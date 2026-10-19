@@ -1,0 +1,10 @@
+[package]
+name = "tidemq"
+version = "0.1.0"
+edition = "2024"
+description = "A cloud-native message queue built on object storage, designed for high throughput, low latency, and elastic scaling."
+license = "MIT"
+repository = "https://github.com/bitcapybara/tidemq"
+readme = "README.md"
+
+[dependencies]
