@@ -229,8 +229,97 @@ impl Drop for Fixture {
 }
 
 fn udp_address() -> SocketAddr {
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.local_addr().unwrap()
+    use std::{
+        collections::BTreeSet,
+        os::fd::AsRawFd,
+        sync::{Mutex, OnceLock},
+    };
+    struct Ports {
+        file: std::fs::File,
+        ephemeral: (u16, u16),
+        next: u32,
+        used: BTreeSet<u16>,
+    }
+    static PORTS: OnceLock<Mutex<Ports>> = OnceLock::new();
+    let ports = PORTS.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        let ephemeral = {
+            let read = |name| {
+                let output = std::process::Command::new("sysctl")
+                    .args(["-n", name])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap()
+            };
+            (
+                read("net.inet.ip.portrange.first"),
+                read("net.inet.ip.portrange.last"),
+            )
+        };
+        #[cfg(target_os = "linux")]
+        let ephemeral = {
+            let text = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+            let mut fields = text
+                .split_ascii_whitespace()
+                .map(|value| value.parse::<u16>().unwrap());
+            (fields.next().unwrap(), fields.next().unwrap())
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        compile_error!("Native runtime tests require a supported ephemeral-port observation");
+        assert!(ephemeral.0 <= ephemeral.1);
+        let seed = Id::random().unwrap();
+        Mutex::new(Ports {
+            file: std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(std::env::temp_dir().join("tidemq-runtime-ports.lock"))
+                .unwrap(),
+            ephemeral,
+            next: u32::from(u16::from_le_bytes([seed.as_bytes()[0], seed.as_bytes()[1]])),
+            used: BTreeSet::new(),
+        })
+    });
+    let mut ports = ports.lock().unwrap();
+    for _ in 0..64_512 {
+        let port = 1024 + (ports.next % 64_512) as u16;
+        ports.next = ports.next.wrapping_add(1);
+        if (ports.ephemeral.0..=ports.ephemeral.1).contains(&port) || ports.used.contains(&port) {
+            continue;
+        }
+        let Ok(socket) = UdpSocket::bind(("127.0.0.1", port)) else {
+            continue;
+        };
+        // One open file retains cross-process port reservations without one descriptor per port.
+        let mut reservation = std::mem::MaybeUninit::<libc::flock>::zeroed();
+        // All fields are integer ABI values and zero is valid for the remaining platform fields.
+        let reservation = unsafe {
+            let value = reservation.assume_init_mut();
+            value.l_type = libc::F_WRLCK as _;
+            value.l_whence = libc::SEEK_SET as _;
+            value.l_start = i64::from(port);
+            value.l_len = 1;
+            value
+        };
+        // The owned descriptor and initialized structure follow the pinned libc fcntl ABI.
+        if unsafe { libc::fcntl(ports.file.as_raw_fd(), libc::F_SETLK, reservation) } != 0 {
+            let error = std::io::Error::last_os_error();
+            assert!(
+                matches!(error.raw_os_error(), Some(libc::EACCES | libc::EAGAIN)),
+                "Port reservation failed: {error}"
+            );
+            continue;
+        }
+        ports.used.insert(port);
+        return socket.local_addr().unwrap();
+    }
+    panic!("No test UDP port is available outside the observed ephemeral range");
 }
 fn tcp_address() -> SocketAddr {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1033,4 +1122,234 @@ async fn private_file(path: PathBuf) {
     }
     #[cfg(not(unix))]
     let _ = path;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn native_runtime_scaling_explicit_replacement_preserves_original_sdk_traffic_and_ack() {
+    exercise_runtime_scaling(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn native_runtime_scaling_automatically_repairs_failed_storage_with_original_sdk_handles() {
+    exercise_runtime_scaling(true).await;
+}
+
+async fn exercise_runtime_scaling(automatic: bool) {
+    let mut fixture = Fixture::new(
+        &[
+            (11, Role::Metadata),
+            (12, Role::Metadata),
+            (13, Role::Metadata),
+            (21, Role::Storage),
+            (22, Role::Storage),
+            (23, Role::Storage),
+            (24, Role::Storage),
+            (31, Role::Broker),
+            (41, Role::Gateway),
+        ],
+        &[11, 12, 13],
+        &[21, 22, 23],
+    )
+    .await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.groups.first_mut().unwrap().standby = vec![24];
+        // The replacement keeps the removed replica's availability zone.
+        config
+            .runtime
+            .peers
+            .iter_mut()
+            .find(|peer| peer.node_id == 24)
+            .unwrap()
+            .zone = "zone-2".into();
+    }
+    let mut storage_process = if automatic {
+        for (node, config) in &fixture.configs {
+            if *node != 23 {
+                fixture
+                    .running
+                    .insert(*node, RunningNode::start(config.clone()).await.unwrap());
+            }
+        }
+        let child = start_process(&fixture, 23).await;
+        fixture.wait_ready().await;
+        Some(child)
+    } else {
+        fixture.start_all().await;
+        None
+    };
+    wait_scaling_diagnostic(&fixture, 24, |value| {
+        value["placement_capacity_available"] == true
+    })
+    .await;
+    let client = fixture.client(41).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    let message = || public::Message {
+        key: Bytes::from_static(b"scaling-key"),
+        body: Bytes::from_static(b"scaling-body"),
+    };
+    producer
+        .produce(vec![message(), message()], deadline())
+        .await
+        .unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 2);
+    let first = consumer.next().await.unwrap().unwrap();
+    assert_eq!(
+        consumer
+            .ack(&first, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        1
+    );
+    let held = consumer.next().await.unwrap().unwrap();
+    assert_eq!(held.offset(), 1);
+    if let Some(child) = storage_process.as_mut() {
+        child.kill().await.unwrap();
+        assert!(!child.wait().await.unwrap().success());
+    }
+    let migration = async {
+        if automatic {
+            wait_scaling_diagnostic(&fixture, 21, scaling_group_is_replaced).await;
+            None
+        } else {
+            Some(
+                fixture
+                    .running
+                    .get(&11)
+                    .unwrap()
+                    .replace_replica(2, 23, 24, Instant::now() + Duration::from_secs(30))
+                    .await
+                    .unwrap(),
+            )
+        }
+    };
+    let traffic = async {
+        let ack = consumer.ack(&held, deadline()).await;
+        let produced = producer.produce(vec![message()], deadline()).await;
+        let read = consumer.fill(deadline()).await;
+        (ack, produced, read)
+    };
+    let (plan, (ack, produced, read)) = tokio::join!(migration, traffic);
+    if let Some(plan) = plan {
+        assert_eq!(plan.previous(), &[21, 22, 23].into());
+        assert_eq!(plan.target(), &[21, 22, 24].into());
+        let repeated = fixture
+            .running
+            .get(&11)
+            .unwrap()
+            .replace_replica(2, 23, 24, deadline())
+            .await
+            .unwrap();
+        assert_eq!(
+            repeated, plan,
+            "A completion retry must retain its original plan identity"
+        );
+    }
+    wait_scaling_diagnostic(&fixture, 21, scaling_group_is_replaced).await;
+    let ack = match ack {
+        Ok(ack) => ack,
+        Err(_) => consumer.ack(&held, deadline()).await.unwrap(),
+    };
+    assert_eq!(ack.acknowledged_before, 2);
+    let receipt = match produced {
+        Ok(receipt) => receipt,
+        Err(error) if error.outcome_unknown() => {
+            let pending = producer.pending_batches().await.unwrap();
+            assert_eq!(pending.len(), 1);
+            let batch = pending.first().unwrap();
+            let identity = (
+                batch.operation_id(),
+                batch.producer_epoch(),
+                batch.first_sequence(),
+                batch.digest().to_vec(),
+            );
+            let receipt = producer.retry(batch, deadline()).await.unwrap();
+            assert_eq!(
+                identity,
+                (
+                    batch.operation_id(),
+                    batch.producer_epoch(),
+                    batch.first_sequence(),
+                    batch.digest().to_vec()
+                )
+            );
+            receipt
+        }
+        Err(_) => producer.produce(vec![message()], deadline()).await.unwrap(),
+    };
+    assert_eq!(receipt.first_offset, 2);
+    assert!(producer.pending_batches().await.unwrap().is_empty());
+    let during = read.unwrap_or(0);
+    assert_eq!(during + consumer.fill(deadline()).await.unwrap(), 1);
+    let delivered = consumer.next().await.unwrap().unwrap();
+    assert_eq!(delivered.offset(), 2);
+    assert_eq!(delivered.body(), b"scaling-body");
+    assert_eq!(
+        consumer
+            .ack(&delivered, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        3
+    );
+    assert!(consumer.next().await.unwrap().is_none());
+    client.close(deadline()).await;
+    drop(consumer);
+    drop(producer);
+    drop(client);
+    fixture.close().await;
+}
+
+fn scaling_group_is_replaced(value: &serde_json::Value) -> bool {
+    value["data_groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|group| {
+            group["group_id"] == 2
+                && group["joint_configs"]
+                    .as_array()
+                    .is_some_and(|configs| configs.len() == 1)
+                && group["voters"].as_array().map(|voters| {
+                    voters
+                        .iter()
+                        .filter_map(serde_json::Value::as_u64)
+                        .collect::<std::collections::BTreeSet<_>>()
+                }) == Some([21, 22, 24].into())
+        })
+}
+
+async fn wait_scaling_diagnostic(
+    fixture: &Fixture,
+    node: u64,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let address = fixture.running.get(&node).unwrap().management_address;
+        let response = http(address, "/diagnostics").await;
+        let (_, body) = response.split_once("\r\n\r\n").unwrap();
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        if predicate(&value) {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "Scaling diagnostic did not satisfy its predicate: {value}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
