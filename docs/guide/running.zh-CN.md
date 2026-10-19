@@ -17,6 +17,8 @@ bash deploy/local/run.sh /tmp/tidemq-rf1 target/debug/tidemq
 
 管理入口为 `http://127.0.0.1:8410`。`/healthz` 表示进程仍可响应；`/readyz` 还检查元数据控制可用性、本地数据初始化与新鲜容量采样，并在本地数据 Leader 上检查真实 quorum。`/metrics` 返回统一 OpenMetrics 文本；`/diagnostics` 返回有界的本进程诊断。管理监听必须是 loopback，只提供只读接口。`validate-config` 验证拓扑和容量限制，不打开监听或数据目录；证书、私密文件权限和 S3 连接在运行时检查。
 
+Metadata/Combined 的 `/ownership/<topic UUID>/<partition u32>` 按键返回一个分区的 owner、phase、epoch 和 route generation，沿用两秒请求期限及并发、字节限额，不扫描全部分区。`partition` 使用现有的 `"<UUID>/<partition>"` 字符串格式。`source=local_applied` 表示该副本的已应用视图，不能当作线性一致读或写入授权证明；非 Metadata 节点或不存在的分区返回 404，非法键返回 400。本地读取不可用时返回 503，若已耗尽总期限则可能直接断开。故障验证先比对多数 Metadata 的 `active` owner/epoch/route generation，并结合实际生产、持久 ACK 确认结果。
+
 `config/local.toml` 是路径示例，需要自行提供 `certs/` 与 `secrets/`。生成器输出可以直接启动。静态令牌文件中每条授权指定 `principal`、`scope` 与操作白名单；`scope='topic:events'` 只授权该主题，`scope='*'` 用于本地管理员。Gateway 和 Storage 都重新检查业务授权。
 
 ## 本地 RF3 与分角色

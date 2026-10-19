@@ -393,6 +393,9 @@ async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>
             serde_json::to_string(&*health.snapshot.read().await)
                 .map_err(|source| Error::operation("encode bounded diagnostics", source))?,
         ),
+        Ok(path) if path.starts_with("/ownership/") => {
+            ownership_response(&service, path, deadline).await?
+        }
         Ok(_) => (404, "application/json", "{\"error\":\"Not found\"}".into()),
         Err(_) => (
             400,
@@ -423,6 +426,63 @@ async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>
     .await
     .map_err(|_| Error::invalid("Management response deadline expired"))?
     .map_err(|source| Error::operation("write management response", source))
+}
+
+async fn ownership_response(
+    service: &Service,
+    path: &str,
+    deadline: Instant,
+) -> Result<(u16, &'static str, String)> {
+    let key = match ownership_key(path) {
+        Ok(key) => key,
+        Err(_) => {
+            return Ok((
+                400,
+                "application/json",
+                "{\"error\":\"Invalid ownership key\"}".into(),
+            ));
+        }
+    };
+    let Some(replica) = &service.metadata else {
+        return Ok((
+            404,
+            "application/json",
+            "{\"error\":\"Metadata is not local\"}".into(),
+        ));
+    };
+    let diagnostic = timeout_at(
+        deadline,
+        replica
+            .state
+            .try_with_application(|state| state.diagnose_ownership(key)),
+    )
+    .await;
+    match diagnostic {
+        Ok(Ok(Some(diagnostic))) => Ok((
+            200,
+            "application/json",
+            serde_json::to_string(&diagnostic)
+                .map_err(|source| Error::operation("encode ownership diagnostic", source))?,
+        )),
+        Ok(Ok(None)) => Ok((
+            404,
+            "application/json",
+            "{\"error\":\"Partition is not local\"}".into(),
+        )),
+        _ => Ok((
+            503,
+            "application/json",
+            "{\"error\":\"Ownership diagnostic is unavailable\"}".into(),
+        )),
+    }
+}
+
+fn ownership_key(path: &str) -> Result<crate::metadata::PartitionKey> {
+    path.strip_prefix("/ownership/")
+        .ok_or_else(|| Error::invalid("Invalid ownership key"))?
+        .to_owned()
+        .try_into()
+        .map_err(|_| Error::invalid("Invalid ownership key"))
 }
 
 fn parse_request(bytes: &[u8]) -> Result<&str> {
@@ -468,6 +528,19 @@ fn parse_request(bytes: &[u8]) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ownership_lookup_accepts_one_bounded_partition_key() {
+        let topic = "f098986a-ecf4-4b23-b9ca-1475d2c51d75";
+        let key = ownership_key(&format!("/ownership/{topic}/4294967295")).unwrap();
+        assert_eq!(key.topic_id.to_string(), topic);
+        assert_eq!(key.partition, u32::MAX);
+        for suffix in ["", "-1", "+1", "00", "4294967296", "0/1", "0?x=1"] {
+            assert!(ownership_key(&format!("/ownership/{topic}/{suffix}")).is_err());
+        }
+        assert!(ownership_key("/ownership/invalid/0").is_err());
+        assert!(ownership_key(&format!("/other/{topic}/0")).is_err());
+    }
+
     #[test]
     fn management_parser_rejects_mutation_and_request_smuggling() {
         assert_eq!(

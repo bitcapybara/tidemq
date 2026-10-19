@@ -911,6 +911,25 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     .await;
     assert!(!diagnostics.contains(TOKEN));
     assert!(!diagnostics.contains("durable-body"));
+    let ownership = http(
+        fixture.running.get(&1).unwrap().management_address,
+        &format!("/ownership/{topic}/0"),
+    )
+    .await;
+    assert!(ownership.starts_with("HTTP/1.1 200"));
+    let ownership: serde_json::Value =
+        serde_json::from_str(ownership.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(ownership.get("source").unwrap(), "local_applied");
+    assert_eq!(ownership.get("phase").unwrap(), "active");
+    assert_eq!(ownership.get("owner_node").unwrap(), 1);
+    assert!(ownership.get("epoch").unwrap().as_u64().unwrap() > 0);
+    assert_eq!(ownership.get("partition").unwrap(), &format!("{topic}/0"));
+    let invalid = http(
+        fixture.running.get(&1).unwrap().management_address,
+        "/ownership/invalid/0",
+    )
+    .await;
+    assert!(invalid.starts_with("HTTP/1.1 400"));
     client.close(deadline()).await;
     drop(consumer);
     drop(producer);
