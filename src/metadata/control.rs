@@ -328,7 +328,7 @@ impl MetadataState {
             (ControlStage::Grant, None) => {}
             (ControlStage::Grant, Some(_)) | (_, None) => return Err(Rejection::InvalidEvidence),
             (_, Some(position)) => {
-                self.validate_evidence_identity(grant, position)?;
+                self.validate_recorded_evidence_identity(grant, position)?;
                 let minimum = action.proof_position().ok_or(Rejection::InvalidEvidence)?;
                 if position.index < minimum.index {
                     return Err(Rejection::InvalidEvidence);

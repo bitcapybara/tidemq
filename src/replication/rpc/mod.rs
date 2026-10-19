@@ -34,6 +34,8 @@ pub enum Error {
     },
     #[snafu(display("Raft RPC memory admission failed"))]
     Memory { source: crate::budget::Error },
+    #[snafu(display("Raft learner repair admission failed"))]
+    Repair { source: crate::scaling::Error },
 }
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;

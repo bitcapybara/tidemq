@@ -1,0 +1,12 @@
+groups:
+  - name: tidemq-scaling
+    rules:
+      - alert: TideMQScalingRepeatedUnknown
+        expr: increase(tidemq_scaling_unknown_outcomes_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scaling repeatedly requires reconciliation"
+          description: "Inspect the original migration plan, actual quorum membership and capacity before retrying."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/scaling.zh-CN.md"

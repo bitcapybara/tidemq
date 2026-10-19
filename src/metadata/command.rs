@@ -63,6 +63,8 @@ pub(crate) enum Action {
     ObserveFence(FenceEvidence),
     ObserveRecovery(RecoveryEvidence),
     ActivateRoute(RecoveryEvidence),
+    PrepareMembership(crate::scaling::MembershipPlan),
+    CompleteMembership(crate::scaling::MembershipEvidence),
     Lifecycle(crate::lifecycle::MetadataOperation),
 }
 
@@ -269,6 +271,8 @@ pub enum Outcome {
     FenceObserved,
     RecoveryObserved,
     RouteActivated(Route),
+    MembershipPrepared(crate::scaling::MembershipPlan),
+    MembershipCompleted(crate::scaling::MembershipPlan),
     Lifecycle(crate::lifecycle::MetadataResult),
 }
 

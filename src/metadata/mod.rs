@@ -7,6 +7,7 @@ mod command;
 mod control;
 mod diagnostics;
 mod replicated;
+mod scaling;
 mod state;
 mod types;
 mod validation;
