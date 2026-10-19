@@ -20,6 +20,8 @@ use tokio::time::Instant;
 
 #[path = "runtime_support/broker_failover.rs"]
 mod broker_failover;
+#[path = "runtime_support/read_batches.rs"]
+mod read_batches;
 #[path = "runtime_support/tracing.rs"]
 mod tracing_tests;
 
