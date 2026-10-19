@@ -1,0 +1,71 @@
+name: tidemq-observability
+
+x-local-observer: &local-observer
+  profiles: [observability]
+  network_mode: host
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 128
+  cpus: 1.0
+  stop_grace_period: 5s
+  restart: "no"
+  logging:
+    driver: local
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  prometheus:
+    <<: *local-observer
+    image: prom/prometheus:v3.15.0
+    mem_limit: 768m
+    environment:
+      GOMEMLIMIT: 192MiB
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.listen-address=127.0.0.1:19090
+      - --web.max-connections=16
+      - --web.read-timeout=5s
+      - --query.max-concurrency=4
+      - --query.max-samples=200000
+      - --query.timeout=5s
+      - --no-auto-gomemlimit
+      - --log.format=json
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts:/etc/prometheus/alerts:ro
+    tmpfs:
+      - /prometheus:size=512m,uid=65534,gid=65534,mode=0700
+      - /tmp:size=16m,mode=1777
+
+  grafana:
+    <<: *local-observer
+    image: grafana/grafana:13.2.4
+    mem_limit: 256m
+    environment:
+      GOMEMLIMIT: 128MiB
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: "13000"
+      GF_PATHS_LOGS: /tmp
+      GF_LOG_MODE: console
+      GF_LOG_CONSOLE_FORMAT: json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+    volumes:
+      - ./grafana:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+    tmpfs:
+      - /var/lib/grafana:size=64m,uid=472,gid=472,mode=0700
+      - /tmp:size=16m,mode=1777

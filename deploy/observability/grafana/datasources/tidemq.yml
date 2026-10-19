@@ -1,0 +1,14 @@
+apiVersion: 1
+datasources:
+  - name: TideMQ Prometheus
+    uid: tidemq-prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:19090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      queryTimeout: 5s
+      timeout: 5

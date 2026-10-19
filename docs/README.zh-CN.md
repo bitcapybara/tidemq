@@ -14,4 +14,4 @@
 | 业务与对象排障 | [生产](operations/producer-troubleshooting.zh-CN.md)、[订阅](operations/subscription-troubleshooting.zh-CN.md)、[S3](operations/object-storage-troubleshooting.zh-CN.md)、[生命周期](operations/object-lifecycle.zh-CN.md)、[扩缩容](operations/scaling.zh-CN.md)、[内存](operations/memory-troubleshooting.zh-CN.md) |
 | 验证与性能 | [测试方法与证据](testing-benchmarks.zh-CN.md)、[性能工具与口径](performance.zh-CN.md)、[同 allocator 发布构建栈采样证据](evidence/2026-10-19-allocator-release.zh-CN.md) |
 
-真实三区的资源输入、费用、拓扑和故障执行顺序见[三区验证准备](guide/three-az-validation.zh-CN.md)。看板和告警位于仓库 `deploy/observability/`。SDK 位于同仓库 `sdk/rust/`，由宿主初始化日志、指标导出和全局分配器。管理 HTTP 必须留在 loopback；访问其他节点需部署受保护代理。
+真实三区的资源输入、费用、拓扑和故障执行顺序见[三区验证准备](guide/three-az-validation.zh-CN.md)。可选监控组件、看板与告警见[观测部署](../deploy/observability/README.zh-CN.md)。SDK 位于同仓库 `sdk/rust/`，由宿主初始化日志、指标导出和全局分配器。管理 HTTP 必须留在 loopback；访问其他节点需部署受保护代理。
