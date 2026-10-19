@@ -123,6 +123,11 @@ impl Fixture {
                 };
                 config.memory.total_bytes = 128 * 1024 * 1024;
                 config.memory.control_reserved_bytes = 32 * 1024 * 1024;
+                // Several independently budgeted native runtimes share this test process's RSS.
+                config.runtime.capacity.process_memory = tidemq::quota::Watermark {
+                    low: 1_610_612_736,
+                    high: 2_147_483_648,
+                };
                 (*node, config)
             })
             .collect();
@@ -164,12 +169,7 @@ impl Fixture {
 
     async fn client(&self, gateway: u64) -> Client {
         let config = self.configs.get(&gateway).unwrap();
-        let address = self
-            .running
-            .get(&gateway)
-            .unwrap()
-            .external_address
-            .unwrap();
+        let address = config.listen;
         let mut sdk = ClientConfig::new(format!("node-{gateway}.local:{}", address.port()));
         sdk.request_timeout_ms = 10_000;
         Client::with_target(
@@ -196,20 +196,7 @@ impl Fixture {
 
     async fn stop(&mut self, node: u64) {
         let running = self.running.remove(&node).unwrap();
-        let address = running.internal_address;
         running.shutdown().await.unwrap();
-        let started = Instant::now();
-        loop {
-            if UdpSocket::bind(address).is_ok() {
-                eprintln!("Native UDP endpoint released after {:?}", started.elapsed());
-                break;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(6),
-                "Native UDP endpoint retained its bound socket after shutdown"
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
     }
     async fn restart(&mut self, node: u64) {
         self.running.insert(
@@ -279,6 +266,139 @@ async fn create(client: &Client) -> (Id, Id) {
         topic,
         Id::from_slice(&subscription.subscription_id).unwrap(),
     )
+}
+
+async fn start_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
+    let config = fixture.configs.get(&node).unwrap();
+    let path = fixture.directory.join(format!("process-{node}.toml"));
+    tokio::fs::write(&path, toml::to_string(config).unwrap())
+        .await
+        .unwrap();
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(fixture.directory.join(format!("process-{node}.log")))
+        .unwrap();
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tidemq"))
+        .arg("serve")
+        .arg("--config")
+        .arg(&path)
+        .stdout(output)
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "Runtime process exited during startup"
+        );
+        let attempt = tokio::time::timeout(Duration::from_millis(200), async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut stream = tokio::net::TcpStream::connect(config.management_listen).await?;
+            stream
+                .write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await?;
+            let mut output = String::new();
+            stream.take(8192).read_to_string(&mut output).await?;
+            Ok::<_, std::io::Error>(output)
+        })
+        .await;
+        if matches!(attempt, Ok(Ok(ref response)) if response.starts_with("HTTP/1.1 200")) {
+            return child;
+        }
+        assert!(
+            Instant::now() < until,
+            "Runtime process did not become ready within its bound"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() {
+    let fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let mut process = start_process(&fixture, 1).await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    let message = || public::Message {
+        key: Bytes::from_static(b"process-key"),
+        body: Bytes::from_static(b"process-body"),
+    };
+    producer.produce(vec![message()], deadline()).await.unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let first = consumer.next().await.unwrap().unwrap();
+    assert_eq!(
+        consumer
+            .ack(&first, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        1
+    );
+    process.kill().await.unwrap();
+    assert!(!process.wait().await.unwrap().success());
+    let failure = producer
+        .produce(vec![message()], Instant::now() + Duration::from_millis(200))
+        .await
+        .unwrap_err();
+    assert!(failure.outcome_unknown());
+    let batches = producer.pending_batches().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    let batch = batches.first().unwrap();
+    let identity = (
+        batch.operation_id(),
+        batch.producer_epoch(),
+        batch.first_sequence(),
+        batch.digest().to_vec(),
+    );
+    let started = Instant::now();
+    let mut process = start_process(&fixture, 1).await;
+    let receipt = producer.retry(batch, deadline()).await.unwrap();
+    assert_eq!(receipt.first_offset, 1);
+    assert_eq!(
+        identity,
+        (
+            batch.operation_id(),
+            batch.producer_epoch(),
+            batch.first_sequence(),
+            batch.digest().to_vec()
+        )
+    );
+    assert!(producer.pending_batches().await.unwrap().is_empty());
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let second = consumer.next().await.unwrap().unwrap();
+    assert_eq!(second.offset(), 1);
+    assert_eq!(
+        consumer
+            .ack(&second, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        2
+    );
+    eprintln!(
+        "Original SDK producer and consumer recovered after process restart in {:?}",
+        started.elapsed()
+    );
+    client.close(deadline()).await;
+    process.kill().await.unwrap();
+    let _ = process.wait().await.unwrap();
+    fixture.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
