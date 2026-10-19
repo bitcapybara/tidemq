@@ -2,7 +2,7 @@
 
 验收先检查持久正确性，再做性能。每类测试说明实际边界；参考模型、真实 QUIC/磁盘、RustFS 和独立 CLI 进程分别报告。当前待收敛的组合回归见[实施状态](implementation-status.zh-CN.md)，不能由测试文件存在推断已经通过。
 
-2026-10-20 合流后的实际命令、241 项普通测试、九项真实后端 ignored、默认 credit 下 512 条 Read 的红绿回归、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。
+2026-10-20 合流后的实际命令、245 项普通测试、九项真实后端 ignored、默认 credit 下 512 条 Read 与空闲 sibling lane 的红绿回归、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。
 
 ## 可复现验证
 
@@ -35,7 +35,7 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 
 | 代号与入口 | 实际验证内容 | 范围限制 |
 | --- | --- | --- |
-| S01 [真实 QUIC](../tests/quic_transport.rs)、[分派](../tests/server_dispatch.rs)、SDK 的网络测试 | TLS/mTLS 与伪造身份拒绝、有限分类连接/流、取消隔离、control/ACK 推进、RPC 结果匹配；原期限内关闭 owned native I/O 并重绑端口；新 1-RTT 包 ACK 探测能淘汰失联旧连接，慢业务有网络进展时不误杀 | 本机 UDP；真实 LB/NAT/CID 和同预算性能对照另验 |
+| S01 [真实 QUIC](../tests/quic_transport.rs)、[分派](../tests/server_dispatch.rs)、SDK 的网络测试 | TLS/mTLS 与伪造身份拒绝、有限分类连接/流、取消隔离、control/ACK 推进、RPC 结果匹配；四 lane 单 affinity 持续请求不因 sibling 空闲断连，半帧仍 poison；原期限内关闭 owned native I/O 并重绑端口；新 1-RTT 包 ACK 探测能淘汰失联旧连接，慢业务有网络进展时不误杀 | 本机 UDP；真实 LB/NAT/CID 和同预算性能对照另验 |
 | S02 [WAL](../tests/wal_journal.rs)、[存储](../tests/replication_storage.rs)、[Raft QUIC](../tests/raft_quic.rs)、[崩溃](../tests/replication_crash.rs)、[应用失败](../tests/application_failure.rs) | fsync/vote/log/commit/snapshot、官方 storage-v2、RF1/RF3 多数派、换主、B 快照与 R 日志、原结果、SIGKILL、日志 rewrite、状态损坏/应用失败关闭 | 一部分底层测试使用受控内存网络；raft_quic 才是原生网络，不混称三区 |
 | S03 [元数据](../tests/metadata_state.rs)、[权威](../tests/ownership_authority.rs) | CRUD 与永久身份、grant/fence/recover/activate、重试/CAS/旧 epoch、TTL 从请求开始、控制失 quorum、有限安全收尾 | 必须再通过实际角色接管，纯状态不能代表入口故障 |
 | S04 [Broker 测试](../src/broker/tests/mod.rs)、SDK 网络测试 | producer 注册/固定过期/全局高水位、canonical digest、sequence/冲突/原结果、owned 取消后提交、快照恢复、原 PendingBatch 重试 | 有限原结果窗口；SDK 进程重启没有持久 outbox |

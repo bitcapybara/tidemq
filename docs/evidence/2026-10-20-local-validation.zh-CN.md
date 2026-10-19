@@ -11,10 +11,10 @@
 | `cargo fmt --all` | 通过 |
 | `cargo clippy --workspace --tests --examples --no-deps --locked -j2 -- -D warnings` | 通过，零警告 |
 | workspace lib/bins 的 unwrap、expect、panic、todo、unimplemented、indexing/slicing 严格 clippy | 通过，命令见[测试方法](../testing-benchmarks.zh-CN.md) |
-| `cargo test --workspace --locked -j2 --no-fail-fast -- --test-threads=2` | **241 passed，9 ignored，34 suites，76.25 s** |
-| 指定真实 RustFS 与官方 Collector，`cargo test --workspace --locked -j2 -- --ignored --test-threads=1` | **9 passed，241 filtered out，34 suites，36.55 s** |
-| `cargo test --workspace --doc --locked -j2` | **3 passed，4 suites，0.24 s** |
-| `cargo test -p tidemq-sdk --locked --features 'metrics opentelemetry' -j2` | **26 passed，3 suites，0.60 s** |
+| `cargo test --workspace --locked -j2 --no-fail-fast -- --test-threads=2` | **245 passed，9 ignored，34 suites，76.82 s** |
+| 指定真实 RustFS 与官方 Collector，`cargo test --workspace --locked -j2 -- --ignored --test-threads=1` | **9 passed，245 filtered out，34 suites，38.10 s** |
+| `cargo test --workspace --doc --locked -j2` | **3 passed，4 suites，0.28 s** |
+| `cargo test -p tidemq-sdk --locked --features 'metrics opentelemetry' -j2` | **26 passed，3 suites，0.61 s** |
 | protocol `codegen` 构建、fmt、generated diff | 通过，生成文件无差异 |
 | mimalloc 的 tests clippy 与 `allocator_diagnostics` | 零警告；**2 passed，2.04 s** |
 | jemalloc 的 tests clippy 与 `allocator_diagnostics` | 零警告；**2 passed，2.06 s** |
@@ -31,11 +31,17 @@
 
 原失败日志保留在集成 worktree 的私有 `target/unified-before-producer-helper-fix.log`，原 fixture 数据目录也保留；定向两个独立 RF3 场景和最终完整普通回归均已通过。heap profiling 专门检查另修正了退出条件的 clippy 嵌套写法，原期限和行为保持一致，并单独运行该 feature 的实际测试。
 
-正式负载另发现两处问题，失败批次均未当作性能成功数据。第一处是负载工具仍按旧 132096 B 总响应上限读取指标，而最终服务指标正文已达 138163 B、服务正文上限为 262144 B。采样工具对齐服务端已有上限，保留独立 1024 B 头部上限、两秒采样期限和有限总读取，并校验唯一 Content-Length、正文长度及单个 OpenMetrics EOF。真实 TCP 测试验证 138163 B 与 262144 B 成功、262145 B 拒绝；解析测试另覆盖超限头部、截断、重复长度和 chunked 拒绝。
+正式负载另发现三处问题，失败批次均未当作性能成功数据。第一处是负载工具仍按旧 132096 B 总响应上限读取指标，而最终服务指标正文已达 138163 B、服务正文上限为 262144 B。采样工具对齐服务端已有上限，保留独立 1024 B 头部上限、两秒采样期限和有限总读取，并校验唯一 Content-Length、正文长度及单个 OpenMetrics EOF。真实 TCP 测试验证 138163 B 与 262144 B 成功、262145 B 拒绝；解析测试另覆盖超限头部、截断、重复长度和 chunked 拒绝。
 
 第二处是 Read 最多逐条持久签发 256 条投递，却整批共用起始短期 lease；整批尚未完成就到期时，已签发的前缀也没有返回。独立真实 RF1 回归在旧 `10eea25` 上先取得 512 条持久生产回执，首次 `fill` 于约 2.561 s 返回 `Unavailable/Unknown`，交付与 ACK 均为零。修复保留原 TTL、总请求期限、消息 credit 和每条持久签发，按有限新工作片及 writer、冷页 pin、全部控制 lease 的最早期限返回明确成功的部分前缀；Unknown 和最终代次、冷页校验仍返回错误。具体契约见[运行时设计](../design/runtime.zh-CN.md)。
 
-合流后同一 512×1KiB 默认 credit 回归通过：32 次 Read 完整交付，最终持久 ACK 前沿为 512，其中 16 次在仍有完整 credit 时返回非空部分批次。单次 Read 最长约 296 ms，说明 250 ms 是新签发的准入窗口，不是整个 RPC 的硬时延保证。这些耗时仅是功能回归证据，不作为正式性能或高分位结论。旧失败日志保留在性能 worktree 的私有 `target/runtime-read-batches-10eea25-red.log`，绿色日志保留在集成 worktree 的私有 `target/read-batches-sliced-green-20261020.log`；原现场均未提交。新增三个预算测试与一个冷页最早期限测试覆盖短 TTL、首条冷准备、原 deadline、只收紧不续期及 pin/全部 lease 最早边界，最终 241 项普通与九项真实后端已在合流后重新执行通过。
+合流后同一 512×1KiB 默认 credit 回归通过：32 次 Read 完整交付，最终持久 ACK 前沿为 512，其中 16 次在仍有完整 credit 时返回非空部分批次。单次 Read 最长约 296 ms，说明 250 ms 是新签发的准入窗口，不是整个 RPC 的硬时延保证。这些耗时仅是功能回归证据，不作为正式性能或高分位结论。旧失败日志保留在性能 worktree 的私有 `target/runtime-read-batches-10eea25-red.log`，绿色日志保留在集成 worktree 的私有 `target/read-batches-sliced-green-20261020.log`；原现场均未提交。新增三个预算测试与一个冷页最早期限测试覆盖短 TTL、首条冷准备、原 deadline、只收紧不续期及 pin/全部 lease 最早边界。
+
+第三处是长寿命 RPC 的每条 sibling lane 独立按 30 秒空等收帧，闲置 lane 超时会关闭仍有活跃业务的整个连接。冻结 `f4d400a` 的首项负载中，4096 条生产全部持久成功，消费 ACK 仅 2474 条，最后成功回执的连续前沿为 1468，随后因未收齐预期消息失败；该现场与剩余未运行的 16 项均未算作成功。只读检查原 WAL 的完整文件、帧长度、连续序号和已提交命令发现：1468—1485 的 18 条投递已持久签发但没有 ACK，后续 1006 条 ACK 洞占满 1024 条订阅窗口，负载退出早于首批可见性重试期限约 12.3 秒。该辅助检查没有验证每帧 BLAKE3、token MAC 或完整 Rust 状态机回放，也不能判断客户端或服务端哪一端先关闭；正式负载的退出规则和可见性期限均保持原值。
+
+在生产修复前新增两项真实 QUIC 回归，分别隔离客户端、服务端的 120 ms 读阈值：四条 Request lane 中仅一个 affinity 持续工作，两次执行均为 0 passed / 2 failed（约 0.44 / 0.40 秒），错误为活跃 RPC 被关闭。修后同命令 2 passed（0.89 秒），两种方向均持续业务超过阈值、始终一条物理连接，deadline/malformed 均为零。长寿命 reader 现在安全等待首字节，收到首字节后仍有限组帧并扣减 peer 剩余预算；一次性绝对收帧 API、native idle、探活和原关闭期限保留，具体见 [QUIC 设计](../design/quic-transport.zh-CN.md)。
+
+修复的定向门禁另通过 transport 单元 5 项、QUIC 23 项、dispatch 3 项、SDK 含文档 26 项，以及真实 Gateway 强杀、丢包/重排、1199 B MTU 黑洞后恢复到 1200 B 的原身份恢复单例。后者测试共 11.26 秒，恢复段约 7.42 秒且含四秒注入黑洞，不代表恢复 SLO。负向回归覆盖首字节前取消后复用、无效组帧期限、prefix/body 超时与取消后 poison，以及首字节后的原预算扣减；失败原文、WAL 和脱敏前诊断只保存在各 worktree 私有 `target`，不提交业务正文或身份秘密。
 
 ## 原生观测部署
 
