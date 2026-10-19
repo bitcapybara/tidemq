@@ -1310,10 +1310,13 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
         .unwrap();
     producer
         .produce(
-            vec![public::Message {
-                key: Bytes::from_static(b"cold-key"),
-                body: Bytes::from_static(b"cold-body"),
-            }],
+            vec![
+                public::Message {
+                    key: Bytes::from_static(b"cold-key"),
+                    body: Bytes::from_static(b"cold-body"),
+                };
+                33
+            ],
             deadline(),
         )
         .await
@@ -1348,7 +1351,7 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
                     .unwrap_or(0),
             );
         }
-        if reclaimed > 0 {
+        if reclaimed >= 33 * 17 {
             break;
         }
         assert!(
@@ -1367,24 +1370,27 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     )
     .await
     .unwrap();
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
-    let delivery = consumer.next().await.unwrap().unwrap();
-    assert_eq!(delivery.body(), b"cold-body");
-    assert_eq!(
-        consumer
-            .ack(&delivery, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
-        1
-    );
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 33);
+    for offset in 0..33 {
+        let delivery = consumer.next().await.unwrap().unwrap();
+        assert_eq!(delivery.offset(), offset);
+        assert_eq!(delivery.body(), b"cold-body");
+        assert_eq!(
+            consumer
+                .ack(&delivery, deadline())
+                .await
+                .unwrap()
+                .acknowledged_before,
+            offset + 1
+        );
+    }
     let metrics = http(
         fixture.running.get(&gateway).unwrap().management_address,
         "/metrics",
     )
     .await;
     assert_eq!(metrics.matches("# EOF").count(), 1);
-    let mut published = false;
+    let mut published = 0_u64;
     for node in storage {
         let metrics = http(
             fixture.running.get(node).unwrap().management_address,
@@ -1413,14 +1419,13 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
             1
         );
 
-        published |= http(
-            fixture.running.get(node).unwrap().management_address,
-            "/metrics",
-        )
-        .await
-        .contains("tidemq_lifecycle_published_total 1");
+        published += metrics
+            .lines()
+            .find_map(|line| line.strip_prefix("tidemq_lifecycle_published_total "))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
     }
-    assert!(published);
+    assert_eq!(published, 1);
     client.close(deadline()).await;
     drop(consumer);
     drop(producer);

@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tidemq_protocol::Id;
 use tidemq_protocol::common::{ErrorCode, Outcome, TrafficClass};
 use tidemq_protocol::state::OffsetRange;
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 
 use crate::broker::{DataCommand, DataResponse, WriterFence};
@@ -86,6 +86,31 @@ fn select_archive_range(
         // Each page contains Bytes references only; release them before reading another page.
     }
     Ok(OffsetRange { start, end: next })
+}
+
+async fn background_admitted(
+    quota: &Mutex<crate::quota::Quota>,
+    observed: &Notify,
+    deadline: Instant,
+) -> Result<bool> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(Error::unavailable());
+        }
+        let changed = observed.notified();
+        tokio::pin!(changed);
+        // Register before checking freshness so a concurrent real observation cannot be lost.
+        changed.as_mut().enable();
+        let admission = quota.lock().map_err(|_| Error::unavailable())?.admit(
+            crate::quota::Work::BackgroundSnapshot,
+            std::time::Instant::now(),
+        );
+        match admission {
+            Ok(()) => return Ok(true),
+            Err(crate::quota::Error::Stale) => super::wire::within(deadline, changed).await?,
+            Err(_) => return Ok(false),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -407,16 +432,7 @@ impl Service {
             if !progress.inspected || progress.blocked {
                 continue;
             }
-            let allowed = self
-                .quota
-                .lock()
-                .map_err(|_| Error::unavailable())?
-                .admit(
-                    crate::quota::Work::BackgroundSnapshot,
-                    std::time::Instant::now(),
-                )
-                .is_ok();
-            if !allowed {
+            if !background_admitted(&self.quota, &self.quota_observed, deadline).await? {
                 continue;
             }
             if !checked_compaction {
@@ -575,6 +591,18 @@ mod tests {
 
     use super::*;
 
+    fn observed_quota(age: Duration, memory: u64) -> Mutex<crate::quota::Quota> {
+        let mut quota = crate::quota::Quota::new(Default::default(), Default::default()).unwrap();
+        quota.observe(
+            crate::quota::Usage {
+                process_memory_bytes: memory,
+                ..Default::default()
+            },
+            std::time::Instant::now().checked_sub(age).unwrap(),
+        );
+        Mutex::new(quota)
+    }
+
     fn budget() -> MemoryBudget {
         MemoryBudget::new(MemoryLimits {
             total_bytes: 192 * 1024 * 1024,
@@ -711,5 +739,97 @@ mod tests {
         assert!(budget.available_core_bytes() > 0);
         drop(busy);
         assert_eq!(budget.available_bytes(), available);
+    }
+
+    #[tokio::test]
+    async fn stale_background_admission_waits_for_a_real_observation_without_losing_notifications()
+    {
+        let quota = observed_quota(Duration::from_millis(1100), 64 * 1024 * 1024);
+        let observed = Notify::new();
+        let waiting =
+            background_admitted(&quota, &observed, Instant::now() + Duration::from_secs(1));
+        tokio::pin!(waiting);
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(waiting.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        observed.notify_waiters();
+        // A notification alone is not evidence: the stale quota must still refuse admission.
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(waiting.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        quota.lock().unwrap().observe(
+            crate::quota::Usage {
+                process_memory_bytes: 64 * 1024 * 1024,
+                ..Default::default()
+            },
+            std::time::Instant::now(),
+        );
+        observed.notify_waiters();
+        assert!(waiting.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn background_admission_keeps_the_original_deadline_and_pressure_rejection() {
+        let observed = Notify::new();
+        let quota = observed_quota(Duration::from_millis(1100), 64 * 1024 * 1024);
+        assert!(
+            background_admitted(
+                &quota,
+                &observed,
+                Instant::now() + Duration::from_millis(20)
+            )
+            .await
+            .is_err()
+        );
+        let pressured = observed_quota(
+            Duration::ZERO,
+            crate::quota::Limits::default().process_memory.high,
+        );
+        assert!(
+            !background_admitted(
+                &pressured,
+                &observed,
+                Instant::now() + Duration::from_secs(1)
+            )
+            .await
+            .unwrap()
+        );
+        let unknown =
+            Mutex::new(crate::quota::Quota::new(Default::default(), Default::default()).unwrap());
+        assert!(
+            !background_admitted(&unknown, &observed, Instant::now() + Duration::from_secs(1))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_a_stale_background_admission_wait() {
+        let quota = observed_quota(Duration::from_millis(1100), 64 * 1024 * 1024);
+        let observed = Notify::new();
+        let (shutdown, mut receiver) = watch::channel(false);
+        let running = async {
+            tokio::select! {
+                _ = receiver.changed() => Ok(false),
+                admitted = background_admitted(&quota, &observed, Instant::now() + Duration::from_secs(5)) => admitted,
+            }
+        };
+        tokio::pin!(running);
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(running.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        shutdown.send(true).unwrap();
+        assert!(
+            !tokio::time::timeout(Duration::from_millis(100), running)
+                .await
+                .unwrap()
+                .unwrap()
+        );
     }
 }

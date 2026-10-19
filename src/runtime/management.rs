@@ -313,6 +313,7 @@ async fn sample_capacity(
         .lock()
         .map_err(|_| Error::unavailable())?
         .observe(usage, started.into_std());
+    service.quota_observed.notify_waiters();
     *service
         .disk_capacity
         .lock()

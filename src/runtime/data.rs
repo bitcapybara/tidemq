@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use prost::Message;
@@ -11,6 +11,7 @@ use tokio::time::Instant;
 
 use crate::broker::{self, DataCommand, DataRejection, DataResponse, RequestContext, WriterFence};
 use crate::gateway::Access;
+use crate::lifecycle::{GuardedPage, VerifiedColdDelivery};
 use crate::metadata::{PartitionKey, Route};
 use crate::ownership::remote::{Query, Value};
 use crate::ownership::{ControlLease, FinalizationKind, Work};
@@ -120,6 +121,17 @@ impl Service {
         partition: PartitionKey,
         deadline: Instant,
     ) -> Result<Arc<ControlLease>> {
+        self.data_lease_for(group, partition, deadline, Duration::ZERO)
+            .await
+    }
+
+    async fn data_lease_for(
+        &self,
+        group: u64,
+        partition: PartitionKey,
+        deadline: Instant,
+        minimum_remaining: Duration,
+    ) -> Result<Arc<ControlLease>> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         self.authoritative_group(group, deadline).await?;
@@ -162,10 +174,13 @@ impl Service {
                 .clone()
         };
         let mut cached = wire::within(deadline, slot.lock()).await?;
-        if let Some(lease) = cached
-            .as_ref()
-            .filter(|lease| lease.check(&fence, Work::ControlMutation).is_ok())
-        {
+        if let Some(lease) = cached.as_ref().filter(|lease| {
+            lease.check(&fence, Work::ControlMutation).is_ok()
+                && lease
+                    .expires_at()
+                    .saturating_duration_since(std::time::Instant::now())
+                    >= minimum_remaining
+        }) {
             return Ok(lease.clone());
         }
         let lease = Arc::new(
@@ -175,6 +190,13 @@ impl Service {
                 .map_err(|_| Error::unavailable())?,
         );
         *cached = Some(lease.clone());
+        if lease
+            .expires_at()
+            .saturating_duration_since(std::time::Instant::now())
+            < minimum_remaining
+        {
+            return Err(Error::unavailable());
+        }
         Ok(lease)
     }
 
@@ -868,6 +890,21 @@ impl Service {
     ) -> Result<Frame> {
         let group = route.group_id;
         let partition = route.partition;
+        // Start a durable batch with room to make progress; renewal remains a fresh quorum read.
+        let renewed = self
+            .data_lease_for(
+                group,
+                partition,
+                deadline,
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(1)),
+            )
+            .await?;
+        if renewed.grant() != lease.grant() {
+            return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
+        }
+        let lease = renewed.as_ref();
         let subscription = wire::id(&request.subscription_id)?;
         self.require_subscription(subscription, partition, deadline)
             .await?;
@@ -989,37 +1026,33 @@ impl Service {
                             false,
                         ));
                     }
-                    let coordinator = self.objects.get(&group).ok_or_else(Error::unavailable)?;
-                    let page = coordinator
-                        .read(
-                            partition,
-                            offset,
-                            1,
-                            u64::from(request.max_bytes),
-                            deadline.into_std(),
-                        )
-                        .await
-                        .map_err(|source| Error::operation("read published cold object", source))?;
-                    let message = {
-                        let record = page
-                            .records()
-                            .map_err(|source| Error::operation("validate cold read pin", source))?
-                            .first()
-                            .ok_or_else(Error::unavailable)?;
-                        if record.offset != offset {
-                            return Err(Error::invalid(
-                                "Cold object returned a different message offset",
-                            ));
-                        }
-                        MessageData {
-                            key: Bytes::copy_from_slice(record.key()),
-                            body: Bytes::copy_from_slice(record.body()),
-                        }
-                    };
-                    let proof = page
-                        .verified_delivery(offset)
-                        .map_err(|source| Error::operation("bind cold delivery proof", source))?;
-                    (message, Some(proof), Some(page))
+                    let cached = cold_pages
+                        .last()
+                        .map(|page| cold_message(page, offset))
+                        .transpose()?
+                        .flatten();
+                    if let Some((message, proof)) = cached {
+                        (message, Some(proof), None)
+                    } else {
+                        let coordinator =
+                            self.objects.get(&group).ok_or_else(Error::unavailable)?;
+                        let page = coordinator
+                            .read(
+                                partition,
+                                offset,
+                                request.max_messages as usize,
+                                u64::from(request.max_bytes),
+                                deadline.into_std(),
+                            )
+                            .await
+                            .map_err(|source| {
+                                Error::operation("read published cold object", source)
+                            })?;
+                        let (message, proof) = cold_message(&page, offset)?.ok_or_else(|| {
+                            Error::invalid("Cold object omitted the requested message offset")
+                        })?;
+                        (message, Some(proof), Some(page))
+                    }
                 }
                 Err(broker::Error::Rejected {
                     reason:
@@ -1174,6 +1207,28 @@ fn assignment_wire(
         issued_before: assignment.issued_before,
     }
 }
+fn cold_message(
+    page: &GuardedPage,
+    offset: u64,
+) -> Result<Option<(MessageData, VerifiedColdDelivery)>> {
+    let records = page
+        .records()
+        .map_err(|source| Error::operation("validate cold read pin", source))?;
+    let Some(record) = records.iter().find(|record| record.offset == offset) else {
+        return Ok(None);
+    };
+    let proof = page
+        .verified_delivery(offset)
+        .map_err(|source| Error::operation("bind cold delivery proof", source))?;
+    Ok(Some((
+        MessageData {
+            key: Bytes::copy_from_slice(record.key()),
+            body: Bytes::copy_from_slice(record.body()),
+        },
+        proof,
+    )))
+}
+
 fn check_generations(cursor: u64, assignment: u64, delivery: u64) -> Result<Generations> {
     if cursor == 0 || assignment == 0 || assignment != delivery {
         Err(subscription_error(subscription::Rejection::StaleGeneration))

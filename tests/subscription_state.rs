@@ -413,6 +413,62 @@ fn cold_to_hot_switch_requires_continuous_sdk_receive_barrier_independent_of_bus
 }
 
 #[test]
+fn lost_partial_cold_reply_preserves_the_prefix_until_visibility_retry_and_business_ack() {
+    let mut f = Fixture::new(Limits::default(), 33);
+    // These durable deliveries are missing from the failed Read's response, never business-ACKed.
+    let lost = (0..25)
+        .map(|offset| f.deliver(offset, 0, 0, DeliveryLane::Bulk))
+        .collect::<Vec<_>>();
+    let earliest_retry = lost
+        .iter()
+        .map(|receipt| receipt.retry_at_ms)
+        .min()
+        .unwrap();
+    let retry_at = lost
+        .iter()
+        .map(|receipt| receipt.retry_at_ms)
+        .max()
+        .unwrap();
+    let snapshot = postcard::to_stdvec(&f.state).unwrap();
+    f.state = postcard::from_bytes(&snapshot).unwrap();
+    f.state.validate().unwrap();
+    let assignment = f.state.assignment(f.id).unwrap();
+    assert_eq!(assignment.acknowledged_before, 0);
+    assert_eq!(assignment.next_delivery_offset, 25);
+    let tail = (25..33)
+        .map(|offset| f.deliver(offset, 0, 0, DeliveryLane::Bulk).token)
+        .collect();
+    assert_eq!(f.ack(tail).unwrap().acknowledged_before, 0);
+    assert_eq!(f.state.protected_before(), Some(0));
+    assert!(
+        f.state
+            .due_retries(f.id, earliest_retry - 1, 33)
+            .unwrap()
+            .is_empty()
+    );
+    let snapshot = postcard::to_stdvec(&f.state).unwrap();
+    f.state = postcard::from_bytes(&snapshot).unwrap();
+    f.state.validate().unwrap();
+    let due = f.state.due_retries(f.id, retry_at, 33).unwrap();
+    assert_eq!(
+        due.iter().map(|retry| retry.offset).collect::<Vec<_>>(),
+        (0..25).collect::<Vec<_>>()
+    );
+    let mut recovered = Vec::new();
+    for offset in 0..25 {
+        let receipt = f.deliver(offset, 1, retry_at, DeliveryLane::Bulk);
+        assert_eq!(receipt.attempt, 2);
+        recovered.push(receipt.token);
+    }
+    let stale = lost.into_iter().next().unwrap().token;
+    assert_eq!(f.ack(vec![stale]), Err(Rejection::StaleAttempt));
+    assert_eq!(f.ack(recovered).unwrap().acknowledged_before, 33);
+    let assignment = f.state.assignment(f.id).unwrap();
+    assert_eq!(assignment.generations, f.generations);
+    assert_eq!(assignment.cold_before, 33);
+}
+
+#[test]
 fn cold_retries_remain_on_bulk_after_realtime_delivery_starts() {
     let mut f = Fixture::new(Limits::default(), 2);
     let zero = f.deliver(0, 0, 0, DeliveryLane::Bulk);
