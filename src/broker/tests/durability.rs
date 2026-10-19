@@ -107,6 +107,63 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
     };
     // The application commits the ACK; discard its response before retrying after recovery.
     let _lost_ack_response = cluster.write(command(ack.clone())).await;
+    let (revision, now_ms) = cluster
+        .node(1)
+        .state
+        .with_application(|state| {
+            let retention = state.retention(partition).unwrap();
+            assert!(state.capacity_usage().unwrap().logical_backlog_upper_bytes > 0);
+            (
+                retention.revision(),
+                state.producer(partition).unwrap().logical_time_ms()
+                    + retention.policy().minimum_age_ms
+                    + 1_000,
+            )
+        })
+        .await;
+    assert!(matches!(
+        cluster
+            .write(DataCommand::Retention {
+                partition,
+                writer: writer(&grant),
+                command: crate::retention::Command {
+                    expected_revision: revision,
+                    before: 2,
+                    now_ms
+                }
+            })
+            .await,
+        DataResponse::Rejected(DataRejection::Retention(
+            crate::retention::Rejection::Protected { maximum: 1 }
+        ))
+    ));
+    assert!(matches!(
+        cluster
+            .write(DataCommand::Retention {
+                partition,
+                writer: writer(&grant),
+                command: crate::retention::Command {
+                    expected_revision: revision,
+                    before: 1,
+                    now_ms
+                }
+            })
+            .await,
+        DataResponse::Retention(crate::retention::Status { floor: 1, .. })
+    ));
+    assert!(matches!(
+        cluster
+            .write(command(subscription::Command::Seek {
+                subscription_id,
+                operation_id: Id::random().unwrap(),
+                expected_cursor_generation: assignment.generations.cursor,
+                offset: 0
+            }))
+            .await,
+        DataResponse::Rejected(DataRejection::Subscription(
+            subscription::Rejection::OutOfRetention
+        ))
+    ));
     let last = cluster
         .node(1)
         .raft
@@ -159,6 +216,8 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
         .state
         .with_application(|application| {
             assert_eq!(application.producer(partition).unwrap().committed_end(), 2);
+            assert_eq!(application.retention(partition).unwrap().floor(), 1);
+            assert_eq!(application.producer(partition).unwrap().retained_floor(), 1);
             crate::replication::Application::validate(application).unwrap();
         })
         .await;

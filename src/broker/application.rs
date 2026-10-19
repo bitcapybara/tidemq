@@ -24,6 +24,29 @@ pub struct DataGroupConfig {
     pub max_hot_messages: usize,
     pub producer: ProducerLimits,
     pub subscription: subscription::Limits,
+    pub retention: crate::retention::Policy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct CapacityUsage {
+    pub logical_backlog_upper_bytes: u64,
+    pub hot_body_bytes: u64,
+    pub unpublished_upper_bytes: u64,
+    pub hot_messages: usize,
+    pub time_boundaries: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ArchiveCandidate {
+    pub partition: PartitionKey,
+    pub published_end: u64,
+    pub committed_end: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArchivePage {
+    pub partitions: Vec<ArchiveCandidate>,
+    pub next: Option<PartitionKey>,
 }
 
 impl DataGroupConfig {
@@ -32,6 +55,9 @@ impl DataGroupConfig {
         self.subscription
             .validate()
             .map_err(DataRejection::Subscription)?;
+        self.retention
+            .validate()
+            .map_err(DataRejection::Retention)?;
         if self.group_id == 0
             || self.max_partitions == 0
             || self.max_partitions > 8_192
@@ -67,6 +93,11 @@ pub enum ProducerCommand {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataCommand {
     Initialize(DataGroupConfig),
+    Retention {
+        partition: PartitionKey,
+        writer: WriterFence,
+        command: crate::retention::Command,
+    },
     InstallFence(FenceCommand),
     Recover {
         partition: PartitionKey,
@@ -102,6 +133,7 @@ pub enum DataRejection {
     Fence(FenceRejection),
     Producer(producer::Rejection),
     Subscription(subscription::Rejection),
+    Retention(crate::retention::Rejection),
     Lifecycle(crate::lifecycle::Rejection),
 }
 
@@ -116,6 +148,7 @@ pub enum DataResponse {
     Produced(BatchResult),
     Retired,
     TimeAdvanced,
+    Retention(crate::retention::Status),
     Subscription(subscription::Outcome),
     Lifecycle(crate::lifecycle::DataResult),
     Rejected(DataRejection),
@@ -142,6 +175,7 @@ impl fmt::Debug for DataResponse {
             Self::Produced(result) => formatter.debug_tuple("Produced").field(result).finish(),
             Self::Retired => formatter.write_str("Retired"),
             Self::TimeAdvanced => formatter.write_str("TimeAdvanced"),
+            Self::Retention(status) => formatter.debug_tuple("Retention").field(status).finish(),
             Self::Subscription(_) => formatter.write_str("Subscription(<bounded outcome>)"),
             Self::Lifecycle(result) => formatter.debug_tuple("Lifecycle").field(result).finish(),
             Self::Rejected(reason) => formatter.debug_tuple("Rejected").field(reason).finish(),
@@ -153,6 +187,7 @@ impl fmt::Debug for DataResponse {
 struct PartitionState {
     producer: ProducerState,
     subscriptions: SubscriptionState,
+    retention: crate::retention::RetentionState,
 }
 
 /// The complete data-group authority: offsets, sessions, writer fences, delivery attempts and ACKs.
@@ -179,6 +214,106 @@ impl fmt::Debug for DataApplication {
 }
 
 impl DataApplication {
+    pub fn retention(&self, partition: PartitionKey) -> Option<&crate::retention::RetentionState> {
+        self.partitions
+            .get(&partition)
+            .map(|state| &state.retention)
+    }
+
+    /// At most the configured partition count, with logarithmic time-index lookups and no body scan.
+    pub fn capacity_usage(&self) -> Result<CapacityUsage, DataRejection> {
+        self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
+        let mut usage = CapacityUsage {
+            hot_body_bytes: self.hot_bytes,
+            hot_messages: self.hot_messages,
+            ..CapacityUsage::default()
+        };
+        for (partition, state) in &self.partitions {
+            let backlog = state
+                .retention
+                .logical_backlog_upper_bytes(state.subscriptions.protected_before())
+                .map_err(DataRejection::Retention)?;
+            let published = self.lifecycle.published_end(*partition);
+            let unpublished = if published < state.retention.floor() {
+                state.producer.hot_bytes()
+            } else {
+                state
+                    .retention
+                    .logical_backlog_upper_bytes(Some(published))
+                    .map_err(DataRejection::Retention)?
+            };
+            usage.logical_backlog_upper_bytes = usage
+                .logical_backlog_upper_bytes
+                .checked_add(backlog)
+                .ok_or(DataRejection::InvalidConfiguration)?;
+            usage.unpublished_upper_bytes = usage
+                .unpublished_upper_bytes
+                .checked_add(unpublished)
+                .ok_or(DataRejection::InvalidConfiguration)?;
+            usage.time_boundaries = usage
+                .time_boundaries
+                .checked_add(state.retention.status(0, None).time_boundaries)
+                .ok_or(DataRejection::InvalidConfiguration)?;
+        }
+        Ok(usage)
+    }
+
+    pub fn archive_candidates(
+        &self,
+        after: Option<PartitionKey>,
+        limit: usize,
+    ) -> Result<ArchivePage, DataRejection> {
+        use std::ops::Bound;
+        if limit == 0 || limit > 64 {
+            return Err(DataRejection::InvalidConfiguration);
+        }
+        let start = after.map_or(Bound::Unbounded, Bound::Excluded);
+        let mut entries = self.partitions.range((start, Bound::Unbounded));
+        let mut partitions = Vec::new();
+        partitions
+            .try_reserve_exact(limit)
+            .map_err(|_| DataRejection::Producer(producer::Rejection::Allocation))?;
+        for (partition, state) in entries.by_ref().take(limit) {
+            partitions.push(ArchiveCandidate {
+                partition: *partition,
+                published_end: self.lifecycle.published_end(*partition),
+                committed_end: state.producer.committed_end(),
+            });
+        }
+        let next = if entries.next().is_some() {
+            partitions.last().map(|candidate| candidate.partition)
+        } else {
+            None
+        };
+        Ok(ArchivePage { partitions, next })
+    }
+
+    fn retention_command(
+        &mut self,
+        partition: PartitionKey,
+        writer: WriterFence,
+        command: crate::retention::Command,
+    ) -> Result<DataResponse, DataRejection> {
+        self.check_writer(partition, writer)?;
+        let state = self
+            .partitions
+            .get_mut(&partition)
+            .ok_or(DataRejection::PartitionMissing)?;
+        let status = state
+            .retention
+            .advance(
+                command,
+                state.producer.committed_end(),
+                state.subscriptions.protected_before(),
+            )
+            .map_err(DataRejection::Retention)?;
+        state
+            .producer
+            .set_retained_floor(status.floor)
+            .map_err(DataRejection::Producer)?;
+        Ok(DataResponse::Retention(status))
+    }
+
     pub fn lifecycle(&self) -> &crate::lifecycle::DataState {
         &self.lifecycle
     }
@@ -264,6 +399,8 @@ impl DataApplication {
                 PartitionState {
                     producer,
                     subscriptions,
+                    retention: crate::retention::RetentionState::new(config.retention)
+                        .map_err(DataRejection::Retention)?,
                 },
             );
         }
@@ -303,6 +440,11 @@ impl DataApplication {
         }
         let mut digest = blake3::Hasher::new();
         digest.update(b"tidemq-data-recovery-v1\0");
+        state
+            .retention
+            .validate()
+            .map_err(DataRejection::Retention)?;
+        digest.update(&state.retention.recovery_digest());
         digest.update(
             &state
                 .producer
@@ -367,11 +509,40 @@ impl DataApplication {
                 .map(|()| DataResponse::TimeAdvanced)
                 .map_err(DataRejection::Producer),
             ProducerCommand::Append(request) => {
+                let logical_bytes = request
+                    .messages
+                    .iter()
+                    .try_fold(0_u64, |sum, message| {
+                        sum.checked_add(message.logical_bytes()?)
+                    })
+                    .ok_or(DataRejection::Producer(producer::Rejection::InvalidBatch))?;
                 let before_bytes = state.producer.hot_bytes();
                 let before_messages = state.producer.hot_message_count();
                 let result = state
                     .producer
-                    .append_with_capacity(now_ms, request, available_bytes, available_messages)
+                    .append_admitted(
+                        now_ms,
+                        request,
+                        available_bytes,
+                        available_messages,
+                        |previous, end| {
+                            state
+                                .retention
+                                .record_append(previous, end, now_ms, logical_bytes)
+                                .map_err(|error| match error {
+                                    crate::retention::Rejection::Allocation => {
+                                        producer::Rejection::Allocation
+                                    }
+                                    crate::retention::Rejection::TimestampBudget => {
+                                        producer::Rejection::DataCapacity
+                                    }
+                                    crate::retention::Rejection::CounterOverflow => {
+                                        producer::Rejection::CounterExhausted
+                                    }
+                                    _ => producer::Rejection::InvalidSnapshot,
+                                })
+                        },
+                    )
                     .map_err(DataRejection::Producer)?;
                 if !result.duplicate {
                     self.hot_bytes = self
@@ -515,6 +686,10 @@ impl DataApplication {
                 .ok_or(DataRejection::PartitionMissing)?;
             state.producer.validate().map_err(DataRejection::Producer)?;
             state
+                .retention
+                .validate()
+                .map_err(DataRejection::Retention)?;
+            state
                 .subscriptions
                 .validate()
                 .map_err(DataRejection::Subscription)?;
@@ -525,8 +700,19 @@ impl DataApplication {
                 || state.subscriptions.owner_fence_generation() != fence.fence_generation
                 || state.producer.limits() != &config.producer
                 || state.subscriptions.limits() != config.subscription
+                || state.retention.policy() != config.retention
+                || state.retention.committed_end() != state.producer.committed_end()
+                || state.retention.floor() != state.producer.retained_floor()
             {
                 return Err(DataRejection::InvalidConfiguration);
+            }
+            if self.lifecycle.published_end(*partition) > state.producer.committed_end()
+                || self.lifecycle.local_reclaim_end(*partition)
+                    != state.producer.local_reclaim_end()
+            {
+                return Err(DataRejection::Lifecycle(
+                    crate::lifecycle::Rejection::InvalidSnapshot,
+                ));
             }
             let diagnostic = state.producer.diagnostic();
             bytes = bytes
@@ -549,13 +735,18 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
     type Command = DataCommand;
     type Response = DataResponse;
 
     fn apply(&mut self, command: DataCommand) -> DataResponse {
         let result = match command {
             DataCommand::Initialize(config) => self.initialize(config),
+            DataCommand::Retention {
+                partition,
+                writer,
+                command,
+            } => self.retention_command(partition, writer, command),
             DataCommand::Lifecycle(operation) => self.lifecycle_command(operation),
             DataCommand::ColdSubscription {
                 partition,

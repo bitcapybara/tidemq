@@ -259,6 +259,7 @@ impl Fixture {
             max_hot_messages: 65_536,
             producer: ProducerLimits::default(),
             subscription: tidemq::subscription::Limits::default(),
+            retention: tidemq::retention::Policy::default(),
         };
         assert!(matches!(
             self.data

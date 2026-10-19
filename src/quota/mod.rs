@@ -8,6 +8,7 @@ use prometheus_client::{
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 
+pub mod disk;
 pub mod memory;
 
 pub type Result<T> = std::result::Result<T, Error>;
