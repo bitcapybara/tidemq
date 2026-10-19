@@ -16,6 +16,7 @@ pub struct PressureSample {
     pub cpu_per_mille: u16,
     pub bytes_per_second: u64,
     pub cpu_capacity_millicores: u64,
+    pub active_connections: u32,
     pub source: &'static str,
 }
 
@@ -24,12 +25,13 @@ struct Observation {
     cpu_ns: u128,
     capacity: u64,
     bytes: u64,
+    connections: u32,
     source: &'static str,
 }
 
 /// Measures deltas; missing native samples, resets and stale intervals never become zero load.
 pub struct PressureSampler {
-    metrics: Arc<TransportMetrics>,
+    metrics: Vec<Arc<TransportMetrics>>,
     slot: Arc<Semaphore>,
     previous: std::sync::Mutex<Option<Observation>>,
 }
@@ -37,10 +39,31 @@ pub struct PressureSampler {
 impl PressureSampler {
     pub fn new(metrics: Arc<TransportMetrics>) -> Self {
         Self {
-            metrics,
+            metrics: vec![metrics],
             slot: Arc::new(Semaphore::new(1)),
             previous: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Aggregates the node's client, internal server and public server without duplicate counters.
+    pub fn with_metrics(metrics: Vec<Arc<TransportMetrics>>) -> Result<Self> {
+        if metrics.is_empty() || metrics.len() > 4 {
+            return Err(Error::Configuration);
+        }
+        for (index, metric) in metrics.iter().enumerate() {
+            if metrics
+                .iter()
+                .take(index)
+                .any(|old| Arc::ptr_eq(old, metric))
+            {
+                return Err(Error::Configuration);
+            }
+        }
+        Ok(Self {
+            metrics,
+            slot: Arc::new(Semaphore::new(1)),
+            previous: std::sync::Mutex::new(None),
+        })
     }
 
     /// The native worker retains admission after a deadline until its actual read completes.
@@ -53,11 +76,19 @@ impl PressureSampler {
         let metrics = self.metrics.clone();
         let task = tokio::task::spawn_blocking(move || {
             let cpu = native::read_cpu().map_err(|source| Error::Observation { source })?;
-            let transport = metrics.snapshot();
-            let bytes = transport
-                .bytes_sent_total
-                .checked_add(transport.bytes_received_total)
-                .ok_or(Error::Placement)?;
+            let mut bytes = 0_u64;
+            let mut connections = 0_u64;
+            for metric in metrics {
+                let transport = metric.snapshot();
+                bytes = bytes
+                    .checked_add(transport.bytes_sent_total)
+                    .and_then(|bytes| bytes.checked_add(transport.bytes_received_total))
+                    .ok_or(Error::Placement)?;
+                connections = connections
+                    .checked_add(transport.active_connections)
+                    .ok_or(Error::Placement)?;
+            }
+            let connections = u32::try_from(connections).map_err(|_| Error::Placement)?;
             Ok((
                 Observation {
                     at: std::time::Instant::now(),
@@ -65,6 +96,7 @@ impl PressureSampler {
                     capacity: cpu.millicores,
                     source: cpu.source,
                     bytes,
+                    connections,
                 },
                 permit,
             ))
@@ -109,6 +141,7 @@ fn delta(previous: &Observation, current: &Observation) -> Option<PressureSample
         cpu_per_mille: u16::try_from(cpu_load).unwrap_or(u16::MAX),
         bytes_per_second: u64::try_from(rate).ok()?,
         cpu_capacity_millicores: current.capacity,
+        active_connections: current.connections,
         source: current.source,
     })
 }
@@ -123,6 +156,7 @@ mod tests {
             cpu_ns,
             capacity: 500,
             bytes,
+            connections: 4,
             source: "measured_test_fixture",
         }
     }
@@ -135,6 +169,7 @@ mod tests {
         let sample = delta(&first, &second).unwrap();
         assert_eq!(sample.cpu_per_mille, 500);
         assert_eq!(sample.bytes_per_second, 4_000);
+        assert_eq!(sample.active_connections, 4);
         second.capacity = 1000;
         assert!(delta(&first, &second).is_none());
         second.capacity = 500;
@@ -148,6 +183,29 @@ mod tests {
         assert!(delta(&first, &second).is_none());
         second.at = now + Duration::from_millis(100);
         assert!(delta(&first, &second).is_none());
+    }
+
+    #[test]
+    fn endpoint_collection_rejects_unbounded_or_duplicate_observations() {
+        let metrics = Arc::new(TransportMetrics::default());
+        assert!(PressureSampler::with_metrics(vec![]).is_err());
+        assert!(PressureSampler::with_metrics(vec![metrics.clone(), metrics]).is_err());
+        assert!(
+            PressureSampler::with_metrics(
+                (0..5)
+                    .map(|_| Arc::new(TransportMetrics::default()))
+                    .collect()
+            )
+            .is_err()
+        );
+        assert!(
+            PressureSampler::with_metrics(
+                (0..3)
+                    .map(|_| Arc::new(TransportMetrics::default()))
+                    .collect()
+            )
+            .is_ok()
+        );
     }
 
     #[tokio::test]
