@@ -44,7 +44,7 @@ let subscription = client.admin().create_subscription(
 
 `fill` 将消息放入有界队列；`next` 取出已排好顺序的可执行工作，`recv` 在队列为空时 fetch。`Delivery` 的 key、body 和 token 不出现在 Debug；payload/token 在最后一个 clone 释放前一直计入逻辑预算。队列满、宿主长期持有 Delivery 或未决批次时，会得到背压，不无限缓存。保留消息超过服务端 attempt 期限后，ACK 可能报告旧 token；它不会确认新的 attempt。
 
-1. 分配冻结排他边界 H。B 只接收 H 之前的数据，D 只接收 H 及之后的数据。
+1. 分配冻结排他边界 H。B 只接收 H 之前的数据，D 只接收 H 及之后的数据。持续消费 D 后，持久 ACK 前沿可超过 H；H 不随 ACK 推进，后续接收屏障与 owner 恢复仍接受这种合法状态。
 2. SDK 只合并实际成功入队的 offset 和服务端给出的持久 ACK 区间。缺少 offset 时不取最大值推进；最早块缺失时保留有限预取和头部容量。
 3. 连续接收前沿通过 C 上的 `ReceiveBarrier` 确认；回包未知可用相同 tuple/前沿重试。服务端确认后才启用 D。
 4. 接收屏障不修改持久业务 ACK。H 之前仍未 ACK 的消息可能需要 B 重投，因此启用 D 后，在冷 ACK 前沿未达到 H 时有限轮换 B/D；慢业务 ACK 不阻止 D 开始。

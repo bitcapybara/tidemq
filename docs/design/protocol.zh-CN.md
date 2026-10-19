@@ -30,6 +30,8 @@ traceparent 只接受有界 W3C version 00；无效上下文在帧总额内丢�
 
 生产会话通过 OpenProducer 显式注册，用单分区注册 epoch 高水位 CAS；过期后的旧 ProduceBatch 不创建新身份。共享 producer::canonical_produce_digest 以固定 domain、身份、epoch、起始序列、条数及逐条 key/body 长度和内容计算 BLAKE3；owner epoch、请求期限与 trace 不参与摘要。borrowed parts 接口避免服务端复制消息后再哈希。
 
+共享 `producer::partition_for_key` 使用 BLAKE3(`tidemq/key-routing/v1\0` + 原 key 字节)，取摘要前 8 字节的大端 u64 对非零 Topic 分区数取模。SDK 直接导出该函数；Topic 分区数在首版固定，副本/owner 迁移不改变映射。空 key 也有确定映射；无 key 业务若要分散负载，应显式选择分区。不同语言必须复用此版本算法；97 分区下空 key、UTF-8 `customer-42`、二进制 `00ff` 分别为 10、65、59。不存在跨分区排序或自动拆分现有 Topic。
+
 消费 ClaimAssignment 显式分配会话，替换已有会话需要 replace_session_id 与代次 CAS。assignment_generation 同时充当 delivery_generation，wire 两字段必须一致；seek、owner fence 和新分配使旧投递失效。DeliveryBatch 携带完整 topic/partition/subscription/session/cursor/assignment/delivery 绑定，issued_before 限制本代次连续签发范围，acknowledged_ranges 只表示持久 ACK 洞。SDK 必须按成功入队的消息和已验证洞区间连续推进 received_before；最大收到 offset、QUIC ACK 或业务 ACK 都不能代替冷热接收屏障。
 
-schema 已包含注册/状态/退役、分配/状态/seek/删除和按名称查询，均走 Control 类别；生产走 Produce，冷热消息分别走 Delivery/Bulk。已实现 TLS/mTLS 的有界 QUIC IO；业务请求分派与真实 SDK 联调仍待 T04/T05/T06/T10。
+schema 包含注册/状态/退役、分配/状态/seek/删除和按名称查询，均走 Control 类别；生产走 Produce，冷热消息分别走 Delivery/Bulk。运行时已经接入 TLS/mTLS、有界业务分派及真实 SDK。网络收包、收到正文、Producer 持久成功、业务持久 ACK 和对象发布分别保留其完成口径。
