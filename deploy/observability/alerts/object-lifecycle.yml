@@ -1,0 +1,27 @@
+groups:
+  - name: tidemq-lifecycle-examples
+    interval: 30s
+    rules:
+      - alert: TideMQLifecycleReconciliationStalled
+        expr: |
+          (increase(tidemq_lifecycle_failures_total[5m])
+            / clamp_min(increase(tidemq_lifecycle_retries_total[5m]), 1) > 0.50)
+          and (increase(tidemq_lifecycle_retries_total[5m]) >= 10)
+        for: 5m
+        labels:
+          severity: warning
+          component: lifecycle
+        annotations:
+          summary: "Object reconciliation repeatedly cannot finish"
+          description: "Example threshold: more than half of at least ten attempts fail for five minutes. Query authoritative object blockers, then check quorum, authorization, S3 and snapshot progress. Preserve original object identities."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/object-lifecycle.zh-CN.md"
+      - alert: TideMQLifecycleWarningSuppression
+        expr: increase(tidemq_lifecycle_suppressed_logs_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: lifecycle
+        annotations:
+          summary: "Lifecycle warnings exceed the bounded logging rate"
+          description: "Warnings remain limited to one per second per shared metrics instance. Use counters and bounded diagnostics rather than enabling unrestricted per-object logs. Tune this example threshold against the workload baseline."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/object-lifecycle.zh-CN.md"

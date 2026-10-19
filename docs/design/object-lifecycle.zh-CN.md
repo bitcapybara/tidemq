@@ -57,3 +57,15 @@ Compaction 读取并校验原始历史，先生成完整替代对象，然后在
 - `cargo test -p tidemq --test s3_boundaries`：7 passed，0.67 秒；包括挂住 Range 正文时 HEAD 和 DELETE 的保留并发槽验证。
 
 以上证据是 macOS 本机进程与真实磁盘/S3 API 验证，不等同机器掉电、跨进程远程适配完成或三可用区验收。
+
+### 保留策略与分组后台工作
+
+`Coordinator::retire_before(partition, deadline)` 从真实数据 quorum 的同一应用读锁获得逻辑 floor、已完成发布序列和提交位置，调用者不能给任意 floor。元数据只移除整段 `end<=floor` 的引用；发布尚未在数据组补完时保守等待。每次引用变化推进清单 CAS generation，publication_generation 只随发布推进，数据完成流水不会因为保留回收而跳序。
+
+移除引用会增加永久 floor recovery hold。只有当前全部稳定 voters 的实际快照覆盖该逻辑 floor/已完成发布位置，才能在元数据释放 hold，并在数据组记录 floor checkpoint。随后已逻辑过期的热正文可以安全释放。部分共享对象继续保留，由共享滞留上界反映其容量成本。
+
+`Catalog::capacity_usage()` 和按数据组的 `Coordinator::capacity_usage()` 返回有限聚合：登记对象的物理字节上界、待上传上界及回收滞留上界；Unknown/上传中按完整 descriptor 计，Deleted 计零。共享对象某分区部分过期时，整个分区块字节作为保守滞留上界。此口径是登记对象视图，不能替代 S3 提供方的实际容量监控或包含未登记外来对象；迟到孤儿需按永久终止记录重删。
+
+后台使用 `Coordinator::pending_objects(after,limit<=64,deadline)` 的按组索引分页；登记保护已建立但数据从未收到授权的任务也能被发现。`DataState::pending_objects` 提供数据侧未完成意图索引；目录与数据状态的分页都保留原对象身份，不扫描桶来重建消息清单。
+
+构建 pack 前预留 72 MiB 原始记录/索引预算，最终 pack 仍独立持有其内存 permit；取消不能提前释放阻塞 worker 的内存所有权。临时文件和全量正文不进入日志。阶段事件默认 debug，重试失败 warn 每进程共享指标实例最多每秒一次，抑制计数通过 `tidemq_lifecycle_suppressed_logs_total` 可见。

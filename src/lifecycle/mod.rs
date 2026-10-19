@@ -16,6 +16,7 @@ pub use data::DataState;
 pub use telemetry::LifecycleMetrics;
 pub use types::VerifiedColdDelivery;
 pub use types::{Blocker, Diagnostic, Manifest, ObjectPhase, ObjectRecord, RangeRequest, ReadPin};
+pub use types::{CapacityUsage, ObjectPage};
 pub use types::{DataOperation, DataResult, MetadataOperation, MetadataResult};
 
 pub use types::Rejection;
