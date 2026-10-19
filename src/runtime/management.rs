@@ -154,6 +154,11 @@ async fn sample_capacity(
     deadline: Instant,
 ) -> Result<serde_json::Value> {
     let memory = memory.ok_or_else(Error::unavailable)?;
+    service
+        .quota
+        .lock()
+        .map_err(|_| Error::unavailable())?
+        .observe_container(memory, started.into_std());
     let mut groups = Vec::new();
     let mut usage = crate::quota::Usage {
         process_memory_bytes: memory.process_rss_bytes,

@@ -199,7 +199,7 @@ impl RunningNode {
         };
         let mut data = BTreeMap::new();
         for group in &config.runtime.groups {
-            if group.voters.contains(&config.node_id) {
+            if group.hosts(config.node_id) {
                 data.insert(
                     group.group_id,
                     open_replica::<DataApplication>(
@@ -432,29 +432,17 @@ async fn bind_server(
             budget.clone(),
         ) {
             Ok(server) => return Ok(server),
-            Err(source) if address_in_use(&source) && tokio::time::Instant::now() < deadline => {
+            Err(source) => {
+                let occupied = tokio::net::UdpSocket::bind(address)
+                    .await
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::AddrInUse);
+                if !occupied || tokio::time::Instant::now() >= deadline {
+                    return Err(Error::operation("bind authenticated QUIC listener", source));
+                }
                 tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + backoff)).await;
                 backoff = backoff.saturating_mul(2).min(Duration::from_millis(50));
             }
-            Err(source) => {
-                return Err(Error::operation("bind authenticated QUIC listener", source));
-            }
         }
-    }
-}
-
-fn address_in_use(mut source: &(dyn std::error::Error + 'static)) -> bool {
-    loop {
-        if source
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|source| source.kind() == std::io::ErrorKind::AddrInUse)
-        {
-            return true;
-        }
-        let Some(inner) = source.source() else {
-            return false;
-        };
-        source = inner;
     }
 }
 

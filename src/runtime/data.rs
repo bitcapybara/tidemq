@@ -122,6 +122,7 @@ impl Service {
     ) -> Result<Arc<ControlLease>> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
+        self.authoritative_group(group, deadline).await?;
         let fence = replica
             .state
             .try_with_application(|state| {

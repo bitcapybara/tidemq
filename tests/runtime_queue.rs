@@ -111,6 +111,7 @@ impl Fixture {
                         groups: vec![GroupConfig {
                             group_id: 2,
                             voters: storage.to_vec(),
+                            standby: Vec::new(),
                         }],
                         peers: peers.clone(),
                         access_file: directory.join("access.toml"),

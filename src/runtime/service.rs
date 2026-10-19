@@ -14,7 +14,7 @@ use crate::broker::{Broker, BrokerLimits, DataApplication, ProducerMetrics};
 use crate::budget::MemoryBudget;
 use crate::config::Config;
 use crate::gateway::{Access, AccessTable};
-use crate::metadata::{MetadataState, PartitionKey, Route};
+use crate::metadata::{DataGroup, MetadataState, PartitionKey, Route};
 use crate::observability::metrics::{Metrics, Operation};
 use crate::ownership::remote::{Query, RemoteMetadataAuthority, Value};
 use crate::replication::rpc::{GroupRole, RaftService};
@@ -53,6 +53,7 @@ pub(crate) struct Service {
     pub draining: AtomicBool,
     pub routes: RwLock<BTreeMap<PartitionKey, CachedRoute>>,
     pub leaders: RwLock<BTreeMap<u64, (u64, Instant)>>,
+    pub groups: RwLock<BTreeMap<u64, (DataGroup, Instant)>>,
     pub leases: std::sync::Mutex<BTreeMap<PartitionKey, LeaseSlot>>,
     pub metadata_mutation: Mutex<()>,
     pub subscriptions: std::sync::Mutex<BTreeMap<Id, (Id, Instant)>>,
@@ -125,6 +126,7 @@ impl Service {
             draining: AtomicBool::new(false),
             routes: RwLock::new(BTreeMap::new()),
             leaders: RwLock::new(BTreeMap::new()),
+            groups: RwLock::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             metadata_mutation: Mutex::new(()),
             subscriptions: std::sync::Mutex::new(BTreeMap::new()),
@@ -211,6 +213,60 @@ impl Service {
         Ok(route)
     }
 
+    pub(crate) async fn authoritative_group(
+        &self,
+        group: u64,
+        deadline: Instant,
+    ) -> Result<DataGroup> {
+        let actual = self
+            .data
+            .get(&group)
+            .map(|replica| crate::ownership::remote::current_voters(&replica.raft))
+            .transpose()?;
+        if let Some((cached, _)) =
+            self.groups
+                .read()
+                .await
+                .get(&group)
+                .filter(|(cached, expires)| {
+                    *expires > Instant::now()
+                        && actual
+                            .as_ref()
+                            .is_none_or(|voters| *voters == cached.voters)
+                })
+        {
+            return Ok(cached.clone());
+        }
+        let started = Instant::now();
+        let Value::Group(configured) = self.authority.query(Query::Group(group), deadline).await?
+        else {
+            return Err(Error::unavailable());
+        };
+        if configured.group_id != group
+            || configured.generation == 0
+            || configured.voters.len() != usize::from(self.config.replication_factor)
+            || configured.voters.iter().any(|node| {
+                self.config
+                    .runtime
+                    .peer(*node)
+                    .map_or(true, |peer| !peer.role.stores_data())
+            })
+            || started.elapsed() >= Duration::from_millis(500)
+        {
+            return Err(Error::unavailable());
+        }
+        if let Some(replica) = self.data.get(&group)
+            && crate::ownership::remote::current_voters(&replica.raft)? != configured.voters
+        {
+            return Err(Error::unavailable());
+        }
+        self.groups.write().await.insert(
+            group,
+            (configured.clone(), started + Duration::from_millis(500)),
+        );
+        Ok(configured)
+    }
+
     pub async fn authorize_partition(
         &self,
         access: &Access,
@@ -236,11 +292,17 @@ impl Service {
             return Ok(*leader);
         }
         let voters = if group == self.config.runtime.metadata_group {
-            &self.config.runtime.metadata_voters
+            self.config.runtime.metadata_voters.clone()
         } else {
-            &self.config.runtime.group(group)?.voters
+            let config = self.config.runtime.group(group)?;
+            config
+                .voters
+                .iter()
+                .chain(&config.standby)
+                .copied()
+                .collect()
         };
-        for node in voters {
+        for node in &voters {
             let request = Request::control(wire::LEADER, &())?;
             let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
             if let Ok(bytes) = self.rpc.call(*node, group, request, attempt_deadline).await {
