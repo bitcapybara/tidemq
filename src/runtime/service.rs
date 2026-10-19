@@ -10,7 +10,7 @@ use tidemq_protocol::common::{
 };
 use tidemq_protocol::framing::{decode_frame, decode_payload, encode_payload, frame_limit};
 use tidemq_protocol::internal::{InternalCommand, RaftRequest, SnapshotChunk};
-use tokio::sync::{Mutex, RwLock, watch};
+use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio::time::Instant;
 
 use crate::broker::{Broker, BrokerLimits, DataApplication, ProducerMetrics};
@@ -55,6 +55,7 @@ pub(crate) struct Service {
     pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
     pub scaling: super::scaling::RuntimeScaling,
     pub quota: std::sync::Mutex<crate::quota::Quota>,
+    pub quota_observed: Notify,
     pub disk_capacity: std::sync::Mutex<Option<(crate::quota::disk::Snapshot, Instant)>>,
     pub log_health: std::sync::Mutex<Option<crate::observability::logging::LogHealth>>,
     pub draining: AtomicBool,
@@ -147,6 +148,7 @@ impl Service {
             transport_metrics,
             scaling,
             quota: std::sync::Mutex::new(quota),
+            quota_observed: Notify::new(),
             disk_capacity: std::sync::Mutex::new(None),
             log_health: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
