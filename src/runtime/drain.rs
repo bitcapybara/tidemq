@@ -38,9 +38,70 @@ enum Command {
     Unschedule { node: u64 },
     Inspect { node: u64 },
     Stop { node: u64 },
+    Probe { node: u64 },
+}
+
+#[derive(Serialize, Deserialize)]
+struct Probe {
+    cluster: tidemq_protocol::Id,
+    node: u64,
+    role: crate::config::Role,
+    accepting: bool,
 }
 
 impl Service {
+    pub(super) async fn probe_broker(
+        &self,
+        node: u64,
+        deadline: Instant,
+    ) -> super::failover::Probe {
+        use super::failover::Probe as Observation;
+        let rpc = match self
+            .rpc
+            .pool
+            .connection(node, TrafficClass::Control, deadline)
+            .await
+        {
+            Ok(rpc) => rpc,
+            Err(error) => {
+                return if connection_unreachable(&error) {
+                    Observation::Unreachable
+                } else {
+                    Observation::Responsive
+                };
+            }
+        };
+        let result = self
+            .drain_rpc(
+                node,
+                self.config.runtime.metadata_group,
+                Command::Probe { node },
+                deadline,
+            )
+            .await;
+        match result {
+            Ok(bytes) => match wire::decode_json::<Probe>(&bytes) {
+                Ok(probe)
+                    if probe.cluster == self.cluster
+                        && probe.node == node
+                        && self
+                            .config
+                            .runtime
+                            .peer(node)
+                            .is_ok_and(|peer| probe.role == peer.role)
+                        && probe.role.serves_broker()
+                        && probe.accepting =>
+                {
+                    Observation::Eligible
+                }
+                _ => Observation::Responsive,
+            },
+            Err(Error::Rejected { .. }) => Observation::Responsive,
+            Err(_) if rpc.is_closed() => Observation::Unreachable,
+            Err(_) => Observation::Responsive,
+        }
+    }
+
     pub(crate) fn admit_partition(
         &self,
         partition: PartitionKey,
@@ -255,6 +316,17 @@ impl Service {
             return Err(forbidden());
         }
         match command {
+            Command::Probe { node } => {
+                if node != self.config.node_id || group != self.config.runtime.metadata_group {
+                    return Err(forbidden());
+                }
+                wire::json(&Probe {
+                    cluster: self.cluster,
+                    node: self.config.node_id,
+                    role: self.config.role,
+                    accepting: !self.draining.load(std::sync::atomic::Ordering::Acquire),
+                })
+            }
             Command::Unschedule { node } => {
                 if group != self.config.runtime.metadata_group {
                     return Err(forbidden());
@@ -356,6 +428,23 @@ impl Service {
             }
         }
     }
+}
+
+fn connection_unreachable(error: &crate::replication::rpc::Error) -> bool {
+    use crate::replication::rpc::Error;
+    use crate::transport::Error as Transport;
+    matches!(
+        error,
+        Error::Transport {
+            source: Transport::Deadline { .. } | Transport::Closed
+        } | Error::Rpc {
+            source: crate::transport::rpc::Error::Closed
+        } | Error::Rpc {
+            source: crate::transport::rpc::Error::Transport {
+                source: Transport::Deadline { .. } | Transport::Closed
+            }
+        }
+    )
 }
 
 fn check_route(handoff: &Move, route: &Route) -> Result<()> {

@@ -18,6 +18,9 @@ use tidemq_sdk::{
 };
 use tokio::time::Instant;
 
+#[path = "runtime_support/broker_failover.rs"]
+mod broker_failover;
+
 // Shared S3 fixtures include additional helpers exercised by their own integration suites.
 #[allow(dead_code)]
 #[path = "lifecycle_support/rustfs.rs"]
@@ -575,12 +578,12 @@ async fn durable_consume(consumer: &Consumer, offset: u64) {
     let until = Instant::now() + Duration::from_secs(20);
     let mut previous = String::new();
     let delivery = loop {
-        if let Some(delivery) = consumer.next().await.unwrap() {
+        let result = consumer
+            .recv(until.min(Instant::now() + Duration::from_secs(2)))
+            .await;
+        if let Ok(Some(delivery)) = result {
             break delivery;
         }
-        let result = consumer
-            .fill(until.min(Instant::now() + Duration::from_secs(2)))
-            .await;
         let detail = format!("{result:?}");
         if previous != detail {
             eprintln!("Consumer recovery for offset {offset}: {detail}");
@@ -712,11 +715,26 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     for node in [leader, second] {
         wait_process(&fixture, node, processes.get_mut(&node).unwrap()).await;
     }
-    let status = client
-        .admin()
-        .subscription_status(topic, 0, subscription, deadline())
-        .await
-        .unwrap();
+    let until = deadline();
+    let status = loop {
+        let status = client
+            .admin()
+            .subscription_status(
+                topic,
+                0,
+                subscription,
+                until.min(Instant::now() + Duration::from_secs(2)),
+            )
+            .await;
+        if let Ok(status) = status {
+            break status;
+        }
+        assert!(
+            Instant::now() < until,
+            "Recovered data quorum did not return a fresh subscription status: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     assert_eq!(status.assignment.unwrap().acknowledged_before, 5);
     let receipt = producer.retry(original, deadline()).await.unwrap();
     assert_eq!(receipt.first_offset, 5);
