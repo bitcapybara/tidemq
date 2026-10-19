@@ -28,6 +28,8 @@ pub enum Error {
     DuplicateRequest,
     #[snafu(display("Invalid RPC request identity"))]
     Protocol { source: tidemq_protocol::Error },
+    #[snafu(display("RPC lane setup failed"))]
+    Transport { source: crate::Error },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -92,6 +94,8 @@ struct Inner {
     next_lane: AtomicUsize,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     _session: Option<Arc<Session>>,
+    max_pending_requests: usize,
+    max_pending_bytes: u32,
 }
 
 impl Drop for Inner {
@@ -111,6 +115,15 @@ pub struct RpcClient {
     inner: Arc<Inner>,
 }
 
+#[derive(Clone, Debug)]
+pub struct RpcSnapshot {
+    pub lanes: usize,
+    pub admitted_requests: usize,
+    pub admitted_bytes: usize,
+    pub pending_responses: Option<usize>,
+    pub closed: bool,
+}
+
 impl RpcClient {
     pub fn start(streams: Vec<FramedStream>, config: RpcConfig) -> Result<Self> {
         Self::start_inner(streams, config, None)
@@ -118,6 +131,35 @@ impl RpcClient {
 
     pub async fn from_session(session: Arc<Session>, config: RpcConfig) -> Result<Self> {
         let streams = session.take_initial_streams().await;
+        Self::start_inner(streams, config, Some(session))
+    }
+
+    /// All control cores are driven; other classes get a fixed reusable lane set.
+    pub async fn from_session_with_lanes(
+        session: Arc<Session>,
+        config: RpcConfig,
+        request_lanes: usize,
+        deadline: Instant,
+    ) -> Result<Self> {
+        if request_lanes == 0 || request_lanes > 64 {
+            return Err(Error::Configuration);
+        }
+        let mut streams = session.take_initial_streams().await;
+        if session.connection().class() != tidemq_protocol::common::TrafficClass::Control {
+            while streams.len() < request_lanes {
+                match session
+                    .connection()
+                    .open(crate::StreamPurpose::Request, deadline)
+                    .await
+                {
+                    Ok(stream) => streams.push(stream),
+                    Err(source) => {
+                        session.close();
+                        return Err(Error::Transport { source });
+                    }
+                }
+            }
+        }
         Self::start_inner(streams, config, Some(session))
     }
 
@@ -131,6 +173,9 @@ impl RpcClient {
             || config.max_pending_requests == 0
             || config.max_pending_requests > 65_536
             || config.max_pending_bytes == 0
+            || usize::try_from(config.max_pending_bytes)
+                .ok()
+                .is_none_or(|bytes| bytes > Semaphore::MAX_PERMITS)
             || config.read_idle_timeout.is_zero()
             || config.read_idle_timeout > Duration::from_secs(300)
         {
@@ -164,6 +209,8 @@ impl RpcClient {
                 next_lane: AtomicUsize::new(0),
                 tasks: Mutex::new(tasks),
                 _session: session,
+                max_pending_requests: config.max_pending_requests,
+                max_pending_bytes: config.max_pending_bytes,
             }),
         })
     }
@@ -172,13 +219,71 @@ impl RpcClient {
         self.inner.state.closed.load(Ordering::Acquire)
     }
 
+    pub fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub fn lane_count(&self) -> usize {
+        self.inner.writers.len()
+    }
+
+    pub fn snapshot(&self) -> RpcSnapshot {
+        RpcSnapshot {
+            lanes: self.lane_count(),
+            admitted_requests: self
+                .inner
+                .max_pending_requests
+                .saturating_sub(self.inner.state.slots.available_permits()),
+            admitted_bytes: (self.inner.max_pending_bytes as usize)
+                .saturating_sub(self.inner.state.bytes.available_permits()),
+            pending_responses: self
+                .inner
+                .state
+                .pending
+                .lock()
+                .ok()
+                .map(|pending| pending.len()),
+            closed: self.is_closed(),
+        }
+    }
+
     /// A caller deadline removes its waiter, never resets a lane shared with other requests.
     pub async fn call(&self, frame: Frame, deadline: Instant) -> Result<ReceivedFrame> {
         self.submit(frame, deadline).await?.receive().await
     }
 
+    pub async fn call_affinity(
+        &self,
+        frame: Frame,
+        deadline: Instant,
+        affinity: u64,
+    ) -> Result<ReceivedFrame> {
+        self.submit_affinity(frame, deadline, affinity)
+            .await?
+            .receive()
+            .await
+    }
+
     /// Ordered enqueue is separate from waiting for the durable application response.
     pub async fn submit(&self, frame: Frame, deadline: Instant) -> Result<RpcResponse> {
+        self.submit_inner(frame, deadline, None).await
+    }
+
+    pub async fn submit_affinity(
+        &self,
+        frame: Frame,
+        deadline: Instant,
+        affinity: u64,
+    ) -> Result<RpcResponse> {
+        self.submit_inner(frame, deadline, Some(affinity)).await
+    }
+
+    async fn submit_inner(
+        &self,
+        frame: Frame,
+        deadline: Instant,
+        affinity: Option<u64>,
+    ) -> Result<RpcResponse> {
         let id = Id::from_slice(&frame.request_id).map_err(|source| Error::Protocol { source })?;
         let operation =
             Id::from_slice(&frame.operation_id).map_err(|source| Error::Protocol { source })?;
@@ -215,6 +320,7 @@ impl RpcClient {
                 _bytes: bytes,
             },
             deadline,
+            affinity,
         )
         .await?;
         Ok(RpcResponse {
@@ -235,6 +341,7 @@ impl RpcClient {
                 _bytes: bytes,
             },
             deadline,
+            None,
         )
         .await
     }
@@ -264,8 +371,17 @@ impl RpcClient {
         Ok((Arc::new(slots), Arc::new(bytes)))
     }
 
-    async fn enqueue(&self, outbound: Outbound, deadline: Instant) -> Result<()> {
-        let lane = self.inner.next_lane.fetch_add(1, Ordering::Relaxed) % self.inner.writers.len();
+    async fn enqueue(
+        &self,
+        outbound: Outbound,
+        deadline: Instant,
+        affinity: Option<u64>,
+    ) -> Result<()> {
+        let lane = match affinity {
+            Some(affinity) => usize::try_from(affinity % self.inner.writers.len() as u64)
+                .map_err(|_| Error::Configuration)?,
+            None => self.inner.next_lane.fetch_add(1, Ordering::Relaxed) % self.inner.writers.len(),
+        };
         let writer = self.inner.writers.get(lane).ok_or(Error::Closed)?;
         timeout_at(deadline, writer.send(outbound))
             .await
@@ -289,7 +405,14 @@ impl RpcClient {
             if empty || Instant::now() >= deadline {
                 break;
             }
-            tokio::time::sleep_until(deadline.min(Instant::now() + Duration::from_millis(2))).await;
+            tokio::time::sleep_until(
+                deadline.min(
+                    Instant::now()
+                        .checked_add(Duration::from_millis(2))
+                        .unwrap_or(deadline),
+                ),
+            )
+            .await;
         }
         self.inner.state.close();
         if let Some(session) = &self.inner._session {
