@@ -117,6 +117,41 @@ impl SubscriptionState {
         self.revision
     }
 
+    /// Retained logical ACK metadata, excluding message bodies and B-tree spare capacity/allocator pages.
+    pub fn logical_state_bytes(&self) -> Result<u64> {
+        let charge = |count: usize, width: usize| {
+            count
+                .checked_mul(width)
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or(Rejection::CounterOverflow)
+        };
+        let mut bytes = charge(1, std::mem::size_of::<Self>())?;
+        for part in [
+            charge(self.identities.len(), std::mem::size_of::<(Id, Slot)>())?,
+            charge(self.protection.len(), std::mem::size_of::<(u64, u32)>())?,
+        ] {
+            bytes = bytes.checked_add(part).ok_or(Rejection::CounterOverflow)?;
+        }
+        for slot in self.identities.values() {
+            if let Slot::Active(subscription) = slot {
+                for part in [
+                    charge(1, std::mem::size_of::<Subscription>())?,
+                    charge(
+                        subscription.records.len(),
+                        std::mem::size_of::<(u64, DeliveryRecord)>(),
+                    )?,
+                    charge(
+                        subscription.retries.len(),
+                        std::mem::size_of::<((u64, u64), ())>(),
+                    )?,
+                ] {
+                    bytes = bytes.checked_add(part).ok_or(Rejection::CounterOverflow)?;
+                }
+            }
+        }
+        Ok(bytes)
+    }
+
     /// The first offset that any active subscription still protects, without a table scan.
     pub fn protected_before(&self) -> Option<u64> {
         self.protection.first_key_value().map(|(offset, _)| *offset)

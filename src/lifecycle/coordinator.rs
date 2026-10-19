@@ -51,6 +51,7 @@ struct Inner {
     metadata: MetadataReplica,
     data: DataReplica,
     checkpoints: Vec<super::ReplicaCheckpoint>,
+    exact_checkpoints: bool,
     store: S3Store,
     reader: ColdReader,
     budget: MemoryBudget,
@@ -161,6 +162,7 @@ impl Coordinator {
                 .into_iter()
                 .map(super::ReplicaCheckpoint::local)
                 .collect(),
+            exact_checkpoints: true,
             store,
             reader,
             budget,
@@ -172,12 +174,30 @@ impl Coordinator {
         })))
     }
 
-    pub fn with_checkpoints(mut self, checkpoints: Vec<super::ReplicaCheckpoint>) -> Result<Self> {
+    pub fn with_checkpoints(self, checkpoints: Vec<super::ReplicaCheckpoint>) -> Result<Self> {
+        self.with_checkpoint_source(checkpoints, true)
+    }
+
+    /// Configure trusted current and standby replicas; each operation still requires every fresh voter.
+    pub fn with_checkpoint_candidates(
+        self,
+        checkpoints: Vec<super::ReplicaCheckpoint>,
+    ) -> Result<Self> {
+        self.with_checkpoint_source(checkpoints, false)
+    }
+
+    fn with_checkpoint_source(
+        mut self,
+        checkpoints: Vec<super::ReplicaCheckpoint>,
+        exact: bool,
+    ) -> Result<Self> {
         let unique: BTreeSet<_> = checkpoints
             .iter()
             .map(super::ReplicaCheckpoint::node_id)
             .collect();
-        if !matches!(checkpoints.len(), 1 | 3)
+        if (exact && !matches!(checkpoints.len(), 1 | 3))
+            || checkpoints.is_empty()
+            || checkpoints.len() > 128
             || unique.len() != checkpoints.len()
             || checkpoints.iter().any(|checkpoint| {
                 checkpoint.cluster_id != self.0.cluster_id
@@ -186,10 +206,35 @@ impl Coordinator {
         {
             return Err(Error::Configuration);
         }
-        Arc::get_mut(&mut self.0)
-            .ok_or(Error::Configuration)?
-            .checkpoints = checkpoints;
+        let inner = Arc::get_mut(&mut self.0).ok_or(Error::Configuration)?;
+        inner.checkpoints = checkpoints;
+        inner.exact_checkpoints = exact;
         Ok(self)
+    }
+
+    fn selected_checkpoints<'a>(
+        &'a self,
+        voters: &'a BTreeSet<u64>,
+    ) -> Result<impl Iterator<Item = &'a super::ReplicaCheckpoint> + 'a> {
+        if (self.0.exact_checkpoints && self.0.checkpoints.len() != voters.len())
+            || !matches!(voters.len(), 1 | 3)
+            || voters.iter().any(|node| {
+                !self
+                    .0
+                    .checkpoints
+                    .iter()
+                    .any(|checkpoint| checkpoint.node_id() == *node)
+            })
+        {
+            return Err(Error::Rejected {
+                reason: Rejection::Membership,
+            });
+        }
+        Ok(self
+            .0
+            .checkpoints
+            .iter()
+            .filter(move |checkpoint| voters.contains(&checkpoint.node_id())))
     }
 
     pub fn metrics(&self) -> Arc<LifecycleMetrics> {
@@ -554,19 +599,8 @@ impl Coordinator {
             return Err(Error::Configuration);
         };
         let voters = self.expected_data_voters(deadline).await?;
-        let configured: BTreeSet<_> = self
-            .0
-            .checkpoints
-            .iter()
-            .map(super::ReplicaCheckpoint::node_id)
-            .collect();
-        if voters != configured {
-            return Err(Error::Rejected {
-                reason: Rejection::Membership,
-            });
-        }
         let mut snapshots = Vec::new();
-        for checkpoint in &self.0.checkpoints {
+        for checkpoint in self.selected_checkpoints(&voters)? {
             let proof = checkpoint
                 .build(object_id, generation, position, &voters, deadline)
                 .await?;
@@ -619,19 +653,8 @@ impl Coordinator {
         }
         self.meta_write(CatalogCommand::RetireBefore(proof.clone()), deadline)
             .await?;
-        let configured = self
-            .0
-            .checkpoints
-            .iter()
-            .map(super::ReplicaCheckpoint::node_id)
-            .collect::<BTreeSet<_>>();
-        if configured != proof.voters {
-            return Err(Error::Rejected {
-                reason: Rejection::Membership,
-            });
-        }
         let mut snapshots = Vec::new();
-        for replica in &self.0.checkpoints {
+        for replica in self.selected_checkpoints(&proof.voters)? {
             let snapshot = replica.build_floor(&proof, deadline).await?;
             snapshots.push((
                 snapshot.node_id,
