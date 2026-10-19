@@ -186,6 +186,9 @@ impl RpcClient {
         let (result, receiver) = oneshot::channel();
         {
             let mut pending = self.inner.state.pending.lock().map_err(|_| Error::Closed)?;
+            if self.is_closed() || self.inner.state.draining.load(Ordering::Acquire) {
+                return Err(Error::Closed);
+            }
             if pending.contains_key(&id) {
                 return Err(Error::DuplicateRequest);
             }
@@ -202,6 +205,7 @@ impl RpcClient {
         let waiter = Waiter {
             state: self.inner.state.clone(),
             id,
+            ticket: slots.clone(),
         };
         self.enqueue(
             Outbound {
@@ -319,11 +323,16 @@ impl RpcResponse {
 struct Waiter {
     state: Arc<State>,
     id: Id,
+    ticket: Arc<OwnedSemaphorePermit>,
 }
 
 impl Drop for Waiter {
     fn drop(&mut self) {
-        if let Ok(mut pending) = self.state.pending.lock() {
+        if let Ok(mut pending) = self.state.pending.lock()
+            && pending
+                .get(&self.id)
+                .is_some_and(|current| Arc::ptr_eq(&current._slots, &self.ticket))
+        {
             pending.remove(&self.id);
         }
     }
@@ -420,6 +429,37 @@ mod tests {
             &ProtocolLimits::default(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn dropping_an_old_waiter_cannot_remove_a_new_waiter_with_the_same_id() {
+        let state = Arc::new(State {
+            pending: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+            draining: AtomicBool::new(false),
+            slots: Arc::new(Semaphore::new(2)),
+            bytes: Arc::new(Semaphore::new(100)),
+            connection: None,
+        });
+        let id = Id::random().unwrap();
+        let old_ticket = Arc::new(state.slots.clone().try_acquire_owned().unwrap());
+        let old = Waiter {
+            state: state.clone(),
+            id,
+            ticket: old_ticket,
+        };
+        let new_ticket = Arc::new(state.slots.clone().try_acquire_owned().unwrap());
+        state.pending.lock().unwrap().insert(
+            id,
+            Pending {
+                result: oneshot::channel().0,
+                operation: id,
+                _slots: new_ticket,
+                _bytes: Arc::new(state.bytes.clone().try_acquire_owned().unwrap()),
+            },
+        );
+        drop(old);
+        assert!(state.pending.lock().unwrap().contains_key(&id));
     }
 
     #[tokio::test]
