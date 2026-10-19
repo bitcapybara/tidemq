@@ -1,5 +1,28 @@
 use crate::{Error, Id, Result, public::Message};
 
+/// Routes a key with the version-one hash and a fixed, nonzero topic partition count.
+/// Keep the count and algorithm unchanged for the lifetime of a topic.
+pub fn partition_for_key(key: &[u8], partition_count: u32) -> Result<u32> {
+    if partition_count == 0 {
+        return Err(Error::Invalid {
+            reason: "key routing requires a nonzero partition count",
+        });
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tidemq/key-routing/v1\0");
+    hash.update(key);
+    let digest = hash.finalize();
+    let prefix = digest.as_bytes().get(..8).ok_or(Error::Invalid {
+        reason: "key routing digest is incomplete",
+    })?;
+    let value = u64::from_be_bytes(prefix.try_into().map_err(|_| Error::Invalid {
+        reason: "key routing digest prefix is invalid",
+    })?);
+    u32::try_from(value % u64::from(partition_count)).map_err(|_| Error::Overflow {
+        name: "key routing partition",
+    })
+}
+
 /// A stable digest of logical content, independent of retries and owner changes.
 pub fn canonical_produce_digest(
     topic: Id,
@@ -77,6 +100,19 @@ fn hash_bytes(hash: &mut blake3::Hasher, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_routing_is_versioned_and_rejects_an_empty_partition_set() {
+        assert!(partition_for_key(b"key", 0).is_err());
+        for (key, expected) in [
+            (b"".as_slice(), 10),
+            (b"customer-42".as_slice(), 65),
+            ([0, 255].as_slice(), 59),
+        ] {
+            assert_eq!(partition_for_key(key, 1).unwrap(), 0);
+            assert_eq!(partition_for_key(key, 97).unwrap(), expected);
+        }
+    }
 
     fn id(byte: u8) -> Id {
         Id::from_slice(&[byte; 16]).unwrap()
