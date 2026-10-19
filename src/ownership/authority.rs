@@ -56,7 +56,7 @@ pub trait OwnershipApplication: Application {
 /// Local authoritative adapter. A remote implementation must additionally authenticate
 /// the configured metadata identity and prohibit cached responses and raw command RPCs.
 pub struct MetadataAuthority {
-    raft: Raft<MetadataState>,
+    pub(super) raft: Raft<MetadataState>,
     state: DiskStateMachine<MetadataState>,
     cluster_id: Id,
     group_id: u64,
@@ -115,6 +115,12 @@ impl MetadataAuthority {
                     .grant(fence.grant.partition)
                     .filter(|grant| *grant == &fence.grant)
                     .ok_or(Error::GrantMismatch)?;
+                if state
+                    .topic(grant.partition.topic_id)
+                    .is_none_or(|topic| topic.status != RecordStatus::Active)
+                {
+                    return Err(Error::GrantMismatch);
+                }
                 let route = state
                     .route(grant.partition)
                     .filter(|route| {
@@ -136,7 +142,7 @@ impl MetadataAuthority {
         .context(ValiditySnafu)
     }
 
-    async fn read<R: Send>(
+    pub(super) async fn read<R: Send>(
         &self,
         query: impl FnOnce(&MetadataState, Option<LogId<u64>>) -> Result<R, Error> + Send,
     ) -> Result<(R, Instant), Error> {
@@ -238,7 +244,7 @@ impl<A: OwnershipApplication> DataAuthority<A> {
         })
     }
 
-    async fn read<R: Send>(
+    pub(super) async fn read<R: Send>(
         &self,
         query: impl FnOnce(&FenceState, Option<LogId<u64>>) -> Result<R, Error> + Send,
     ) -> Result<(R, Instant), Error> {
@@ -270,12 +276,12 @@ impl<A: OwnershipApplication> DataAuthority<A> {
     }
 }
 
-struct Freshness {
+pub(super) struct Freshness {
     expires_at: Instant,
 }
 
 impl Freshness {
-    fn new(started: Instant, policy: ControlPolicy) -> Result<Self, Error> {
+    pub(super) fn new(started: Instant, policy: ControlPolicy) -> Result<Self, Error> {
         let expires_at = started
             .checked_add(policy.ttl)
             .ok_or(Error::InvalidConfiguration)?;
@@ -300,8 +306,8 @@ impl Freshness {
 /// let _: tidemq::ownership::VerifiedGrant = serde_json::from_str("{}").unwrap();
 /// ```
 pub struct VerifiedGrant {
-    grant: Grant,
-    freshness: Freshness,
+    pub(super) grant: Grant,
+    pub(super) freshness: Freshness,
 }
 
 impl VerifiedGrant {
@@ -316,8 +322,8 @@ impl VerifiedGrant {
 }
 
 pub struct VerifiedFence {
-    evidence: FenceEvidence,
-    freshness: Freshness,
+    pub(super) evidence: FenceEvidence,
+    pub(super) freshness: Freshness,
 }
 
 impl VerifiedFence {
@@ -334,8 +340,8 @@ impl VerifiedFence {
 }
 
 pub struct VerifiedRecovery {
-    evidence: RecoveryEvidence,
-    freshness: Freshness,
+    pub(super) evidence: RecoveryEvidence,
+    pub(super) freshness: Freshness,
 }
 
 impl VerifiedRecovery {
@@ -364,7 +370,7 @@ impl VerifiedRecovery {
     }
 }
 
-fn stable_voters<A: Application>(raft: &Raft<A>) -> Result<BTreeSet<u64>, Error> {
+pub(super) fn stable_voters<A: Application>(raft: &Raft<A>) -> Result<BTreeSet<u64>, Error> {
     let receiver = raft.metrics();
     let metrics = receiver.borrow();
     let membership = metrics.membership_config.membership();

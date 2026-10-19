@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -14,6 +14,22 @@ pub(crate) const MAX_SEGMENTS: usize = 4_096;
 pub(crate) const MAX_PINS: usize = 1_024;
 pub(crate) const MAX_PIN_OBJECTS: usize = 64;
 pub(crate) const MAX_PIN_TTL: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CapacityUsage {
+    pub registered_physical_upper_bytes: u64,
+    pub reclaim_lag_upper_bytes: u64,
+    pub pending_upload_upper_bytes: u64,
+    pub objects: usize,
+    pub deleted_objects: usize,
+    pub read_pins: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ObjectPage {
+    pub objects: Vec<(Id, ObjectPhase)>,
+    pub next_after: Option<Id>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Rejection {
@@ -74,9 +90,11 @@ pub struct ObjectRecord {
     pub(crate) plan: Plan,
     pub phase: ObjectPhase,
     pub generation: u64,
+    pub(crate) manifest_references: usize,
     pub checkpoint_generation: Option<u64>,
     pub(crate) published_generations: BTreeMap<PartitionKey, u64>,
     pub(crate) recovery_replacement: Option<Id>,
+    pub(crate) floor_holds: BTreeMap<PartitionKey, u64>,
 }
 
 impl ObjectRecord {
@@ -100,6 +118,7 @@ pub struct Segment {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub generation: u64,
+    pub publication_generation: u64,
     pub published_end: u64,
     pub segments: Vec<Segment>,
 }
@@ -145,7 +164,7 @@ pub enum Blocker {
     None,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub object_id: Id,
     pub phase: ObjectPhase,
@@ -188,6 +207,23 @@ pub(crate) enum CatalogCommand {
     Deleted {
         object_id: Id,
     },
+    RetireBefore(FloorEvidence),
+    FloorCheckpoint {
+        proof: FloorEvidence,
+        snapshots: Vec<(u64, String, u64)>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct FloorEvidence {
+    pub cluster_id: Id,
+    pub group_id: u64,
+    pub partition: PartitionKey,
+    pub before: u64,
+    pub manifest_generation: u64,
+    pub published_end: u64,
+    pub position: openraft::LogId<u64>,
+    pub voters: BTreeSet<u64>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -195,12 +231,38 @@ pub(crate) enum CatalogOutcome {
     Object(Box<ObjectRecord>),
     Pinned,
     Released,
+    Retired,
 }
 
 /// Trusted lifecycle operations are constructed by the coordinator, never decoded from clients.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MetadataOperation {
     pub(crate) command: CatalogCommand,
+}
+
+impl MetadataOperation {
+    pub(crate) fn validate_context(
+        &self,
+        state: &crate::metadata::MetadataState,
+    ) -> Result<(), Rejection> {
+        let proof = match &self.command {
+            CatalogCommand::RetireBefore(proof) | CatalogCommand::FloorCheckpoint { proof, .. } => {
+                proof
+            }
+            _ => return Ok(()),
+        };
+        let group = state.group(proof.group_id).ok_or(Rejection::Identity)?;
+        if state.cluster_id() != Some(proof.cluster_id)
+            || state.partition_group(proof.partition) != Some(proof.group_id)
+            || group.voters != proof.voters
+            || !proof.voters.contains(&proof.position.leader_id.node_id)
+            || !matches!(proof.voters.len(), 1 | 3)
+            || proof.position.index == 0
+        {
+            return Err(Rejection::Identity);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -257,6 +319,10 @@ pub(crate) enum DataCommand {
         end: u64,
         checkpoint_generation: u64,
     },
+    FloorCheckpoint {
+        partition: PartitionKey,
+        before: u64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -266,4 +332,5 @@ pub(crate) enum DataOutcome {
     Published,
     Checkpoint { generation: u64 },
     Reclaimed,
+    FloorCheckpoint,
 }

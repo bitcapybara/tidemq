@@ -3,6 +3,7 @@
 mod authority;
 mod fence;
 mod lease;
+pub(crate) mod remote;
 mod telemetry;
 mod types;
 

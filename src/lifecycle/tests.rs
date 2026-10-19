@@ -17,6 +17,10 @@ use super::{
 };
 
 fn plan(object_id: Id, replaces: Vec<Id>, generation: u64) -> Plan {
+    plan_range(object_id, replaces, generation, 0)
+}
+
+fn plan_range(object_id: Id, replaces: Vec<Id>, generation: u64, offset: u64) -> Plan {
     let cluster = "11111111-1111-4111-8111-111111111111".parse().unwrap();
     let topic = "22222222-2222-4222-8222-222222222222".parse().unwrap();
     let partition = PartitionKey {
@@ -24,7 +28,7 @@ fn plan(object_id: Id, replaces: Vec<Id>, generation: u64) -> Plan {
         partition: 0,
     };
     let record = Record {
-        offset: 0,
+        offset,
         key: Bytes::from_static(b"k"),
         body: Bytes::from_static(b"body"),
     };
@@ -38,8 +42,8 @@ fn plan(object_id: Id, replaces: Vec<Id>, generation: u64) -> Plan {
             group_id: 9,
             topic_id: topic,
             partition_id: 0,
-            offsets: OffsetRange::new(0, 1).unwrap(),
-            committed_end: 1,
+            offsets: OffsetRange::new(offset, offset + 1).unwrap(),
+            committed_end: offset + 1,
             records: &[record],
         }],
         PackLimits::default(),
@@ -249,4 +253,154 @@ fn local_reclaim_preserves_logical_floor_original_results_and_append_admission_a
     restored.validate().unwrap();
     assert_eq!(restored.local_reclaim_end(), 1);
     assert_eq!(restored.retained_floor(), 0);
+}
+
+#[test]
+fn retained_floor_retires_refs_without_skipping_the_next_data_publication_sequence() {
+    let first = plan(Id::random().unwrap(), vec![], 0);
+    let id = first.descriptor.identity.object_id;
+    let partition = *first.expected_generations.keys().next().unwrap();
+    let mut catalog = Catalog::default();
+    let mut data = DataState::default();
+    catalog
+        .apply(CatalogCommand::Register(first.clone()))
+        .unwrap();
+    data.apply(DataCommand::Authorize(first.clone())).unwrap();
+    catalog
+        .apply(CatalogCommand::Uploaded { object_id: id })
+        .unwrap();
+    catalog
+        .apply(CatalogCommand::Publish { object_id: id })
+        .unwrap();
+    data.apply(DataCommand::Published {
+        plan: first.clone(),
+        generations: BTreeMap::from([(partition, 1)]),
+    })
+    .unwrap();
+    let proof = super::types::FloorEvidence {
+        cluster_id: first.descriptor.identity.cluster_id,
+        group_id: 9,
+        partition,
+        before: 1,
+        manifest_generation: 1,
+        published_end: 1,
+        position: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 9),
+        voters: std::collections::BTreeSet::from([1]),
+    };
+    catalog
+        .apply(CatalogCommand::RetireBefore(proof.clone()))
+        .unwrap();
+    assert!(catalog.manifest(partition).unwrap().segments.is_empty());
+    assert_eq!(catalog.manifest(partition).unwrap().generation, 2);
+    assert_eq!(
+        catalog.manifest(partition).unwrap().publication_generation,
+        1
+    );
+    assert_eq!(
+        catalog.apply(CatalogCommand::BeginDelete { object_id: id }),
+        Err(Rejection::RecoveryDependency)
+    );
+    assert_eq!(
+        catalog.capacity_usage().reclaim_lag_upper_bytes,
+        first.descriptor.total_bytes
+    );
+    let second = plan_range(Id::random().unwrap(), vec![], 2, 1);
+    let second_id = second.descriptor.identity.object_id;
+    catalog
+        .apply(CatalogCommand::Register(second.clone()))
+        .unwrap();
+    data.apply(DataCommand::Authorize(second.clone())).unwrap();
+    catalog
+        .apply(CatalogCommand::Uploaded {
+            object_id: second_id,
+        })
+        .unwrap();
+    catalog
+        .apply(CatalogCommand::Publish {
+            object_id: second_id,
+        })
+        .unwrap();
+    data.apply(DataCommand::Published {
+        plan: second.clone(),
+        generations: BTreeMap::from([(partition, 2)]),
+    })
+    .unwrap();
+    assert_eq!(catalog.manifest(partition).unwrap().generation, 3);
+    assert_eq!(data.manifest(partition).unwrap().generation, 2);
+    catalog
+        .apply(CatalogCommand::FloorCheckpoint {
+            proof,
+            snapshots: vec![(1, "safe-floor-snapshot".into(), 9)],
+        })
+        .unwrap();
+    catalog
+        .apply(CatalogCommand::BeginDelete { object_id: id })
+        .unwrap();
+    catalog
+        .apply(CatalogCommand::Deleted { object_id: id })
+        .unwrap();
+    assert_eq!(
+        catalog.capacity_usage().registered_physical_upper_bytes,
+        second.descriptor.total_bytes
+    );
+    let page = catalog.objects_page(9, None, 1).unwrap();
+    assert_eq!(page.objects.len(), 1);
+    assert!(page.next_after.is_some());
+    let final_page = catalog.objects_page(9, page.next_after, 1).unwrap();
+    assert_eq!(final_page.objects.len(), 1);
+    assert!(final_page.next_after.is_none());
+    assert_ne!(
+        page.objects.first().unwrap().0,
+        final_page.objects.first().unwrap().0
+    );
+    catalog.validate().unwrap();
+    data.validate().unwrap();
+}
+
+#[test]
+fn archive_reader_can_finish_publishing_logically_expired_hot_data() {
+    let mut producer =
+        ProducerState::new(Id::random().unwrap(), 0, ProducerLimits::default()).unwrap();
+    let session = producer
+        .register(
+            1,
+            RegisterProducer {
+                producer_id: Id::random().unwrap(),
+                expected_registration_epoch: 1,
+            },
+        )
+        .unwrap();
+    let messages = vec![MessageData {
+        key: Bytes::from_static(b"k"),
+        body: Bytes::from_static(b"body"),
+    }];
+    let content_digest = tidemq_protocol::producer::canonical_produce_digest_parts(
+        producer.topic_id(),
+        0,
+        session.producer_id,
+        1,
+        0,
+        messages
+            .iter()
+            .map(|message| (message.key.as_ref(), message.body.as_ref())),
+    )
+    .unwrap();
+    producer
+        .append(
+            1,
+            AppendBatch {
+                topic_id: producer.topic_id(),
+                partition_id: 0,
+                producer_id: session.producer_id,
+                producer_epoch: 1,
+                first_sequence: 0,
+                messages,
+                content_digest,
+            },
+        )
+        .unwrap();
+    producer.set_retained_floor(1).unwrap();
+    assert!(producer.hot_read(0, 1, 1024).is_err());
+    assert_eq!(producer.archive_read(0, 1, 1024).unwrap().messages.len(), 1);
+    assert_eq!(producer.local_reclaim_end(), 0);
 }
