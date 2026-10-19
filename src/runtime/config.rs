@@ -134,6 +134,25 @@ impl RuntimeConfig {
                 "Archive interval must be between 100 and 60000 milliseconds",
             ));
         }
+        if let Some(objects) = &self.objects {
+            if config.memory.total_bytes < 201_326_592
+                || config.memory.control_reserved_bytes < 33_554_432
+                || self.capacity.process_memory.high
+                    < u64::from(config.memory.total_bytes).saturating_add(67_108_864)
+            {
+                return Err(Error::invalid(
+                    "Object storage requires at least 192 MiB application budget, 32 MiB control reserve and 64 MiB RSS headroom",
+                ));
+            }
+            if objects.endpoint.len() > 2_048
+                || objects.endpoint.contains('@')
+                || objects.endpoint.chars().any(char::is_whitespace)
+            {
+                return Err(Error::invalid(
+                    "Object endpoint contains unsupported identity or whitespace",
+                ));
+            }
+        }
         if self.peers.is_empty()
             || self.peers.len() > 32
             || self.groups.is_empty()

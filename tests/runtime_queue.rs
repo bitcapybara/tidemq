@@ -122,7 +122,7 @@ impl Fixture {
                     },
                     ..Config::default()
                 };
-                config.memory.total_bytes = 128 * 1024 * 1024;
+                config.memory.total_bytes = 192 * 1024 * 1024;
                 config.memory.control_reserved_bytes = 32 * 1024 * 1024;
                 // Several independently budgeted native runtimes share this test process's RSS.
                 config.runtime.capacity.process_memory = tidemq::quota::Watermark {
