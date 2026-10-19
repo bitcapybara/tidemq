@@ -168,6 +168,22 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::TopicResult
         | FrameKind::CreateSubscription
         | FrameKind::SubscriptionResult
+        | FrameKind::OpenProducer
+        | FrameKind::ProducerSessionResult
+        | FrameKind::ProducerStatus
+        | FrameKind::ProducerStatusResult
+        | FrameKind::RetireProducer
+        | FrameKind::ProducerRetired
+        | FrameKind::ClaimAssignment
+        | FrameKind::AssignmentResult
+        | FrameKind::SeekSubscription
+        | FrameKind::SeekResult
+        | FrameKind::DeleteSubscription
+        | FrameKind::SubscriptionDeleted
+        | FrameKind::SubscriptionStatus
+        | FrameKind::SubscriptionStatusResult
+        | FrameKind::GetTopic
+        | FrameKind::GetSubscription
         | FrameKind::AckBatch
         | FrameKind::AckResult
         | FrameKind::ReceiveBarrier

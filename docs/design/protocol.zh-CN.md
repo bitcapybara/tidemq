@@ -24,8 +24,12 @@ Id 使用 fallible entropy 生成 UUID v4，拒绝 nil 与错误长度；不使�
 
 cluster_id、topic/producer/subscription/operation 身份使用 Id；node_id 与 group_id 使用非零 u64。group_id 在集群内分配且不可复用，metadata_group_id 单独保留，数据组不能占用它；磁盘与内部网络使用同一组身份，不另建 UUID 到 wire ID 的隐式映射。
 
-错误使用固定 ErrorCode、retryable 和 Outcome；明确 rejected、committed、unknown，SDK 不匹配错误文本决定重试。敏感 token/body 不进入日志或 instrument 参数。取消按 request_id 处理，不能为取消一个请求 RESET 整条复用流。
+错误使用固定 ErrorCode、retryable 和 Outcome；明确 rejected、committed、unknown，SDK 不匹配错误文本决定重试。expected_sequence、expected_registration_epoch 和 retry_after_ms 是可选结构化提示，不能据此把未知结果改为拒绝。敏感 token/body 不进入日志或 instrument 参数。取消按 request_id 处理，不能为取消一个请求 RESET 整条复用流。
 
 traceparent 只接受有界 W3C version 00；无效上下文在帧总额内丢弃，不改变业务身份。它不参与去重摘要、授权或持久状态机，不绑定共享 connection，不默认传任意 baggage。
 
-当前仅有 schema、codec 和不变量检查；认证握手、实际 QUIC IO 和请求分派由 T01/T10 实现。
+生产会话通过 OpenProducer 显式注册，用单分区注册 epoch 高水位 CAS；过期后的旧 ProduceBatch 不创建新身份。共享 producer::canonical_produce_digest 以固定 domain、身份、epoch、起始序列、条数及逐条 key/body 长度和内容计算 BLAKE3；owner epoch、请求期限与 trace 不参与摘要。borrowed parts 接口避免服务端复制消息后再哈希。
+
+消费 ClaimAssignment 显式分配会话，替换已有会话需要 replace_session_id 与代次 CAS。assignment_generation 同时充当 delivery_generation，wire 两字段必须一致；seek、owner fence 和新分配使旧投递失效。DeliveryBatch 携带完整 topic/partition/subscription/session/cursor/assignment/delivery 绑定，issued_before 限制本代次连续签发范围，acknowledged_ranges 只表示持久 ACK 洞。SDK 必须按成功入队的消息和已验证洞区间连续推进 received_before；最大收到 offset、QUIC ACK 或业务 ACK 都不能代替冷热接收屏障。
+
+schema 已包含注册/状态/退役、分配/状态/seek/删除和按名称查询，均走 Control 类别；生产走 Produce，冷热消息分别走 Delivery/Bulk。已实现 TLS/mTLS 的有界 QUIC IO；业务请求分派与真实 SDK 联调仍待 T04/T05/T06/T10。

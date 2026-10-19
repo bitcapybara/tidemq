@@ -19,6 +19,12 @@ enum FrameKind {
   TOPIC_RESULT = 11;
   CREATE_SUBSCRIPTION = 12;
   SUBSCRIPTION_RESULT = 13;
+  OPEN_PRODUCER = 14;
+  PRODUCER_SESSION_RESULT = 15;
+  PRODUCER_STATUS = 16;
+  PRODUCER_STATUS_RESULT = 17;
+  RETIRE_PRODUCER = 18;
+  PRODUCER_RETIRED = 19;
   PRODUCE_BATCH = 20;
   PRODUCE_RESULT = 21;
   READ = 22;
@@ -27,6 +33,16 @@ enum FrameKind {
   ACK_RESULT = 25;
   CANCEL = 26;
   RECEIVE_BARRIER = 27;
+  CLAIM_ASSIGNMENT = 28;
+  ASSIGNMENT_RESULT = 29;
+  SEEK_SUBSCRIPTION = 30;
+  SEEK_RESULT = 31;
+  DELETE_SUBSCRIPTION = 32;
+  SUBSCRIPTION_DELETED = 33;
+  SUBSCRIPTION_STATUS = 34;
+  SUBSCRIPTION_STATUS_RESULT = 35;
+  GET_TOPIC = 36;
+  GET_SUBSCRIPTION = 37;
   RAFT_VOTE = 40;
   RAFT_APPEND = 41;
   RAFT_SNAPSHOT = 42;
@@ -54,6 +70,10 @@ enum ErrorCode {
   OFFSET_EXPIRED = 13;
   NOT_FOUND = 14;
   INTERNAL_ERROR = 15;
+  SESSION_EXPIRED = 16;
+  REGISTRATION_CONFLICT = 17;
+  ASSIGNMENT_BUSY = 18;
+  STALE_GENERATION = 19;
 }
 
 enum Outcome {
@@ -79,6 +99,9 @@ message ErrorReply {
   string message = 2;
   bool retryable = 3;
   Outcome outcome = 4;
+  optional uint64 expected_sequence = 5;
+  optional uint64 expected_registration_epoch = 6;
+  optional uint64 retry_after_ms = 7;
 }
 
 message CancelRequest { bytes request_id = 1; }
