@@ -124,12 +124,7 @@ cat >> "$output/compose.yaml" <<'EOF'
         read_only: true
         bind: {create_host_path: false}
       - validation-data:/var/lib/tidemq
-    extra_hosts:
 EOF
-for source in "$output"/init/node-*.toml; do
-  node=$(awk '$1 == "node_id" {print $3; exit}' "$source")
-  printf '      - "node-%s.local:127.0.0.1"\n' "$node" >> "$output/compose.yaml"
-done
 for source in "$output"/init/node-*.toml; do
   node=$(awk '$1 == "node_id" {print $3; exit}' "$source")
   role=$(awk -F "'" '$1 == "role = " {print $2; exit}' "$source")
