@@ -27,7 +27,10 @@ impl Default for RuntimeConfig {
             internal_listen: SocketAddr::from(([127, 0, 0, 1], 7444)),
             metadata_group: 1,
             metadata_voters: vec![1],
-            groups: vec![GroupConfig { group_id: 2, voters: vec![1] }],
+            groups: vec![GroupConfig {
+                group_id: 2,
+                voters: vec![1],
+            }],
             peers: Vec::new(),
             access_file: "secrets/access.toml".into(),
             delivery_key_file: "secrets/delivery.key".into(),
@@ -64,33 +67,62 @@ impl Role {
             Self::Metadata => "metadata",
         }
     }
-    pub fn serves_gateway(self) -> bool { matches!(self, Self::Combined | Self::Gateway) }
-    pub fn serves_broker(self) -> bool { matches!(self, Self::Combined | Self::Broker) }
-    pub fn stores_data(self) -> bool { matches!(self, Self::Combined | Self::Storage) }
-    pub fn stores_metadata(self) -> bool { matches!(self, Self::Combined | Self::Metadata) }
+    pub fn serves_gateway(self) -> bool {
+        matches!(self, Self::Combined | Self::Gateway)
+    }
+    pub fn serves_broker(self) -> bool {
+        matches!(self, Self::Combined | Self::Broker)
+    }
+    pub fn stores_data(self) -> bool {
+        matches!(self, Self::Combined | Self::Storage)
+    }
+    pub fn stores_metadata(self) -> bool {
+        matches!(self, Self::Combined | Self::Metadata)
+    }
 }
 
 impl RuntimeConfig {
     pub fn validate(&self, config: &Config) -> Result<()> {
         config.validate().map_err(Error::foundation)?;
-        if self.peers.is_empty() || self.peers.len() > 32 || self.groups.is_empty() || self.groups.len() > 16
-            || self.metadata_group == 0 || self.internal_listen == config.listen
+        if self.peers.is_empty()
+            || self.peers.len() > 32
+            || self.groups.is_empty()
+            || self.groups.len() > 16
+            || self.metadata_group == 0
+            || self.internal_listen == config.listen
             || self.internal_listen == config.management_listen
-        { return Err(Error::invalid("Runtime topology or listener bounds are invalid")); }
+        {
+            return Err(Error::invalid(
+                "Runtime topology or listener bounds are invalid",
+            ));
+        }
         let mut ids = BTreeSet::new();
         for peer in &self.peers {
-            if peer.node_id == 0 || !ids.insert(peer.node_id) || peer.internal_address.port() == 0
-                || peer.server_name.is_empty() || peer.server_name.len() > 253 || peer.zone.is_empty() || peer.zone.len() > 64
-            { return Err(Error::invalid("Runtime peer identity is invalid or duplicated")); }
+            if peer.node_id == 0
+                || !ids.insert(peer.node_id)
+                || peer.internal_address.port() == 0
+                || peer.server_name.is_empty()
+                || peer.server_name.len() > 253
+                || peer.zone.is_empty()
+                || peer.zone.len() > 64
+            {
+                return Err(Error::invalid(
+                    "Runtime peer identity is invalid or duplicated",
+                ));
+            }
         }
         let local = self.peer(config.node_id)?;
         if local.role != config.role || local.internal_address != self.internal_listen {
-            return Err(Error::invalid("Local topology identity differs from process identity"));
+            return Err(Error::invalid(
+                "Local topology identity differs from process identity",
+            ));
         }
         self.validate_voters(&self.metadata_voters, config.replication_factor, true)?;
         let mut groups = BTreeSet::from([self.metadata_group]);
         for group in &self.groups {
-            if group.group_id == 0 || !groups.insert(group.group_id) { return Err(Error::invalid("Group identity is invalid or duplicated")); }
+            if group.group_id == 0 || !groups.insert(group.group_id) {
+                return Err(Error::invalid("Group identity is invalid or duplicated"));
+            }
             self.validate_voters(&group.voters, config.replication_factor, false)?;
         }
         if !self.peers.iter().any(|peer| peer.role.serves_broker()) {
@@ -102,24 +134,42 @@ impl RuntimeConfig {
     fn validate_voters(&self, voters: &[u64], factor: u8, metadata: bool) -> Result<()> {
         let unique: BTreeSet<_> = voters.iter().copied().collect();
         if voters.len() != usize::from(factor) || unique.len() != voters.len() {
-            return Err(Error::invalid("Voters must match the explicit replication factor"));
+            return Err(Error::invalid(
+                "Voters must match the explicit replication factor",
+            ));
         }
         let mut zones = BTreeSet::new();
         for voter in voters {
             let peer = self.peer(*voter)?;
-            if !(if metadata { peer.role.stores_metadata() } else { peer.role.stores_data() }) {
-                return Err(Error::invalid("Voter role does not store the selected group"));
+            if !(if metadata {
+                peer.role.stores_metadata()
+            } else {
+                peer.role.stores_data()
+            }) {
+                return Err(Error::invalid(
+                    "Voter role does not store the selected group",
+                ));
             }
             zones.insert(&peer.zone);
         }
-        if factor == 3 && zones.len() != 3 { return Err(Error::invalid("Three replicas require three distinct configured zones")); }
+        if factor == 3 && zones.len() != 3 {
+            return Err(Error::invalid(
+                "Three replicas require three distinct configured zones",
+            ));
+        }
         Ok(())
     }
 
     pub fn peer(&self, node: u64) -> Result<&PeerConfig> {
-        self.peers.iter().find(|peer| peer.node_id == node).ok_or_else(|| Error::invalid("Node is absent from trusted topology"))
+        self.peers
+            .iter()
+            .find(|peer| peer.node_id == node)
+            .ok_or_else(|| Error::invalid("Node is absent from trusted topology"))
     }
     pub fn group(&self, group: u64) -> Result<&GroupConfig> {
-        self.groups.iter().find(|entry| entry.group_id == group).ok_or_else(|| Error::invalid("Data group is absent from trusted topology"))
+        self.groups
+            .iter()
+            .find(|entry| entry.group_id == group)
+            .ok_or_else(|| Error::invalid("Data group is absent from trusted topology"))
     }
 }

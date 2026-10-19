@@ -9,7 +9,10 @@ pub enum Error {
     #[snafu(display("Invalid runtime input: {reason}"))]
     Invalid { reason: &'static str },
     #[snafu(display("Runtime operation failed: {operation}"))]
-    Operation { operation: &'static str, source: std::io::Error },
+    Operation {
+        operation: &'static str,
+        source: std::io::Error,
+    },
     #[snafu(display("Runtime operation was rejected: {failure:?}"))]
     Rejected { failure: Failure },
 }
@@ -24,20 +27,38 @@ pub struct Failure {
 }
 
 impl Error {
-    pub fn invalid(reason: &'static str) -> Self { Self::Invalid { reason } }
-    pub fn operation(operation: &'static str, source: impl std::error::Error + Send + Sync + 'static) -> Self {
-        Self::Operation { operation, source: std::io::Error::other(source) }
+    pub fn invalid(reason: &'static str) -> Self {
+        Self::Invalid { reason }
     }
-    pub fn foundation(source: crate::Error) -> Self { Self::operation("foundation service", source) }
+    pub fn operation(
+        operation: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Operation {
+            operation,
+            source: std::io::Error::other(source),
+        }
+    }
+    pub fn foundation(source: crate::Error) -> Self {
+        Self::operation("foundation service", source)
+    }
     pub fn reject(code: ErrorCode, outcome: Outcome, retryable: bool) -> Self {
-        Self::Rejected { failure: Failure::new(code, outcome, retryable) }
+        Self::Rejected {
+            failure: Failure::new(code, outcome, retryable),
+        }
     }
-    pub fn unavailable() -> Self { Self::reject(ErrorCode::Unavailable, Outcome::Rejected, true) }
-    pub fn unknown() -> Self { Self::reject(ErrorCode::Unavailable, Outcome::Unknown, true) }
+    pub fn unavailable() -> Self {
+        Self::reject(ErrorCode::Unavailable, Outcome::Rejected, true)
+    }
+    pub fn unknown() -> Self {
+        Self::reject(ErrorCode::Unavailable, Outcome::Unknown, true)
+    }
     pub fn failure(&self) -> Failure {
         match self {
             Self::Rejected { failure } => failure.clone(),
-            Self::Invalid { .. } => Failure::new(ErrorCode::InvalidRequest, Outcome::Rejected, false),
+            Self::Invalid { .. } => {
+                Failure::new(ErrorCode::InvalidRequest, Outcome::Rejected, false)
+            }
             Self::Operation { .. } => Failure::new(ErrorCode::Unavailable, Outcome::Unknown, true),
         }
     }
@@ -45,6 +66,12 @@ impl Error {
 
 impl Failure {
     fn new(code: ErrorCode, outcome: Outcome, retryable: bool) -> Self {
-        Self { code: code.into(), outcome: outcome.into(), retryable, expected_sequence: None, expected_registration_epoch: None }
+        Self {
+            code: code.into(),
+            outcome: outcome.into(),
+            retryable,
+            expected_sequence: None,
+            expected_registration_epoch: None,
+        }
     }
 }

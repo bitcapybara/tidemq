@@ -115,7 +115,10 @@ impl MetadataAuthority {
                     .grant(fence.grant.partition)
                     .filter(|grant| *grant == &fence.grant)
                     .ok_or(Error::GrantMismatch)?;
-                if state.topic(grant.partition.topic_id).is_none_or(|topic| topic.status != RecordStatus::Active) {
+                if state
+                    .topic(grant.partition.topic_id)
+                    .is_none_or(|topic| topic.status != RecordStatus::Active)
+                {
                     return Err(Error::GrantMismatch);
                 }
                 let route = state
