@@ -107,7 +107,7 @@ impl RunningNode {
             .registry_mut()
             .sub_registry_with_prefix("tidemq_producer")
             .register_collector(Box::new(producer.clone()));
-        let _ownership = crate::ownership::OwnershipMetrics::register(metrics.registry_mut());
+        let ownership = crate::ownership::OwnershipMetrics::register(metrics.registry_mut());
         let quota_metrics = crate::quota::Metrics::default();
         quota_metrics.register(metrics.registry_mut());
         let quota = crate::quota::Quota::new(config.runtime.capacity, quota_metrics)
@@ -195,6 +195,7 @@ impl RunningNode {
                     &config.runtime.metadata_voters,
                     cluster,
                     pool.clone(),
+                    metrics.operation(Operation::Control),
                 )
                 .await?,
             )
@@ -212,6 +213,7 @@ impl RunningNode {
                         &group.voters,
                         cluster,
                         pool.clone(),
+                        metrics.operation(Operation::Produce),
                     )
                     .await?,
                 );
@@ -258,6 +260,7 @@ impl RunningNode {
             producer,
             metrics,
             runtime_metrics,
+            ownership,
             quota,
             repair,
             transport_metrics,
@@ -283,6 +286,7 @@ impl RunningNode {
         let (management_address, task) =
             super::management::start(service.clone(), stopped.clone()).await?;
         tasks.push(task);
+        tasks.push(tokio::spawn(service.clone().rebalance(stopped.clone())));
         let maintenance = service.clone();
         tasks.push(tokio::spawn(maintenance.maintain(stopped.clone())));
         tasks.push(tokio::spawn(service.clone().expire_pins(stopped.clone())));
@@ -519,12 +523,13 @@ async fn open_replica<A: Application>(
     voters: &[u64],
     cluster: Id,
     pool: Arc<PeerPool>,
+    stages: Option<Arc<crate::observability::metrics::OperationMetrics>>,
 ) -> Result<Replica<A>> {
     let store = DiskStore::<A>::open(
         config.data_dir.join(format!("group-{group}")),
         StorageIdentity::new::<A>(cluster, group, config.node_id),
         StorageOptions::default(),
-        None,
+        stages,
     )
     .await
     .map_err(|source| Error::operation("open durable Raft replica", source))?;

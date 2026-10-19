@@ -640,9 +640,15 @@ async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
         )
         .await
         .unwrap();
-    let rpc = tidemq::transport::rpc::RpcClient::from_session(session, Default::default())
-        .await
-        .unwrap();
+    let rpc = tidemq::transport::rpc::RpcClient::from_session(
+        session,
+        tidemq::transport::rpc::RpcConfig {
+            liveness_timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let semantic = || {
         let operation = Id::random().unwrap();
         frame(
@@ -683,6 +689,13 @@ async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
         .unwrap()
         .unwrap();
     assert_eq!(response.frame().kind, i32::from(FrameKind::RaftResult));
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(
+        !rpc.is_closed(),
+        "Native progress must preserve slow application handlers"
+    );
+    assert!(client.metrics.snapshot().liveness_probes_total >= 1);
+    assert_eq!(client.metrics.snapshot().liveness_failures_total, 0);
     service.release.add_permits(2);
     first.receive().await.unwrap();
     second.receive().await.unwrap();

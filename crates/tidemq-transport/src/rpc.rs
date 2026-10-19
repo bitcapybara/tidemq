@@ -39,6 +39,7 @@ pub struct RpcConfig {
     pub max_pending_requests: usize,
     pub max_pending_bytes: u32,
     pub read_idle_timeout: Duration,
+    pub liveness_timeout: Duration,
 }
 
 impl Default for RpcConfig {
@@ -47,6 +48,7 @@ impl Default for RpcConfig {
             max_pending_requests: 256,
             max_pending_bytes: 16 * 1024 * 1024,
             read_idle_timeout: Duration::from_secs(30),
+            liveness_timeout: Duration::from_secs(1),
         }
     }
 }
@@ -178,6 +180,8 @@ impl RpcClient {
                 .is_none_or(|bytes| bytes > Semaphore::MAX_PERMITS)
             || config.read_idle_timeout.is_zero()
             || config.read_idle_timeout > Duration::from_secs(300)
+            || config.liveness_timeout < Duration::from_millis(100)
+            || config.liveness_timeout > Duration::from_secs(10)
         {
             return Err(Error::Configuration);
         }
@@ -191,6 +195,12 @@ impl RpcClient {
         });
         let mut writers = Vec::new();
         let mut tasks = Vec::new();
+        if session.is_some() {
+            tasks.push(tokio::spawn(watch_liveness(
+                Arc::downgrade(&state),
+                config.liveness_timeout,
+            )));
+        }
         for stream in streams {
             let (sender, receiver) = stream.split();
             let (tx, rx) = mpsc::channel(config.max_pending_requests);
@@ -514,6 +524,43 @@ async fn read_loop(mut receiver: FrameReceiver, state: Weak<State>, idle: Durati
     }
     if let Some(state) = state.upgrade() {
         state.close();
+    }
+}
+
+async fn watch_liveness(state: Weak<State>, timeout: Duration) {
+    let mut ticker = tokio::time::interval(timeout);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        ticker.tick().await;
+        let Some(state) = state.upgrade() else {
+            return;
+        };
+        if state.closed.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(connection) = state.connection.as_ref() else {
+            return;
+        };
+        let pending = state
+            .pending
+            .lock()
+            .map_or(true, |pending| !pending.is_empty());
+        let native_pending = connection
+            .recovery_snapshot()
+            .ok()
+            .flatten()
+            .is_some_and(|snapshot| snapshot.bytes_in_flight > 0);
+        if !pending && !connection.has_ack_streams() && !native_pending {
+            continue;
+        }
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            state.close();
+            return;
+        };
+        if connection.probe(deadline).await.is_err() {
+            state.close();
+            return;
+        }
     }
 }
 

@@ -60,7 +60,9 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 原生 Raft 的 vote/空 Append 心跳在内部 mTLS Core 上使用独立的 2 个执行槽与队列；语义 Core 默认 8、短 ACK 默认 32、数据默认 128。语义线性化控制可能等待 Raft，因此不能占用 Raft 自己的执行槽。满队列立即拒绝新工作，不能排队占满全部控制执行能力。它们仍共享有限的 Core 帧内存和 CPU；执行隔离不承诺抗无限可信节点流量。真实 mTLS 测试将语义 Core 执行槽全部阻塞，验证同一复用连接上的原生 Raft 控制帧仍能返回。
 
-固定 s2n-quic 1.91 的 idle acceptor Drop 不会主动唤醒底层 I/O。Server shutdown 在 acceptor 退出后发送一条本地无效 datagram 唤醒关闭检查，否则在连接已经排空后停止监听可能长期保留 UDP 端口。端口释放回归使用实际 bind 验证，不使用 SO_REUSEPORT 或固定等待；升级依赖时重新检查上游 endpoint/close 行为和该兼容措施。
+RPC 每个物理连接拥有一项有界存活观察任务，仅在存在未决请求、短 ACK 流或原生未确认字节时探测。默认间隔和单次期限各一秒，可通过 RpcConfig/SDK ClientConfig 的 liveness_timeout 在 100ms–10s 调整。PING 发起前记录最后已发送的 OneRtt packet number，只把其后新包得到的认证 ACK 视为网络前进；迟到旧 ACK 不算。网络期限耗尽才关闭该失活物理连接并让原业务身份重握手，慢 handler 仍能收到原生 ACK 时继续等待。PING 不占业务流窗口，也不构成 WAL/quorum/消费 ACK 证明；单请求取消或期限仍不直接重置健康复用流。真正 CLI 子进程 SIGKILL/原端口重启回归保持原 Producer、PendingBatch 和 Consumer；慢语义 handler 回归验证不会被存活任务误杀。
+
+固定 s2n-quic 1.91 的 idle acceptor Drop 和 idle Client close interest 不会主动唤醒底层 I/O。Server shutdown 在 acceptor 退出后、Client close 在首次 poll wait_idle 提交关闭兴趣后，发送一条本地无效 datagram 唤醒关闭检查，否则完全空闲时可能长期保留 UDP 端口或卡在 wait_idle。无任何连接活动与真实端口释放回归覆盖这些情形，不使用 SO_REUSEPORT 或固定等待；升级依赖时重新检查上游 endpoint/close 行为和该兼容措施。
 
 ## 诊断与已验证范围
 
