@@ -115,6 +115,7 @@ pub struct Consumer {
     state: Arc<Mutex<State>>,
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
+    _claim: Arc<ClaimTicket>,
 }
 
 impl Consumer {
@@ -135,7 +136,7 @@ impl Consumer {
                 reason: "consumer queue bounds are invalid",
             });
         }
-        let mut ticket = ClaimTicket::reserve(client.clone(), (topic, partition, subscription))?;
+        let ticket = ClaimTicket::reserve(client.clone(), (topic, partition, subscription))?;
         let status = client
             .admin()
             .subscription_status(topic, partition, subscription, deadline)
@@ -190,8 +191,8 @@ impl Consumer {
             return Err(Error::ResponseMismatch);
         }
         let received_before = assignment.acknowledged_before;
-        ticket.committed = true;
         Ok(Self {
+            _claim: Arc::new(ticket),
             slots: Arc::new(Semaphore::new(config.max_buffered_messages as usize)),
             bytes: Arc::new(Semaphore::new(config.max_buffered_bytes as usize)),
             client,
@@ -235,11 +236,31 @@ impl Consumer {
             .available_permits()
             .min(self.client.inner.bytes.available_permits())
             .min(self.client.inner.config.protocol.max_frame_bytes as usize);
-        if available == 0 || available_bytes < 256 {
-            return Err(Error::Admission);
-        }
+        let (available, payload_bytes) = read_credit(
+            available,
+            available_bytes,
+            self.client.inner.config.protocol.max_message_bytes as usize,
+        )?;
+        let credit = ReadCredit {
+            bytes: self
+                .bytes
+                .clone()
+                .try_acquire_many_owned(
+                    u32::try_from(available_bytes).map_err(|_| Error::Admission)?,
+                )
+                .map_err(|_| Error::Admission)?,
+            client: self
+                .client
+                .inner
+                .bytes
+                .clone()
+                .try_acquire_many_owned(
+                    u32::try_from(available_bytes).map_err(|_| Error::Admission)?,
+                )
+                .map_err(|_| Error::Admission)?,
+        };
         let (mut batch, class) = match self
-            .read_batch(&state, available, available_bytes, deadline)
+            .read_batch(&state, available, payload_bytes, deadline)
             .await
         {
             Ok(batch) => batch,
@@ -250,8 +271,22 @@ impl Consumer {
         };
         validate_batch(&batch, &state, class)?;
         self.validate_admission(&batch, &state, available, available_bytes)?;
-        let incoming =
-            self.admit_deliveries(std::mem::take(&mut batch.deliveries), state.generation)?;
+        if batch
+            .deliveries
+            .iter()
+            .try_fold(0_usize, |sum, item| {
+                sum.checked_add(item.key.len())?
+                    .checked_add(item.body.len())
+            })
+            .is_none_or(|sum| sum > payload_bytes)
+        {
+            return Err(Error::ResponseMismatch);
+        }
+        let incoming = self.admit_deliveries(
+            std::mem::take(&mut batch.deliveries),
+            state.generation,
+            credit,
+        )?;
         let count = self.enqueue_batch(&mut state, batch, incoming)?;
         if state.received_before > state.assignment.received_before {
             self.confirm_barrier(&mut state, deadline).await?;
@@ -362,6 +397,7 @@ impl Consumer {
         &self,
         deliveries: Vec<public::Delivery>,
         generation: Generation,
+        mut credit: ReadCredit,
     ) -> Result<Vec<Delivery>> {
         let mut incoming = Vec::new();
         incoming
@@ -375,18 +411,14 @@ impl Consumer {
                 body: delivery.body,
                 token: delivery.delivery_token,
                 generation,
-                _bytes: self
+                _bytes: credit
                     .bytes
-                    .clone()
-                    .try_acquire_many_owned(length)
-                    .map_err(|_| Error::Admission)?,
-                _client_bytes: self
+                    .split(length as usize)
+                    .ok_or(Error::ResponseMismatch)?,
+                _client_bytes: credit
                     .client
-                    .inner
-                    .bytes
-                    .clone()
-                    .try_acquire_many_owned(length)
-                    .map_err(|_| Error::Admission)?,
+                    .split(length as usize)
+                    .ok_or(Error::ResponseMismatch)?,
                 _slot: self
                     .slots
                     .clone()
@@ -872,7 +904,6 @@ fn release_key(state: &mut State, delivery: &Delivery) {
 struct ClaimTicket {
     client: Client,
     key: (Id, u32, Id),
-    committed: bool,
 }
 impl ClaimTicket {
     fn reserve(client: Client, key: (Id, u32, Id)) -> Result<Self> {
@@ -893,18 +924,12 @@ impl ClaimTicket {
             claims.try_reserve(1).map_err(|_| Error::Admission)?;
             claims.insert(key);
         }
-        Ok(Self {
-            client,
-            key,
-            committed: false,
-        })
+        Ok(Self { client, key })
     }
 }
 impl Drop for ClaimTicket {
     fn drop(&mut self) {
-        if !self.committed
-            && let Ok(mut claims) = self.client.inner.consumer_claims.lock()
-        {
+        if let Ok(mut claims) = self.client.inner.consumer_claims.lock() {
             claims.remove(&self.key);
         }
     }
@@ -1062,4 +1087,26 @@ fn delivery_charge(delivery: &public::Delivery) -> Result<u32> {
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<DeliveryData>() + 128))
         .and_then(|bytes| u32::try_from(bytes).ok())
         .ok_or(Error::Admission)
+}
+
+struct ReadCredit {
+    bytes: OwnedSemaphorePermit,
+    client: OwnedSemaphorePermit,
+}
+
+pub(crate) fn delivery_overhead() -> usize {
+    std::mem::size_of::<DeliveryData>() + 229
+}
+
+fn read_credit(slots: usize, bytes: usize, maximum_message: usize) -> Result<(usize, usize)> {
+    let overhead = delivery_overhead();
+    if slots == 0 || bytes <= overhead {
+        return Err(Error::Admission);
+    }
+    let one_payload = maximum_message.min(bytes - overhead);
+    let count = slots.min((bytes - one_payload) / overhead).max(1);
+    let payload = bytes
+        .checked_sub(count.checked_mul(overhead).ok_or(Error::Admission)?)
+        .ok_or(Error::Admission)?;
+    Ok((count, payload))
 }

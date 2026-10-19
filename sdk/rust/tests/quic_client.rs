@@ -57,6 +57,7 @@ struct PeerState {
     acknowledged_tokens: BTreeSet<Bytes>,
     seek_count: u64,
     skip_hole: bool,
+    fill_credit: bool,
 }
 
 struct Peer {
@@ -390,8 +391,19 @@ fn handle(
             };
             let delivery = public::Delivery {
                 offset,
-                key: Bytes::from_static(b"same-key"),
-                body: Bytes::from_static(b"payload"),
+                key: if state.fill_credit {
+                    Bytes::new()
+                } else {
+                    Bytes::from_static(b"same-key")
+                },
+                body: if state.fill_credit {
+                    Bytes::from(vec![
+                        b'x';
+                        read.max_bytes.min(limits.max_message_bytes) as usize
+                    ])
+                } else {
+                    Bytes::from_static(b"payload")
+                },
                 delivery_token: Bytes::from(vec![offset as u8; 101]),
             };
             response(
@@ -475,6 +487,170 @@ fn handle(
         FrameKind::Cancel => return None,
         kind => panic!("Unexpected test request: {kind:?}"),
     })
+}
+
+#[tokio::test]
+async fn unresolved_production_leaves_consumption_capacity_and_does_not_retain_host_backing() {
+    let peer = peer(false, true).await;
+    let mut config = ClientConfig::new(peer.endpoint.clone());
+    config.max_pending_bytes = 1_048_576;
+    let client = Client::connect(config, peer.ca.clone(), TOKEN.into())
+        .await
+        .unwrap();
+    let mut producers = Vec::new();
+    for producer_id in [3, 4] {
+        let producer = Producer::open(client.clone(), id(1), 0, id(producer_id), deadline())
+            .await
+            .unwrap();
+        peer.state.lock().unwrap().drop_first_produce = true;
+        let result = producer
+            .produce(
+                vec![public::Message {
+                    key: Bytes::new(),
+                    body: Bytes::from(vec![b'x'; 262_144]),
+                }],
+                Instant::now() + Duration::from_millis(80),
+            )
+            .await;
+        assert!(matches!(result, Err(Error::ProduceUnknown { .. })));
+        producers.push(producer);
+    }
+    let third = Producer::open(client.clone(), id(1), 0, id(5), deadline())
+        .await
+        .unwrap();
+    assert!(matches!(
+        third
+            .produce(
+                vec![public::Message {
+                    key: Bytes::new(),
+                    body: Bytes::from(vec![b'x'; 262_144])
+                }],
+                deadline()
+            )
+            .await,
+        Err(Error::Admission)
+    ));
+    assert!(third.pending_batches().await.unwrap().is_empty());
+    peer.state.lock().unwrap().fill_credit = true;
+    let consumer = Consumer::claim(
+        client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig {
+            max_buffered_bytes: 1_048_576,
+            max_buffered_messages: 1,
+            ..ConsumerConfig::default()
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    let delivery = consumer.next().await.unwrap().unwrap();
+    assert_eq!(delivery.body().len(), 262_144);
+    consumer.ack(&delivery, deadline()).await.unwrap();
+    assert!(client.metrics().snapshot().admitted_bytes <= 1_048_576);
+
+    struct Backing {
+        bytes: Vec<u8>,
+        released: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl AsRef<[u8]> for Backing {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+    impl Drop for Backing {
+        fn drop(&mut self) {
+            self.released
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let backing = Bytes::from_owner(Backing {
+        bytes: vec![b'y'; 2_097_152],
+        released: released.clone(),
+    });
+    let small = backing.slice(..4);
+    drop(backing);
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(6), deadline())
+        .await
+        .unwrap();
+    peer.state.lock().unwrap().drop_first_produce = true;
+    assert!(matches!(
+        producer
+            .produce(
+                vec![public::Message {
+                    key: Bytes::new(),
+                    body: small
+                }],
+                Instant::now() + Duration::from_millis(80)
+            )
+            .await,
+        Err(Error::ProduceUnknown { .. })
+    ));
+    assert!(released.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(producer.pending_batches().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn consumer_credit_includes_metadata_and_last_handle_releases_its_claim() {
+    let peer = peer(false, true).await;
+    peer.state.lock().unwrap().fill_credit = true;
+    let config = ConsumerConfig {
+        max_buffered_messages: 1,
+        max_buffered_bytes: 1_024,
+        ..ConsumerConfig::default()
+    };
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        config.clone(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let clone = consumer.clone();
+    assert!(
+        Consumer::claim(
+            peer.client.clone(),
+            id(1),
+            0,
+            id(2),
+            config.clone(),
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let delivery = consumer.next().await.unwrap().unwrap();
+    assert!(!delivery.body().is_empty());
+    assert!(peer.client.metrics().snapshot().admitted_bytes <= 1_024);
+    drop(consumer);
+    assert!(
+        Consumer::claim(
+            peer.client.clone(),
+            id(1),
+            0,
+            id(2),
+            config.clone(),
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    drop(clone);
+    drop(delivery);
+    assert_eq!(peer.client.metrics().snapshot().admitted_bytes, 0);
+    // Dropping a handle releases local admission, not the server's durable assignment.
+    peer.state.lock().unwrap().assignment = None;
+    Consumer::claim(peer.client.clone(), id(1), 0, id(2), config, deadline())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
