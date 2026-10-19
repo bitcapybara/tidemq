@@ -355,7 +355,7 @@ impl<A: Application> DiskLog<A> {
         let start = Instant::now();
         self.persist(Record::Committed(committed)).await?;
         if let Some(metrics) = &self.0.metrics {
-            metrics.observe(Stage::Commit, start.elapsed().as_secs_f64());
+            metrics.observe(Stage::CommitPersist, start.elapsed().as_secs_f64());
         }
         Ok(())
     }

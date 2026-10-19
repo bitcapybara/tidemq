@@ -1,6 +1,6 @@
 # 存储与复制排障
 
-本手册对应 `src/wal` 与 `src/replication`，面向当前 T02 实现。现有入口是只读 Rust 诊断/检查 API；统一管理监听、CLI、看板与真正 QUIC 复制由后续运行时接入。以下测试命令已经使用隔离临时目录，不操作用户消息或生产数据。
+本手册对应 `src/wal` 与 `src/replication`。真实 QUIC Raft 已接入服务运行时；管理 `/diagnostics` 返回有界的 metadata_storage 与 data_groups[].storage，含实际 WAL、commit/applied/snapshot/失败状态；`/metrics` 返回同一进程的分段统计。读取是本地诊断，不能替代 quorum 权威。以下测试使用隔离临时目录。
 
 ## 首先确定哪一步慢
 
@@ -8,12 +8,13 @@
 
 | 证据 | 含义与下一步 |
 | --- | --- |
-| Admission 上升、pending byte 余量很低 | 等待 writer 字节/记录额度；检查写入速率、记录大小、快照/磁盘耗时 |
-| Queue 上升，Sync 基本稳定 | batch/linger、writer 排队或 checkpoint rewrite；核对活跃组和前台准入 |
+| WalAdmission 上升、pending byte 余量很低 | 等待 writer 字节/记录额度；检查写入速率、记录大小、快照/磁盘耗时；Broker Admission 另计 |
+| WalQueue 上升，Sync 基本稳定 | batch/linger、writer 排队或 checkpoint rewrite；Broker Queue 与修复 RepairPace 分开 |
 | Append 上升，Sync 较低 | 编码/校验或文件写入慢；CPU profile 与 IO 分开分析，不先扩大 batch |
 | Sync 尾延迟上升 | 操作系统/设备同步或磁盘争用；结合磁盘队列、剩余空间和后台任务 |
 | 本地落盘快，quorum 返回慢 | 看真正 RPC Replicate、peer lag、选举和网络；当前 harness 延迟不能替代网络证据 |
-| Commit 上升 | 本地 committed 标记等待/同步；此指标不是整个生产成功 RTT |
+| Commit 上升 | Broker 等待 Raft client_write 的整体提交结果，包含复制/应用；不是 SDK 全链路 RTT |
+| CommitPersist 上升 | 本地 committed 标记持久化；不能与 Broker Commit 混为一个分布 |
 | Apply 上升 | 应用确定性执行慢或锁竞争；热路径不应做整库 validate、IO 或全量拷贝 |
 | committed 领先 applied | 看状态机进度和 IO/storage fatal；不要直接修改 applied 标记 |
 | snapshot 落后、journal 接近上限 | 提前触发/等待正常 core checkpoint，检查应用状态和快照预算；不能手工删 WAL |
@@ -67,7 +68,7 @@ rtk cargo test -p tidemq --test wal_journal --test replication_storage --test re
 - `replication_crash`：单独 test 子进程在 durable commit、snapshot+purge、partial tail、16 KiB 文件预算下 128 轮继续写入/快照/purge 四个边界停住；父进程 SIGKILL 后重开，验证未执行 Drop/close 时仍恢复已持久结果。子进程只由测试持有句柄管理。
 - `raft_cluster`：真正 OpenRaft 的 RF1/RF3、同身份响应丢失重试、leader 隔离、剩余多数派选举、磁盘重开、成员变更、新副本分块 snapshot，以及控制心跳先到/缺失 prev_log/旧 term 因果。
 
-这些证据不覆盖真实 QUIC、磁盘控制器掉电、跨区丢包/抖动或持续容量负载。更改内核、文件系统、设备、codec、配置、snapshot 策略或网络适配器后，按对应关卡重新验证；不把当前结果表述为生产 SLA。
+上述底层证据与真实 QUIC 的 `raft_quic`、独立 OS RF3 的 `runtime_queue` 交叉验证，见[测试索引](../testing-benchmarks.zh-CN.md)。磁盘控制器掉电、跨区丢包/抖动或持续容量负载仍需独立验证。更改内核、文件系统、设备、codec、snapshot 或网络适配器后重新跑相应关卡；当前结果不是生产 SLA。
 
 ## 正常停止与恢复约束
 

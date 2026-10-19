@@ -61,7 +61,7 @@ CRUD 容量用尽返回 `Capacity`。Topic/订阅退休身份与 CRUD 原决策�
 
 本批采用新鲜权威读取，不增加离线签名票据体系。`VerifiedGrant`、`VerifiedFence`、`VerifiedRecovery` 的构造私有，且不实现 Deserialize/Clone/Debug；在消费为内部命令时再次检查有效期。`ControlLease` 的创建工厂也限制在 ownership 模块内。`MetadataCommand`、`FenceCommand` 的 serde 只用于 Raft 持久化和受信进程内调度，**禁止把它们直接暴露为通用 InternalCommand 网络接口**。远端适配必须验证配置允许的权威服务身份、角色和组权限，执行真正的线性化查询，不接受客户端自报的证据。
 
-本地适配器使用 `MetadataAuthority` 和 `DataAuthority<A: OwnershipApplication>`。数据应用直接提供其真实 `FenceState`。适配器核对 cluster/group，并核对实际 Raft voter 集：元数据组还须满足模式、Metadata 角色与 zone 放置；数据组 voter 必须精确匹配受信配置。未知或 joint 配置时，本批保守拒绝生成新能力，等待 T11 的经验证成员变化路径。
+本地适配器使用 `MetadataAuthority` 和 `DataAuthority<A: OwnershipApplication>`。数据应用直接提供其真实 `FenceState`。适配器核对 cluster/group 与实际 Raft voter 集；元数据组还核对模式、Metadata 角色与 zone。运行时从新鲜元数据获取数据组成员，再精确比对本地实际 stable membership；joint、未知或不匹配时不生成新能力。T11 的 learner/joint/stable 完成路径需要真实私有稳定证明，不能凭元数据列表先发权限。
 
 OpenRaft 使用非 Byzantine 故障模型；授权 Raft voter 是可信共识成员。QUIC 组权限必须阻止无关内部节点发送共识 RPC。类型封装不替代运行时的 RPC 授权。
 

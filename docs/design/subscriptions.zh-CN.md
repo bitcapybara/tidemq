@@ -56,4 +56,6 @@ Claim 冻结冷读交界 `H=cold_before`。冷段使用 B，SDK 的连续有界�
 
 ## 本批边界
 
-本模块提供确定性状态、token codec、只读限额诊断、持久化验证与同组组合接缝。纯状态测试不能替代真实 Raft 提交证据，也不验证 QUIC、S3 冷读、SDK 排队、三区故障或外部业务副作用。后续 DataApplication 与真实磁盘/Raft 测试必须组合真实生产、所有权和订阅状态，不另造 Broker ACK 权威。默认消费至少一次；同 key 串行属于 SDK 调度契约，不提供外部副作用 exactly-once。
+DataApplication 已在真实磁盘/Raft 中组合生产、所有权与订阅状态，SDK 通过 QUIC 完成热/冷投递与持久 ACK；没有第二套 Broker ACK 权威。底层状态、实际 RustFS、分角色 Runtime 和独立 OS RF3 故障分别有[行为证据](../testing-benchmarks.zh-CN.md)。默认至少一次，同 key 串行由 SDK 调度；真实三区与外部业务副作用不在这些本地证据范围。
+
+SDK 在 owner fence 后保留原逻辑 session，从新鲜状态恢复分配；自动恢复不抢占其他活跃 session，不修改旧 Delivery/token。KeySerial 的失败 offset 跨 assignment 保持阻塞，显式重试或 seek 才改变业务决定。H 保持冻结的 B/D 交界；实时 D 的 received/issued/持久 ACK 前沿可以超过 H，不能据此拒绝合法响应，也不能把 H 推高来掩盖错误。

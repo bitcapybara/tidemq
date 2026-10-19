@@ -1,13 +1,31 @@
 # 观测与诊断契约
 
-日志使用 tracing/subscriber/appender，指标使用 prometheus-client，OTLP 为可选导出。最终应用入口拥有全局 subscriber，SDK 仅发事件并接入宿主设施。基础指标标签使用固定 operation/stage/outcome 枚举，无 request/tenant/topic/partition/object ID。
+服务入口拥有全局 tracing subscriber、有限日志队列和统一 prometheus-client Registry。SDK 只发事件并提供可选 collector，由宿主初始化；当前没有内置 OTLP exporter。基础标签仅使用有限 operation/stage/outcome，request/tenant/topic/partition/object ID 留在受控事件或诊断。
 
-逻辑 operation_id 与每次 request_id/attempt 分开；跨 Gateway、异步任务和重试传播有界请求级上下文。合批用有限 links/摘要，不为整个长连接建立无限 trace。head sampling 未采集的历史不能事后补齐；错误摘要与计数独立保留且限流。
+逻辑 operation_id 与每次 request_id/attempt 分开，跨 Gateway、异步任务和重试传递有界请求级 traceparent。trace 不参与去重、fence 或持久状态，也不绑定整个长连接；无效或未采集上下文不改变业务事实。临时详细过滤最多 300 秒后恢复；未采集历史不能事后补齐。错误计数和限速摘要独立于日志输出。
 
-阶段用本进程单调时钟计时，SDK 端到端包含排队/linger/退避/重试。WAL append、同步、复制、commit、apply 与回包分开；消费 handler 与持久 ACK 分开。并行阶段不能简单相加，各节点 P99 不能平均。
+## 时延口径
 
-日志有独立有界事件队列、单事件上限和 sink 错误计数。超大事件整体丢弃，避免截断后形成非法 JSON；丢弃、采集失败与恢复均须可诊断。临时过滤需有 Tokio runtime、有效期和代次，到期恢复，旧计时器不得覆盖新设置。
+| 采样 | 实际边界 |
+| --- | --- |
+| SDK offered-to-durable-ACK | 一个负载进程单调时钟，构建消息前至业务逐消息持久 ACK；包含排队、重试、读与业务等待 |
+| SDK produce/ACK batch | 原逻辑批次至持久回执；Unknown 的原身份恢复仍计入同一样本，不是单消息延迟 |
+| Runtime Read/Ack/Control Total | 本地 handler 进入到生成结果；取消为 Unknown，不包含后续发送队列与对端业务处理 |
+| Broker Admission / Queue | 前台业务许可与 owned submission 队列，各自有限 |
+| Broker Commit / Total | client_write 等待复制/提交/应用结果，以及本地整个生产 attempt；不是纯磁盘或纯网络 |
+| WAL WalAdmission / WalQueue | journal 字节/记录许可与 writer 排队；和 Broker 的准入/队列分开 |
+| WAL Append / Sync | 本地有限批次编码/文件写入与 sync_all；group commit 的一次样本不能当作每消息一次 fsync |
+| CommitPersist | 本地持久 committed 标记；和 Broker 等待结果的 Commit 分开，禁止混样本算分位 |
+| Replicate / RepairPace | 原生 Raft RPC 含连接、修复 pacing 和对端响应的总等待；RepairPace 是其中受修复预算影响的部分，不与总时长相加 |
+| Apply | 本地已提交日志批次的状态机应用，包含实际应用锁/执行；不是客户端全链路 |
+| Ownership / Scaling / S3 | 对应模块的实际权威转换、learner/joint/stable 阶段与 SDK headers/body/decode；独立直方图和口径 |
 
-每模块交付事件/error/outcome、指标边界/bucket/标签预算、诊断查询和关联 runbook。抓取仅读有限快照，不扫描全量持久数据。日志/Collector 失败不得进入 quorum/ACK/GC 的成功判断或反压业务；诊断和 native 操作开销另行测试。
+磁盘采样以数据组和元数据组绑定到 Produce/Control；同数据组的 ACK、fence、生命周期记录也会落该 WAL。不要将底层 Produce 标签理解为每条记录都是正文追加。预注册 Decode/Response 暂无完整分段样本，count=0 表示无观测，不表示免费。并行/嵌套阶段不能相加，各节点 P99 不能平均。
 
-当前基础层提供日志管理、有限指标 schema 和统计快照。服务端管理监听、业务埋点、看板/告警及 Collector 部署仍随 T01—T14 交付，不能将 fresh-process metrics 命令视为运行中集群监控。
+日志默认 JSON、有独立事件条数/字节上限和 sink 错误计数，超大事件整体丢弃。请求 span 使用 skip_all，只记录有界身份和固定分类；token、正文/key、私钥和 S3 凭据不进入支持包。轮转、保留和持久日志存储由部署日志接收端负责，详见[日志运维](../operations/logging.zh-CN.md)。
+
+## 运行与限制
+
+管理 HTTP 仅 loopback，四项并发连接和有限请求/响应/期限；抓取读取已注册计数/快照，不扫描正文。诊断包括本地 applied/quorum/成员、WAL、容量样本年龄、真实 RSS/cgroup、allocator、transport 与 placement。指标只描述观察，不授权 ACK、写入、发布或 GC。profile 独占 native worker，并有期限/体积/权限约束。
+
+实际采集配置、看板、告警及 Prometheus 抓取证据见[指标手册](../operations/metrics.zh-CN.md)。日志/Collector 故障不能改变持久事实；队列丢失、sink 错误与采集失败单独可见。压力中的 Collector 中断、Linux OOM/长稳和三档正式成本仍需对应实验。[性能报告](../performance.zh-CN.md)必须保留真实 allocator/构建、开关与完整失败样本，不以占位 histogram 或一次 CPU/RSS 差值证明定位精度和开销。
