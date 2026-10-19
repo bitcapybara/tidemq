@@ -58,7 +58,9 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 每条连接另以 `connection_window_bytes + max_streams × send_buffer_bytes` 保守预留传输 envelope；服务端预认证 envelope 先占独立 handshake，认证后取得对应类别的 normal/data envelope，再释放握手额度；客户端已知目标类别，C 使用 normal Control。数据额度满时，新 C 仍可认证并传递 ACK，不要求关闭已有 D。handshake 配额满只拒绝/超时新握手，不侵占 Core。默认 connection/stream/send buffer 分别为 64KiB/16KiB/16KiB，最大连接 128、握手 16、流 16、Core 2、ACK 8；默认 1MiB handshake 配额会进一步限制同时进入应用 HELLO 的连接数量。它们是可测的起点，未声明为生产吞吐最优值。native TLS、UDP packet buffer、连接元数据及操作系统 socket 内存不等于该公式，必须同时看 RSS/allocator 与进程上限。
 
-所有连接、握手、stream prelude、读取、发送均有有限数量/期限；无使用的 uni stream 窗口为 0。应用接收队列满时拒绝/reset 新流，不让 dispatcher 队列无限增长。`Connection::close` 会立即关闭所有流，未决结果可能未知。通用 dispatcher 先用 `Server::shutdown` 停止接受并取消握手，再有限排空已经接收的 Session 和 owned handler；关闭监听错误也不跳过业务排空。`Client::close(deadline)` 阻止新连接，关闭缓存与直接连接，并等待原生 endpoint 的连接退出；这些关闭操作不代表消息已经提交。
+所有连接、握手、stream prelude、读取、发送均有有限数量/期限；无使用的 uni stream 窗口为 0。应用接收队列满时拒绝/reset 新流，不让 dispatcher 队列无限增长。`Connection::close` 会立即关闭所有流，未决结果可能未知。通用 dispatcher 先用 `Server::stop_accepting(deadline)` 停止接受并取消握手，保留原生 I/O 排空已经接收的 Session 和 owned handler，最后 `shutdown_by(deadline)` 释放 endpoint；关闭监听错误也不跳过业务排空。全部阶段共用原来的总期限。
+
+`Client::close(deadline)` 阻止新连接、关闭缓存和直接连接，并停止及 join 本进程持有的原生 Tokio I/O 主任务。固定版本 s2n-quic 的默认 Provider 丢弃这个 JoinHandle，连接关闭状态又可能保留三倍当前 PTO，故障后的退避不能作为五秒进程关闭的前置等待。传输层仅薄封装公开 Provider，正常业务停止后才取消该主任务；上游 RX/TX 环形队列随之关闭，退出前以有界 socket 重新绑定验证端口确实释放，超时继续返回真实错误。未决 RPC 收到 Closed/Unknown，不能当作未提交。没有延长关闭预算，也不启用 SO_REUSEPORT。这些资源关闭操作均不证明消息已持久提交。
 
 原生 Raft 的 vote/空 Append 心跳在内部 mTLS Core 上使用独立的 2 个执行槽与队列；语义 Core 默认 8、短 ACK 默认 32、数据默认 128。语义线性化控制可能等待 Raft，因此不能占用 Raft 自己的执行槽。满队列立即拒绝新工作，不能排队占满全部控制执行能力。它们仍共享有限的 Core 帧内存和 CPU；执行隔离不承诺抗无限可信节点流量。真实 mTLS 测试将语义 Core 执行槽全部阻塞，验证同一复用连接上的原生 Raft 控制帧仍能返回。
 

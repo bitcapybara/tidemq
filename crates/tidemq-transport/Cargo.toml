@@ -13,6 +13,7 @@ bytes.workspace = true
 prometheus-client.workspace = true
 prost.workspace = true
 s2n-quic.workspace = true
+s2n-quic-core.workspace = true
 serde.workspace = true
 snafu.workspace = true
 tidemq-protocol.workspace = true

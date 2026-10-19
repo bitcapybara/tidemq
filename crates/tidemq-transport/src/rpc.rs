@@ -424,6 +424,12 @@ impl RpcClient {
             )
             .await;
         }
+        self.shutdown(deadline).await;
+    }
+
+    /// Stop owned tasks after the caller has stopped work; unresolved replies remain unknown.
+    pub async fn shutdown(&self, deadline: Instant) {
+        self.inner.state.draining.store(true, Ordering::Release);
         self.inner.state.close();
         let tasks = self
             .inner

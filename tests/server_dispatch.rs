@@ -291,6 +291,36 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
             decode_payload(response.frame().payload.clone(), &ProtocolLimits::default()).unwrap();
         assert_eq!(result.first_offset, expected);
     }
+    let unanswered = produce
+        .submit(
+            request(
+                FrameKind::ProduceBatch,
+                TrafficClass::Produce,
+                &ProduceBatch {
+                    first_sequence: 2,
+                    ..Default::default()
+                },
+            ),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while service.submitted.lock().unwrap().len() != 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), produce.shutdown(deadline()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        unanswered.receive().await,
+        Err(tidemq::transport::rpc::Error::Closed)
+    ));
+    service.replies.add_permits(1);
+    client.close(deadline()).await.unwrap();
     shutdown.send(true).unwrap();
     task.await.unwrap().unwrap();
 }

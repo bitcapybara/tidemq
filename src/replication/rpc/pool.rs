@@ -63,7 +63,8 @@ impl PeerPool {
             if let Ok(mut cached) = tokio::time::timeout_at(deadline, slot.lock()).await
                 && let Some(rpc) = cached.take()
             {
-                rpc.close(deadline).await;
+                // Raft and business owners already stopped; stale RPCs must not exhaust endpoint drain.
+                rpc.shutdown(deadline).await;
             }
         }
         self.client

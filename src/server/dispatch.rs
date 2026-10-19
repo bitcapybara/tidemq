@@ -206,12 +206,12 @@ pub async fn run<S: WireService>(
             }
         }
     }
-    let listener_result = server.shutdown().await;
     let deadline = Instant::now()
         .checked_add(dispatcher.config.drain_timeout)
         .ok_or(crate::Error::Configuration {
             reason: "server drain deadline overflow",
         })?;
+    let listener_result = server.stop_accepting(deadline).await;
     for receiver in [&mut raft_rx, &mut core_rx, &mut ack_rx, &mut data_rx] {
         receiver.close();
         while let Ok(job) = receiver.try_recv() {
@@ -237,7 +237,10 @@ pub async fn run<S: WireService>(
         }
     }
     while sessions.join_next().await.is_some() {}
-    listener_result.map_err(|source| crate::Error::Transport { source })
+    let endpoint_result = server.shutdown_by(deadline).await;
+    listener_result
+        .and(endpoint_result)
+        .map_err(|source| crate::Error::Transport { source })
 }
 
 fn validate(config: &DispatchConfig) -> crate::Result<()> {

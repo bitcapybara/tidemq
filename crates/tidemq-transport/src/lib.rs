@@ -7,6 +7,7 @@ mod auth;
 mod endpoint;
 mod error;
 mod frame;
+mod io;
 mod policy;
 mod session;
 mod telemetry;

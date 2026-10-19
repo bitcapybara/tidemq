@@ -26,6 +26,7 @@
 | RSS 不回落但业务 Bytes 已释放 | allocator live/retained、RSS、native TLS/socket 量 | 结合内存排障手册区分真实存活、缓存/碎片与 native 缓冲；transport envelope 不是精确 RSS 计量 |
 | Deadline 后下一帧报 Poisoned | 是否发生部分 prefix/body 或 send | 关闭并恢复该 lane 的全部未决请求，沿用原业务身份；不能继续猜测帧边界，超时不等于未提交 |
 | 退出时还有未决操作 | 准入/在途数量、业务持久结果 | 先停止准入并有限排空，按身份查询/重试未知结果，再关闭 Session 和 listener；QUIC finish 不作提交证明 |
+| 退出时 native I/O 或端口释放超时 | 原关闭期限、原生任务错误链、UDP 端口持有者 | 检查业务是否先停止、handler/session 是否排空；当前实现持有并回收原生 I/O 主任务，验证 RX/TX socket 释放。不能忽略错误、等待故障连接退避或用 SO_REUSEPORT 绕过 |
 
 ## 日志与指标口径
 

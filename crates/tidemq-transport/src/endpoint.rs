@@ -257,8 +257,9 @@ impl Limiter for EndpointLimits {
 
 pub struct Server {
     address: SocketAddr,
+    io: super::io::Owner,
     incoming: mpsc::Receiver<Arc<Session>>,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
     pub metrics: Arc<TransportMetrics>,
 }
 
@@ -309,6 +310,7 @@ impl Server {
             .config_mut()
             .set_max_cert_chain_depth(8)
             .map_err(|source| setup("bound client certificate chain depth", source))?;
+        let (io, provider) = super::io::Owner::bind(address)?;
         let endpoint = s2n_quic::Server::builder()
             .with_tls(
                 tls_builder
@@ -316,7 +318,7 @@ impl Server {
                     .map_err(|source| setup("build server TLS", source))?,
             )
             .map_err(|source| setup("configure server TLS", source))?
-            .with_io(address)
+            .with_io(provider)
             .map_err(|source| setup("bind server socket", source))?
             .with_limits(config.limits()?)
             .map_err(|source| setup("configure server limits", source))?
@@ -344,8 +346,9 @@ impl Server {
         ));
         Ok(Self {
             address,
+            io,
             incoming,
-            task,
+            task: Some(task),
             metrics,
         })
     }
@@ -355,18 +358,45 @@ impl Server {
     pub async fn accept(&mut self) -> Option<Arc<Session>> {
         self.incoming.recv().await
     }
-    /// Stops accepting and cancels active handshakes; callers drain/close accepted sessions first.
-    pub async fn shutdown(mut self) -> Result<()> {
-        self.task.abort();
-        let _ = (&mut self.task).await;
+    /// Stops admission while keeping native I/O alive for accepted sessions to drain.
+    pub async fn stop_accepting(&mut self, deadline: Instant) -> Result<()> {
+        self.incoming.close();
+        let Some(mut task) = self.task.take() else {
+            return Ok(());
+        };
+        task.abort();
+        timeout_at(deadline, &mut task)
+            .await
+            .map_err(|_| Error::Deadline {
+                operation: "stop native listener admission",
+            })?
+            .or_else(|source| {
+                if source.is_cancelled() {
+                    Ok(())
+                } else {
+                    Err(source)
+                }
+            })
+            .map_err(|source| setup("join native listener admission", source))
+    }
+    /// Callers finish accepted sessions before stopping their native I/O.
+    pub async fn shutdown(self) -> Result<()> {
         let deadline = super::policy::deadline_after(std::time::Duration::from_secs(1))?;
-        wake_endpoint(self.address, deadline).await
+        self.shutdown_by(deadline).await
+    }
+    /// Uses the caller's original drain deadline, including native socket release.
+    pub async fn shutdown_by(mut self, deadline: Instant) -> Result<()> {
+        let admission = self.stop_accepting(deadline).await;
+        let io = self.io.shutdown(deadline).await;
+        admission.and(io)
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -381,6 +411,7 @@ type PoolSlot = Arc<Mutex<Option<Arc<Session>>>>;
 
 pub struct Client {
     endpoint: s2n_quic::Client,
+    io: super::io::Owner,
     config: Arc<TransportConfig>,
     budget: MemoryBudget,
     expected_nodes: Vec<NodeGrant>,
@@ -429,6 +460,7 @@ impl Client {
         tls_builder = tls_builder
             .with_max_cert_chain_depth(8)
             .map_err(|source| setup("bound server certificate chain depth", source))?;
+        let (io, provider) = super::io::Owner::bind(address)?;
         let endpoint = s2n_quic::Client::builder()
             .with_tls(
                 tls_builder
@@ -436,7 +468,7 @@ impl Client {
                     .map_err(|source| setup("build client TLS", source))?,
             )
             .map_err(|source| setup("configure client TLS", source))?
-            .with_io(address)
+            .with_io(provider)
             .map_err(|source| setup("bind client socket", source))?
             .with_limits(config.limits()?)
             .map_err(|source| setup("configure client limits", source))?
@@ -446,6 +478,7 @@ impl Client {
             .map_err(|source| setup("start client", source))?;
         Ok(Self {
             endpoint,
+            io,
             slots: Arc::new(Semaphore::new(config.max_connections)),
             config: Arc::new(config),
             budget,
@@ -581,14 +614,21 @@ impl Client {
         }
     }
 
-    /// Closes cached and direct sessions, then waits for native endpoint connections to drain.
+    /// Stops owned sessions and native I/O within one deadline; unfinished business stays unknown.
     pub async fn close(&self, deadline: Instant) -> Result<()> {
         self.closed.store(true, Ordering::Release);
-        let _closing = timeout_at(deadline, self.lifecycle.write())
-            .await
-            .map_err(|_| Error::Deadline {
+        let closing = timeout_at(deadline, self.lifecycle.write()).await;
+        let sessions = match &closing {
+            Ok(_) => self.close_sessions(deadline).await,
+            Err(_) => Err(Error::Deadline {
                 operation: "drain client connection attempts",
-            })?;
+            }),
+        };
+        let io = self.io.shutdown(deadline).await;
+        sessions.and(io)
+    }
+
+    async fn close_sessions(&self, deadline: Instant) -> Result<()> {
         let sessions = {
             let mut sessions = self.sessions.lock().map_err(|_| Error::Closed)?;
             std::mem::take(&mut *sessions)
@@ -604,27 +644,12 @@ impl Client {
                 })?;
         pool.clear();
         drop(pool);
+        let mut result = Ok(());
         for session in sessions.iter().filter_map(Weak::upgrade) {
-            session.shutdown(deadline).await?;
+            let shutdown = session.shutdown(deadline).await;
+            result = result.and(shutdown);
         }
-        let mut endpoint = self.endpoint.clone();
-        let address = endpoint.local_addr().map_err(|source| Error::Io {
-            operation: "read client endpoint address",
-            source,
-        })?;
-        // Poll wait_idle first so its close interest exists before waking idle native I/O.
-        let (idle, wakeup) = timeout_at(deadline, async {
-            tokio::join!(biased; endpoint.wait_idle(), wake_endpoint(address, deadline))
-        })
-        .await
-        .map_err(|_| Error::Deadline {
-            operation: "drain native client endpoint",
-        })?;
-        wakeup?;
-        idle.map_err(|source| Error::Connection {
-            operation: "drain native client endpoint",
-            source,
-        })
+        result
     }
 
     // Keep authentication and initial lanes under one close-on-failure transaction.
@@ -721,39 +746,6 @@ impl Client {
         );
         Ok(session)
     }
-}
-
-async fn wake_endpoint(mut address: SocketAddr, deadline: Instant) -> Result<()> {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-    let bind = SocketAddr::new(
-        if address.is_ipv4() {
-            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
-        } else {
-            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
-        },
-        0,
-    );
-    if address.ip().is_unspecified() {
-        address.set_ip(if address.is_ipv4() {
-            IpAddr::V4(Ipv4Addr::LOCALHOST)
-        } else {
-            IpAddr::V6(Ipv6Addr::LOCALHOST)
-        });
-    }
-    // Pinned s2n-quic 1.91 close interest does not wake idle I/O without a datagram or timer.
-    timeout_at(deadline, async {
-        let socket = tokio::net::UdpSocket::bind(bind).await?;
-        socket.send_to(&[0], address).await?;
-        Ok::<_, std::io::Error>(())
-    })
-    .await
-    .map_err(|_| Error::Deadline {
-        operation: "wake idle endpoint for shutdown",
-    })?
-    .map_err(|source| Error::Io {
-        operation: "wake idle endpoint for shutdown",
-        source,
-    })
 }
 
 async fn server_loop(

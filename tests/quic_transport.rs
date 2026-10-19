@@ -179,22 +179,8 @@ async fn idle_endpoints_close_without_waiting_for_future_connection_activity() {
         .await
         .unwrap();
     server.shutdown().await.unwrap();
-    timeout(Duration::from_secs(1), async {
-        loop {
-            match std::net::UdpSocket::bind(address) {
-                Ok(socket) => {
-                    drop(socket);
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-                    tokio::time::sleep(Duration::from_millis(1)).await
-                }
-                Err(error) => panic!("Unexpected listener release failure: {error}"),
-            }
-        }
-    })
-    .await
-    .unwrap();
+    let rebound = std::net::UdpSocket::bind(address).unwrap();
+    drop(rebound);
 }
 
 #[tokio::test]
@@ -226,6 +212,7 @@ async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
         .await
         .unwrap();
     let direct_peer = server.accept().await.unwrap();
+    server.stop_accepting(deadline()).await.unwrap();
     let rpc = tidemq::transport::rpc::RpcClient::from_session(session.clone(), Default::default())
         .await
         .unwrap();
@@ -275,22 +262,8 @@ async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
     drop(session);
     drop(client);
     server.shutdown().await.unwrap();
-    timeout(Duration::from_secs(5), async {
-        loop {
-            match std::net::UdpSocket::bind(address) {
-                Ok(socket) => {
-                    drop(socket);
-                    break;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-                    tokio::time::sleep(Duration::from_millis(5)).await
-                }
-                Err(error) => panic!("Unexpected listener release failure: {error}"),
-            }
-        }
-    })
-    .await
-    .unwrap();
+    let rebound = std::net::UdpSocket::bind(address).unwrap();
+    drop(rebound);
 }
 fn produce() -> Frame {
     let id = Id::random().unwrap();

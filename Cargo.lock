@@ -3096,6 +3096,7 @@ dependencies = [
  "prost",
  "rcgen",
  "s2n-quic",
+ "s2n-quic-core",
  "serde",
  "snafu",
  "tidemq-protocol",
