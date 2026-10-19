@@ -10,6 +10,17 @@ storage:
       time: 1h
       size: 64MB
 scrape_configs:
+  - job_name: tidemq-collector
+    metrics_path: /metrics
+    sample_limit: 2000
+    body_size_limit: 1MB
+    label_limit: 12
+    label_name_length_limit: 64
+    label_value_length_limit: 128
+    static_configs:
+      - targets: ["127.0.0.1:18888"]
+        labels:
+          deployment: local-observability
   - job_name: tidemq
     metrics_path: /metrics
     sample_limit: 20000

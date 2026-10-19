@@ -11,6 +11,7 @@
 | `memory.max_connections` / `max_streams_per_connection` / `max_pending_requests` | 有限连接、流、未决请求；范围分别为 1—4096、2—4096、1—65536，实际 transport 还按类别限制池和队列 |
 | `protocol` | 帧、消息、批次条数和解码字段上限联合校验。默认消息 256 KiB 包含 key 与 body，默认帧 1 MiB，消息必须能放进帧 |
 | `logging` | 模块过滤、JSON、有限事件队列与单事件字节。默认 1024×16 KiB；formatter、writer 和活跃事件另占空间，输出交由部署日志管理轮转保留 |
+| `tracing` | 可选 OTLP，默认关闭；默认采样 1%、每秒最多 128 spans、队列 256×4096 字节逻辑许可、批量 32、导出间隔/期限各 500 ms。端点和 TLS、离线校验及完整硬边界见[追踪手册](../operations/tracing.zh-CN.md)；不继承任意 OTLP 环境覆盖 |
 | `tls` | 证书、私钥和 CA 路径；内部节点还需固定 DER 证书绑定 cluster/node/role/group，不信任自行声明的身份 |
 | `runtime.metadata_group` / `metadata_voters` / `groups` / `peers` | 元数据独立组、数据组和有限节点目录；RF3 voter 须具备不同 zone，元数据不承载正文和逐条 ACK |
 | `runtime.groups[].standby` | 有限空副本候选；不属于 voter，不自行初始化，待安全 learner/joint/stable 迁移 |
@@ -20,7 +21,7 @@
 | `runtime.capacity` / `retention` | 逻辑积压、未发布/物理占用、磁盘余量、RSS 的高低水位与最短保留/有界时间索引；新鲜采样缺失或超限拒绝新写，已有 ACK/read/control/GC 保留各自准入 |
 | `runtime.archive_interval_ms` | 后台归档/回收工作间隔；对象上传不进入 Producer ACK 关键路径，未知任务按原对象身份对账 |
 
-本地生成配置明确给出 192 MiB 应用预算和 32 MiB 控制预留。开启 S3 时要求至少这些预算，并要求 RSS 高水位至少高于应用预算 64 MiB，保证打包临时缓冲、最终对象和控制工作能同时准入。修改应用预算必须同步检查 RSS、水位与容器限制；原生 QUIC、线程栈、诊断和 allocator 保留不包含在应用许可里。Linux cgroup v2 另按可见祖先的实际压力做独立门控，无法读取时不能填零。
+本地生成配置明确给出 192 MiB 应用预算和 32 MiB 控制预留。开启 S3 时要求至少这些预算，并要求 RSS 高水位至少高于应用预算 64 MiB，保证打包临时缓冲、最终对象和控制工作能同时准入。修改应用预算必须同步检查 RSS、水位与容器限制；原生 QUIC、线程栈、诊断、追踪和 allocator 保留不包含在应用许可里。Linux cgroup v2 另按可见祖先的实际压力做独立门控，无法读取时不能填零。
 
 构建时只能选择一个全局 allocator；默认 System，mimalloc 是候选。替代构建使用 `--no-default-features`；不支持运行中切换。SDK 不安装全局 allocator、subscriber 或 exporter。统计、采样 feature、native 启动设置和运行中实际生效状态分别核对，详见[内存管理](../design/memory-management.zh-CN.md)。
 

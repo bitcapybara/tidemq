@@ -13,7 +13,8 @@
 | S3/回收停顿 | 原对象 ID、上传/发布/完成、pin/恢复保护、实际全 voter checkpoint | [S3](object-storage-troubleshooting.zh-CN.md)与[生命周期](object-lifecycle.zh-CN.md)；按原身份对账，不按对象年龄直接删除 |
 | 迁移 Unknown/长期 repair | 原 plan、learner/joint/stable、源与目标新鲜容量、独立修复预算 | [扩缩容](scaling.zh-CN.md)；继续原计划，不重复加 learner 或丢弃预留 |
 | 内存增长 | 业务许可、热正文、ACK 逻辑状态、allocator allocated/retained、RSS/cgroup 独立趋势 | [内存](memory-troubleshooting.zh-CN.md)；相同 binary/allocator 符号化，未知字段不填零 |
-| 日志缺失/collector 失败 | dropped/oversized/sink_errors、scrape up/耗时/样本上限 | [日志](logging.zh-CN.md)与[指标](metrics.zh-CN.md)；用有限临时过滤，不全局无限 DEBUG |
+| 日志缺失/采集失败 | dropped/oversized/sink_errors、scrape up/耗时/样本上限 | [日志](logging.zh-CN.md)与[指标](metrics.zh-CN.md)；用有限临时过滤，不全局无限 DEBUG |
+| trace 缺失/OTLP 失败 | 采样率、队列/字节许可、discarded/export_failures/timeouts、Collector accepted/refused | [追踪](tracing.zh-CN.md)；采样或导出失败不说明提交失败，不据此创建新的业务身份 |
 
 短时详细关联使用启动参数 `--trace-seconds`，最多 300 秒后恢复过滤。受控服务 profile 使用同构建的 `--profile-output` 私有目录；native dump 超时后仍可能运行，原 owned 槽位释放前不得叠加新 dump。不要把消息正文、令牌、私钥、S3 凭据或投递签名根放进诊断包。
 

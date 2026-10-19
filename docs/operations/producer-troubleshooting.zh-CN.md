@@ -41,8 +41,8 @@ Counter 随进程重启归零，Broker 崩溃后尚未观察到的已提交操�
 
 ## 看板与示例告警
 
-随模块提供 `deploy/observability/dashboards/producer.json`（Grafana Classic JSON）和 `deploy/observability/alerts/producer.yml`。数据源为调用方选择的 Prometheus，所有查询采用固定指标名。例子对未知结果比例要求至少 100 次尝试且持续 5 分钟，对拒绝比例要求至少 100 次尝试且持续 10 分钟；无提交进展要求存在 pending、最近 5 分钟至少 10 次请求且持续 5 分钟。阈值需在真实负载后冻结，不能将低样本分位数当成 SLA。Collector 由 T10 管理面注册后才会产生数据。
+随模块提供 `deploy/observability/dashboards/producer.json`（Grafana Classic JSON）和 `deploy/observability/alerts/producer.yml`。数据源为调用方选择的 Prometheus，所有查询采用固定指标名。例子对未知结果比例要求至少 100 次尝试且持续 5 分钟，对拒绝比例要求至少 100 次尝试且持续 10 分钟；无提交进展要求存在 pending、最近 5 分钟至少 10 次请求且持续 5 分钟。阈值需在真实负载后冻结，不能将低样本分位数当成 SLA。Broker 指标已在 Runtime 的唯一 Registry 注册，并从管理面 `/metrics` 输出。
 
-已校验 JSON/YAML 可解析及 Collector 指标输出；尚未在 Grafana 中导入或用 promtool 检验 PromQL/告警时间线。格式依据 [Grafana JSON 模型文档](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/view-dashboard-json-model/)和 [Prometheus 告警规则文档](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)。
+已使用官方 promtool 3.15.0 校验生产者规则语法，并由原生 Grafana 13.2.4 provisioning 加载生产者看板的六个面板；真实 Prometheus 数据源与只读权限已验证。尚未验证浏览器渲染和生产者告警的完整触发时间线。格式依据 [Grafana JSON 模型文档](https://grafana.com/docs/grafana/latest/visualizations/dashboards/build-dashboards/view-dashboard-json-model/)和 [Prometheus 告警规则文档](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)。
 
 额度用尽是可以确定拒绝的业务结果；实际 allocator 分配失败发生在已提交 apply 时属于副本故障。数据 Application 的 `try_apply` 将其传播为 fatal 存储错误，不得在不同副本返回不同的已提交业务拒绝。失败前不改变权威追加状态，失败副本停止权威读和快照，恢复时重新从持久快照/已提交日志重放。原生 OOM 仍可能 abort 或被 OS/cgroup kill，不能承诺都有最后日志；调用方按原生产身份恢复未知结果。

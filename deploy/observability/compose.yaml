@@ -17,6 +17,18 @@ x-local-observer: &local-observer
       max-file: "3"
 
 services:
+  collector:
+    <<: *local-observer
+    image: otel/opentelemetry-collector:0.162.0
+    mem_limit: 192m
+    environment:
+      GOMEMLIMIT: 96MiB
+    command: [--config=/etc/otelcol/config.yaml]
+    volumes:
+      - ./collector.yaml:/etc/otelcol/config.yaml:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
   prometheus:
     <<: *local-observer
     image: prom/prometheus:v3.15.0

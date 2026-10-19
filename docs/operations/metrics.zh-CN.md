@@ -27,14 +27,19 @@
 ```sh
 promtool check config deploy/observability/prometheus.yml
 promtool test rules deploy/observability/tests/runtime.yml
-prometheus --config.file=deploy/observability/prometheus.yml --web.listen-address=127.0.0.1:9090 --storage.tsdb.path=/private/path/prometheus --storage.tsdb.retention.time=24h --storage.tsdb.retention.size=1GB
+promtool test rules deploy/observability/tests/tracing.yml
+GOMEMLIMIT=192MiB prometheus --config.file=deploy/observability/prometheus.yml --web.listen-address=127.0.0.1:19090 --storage.tsdb.path=/private/path/prometheus --web.max-connections=16 --web.read-timeout=5s --query.max-concurrency=4 --query.max-samples=200000 --query.timeout=5s --no-auto-gomemlimit --log.format=json
 ```
 
 导入 `deploy/observability/dashboards/runtime.json`、producer/object-lifecycle/scaling 看板并选择 Prometheus 数据源。告警模板共有四个文件；阈值是可调示例，不是已承诺 SLA。先核对抓取成功、固定样本上限、权威口径和基线，再接入部署方现有通知渠道。服务恢复后观察对应计数停止增长或水位回落，不能仅手动静音。
 
 2026-10-19 本机使用官方 Prometheus 3.15.0 darwin-arm64 的 promtool：采集配置、四个规则文件共 12 条规则及 readiness/capacity 的触发与恢复测试均通过。发行包 SHA256 为 `920df4d17e78b3b0175af144eb318b0c74d1cf7b1d1251b326966f0e81977260`，与[官方发布页](https://prometheus.io/download/)一致。
 
-随后真实 debug RF1 服务与独立 Prometheus 进程完成 OpenMetrics 1.0 抓取：`up=1`、target lastError 为空，实际 1186 个样本、单一 EOF，查询 producer counter 成功。启动持久化产生 Control/Produce 的 WAL Sync 样本分别为 12/8；这是初始化事件，不能当作消息提交或消费 ACK 延迟。关闭 Prometheus 后服务仍 ready，正常关闭服务后四个私有 TCP/UDP 端口均可重新绑定。该实验未验证负载中的 Collector 中断、Grafana 渲染或三档观测开销。
+2026-10-20 增加独立 Collector 抓取及 Collector 不可用、已采样追踪丢失两条规则；四个文件共 14 条规则配置校验通过。readiness/capacity 与 trace loss/Collector downtime 两组触发和恢复测试均通过。追踪告警不包含正常 head sampling；无追踪指标时不推断业务失败。
+
+2026-10-19 的早期 debug RF1 与独立 Prometheus 抓取实验中，`up=1`、target lastError 为空，当时实际 1186 个样本、单一 EOF，查询 producer counter 成功。启动持久化产生 Control/Produce 的 WAL Sync 样本分别为 12/8；这是初始化事件，不能当作消息提交或消费 ACK 延迟。关闭 Prometheus 后服务仍 ready，正常关闭服务后四个私有 TCP/UDP 端口均可重新绑定。该实验未验证负载中的 Collector 中断、Grafana 渲染或三档观测开销；当前版本增加有限指标族后，不再假定样本数仍为 1186。
+
+2026-10-20 的原生 Grafana/Prometheus/RF1 链路验证已覆盖四个看板共 29 面板的 provisioning、真实数据源查询和匿名 Viewer 权限，详见[观测部署](../../deploy/observability/README.zh-CN.md)。手动 Prometheus 命令使用配置中的一小时/64 MiB block 保留和有限查询参数；Go 软内存限制不替代容器内存与文件系统硬配额，推荐的隔离限额由 Compose 示例提供。
 
 `promtool check metrics` 的默认 Prometheus 文本 lint 会把 OpenMetrics 的 counter family HELP 与 `_total` 样本名误作缺少 HELP；本次采用实际 HTTP Content-Type 协商与 Prometheus 抓取验证，没有修改合法 OpenMetrics 输出去迎合该文本 lint。
 

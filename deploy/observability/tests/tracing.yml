@@ -1,0 +1,44 @@
+rule_files:
+  - ../alerts/runtime.yml
+evaluation_interval: 1m
+tests:
+  - name: trace loss and Collector downtime activate and recover
+    interval: 1m
+    input_series:
+      - series: 'up{job="tidemq-collector",instance="local-collector"}'
+        values: '1 0x5 1x6'
+      - series: 'tidemq_runtime_trace_export_failures_total{job="tidemq",instance="node-1"}'
+        values: '0 1x11'
+      - series: 'tidemq_runtime_trace_discarded_spans_total{job="tidemq",instance="node-1"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: TideMQCollectorUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: tidemq-collector
+              instance: local-collector
+              severity: warning
+              component: tracing
+            exp_annotations:
+              summary: The local trace Collector cannot be scraped
+              description: Check the bounded Collector process and its loopback metrics endpoint. Trace loss does not establish a queue commit failure. Clear after successful scrapes resume.
+              runbook_url: https://github.com/bitcapybara/tidemq/blob/main/docs/operations/tracing.zh-CN.md
+      - eval_time: 7m
+        alertname: TideMQCollectorUnavailable
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: TideMQTraceEvidenceLost
+        exp_alerts:
+          - exp_labels:
+              job: tidemq
+              instance: node-1
+              severity: warning
+              component: tracing
+            exp_annotations:
+              summary: Bounded tracing is losing sampled evidence
+              description: Inspect exporter failures, response limits, queue permits and shutdown timeouts. Head sampling is excluded. Preserve business quorum and ACK budgets; clear after loss counters stop increasing.
+              runbook_url: https://github.com/bitcapybara/tidemq/blob/main/docs/operations/tracing.zh-CN.md
+      - eval_time: 7m
+        alertname: TideMQTraceEvidenceLost
+        exp_alerts: []
