@@ -297,6 +297,49 @@ impl Drop for FrameSender {
 impl FrameReceiver {
     /// A canceled/expired receive poisons this lane because a prefix/body may be partial.
     pub async fn receive(&mut self, deadline: Instant) -> Result<Option<ReceivedFrame>> {
+        self.receive_frame(Some(deadline), None).await
+    }
+
+    /// Wait without an application idle timer; once the first byte arrives, assembly is bounded.
+    /// Canceling before that byte consumes nothing. Canceling a started frame poisons the lane.
+    pub async fn receive_next(
+        &mut self,
+        assembly_timeout: std::time::Duration,
+    ) -> Result<Option<ReceivedFrame>> {
+        if !self.usable {
+            return Err(Error::Poisoned);
+        }
+        if assembly_timeout.is_zero() || Instant::now().checked_add(assembly_timeout).is_none() {
+            return Err(Error::Configuration {
+                reason: "frame assembly timeout is invalid",
+            });
+        }
+        match read_first(&mut self.stream).await {
+            Ok(Some(first)) => {
+                let deadline = first.1.checked_add(assembly_timeout);
+                self.receive_frame(deadline, Some(first)).await
+            }
+            Ok(None) => {
+                self.usable = false;
+                self.clean_end = true;
+                self.lease.invalidate();
+                Ok(None)
+            }
+            Err(error) => {
+                self.usable = false;
+                self.lease.invalidate();
+                add(&self.lease.state.metrics.malformed, 1);
+                let _ = self.stream.stop_sending(RESET_INVALID.into());
+                Err(error)
+            }
+        }
+    }
+
+    async fn receive_frame(
+        &mut self,
+        deadline: Option<Instant>,
+        first: Option<(u8, Instant)>,
+    ) -> Result<Option<ReceivedFrame>> {
         if !self.usable {
             return Err(Error::Poisoned);
         }
@@ -305,8 +348,11 @@ impl FrameReceiver {
             lease: self.lease.clone(),
             completed: false,
         };
+        let deadline = deadline.ok_or(Error::Configuration {
+            reason: "frame assembly deadline overflow",
+        })?;
         let state = &self.lease.state;
-        let result = read_wire(
+        let result = read_wire_started(
             &mut self.stream,
             if self.lease.purpose == StreamPurpose::Core {
                 FrameAdmission::Core
@@ -317,6 +363,7 @@ impl FrameReceiver {
             &state.budget,
             &state.metrics,
             deadline,
+            first,
         )
         .await;
         match result {
@@ -363,7 +410,23 @@ pub(super) async fn read_wire(
     metrics: &TransportMetrics,
     deadline: Instant,
 ) -> Result<Option<ReceivedFrame>> {
-    let result = timeout_at(deadline, read_body(stream, admission, config, budget)).await;
+    read_wire_started(stream, admission, config, budget, metrics, deadline, None).await
+}
+
+async fn read_wire_started(
+    stream: &mut ReceiveStream,
+    admission: FrameAdmission,
+    config: &TransportConfig,
+    budget: &MemoryBudget,
+    metrics: &TransportMetrics,
+    deadline: Instant,
+    first: Option<(u8, Instant)>,
+) -> Result<Option<ReceivedFrame>> {
+    let result = timeout_at(
+        deadline,
+        read_body(stream, admission, config, budget, first),
+    )
+    .await;
     match result {
         Ok(Ok(frame)) => {
             if let Some(frame) = &frame {
@@ -385,23 +448,35 @@ pub(super) async fn read_wire(
     }
 }
 
-// Admission, prefix/body consumption, and budget deduction share one cancellation boundary.
-async fn read_body(
-    stream: &mut ReceiveStream,
-    admission: FrameAdmission,
-    config: &TransportConfig,
-    budget: &MemoryBudget,
-) -> Result<Option<ReceivedFrame>> {
-    let mut prefix = [0_u8; 4];
-    let first = prefix.get_mut(..1).ok_or(Error::Prelude)?;
-    if stream.read(first).await.map_err(|source| Error::Io {
+// A one-byte read is cancellation safe; the caller arms lane poisoning before the next await.
+async fn read_first(stream: &mut ReceiveStream) -> Result<Option<(u8, Instant)>> {
+    let mut first = [0_u8; 1];
+    if stream.read(&mut first).await.map_err(|source| Error::Io {
         operation: "read prefix",
         source,
     })? == 0
     {
         return Ok(None);
     }
-    let received_at = Instant::now();
+    let [byte] = first;
+    Ok(Some((byte, Instant::now())))
+}
+
+// Started prefix/body consumption and budget deduction share one cancellation boundary.
+async fn read_body(
+    stream: &mut ReceiveStream,
+    admission: FrameAdmission,
+    config: &TransportConfig,
+    budget: &MemoryBudget,
+    first: Option<(u8, Instant)>,
+) -> Result<Option<ReceivedFrame>> {
+    let Some((byte, received_at)) = (match first {
+        Some(first) => Some(first),
+        None => read_first(stream).await?,
+    }) else {
+        return Ok(None);
+    };
+    let mut prefix = [byte, 0, 0, 0];
     let rest = prefix.get_mut(1..).ok_or(Error::Prelude)?;
     stream.read_exact(rest).await.map_err(|source| Error::Io {
         operation: "read prefix",

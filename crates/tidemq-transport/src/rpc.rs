@@ -38,6 +38,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct RpcConfig {
     pub max_pending_requests: usize,
     pub max_pending_bytes: u32,
+    /// Assembly limit after the first frame byte; native connection timers govern idle lanes.
     pub read_idle_timeout: Duration,
     pub liveness_timeout: Duration,
 }
@@ -507,8 +508,8 @@ async fn write_loop(
 }
 
 async fn read_loop(mut receiver: FrameReceiver, state: Weak<State>, idle: Duration) {
-    while let Some(deadline) = Instant::now().checked_add(idle) {
-        let Ok(Some(response)) = receiver.receive(deadline).await else {
+    loop {
+        let Ok(Some(response)) = receiver.receive_next(idle).await else {
             break;
         };
         let Ok(id) = Id::from_slice(&response.frame().request_id) else {

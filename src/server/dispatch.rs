@@ -49,6 +49,7 @@ pub struct DispatchConfig {
     pub ack_handlers: usize,
     pub data_handlers: usize,
     pub replies_per_stream: usize,
+    /// Assembly limit after the first frame byte; idle lanes remain owned until native close/drain.
     pub idle_timeout: Duration,
     pub drain_timeout: Duration,
     pub protocol: ProtocolLimits,
@@ -377,9 +378,9 @@ async fn serve_stream<S: WireService>(
     let (replies, mut outgoing) = mpsc::channel::<Reply>(dispatcher.config.replies_per_stream);
     let sequence = Arc::new(AsyncMutex::new(()));
     let read = async move {
-        while let Some(deadline) = Instant::now().checked_add(dispatcher.config.idle_timeout) {
+        loop {
             let received = tokio::select! {
-                received = receiver.receive(deadline) => received,
+                received = receiver.receive_next(dispatcher.config.idle_timeout) => received,
                 _ = shutdown.changed() => { drop(replies); return true },
             };
             let frame = match received {
@@ -427,7 +428,6 @@ async fn serve_stream<S: WireService>(
                 });
             }
         }
-        false
     };
     let write = async {
         while let Some(reply) = outgoing.recv().await {
