@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use crate::metadata::{DataGroup, MetadataState, NodeRole};
+use crate::metadata::{DataGroup, MetadataState, NodeRole, NodeSpec};
+use tidemq_protocol::Id;
 
 use super::{Error, MembershipPlan, Result};
 
@@ -50,6 +51,10 @@ pub struct Replacement {
 pub struct Placement {
     policy: PlacementPolicy,
     completed: BTreeMap<u64, Instant>,
+    cursor: Option<u64>,
+    failed: BTreeMap<u64, (Instant, u32)>,
+    diagnostic: PlacementDiagnostic,
+    diagnosed_at: Instant,
 }
 
 impl Placement {
@@ -66,6 +71,10 @@ impl Placement {
         Ok(Self {
             policy,
             completed: BTreeMap::new(),
+            cursor: None,
+            failed: BTreeMap::new(),
+            diagnostic: PlacementDiagnostic::default(),
+            diagnosed_at: Instant::now(),
         })
     }
 
@@ -73,6 +82,35 @@ impl Placement {
         &self,
         state: &MetadataState,
         group: &DataGroup,
+        replacement: Replacement,
+        observations: &[Capacity],
+        now: Instant,
+    ) -> Result<MembershipPlan> {
+        if state.group(group.group_id) != Some(group) || observations.len() > 256 {
+            return Err(Error::Placement);
+        }
+        let nodes = group
+            .voters
+            .iter()
+            .copied()
+            .chain(observations.iter().map(|sample| sample.node_id))
+            .filter_map(|id| state.node(id).map(|node| (id, node.spec.clone())))
+            .collect();
+        self.replacement_in(
+            state.cluster_id().ok_or(Error::Authority)?,
+            group,
+            &nodes,
+            replacement,
+            observations,
+            now,
+        )
+    }
+
+    pub(crate) fn replacement_in(
+        &self,
+        cluster: Id,
+        group: &DataGroup,
+        nodes: &BTreeMap<u64, NodeSpec>,
         replacement: Replacement,
         observations: &[Capacity],
         now: Instant,
@@ -87,65 +125,139 @@ impl Placement {
             .ok_or(Error::Placement)?;
         if observations.len() > 256
             || !group.voters.contains(&removed)
-            || state.group(group.group_id) != Some(group)
-            || !repair
-                && self
-                    .completed
-                    .get(&group.group_id)
-                    .is_some_and(|last| now.saturating_duration_since(*last) < self.policy.cooldown)
+            || !repair && self.cooling(group.group_id, now)
         {
             return Err(Error::Placement);
         }
         let mut seen = BTreeSet::new();
         let mut selected: Option<(u64, u64)> = None;
+        let mut blocked = BlockReason::Topology;
         let occupied: BTreeSet<_> = group
             .voters
             .iter()
             .filter(|id| **id != removed)
-            .filter_map(|id| state.node(*id).map(|node| node.spec.zone.as_str()))
+            .filter_map(|id| nodes.get(id).map(|node| node.zone.as_str()))
             .collect();
         for report in observations {
             if !seen.insert(report.node_id) {
                 return Err(Error::Configuration);
             }
-            let Some(node) = state.node(report.node_id) else {
+            let Some(node) = nodes.get(&report.node_id) else {
                 continue;
             };
             if group.voters.contains(&report.node_id)
-                || !node.spec.schedulable
-                || !node.spec.roles.contains(&NodeRole::Storage)
-                || occupied.contains(node.spec.zone.as_str())
-                || report.observed_at > now
-                || now.duration_since(report.observed_at) > self.policy.max_observation_age
-                || report.free_bytes.saturating_sub(report.reserved_bytes) < required
-                || report.cpu_per_mille >= 900
-                || report.bytes_per_second >= self.policy.max_rate_bytes_per_second
-                || report.connections >= self.policy.max_connections
-                || report.ack_bytes >= self.policy.max_ack_bytes
+                || !node.schedulable
+                || !node.roles.contains(&NodeRole::Storage)
+                || occupied.contains(node.zone.as_str())
             {
                 continue;
             }
-            let score = u64::from(report.cpu_per_mille)
-                .saturating_add(
-                    report.bytes_per_second.saturating_mul(1000)
-                        / self.policy.max_rate_bytes_per_second,
-                )
-                .saturating_add(
-                    u64::from(report.connections).saturating_mul(1000)
-                        / u64::from(self.policy.max_connections),
-                )
-                .saturating_add(report.ack_bytes.saturating_mul(1000) / self.policy.max_ack_bytes);
+            if let Some(reason) = self.capacity_block(report, required, now) {
+                blocked = reason;
+                continue;
+            }
+            let score = self.score(report);
             let candidate = (score, report.node_id);
             if selected.is_none_or(|current| candidate < current) {
                 selected = Some(candidate);
             }
         }
-        let (_, node) = selected.ok_or(Error::Placement)?;
+        let (_, node) = selected.ok_or(Error::Capacity { reason: blocked })?;
         let mut target = group.voters.clone();
         target.remove(&removed);
         target.insert(node);
-        MembershipPlan::new(state.cluster_id().ok_or(Error::Authority)?, group, target)
-            .map_err(|reason| Error::Rejected { reason })
+        MembershipPlan::new(cluster, group, target).map_err(|reason| Error::Rejected { reason })
+    }
+
+    pub fn diagnose(&self) -> PlacementDiagnostic {
+        PlacementDiagnostic {
+            age_ms: u64::try_from(self.diagnosed_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ..self.diagnostic
+        }
+    }
+
+    pub(crate) fn note(&mut self, group: u64, blocked: Option<BlockReason>, operation: Option<Id>) {
+        self.diagnostic = PlacementDiagnostic {
+            group: Some(group),
+            blocked,
+            operation,
+            age_ms: 0,
+        };
+        self.diagnosed_at = Instant::now();
+    }
+
+    pub(crate) fn next_group(&mut self, groups: &BTreeMap<u64, BTreeSet<u64>>) -> Option<u64> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let next = self
+            .cursor
+            .and_then(|cursor| groups.range((Excluded(cursor), Unbounded)).next())
+            .or_else(|| groups.first_key_value())
+            .map(|(group, _)| *group);
+        self.cursor = next;
+        next
+    }
+
+    pub(crate) fn cooling(&self, group: u64, now: Instant) -> bool {
+        self.completed
+            .get(&group)
+            .is_some_and(|last| now.saturating_duration_since(*last) < self.policy.cooldown)
+    }
+
+    pub(crate) fn failed(&self, node: u64, now: Instant) -> bool {
+        self.failed.get(&node).is_some_and(|(since, count)| {
+            *count >= 3 && now.saturating_duration_since(*since) >= Duration::from_secs(3)
+        })
+    }
+
+    pub(crate) fn unreachable(&mut self, node: u64, failed: bool, now: Instant) -> bool {
+        if !failed {
+            self.failed.remove(&node);
+            return false;
+        }
+        if !self.failed.contains_key(&node) && self.failed.len() >= 256 {
+            return false;
+        }
+        let (since, attempts) = self.failed.entry(node).or_insert((now, 0));
+        *attempts = attempts.saturating_add(1);
+        *attempts >= 3 && now.saturating_duration_since(*since) >= Duration::from_secs(3)
+    }
+
+    pub(crate) fn score(&self, report: &Capacity) -> u64 {
+        u64::from(report.cpu_per_mille)
+            .saturating_add(
+                report.bytes_per_second.saturating_mul(1000)
+                    / self.policy.max_rate_bytes_per_second,
+            )
+            .saturating_add(
+                u64::from(report.connections).saturating_mul(1000)
+                    / u64::from(self.policy.max_connections),
+            )
+            .saturating_add(report.ack_bytes.saturating_mul(1000) / self.policy.max_ack_bytes)
+    }
+
+    pub(crate) fn capacity_block(
+        &self,
+        report: &Capacity,
+        required: u64,
+        now: Instant,
+    ) -> Option<BlockReason> {
+        if report.observed_at > now
+            || now.duration_since(report.observed_at) > self.policy.max_observation_age
+        {
+            Some(BlockReason::ExpiredObservation)
+        } else if report.free_bytes.saturating_sub(report.reserved_bytes) < required {
+            Some(BlockReason::FreeCapacity)
+        } else if report.cpu_per_mille >= 900 {
+            Some(BlockReason::Cpu)
+        } else if report.bytes_per_second >= self.policy.max_rate_bytes_per_second {
+            Some(BlockReason::ByteRate)
+        } else if report.connections >= self.policy.max_connections {
+            Some(BlockReason::Connections)
+        } else if report.ack_bytes >= self.policy.max_ack_bytes {
+            Some(BlockReason::AckState)
+        } else {
+            None
+        }
     }
 
     pub fn completed(&mut self, group: u64, now: Instant) -> Result<()> {
@@ -154,5 +266,128 @@ impl Placement {
         }
         self.completed.insert(group, now);
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+pub enum BlockReason {
+    NoStandby,
+    Topology,
+    MissingObservation,
+    ExpiredObservation,
+    ReachabilityPending,
+    FreeCapacity,
+    Cpu,
+    ByteRate,
+    Connections,
+    AckState,
+    Cooldown,
+    Balanced,
+    Authority,
+    Admission,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct PlacementDiagnostic {
+    pub group: Option<u64>,
+    pub blocked: Option<BlockReason>,
+    pub operation: Option<Id>,
+    pub age_ms: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> (DataGroup, BTreeMap<u64, NodeSpec>, Capacity) {
+        let group = DataGroup {
+            group_id: 2,
+            generation: 1,
+            voters: [1, 2, 3].into(),
+        };
+        let nodes = (1..=4)
+            .map(|id| {
+                (
+                    id,
+                    NodeSpec {
+                        node_id: id,
+                        zone: format!("zone-{}", if id == 4 { 3 } else { id }),
+                        endpoint: ([127, 0, 0, 1], 7000 + id as u16).into(),
+                        roles: [NodeRole::Storage].into(),
+                        schedulable: true,
+                    },
+                )
+            })
+            .collect();
+        let report = Capacity {
+            node_id: 4,
+            observed_at: Instant::now(),
+            free_bytes: 10 << 30,
+            reserved_bytes: 0,
+            bytes_per_second: 1,
+            cpu_per_mille: 1,
+            connections: 1,
+            ack_bytes: 1,
+        };
+        (group, nodes, report)
+    }
+
+    #[test]
+    fn repairs_bypass_cooldown_without_bypassing_capacity_or_zone() {
+        let (group, mut nodes, mut report) = fixture();
+        let mut placement = Placement::new(PlacementPolicy::default()).unwrap();
+        let now = report.observed_at;
+        placement.completed(group.group_id, now).unwrap();
+        let request = Replacement {
+            removed: 3,
+            copy_bytes: 1 << 30,
+            repair: false,
+        };
+        let cluster = Id::random().unwrap();
+        assert!(
+            placement
+                .replacement_in(cluster, &group, &nodes, request, &[report], now)
+                .is_err()
+        );
+        let repair = Replacement {
+            repair: true,
+            ..request
+        };
+        assert!(
+            placement
+                .replacement_in(cluster, &group, &nodes, repair, &[report], now)
+                .is_ok()
+        );
+        report.reserved_bytes = report.free_bytes;
+        assert!(matches!(
+            placement.replacement_in(cluster, &group, &nodes, repair, &[report], now),
+            Err(Error::Capacity {
+                reason: BlockReason::FreeCapacity
+            })
+        ));
+        report.reserved_bytes = 0;
+        nodes.get_mut(&4).unwrap().zone = "zone-2".into();
+        assert!(matches!(
+            placement.replacement_in(cluster, &group, &nodes, repair, &[report], now),
+            Err(Error::Capacity {
+                reason: BlockReason::Topology
+            })
+        ));
+    }
+
+    #[test]
+    fn round_robin_and_confirmed_failure_state_remain_bounded_and_reset_on_unavailable() {
+        let mut placement = Placement::new(PlacementPolicy::default()).unwrap();
+        let groups = BTreeMap::from([(2, BTreeSet::new()), (3, BTreeSet::new())]);
+        assert_eq!(placement.next_group(&groups), Some(2));
+        assert_eq!(placement.next_group(&groups), Some(3));
+        assert_eq!(placement.next_group(&groups), Some(2));
+        let now = Instant::now();
+        assert!(!placement.unreachable(1, true, now));
+        assert!(!placement.unreachable(1, true, now + Duration::from_secs(2)));
+        assert!(placement.unreachable(1, true, now + Duration::from_secs(3)));
+        assert!(!placement.unreachable(1, false, now + Duration::from_secs(4)));
+        assert!(!placement.failed(1, now + Duration::from_secs(5)));
     }
 }

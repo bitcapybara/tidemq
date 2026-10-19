@@ -21,6 +21,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             .try_acquire_owned()
             .map_err(|_| Error::Overloaded)?;
         let (sender, receiver) = oneshot::channel();
+        let plan = plan.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let result = async {
@@ -30,6 +31,23 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                     .map_err(|source| Error::Quorum {
                         source: Box::new(source),
                     })?;
+                node.state
+                    .try_with_membership(|application, position, membership| {
+                        let voters: BTreeSet<_> = membership.membership().voter_ids().collect();
+                        let membership_log = (*membership.log_id()).ok_or(Error::Authority)?;
+                        let applied = position.ok_or(Error::Authority)?;
+                        if application.membership_identity()
+                            != Some((plan.cluster_id, plan.group_id))
+                            || membership.membership().get_joint_config().len() != 1
+                            || voters != plan.previous
+                            || applied.index < membership_log.index
+                        {
+                            return Err(Error::Authority);
+                        }
+                        Ok(())
+                    })
+                    .await
+                    .map_err(|source| Error::Storage { source })??;
                 let mut state = node.state.clone();
                 let mut snapshot =
                     state

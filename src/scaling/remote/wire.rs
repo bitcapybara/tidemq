@@ -77,6 +77,7 @@ impl Query {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reply {
     Capacity(CapacityReport),
+    CapacityUnavailable,
     View(Box<View>),
     Estimate {
         copy_bytes: u64,
@@ -101,6 +102,25 @@ pub struct CapacityReport {
     pub(super) ack_bytes: u64,
 }
 impl CapacityReport {
+    pub(super) fn measured(self, node: u64, elapsed: Duration) -> Result<Capacity> {
+        let age = Duration::from_millis(self.age_ms).saturating_add(elapsed);
+        if self.node != node || age > Duration::from_secs(5) {
+            return Err(Error::Placement);
+        }
+        Ok(Capacity {
+            node_id: node,
+            observed_at: std::time::Instant::now()
+                .checked_sub(age)
+                .ok_or(Error::Placement)?,
+            free_bytes: self.free_bytes,
+            reserved_bytes: self.reserved_bytes,
+            bytes_per_second: self.bytes_per_second,
+            cpu_per_mille: self.cpu_per_mille,
+            connections: self.connections,
+            ack_bytes: self.ack_bytes,
+        })
+    }
+
     pub(super) fn from_sample(report: Capacity) -> Result<Self> {
         let now = std::time::Instant::now();
         if report.observed_at > now {
