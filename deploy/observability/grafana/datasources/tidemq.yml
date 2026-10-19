@@ -11,4 +11,4 @@ datasources:
       httpMethod: POST
       timeInterval: 15s
       queryTimeout: 5s
-      timeout: 5
+      timeout: "5"

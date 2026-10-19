@@ -9,7 +9,7 @@ target/debug/tidemq validate-config --config /tmp/tidemq-demo/node-1.toml
 bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 ```
 
-工具链固定为 Rust 1.96.0，生成器需要 Bash 和 OpenSSL。输出目录必须不存在；生成的开发证书有效七天。RF1 是单节点持久队列，不提供高可用。完整配置、RF3 分角色运行、后台归档和正常关闭见[运行指南](running.zh-CN.md)。
+工具链固定为 Rust 1.96.0，生成器需要 Bash 和 OpenSSL。脚本显式使用 P-256 named curve 和 SHA-256，兼容 macOS 系统 LibreSSL 与 OpenSSL；不要删除这些参数而依赖工具的默认编码或签名摘要。输出目录必须不存在；生成的开发证书有效七天。RF1 是单节点持久队列，不提供高可用。完整配置、RF3 分角色运行、后台归档和正常关闭见[运行指南](running.zh-CN.md)。
 
 在另一个终端检查实际服务：
 

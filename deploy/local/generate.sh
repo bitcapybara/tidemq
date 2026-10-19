@@ -28,7 +28,7 @@ CN=TideMQ local development CA
 basicConstraints=critical,CA:TRUE
 keyUsage=critical,keyCertSign,cRLSign
 EOF
-openssl req -new -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 7 \
+openssl req -new -x509 -sha256 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve -nodes -days 7 \
   -config "$output/ca.cnf" -keyout "$output/ca.key" -out "$output/ca.pem" >/dev/null 2>&1
 cat > "$output/access.toml" <<EOF
 [[tokens]]
@@ -52,9 +52,9 @@ keyUsage=critical,digitalSignature
 extendedKeyUsage=serverAuth,clientAuth
 subjectAltName=DNS:node-$node.local
 EOF
-  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  openssl req -new -sha256 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve -nodes \
     -config "$output/node-$node.cnf" -keyout "$output/node-$node.key" -out "$output/node-$node.csr" >/dev/null 2>&1
-  openssl x509 -req -in "$output/node-$node.csr" -CA "$output/ca.pem" -CAkey "$output/ca.key" \
+  openssl x509 -req -sha256 -in "$output/node-$node.csr" -CA "$output/ca.pem" -CAkey "$output/ca.key" \
     -set_serial "$node" -days 7 -extfile "$output/node-$node.cnf" -extensions extensions \
     -out "$output/node-$node.pem" >/dev/null 2>&1
   openssl x509 -in "$output/node-$node.pem" -outform DER -out "$output/node-$node.der"
