@@ -106,7 +106,7 @@ async fn run(cli: Cli) -> Result<()> {
                 .map_err(runtime_error)?;
             if trace_seconds > 0 {
                 logging.control.temporary_filter(
-                    "tidemq::runtime=trace,info",
+                    "warn,tidemq=info,tidemq::runtime=trace",
                     std::time::Duration::from_secs(u64::from(trace_seconds)),
                 )?;
             }
@@ -119,7 +119,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }));
             tracing::info!(event_code = "service_started", node_id, role, internal_address = %node.internal_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ runtime is accepting connections");
-            shutdown_signal().await?;
+            tokio::select! { result = shutdown_signal() => result?, _ = node.wait_for_shutdown_request() => {} }
             node.shutdown().await.map_err(runtime_error)?;
             #[cfg(all(feature = "heap-profiling", unix))]
             if let Some(mut profile) = profile {
@@ -152,6 +152,9 @@ async fn run(cli: Cli) -> Result<()> {
                 Config::default()
             };
             config.validate()?;
+            if !config.runtime.peers.is_empty() {
+                config.runtime.validate(&config).map_err(runtime_error)?;
+            }
             print_json(&serde_json::json!({"version": env!("CARGO_PKG_VERSION"),
                 "scope": "current_process", "configuration": config,
                 "allocator": allocator::snapshot().await?, "messaging_runtime_available": true}))

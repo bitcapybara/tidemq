@@ -1,8 +1,8 @@
 # 生产消息指南
 
-本阶段提供服务端生产核心与共享协议，完整 SDK/Gateway 网络用法由后续实现补充。不要将下面的身份流程误认为已经提供可运行的公开客户端示例。
+服务端、Gateway 和同仓库 Rust SDK 已提供实际 QUIC 生产链路。先按[运行指南](running.zh-CN.md)启动，再按[SDK 示例](rust-sdk.zh-CN.md)创建客户端、Topic 和 Producer。下列身份约束同时适用于热数据、重连和所有权迁移。
 
-1. 创建 Topic，保存返回的不可复用 Topic UUID。partition 只有分区内顺序，没有跨分区全局顺序。
+1. 创建 Topic，保存返回的不可复用 Topic UUID。partition 只有分区内顺序，没有跨分区全局顺序。按 key 路由时用 SDK 导出的 `partition_for_key(key, topic.partitions)` 计算分区，然后复用该分区的 Producer；同一批次只能属于同一分区。首版 Topic 分区数固定，所有生产者使用同一版本哈希；副本和 Broker 迁移不改变映射。
 2. 在有效控制授权下读取 `ProducerStatus` 的 `next_registration_epoch`，用 producer UUID 与该 expected epoch 显式 `OpenProducer`。并发 open 冲突可以重新读取提示；成功后固定此会话身份。
 3. 从 sequence 0 开始构造有界批次，使用协议 crate 的 canonical 摘要函数。每个批次固定消息边界、内容与首序号，按消息条数推进下一序号。
 4. 只有 durable produce result 才向业务报告成功。收到 timeout、连接丢失、取消或结果未知时，保留原 producer/epoch/sequence/内容，恢复路由和连接后重试同一批次。

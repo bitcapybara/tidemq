@@ -65,6 +65,7 @@ impl<A: super::OwnershipApplication> super::DataAuthority<A> {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Query {
+    Group(u64),
     TopicName(String),
     Topic(Id),
     SubscriptionName { topic: Id, name: String },
@@ -76,6 +77,7 @@ pub(crate) enum Query {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum Value {
+    Group(crate::metadata::DataGroup),
     Topic(Option<TopicRecord>),
     Subscription(Option<SubscriptionRecord>),
     Partition {
@@ -338,6 +340,12 @@ impl MetadataAuthority {
                         .ok_or(super::AuthorityError::GrantMismatch)
                 };
                 let value = match query {
+                    Query::Group(group) => Value::Group(
+                        state
+                            .group(group)
+                            .cloned()
+                            .ok_or(super::AuthorityError::MembershipMismatch)?,
+                    ),
                     Query::TopicName(name) => Value::Topic(
                         state
                             .topic_by_name(&name)
@@ -418,4 +426,10 @@ impl MetadataAuthority {
             value,
         })
     }
+}
+
+pub(crate) fn current_voters<A: crate::replication::Application>(
+    raft: &crate::replication::Raft<A>,
+) -> Result<BTreeSet<u64>> {
+    super::authority::stable_voters(raft).map_err(|_| Error::unavailable())
 }

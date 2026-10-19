@@ -1,10 +1,13 @@
+use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tidemq_protocol::Id;
-use tidemq_protocol::common::{CancelRequest, ErrorCode, Frame, FrameKind, Outcome, TrafficClass};
+use tidemq_protocol::common::{
+    CancelRequest, ErrorCode, ErrorReply, Frame, FrameKind, Outcome, TrafficClass,
+};
 use tidemq_protocol::framing::{decode_frame, decode_payload, encode_payload, frame_limit};
 use tidemq_protocol::internal::{InternalCommand, RaftRequest, SnapshotChunk};
 use tokio::sync::{Mutex, RwLock, watch};
@@ -14,7 +17,7 @@ use crate::broker::{Broker, BrokerLimits, DataApplication, ProducerMetrics};
 use crate::budget::MemoryBudget;
 use crate::config::Config;
 use crate::gateway::{Access, AccessTable};
-use crate::metadata::{MetadataState, PartitionKey, Route};
+use crate::metadata::{DataGroup, MetadataState, PartitionKey, Route};
 use crate::observability::metrics::{Metrics, Operation};
 use crate::ownership::remote::{Query, RemoteMetadataAuthority, Value};
 use crate::replication::rpc::{GroupRole, RaftService};
@@ -47,12 +50,17 @@ pub(crate) struct Service {
     pub budget: MemoryBudget,
     pub metrics: Metrics,
     pub runtime_metrics: super::telemetry::RuntimeMetrics,
+    pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
+    pub scaling: super::scaling::RuntimeScaling,
     pub quota: std::sync::Mutex<crate::quota::Quota>,
     pub disk_capacity: std::sync::Mutex<Option<(crate::quota::disk::Snapshot, Instant)>>,
     pub log_health: std::sync::Mutex<Option<crate::observability::logging::LogHealth>>,
     pub draining: AtomicBool,
+    pub partition_drains: std::sync::Mutex<BTreeMap<PartitionKey, u64>>,
+    pub shutdown_requested: watch::Sender<bool>,
     pub routes: RwLock<BTreeMap<PartitionKey, CachedRoute>>,
     pub leaders: RwLock<BTreeMap<u64, (u64, Instant)>>,
+    pub groups: RwLock<BTreeMap<u64, (DataGroup, Instant)>>,
     pub leases: std::sync::Mutex<BTreeMap<PartitionKey, LeaseSlot>>,
     pub metadata_mutation: Mutex<()>,
     pub subscriptions: std::sync::Mutex<BTreeMap<Id, (Id, Instant)>>,
@@ -74,10 +82,22 @@ impl Service {
         delivery_key: [u8; 32],
         budget: MemoryBudget,
         producer: ProducerMetrics,
-        metrics: Metrics,
+        mut metrics: Metrics,
         runtime_metrics: super::telemetry::RuntimeMetrics,
         quota: crate::quota::Quota,
+        repair: crate::scaling::RepairBudget,
+        transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
+        shutdown_requested: watch::Sender<bool>,
     ) -> Result<Self> {
+        let scaling = super::scaling::RuntimeScaling::new(
+            &config,
+            cluster,
+            metadata.as_ref(),
+            &data,
+            rpc.clone(),
+            repair,
+            metrics.registry_mut(),
+        )?;
         let mut brokers = BTreeMap::new();
         for (group, replica) in &data {
             let group = config.runtime.group(*group)?;
@@ -119,12 +139,17 @@ impl Service {
             budget,
             metrics,
             runtime_metrics,
+            transport_metrics,
+            scaling,
             quota: std::sync::Mutex::new(quota),
             disk_capacity: std::sync::Mutex::new(None),
             log_health: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
+            partition_drains: std::sync::Mutex::new(BTreeMap::new()),
+            shutdown_requested,
             routes: RwLock::new(BTreeMap::new()),
             leaders: RwLock::new(BTreeMap::new()),
+            groups: RwLock::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             metadata_mutation: Mutex::new(()),
             subscriptions: std::sync::Mutex::new(BTreeMap::new()),
@@ -211,6 +236,60 @@ impl Service {
         Ok(route)
     }
 
+    pub(crate) async fn authoritative_group(
+        &self,
+        group: u64,
+        deadline: Instant,
+    ) -> Result<DataGroup> {
+        let actual = self
+            .data
+            .get(&group)
+            .map(|replica| crate::ownership::remote::current_voters(&replica.raft))
+            .transpose()?;
+        if let Some((cached, _)) =
+            self.groups
+                .read()
+                .await
+                .get(&group)
+                .filter(|(cached, expires)| {
+                    *expires > Instant::now()
+                        && actual
+                            .as_ref()
+                            .is_none_or(|voters| *voters == cached.voters)
+                })
+        {
+            return Ok(cached.clone());
+        }
+        let started = Instant::now();
+        let Value::Group(configured) = self.authority.query(Query::Group(group), deadline).await?
+        else {
+            return Err(Error::unavailable());
+        };
+        if configured.group_id != group
+            || configured.generation == 0
+            || configured.voters.len() != usize::from(self.config.replication_factor)
+            || configured.voters.iter().any(|node| {
+                self.config
+                    .runtime
+                    .peer(*node)
+                    .map_or(true, |peer| !peer.role.stores_data())
+            })
+            || started.elapsed() >= Duration::from_millis(500)
+        {
+            return Err(Error::unavailable());
+        }
+        if let Some(replica) = self.data.get(&group)
+            && crate::ownership::remote::current_voters(&replica.raft)? != configured.voters
+        {
+            return Err(Error::unavailable());
+        }
+        self.groups.write().await.insert(
+            group,
+            (configured.clone(), started + Duration::from_millis(500)),
+        );
+        Ok(configured)
+    }
+
     pub async fn authorize_partition(
         &self,
         access: &Access,
@@ -236,11 +315,17 @@ impl Service {
             return Ok(*leader);
         }
         let voters = if group == self.config.runtime.metadata_group {
-            &self.config.runtime.metadata_voters
+            self.config.runtime.metadata_voters.clone()
         } else {
-            &self.config.runtime.group(group)?.voters
+            let config = self.config.runtime.group(group)?;
+            config
+                .voters
+                .iter()
+                .chain(&config.standby)
+                .copied()
+                .collect()
         };
-        for node in voters {
+        for node in &voters {
             let request = Request::control(wire::LEADER, &())?;
             let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
             if let Ok(bytes) = self.rpc.call(*node, group, request, attempt_deadline).await {
@@ -314,16 +399,34 @@ impl Service {
                 .await;
         }
         let partition = super::data::partition(frame, &self.config.protocol)?;
-        let route = self
+        let mut route = self
             .authorize_partition(&access, partition, deadline)
             .await?;
+        self.admit_partition(partition, route.epoch, kind)?;
         let mut forwarded = frame.clone();
-        super::data::set_owner_epoch(
+        let epoch = super::data::set_owner_epoch(
             &mut forwarded,
             route.epoch,
             &self.config.protocol,
             hops == 0,
-        )?;
+        );
+        if epoch
+            .as_ref()
+            .is_err_and(|error| hops > 0 && error.failure().code == i32::from(ErrorCode::Fenced))
+        {
+            self.routes.write().await.remove(&partition);
+            route = self
+                .authorize_partition(&access, partition, deadline)
+                .await?;
+            super::data::set_owner_epoch(
+                &mut forwarded,
+                route.epoch,
+                &self.config.protocol,
+                false,
+            )?;
+        } else {
+            epoch?;
+        }
         if route.owner_node != self.config.node_id && hops < 2 {
             return self
                 .forward(
@@ -397,7 +500,14 @@ impl Service {
             )
             .await?;
         drop(order);
-        let bytes = pending.receive().await?;
+        let bytes = match pending.receive().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.invalidate_forward(frame, group, error.failure().code)
+                    .await;
+                return Err(error);
+            }
+        };
         let response = decode_frame(bytes, class, &self.config.protocol)
             .map_err(|source| Error::operation("validate forwarded response", source))?;
         if response.request_id != frame.request_id || response.operation_id != frame.operation_id {
@@ -405,7 +515,24 @@ impl Service {
                 "Forwarded response does not match the original request",
             ));
         }
+        if response.kind == i32::from(FrameKind::Error) {
+            let error: ErrorReply = decode_payload(response.payload.clone(), &self.config.protocol)
+                .map_err(|source| Error::operation("decode delegated rejection", source))?;
+            self.invalidate_forward(frame, group, error.code).await;
+        }
         Ok(response)
+    }
+
+    async fn invalidate_forward(&self, frame: &Frame, group: u64, code: i32) {
+        if matches!(
+            ErrorCode::try_from(code),
+            Ok(ErrorCode::Fenced | ErrorCode::Unavailable)
+        ) {
+            if let Ok(partition) = super::data::partition(frame, &self.config.protocol) {
+                self.routes.write().await.remove(&partition);
+            }
+            self.leaders.write().await.remove(&group);
+        }
     }
 
     async fn internal(
@@ -430,6 +557,38 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::drain::KIND => {
+                drop(order);
+                if !matches!(peer.role.as_str(), "metadata" | "combined")
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.drain_command(group, &request.body, deadline).await?
+            }
+            super::scaling::KIND => {
+                drop(order);
+                let query = crate::scaling::remote::decode_query(&request.body)
+                    .map_err(|source| Error::operation("decode closed scaling request", source))?;
+                if query.group_id(self.config.runtime.metadata_group) != group
+                    || frame.traffic_class != i32::from(query.traffic_class())
+                {
+                    return Err(forbidden());
+                }
+                let reply = self
+                    .scaling
+                    .service
+                    .handle(peer, query, deadline)
+                    .await
+                    .map_err(|source| {
+                        Error::operation("execute authenticated scaling request", source)
+                    })?;
+                Bytes::from(
+                    crate::scaling::remote::encode_reply(&reply).map_err(|source| {
+                        Error::operation("encode closed scaling response", source)
+                    })?,
+                )
+            }
             wire::LEADER => {
                 drop(order);
                 if frame.traffic_class != i32::from(TrafficClass::Control) {

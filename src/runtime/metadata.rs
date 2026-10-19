@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::time::{Duration, Instant as MonoInstant};
 
 use bytes::Bytes;
@@ -458,14 +457,10 @@ impl Service {
         deadline: Instant,
     ) -> Result<metadata::Route> {
         let partition = grant.partition;
-        let voters: BTreeSet<_> = self
-            .config
-            .runtime
-            .group(grant.group_id)?
-            .voters
-            .iter()
-            .copied()
-            .collect();
+        let voters = self
+            .authoritative_group(grant.group_id, deadline)
+            .await?
+            .voters;
         let target = self.leader(grant.group_id, deadline).await?;
         if phase < crate::ownership::OwnershipPhase::Fenced {
             let started = MonoInstant::now();
@@ -676,17 +671,18 @@ impl Service {
             self.data_write(group, DataCommand::InstallFence(command), deadline)
                 .await?;
         }
+        let voters = self.authoritative_group(group, deadline).await?.voters;
         let authority = DataAuthority::new(
             replica.raft.clone(),
             replica.state.clone(),
             self.cluster,
             group,
-            replica.voters.clone(),
+            voters.clone(),
             ControlPolicy::default(),
         )
         .map_err(|source| Error::operation("create data authority", source))?;
         let proof = authority
-            .remote_proof(&request.grant, request.recover, replica.voters.clone())
+            .remote_proof(&request.grant, request.recover, voters)
             .await
             .map_err(|source| Error::operation("read data quorum proof", source))?;
         wire::json(&proof)

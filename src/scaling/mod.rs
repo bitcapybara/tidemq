@@ -4,6 +4,7 @@ mod budget;
 mod drain;
 mod membership;
 mod placement;
+mod pressure;
 pub mod remote;
 mod telemetry;
 mod types;
@@ -11,7 +12,10 @@ mod types;
 pub use budget::{RepairBudget, RepairDiagnostic, RepairLease, RepairLimits};
 pub use drain::{DrainActions, DrainPlan, DrainProgress, Handoff};
 pub use membership::{MembershipApplication, MembershipCoordinator, StableMembership};
-pub use placement::{Capacity, Placement, PlacementPolicy, Replacement};
+pub use placement::{
+    BlockReason, Capacity, Placement, PlacementDiagnostic, PlacementPolicy, Replacement,
+};
+pub use pressure::{PressureSample, PressureSampler};
 pub use telemetry::{ScalingMetrics, Stage};
 pub(crate) use types::MembershipEvidence;
 pub use types::{MembershipPlan, MigrationRecord};
@@ -24,6 +28,8 @@ pub enum Error {
     Configuration,
     #[snafu(display("Scaling is blocked by placement, capacity, or cooldown"))]
     Placement,
+    #[snafu(display("Scaling capacity is blocked by {reason:?}"))]
+    Capacity { reason: BlockReason },
     #[snafu(display("Scaling admission is exhausted"))]
     Overloaded,
     #[snafu(display("Scaling operation exceeded its deadline"))]
@@ -54,6 +60,10 @@ pub enum Error {
     Storage { source: crate::wal::Error },
     #[snafu(display("Scaling authority is unavailable or does not match the stable topology"))]
     Authority,
+    #[snafu(display("Scaling peer transport is unreachable"))]
+    Unreachable {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[snafu(display("Scaling trusted peer request failed"))]
     Remote {
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -64,6 +74,8 @@ pub enum Error {
     },
     #[snafu(display("Scaling snapshot file observation failed"))]
     SnapshotIo { source: std::io::Error },
+    #[snafu(display("Scaling pressure observation is unavailable"))]
+    Observation { source: std::io::Error },
     #[snafu(display("Scaling observation worker failed"))]
     Worker { source: tokio::task::JoinError },
     #[snafu(display("Scaling state lock is poisoned"))]

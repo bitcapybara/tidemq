@@ -2,6 +2,7 @@
 
 mod config;
 mod data;
+mod drain;
 mod error;
 mod maintenance;
 mod management;
@@ -9,6 +10,7 @@ mod metadata;
 mod node;
 mod objects;
 pub(crate) mod physical;
+pub(crate) mod scaling;
 mod service;
 mod telemetry;
 pub(crate) mod wire;

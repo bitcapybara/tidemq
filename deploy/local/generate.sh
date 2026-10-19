@@ -71,6 +71,10 @@ management_listen = '127.0.0.1:$management'
 data_dir = '$output/data-$node'
 replication_factor = $factor
 
+[memory]
+total_bytes = 201326592
+control_reserved_bytes = 33554432
+
 [tls]
 certificate = '$output/node-$node.pem'
 private_key = '$output/node-$node.key'

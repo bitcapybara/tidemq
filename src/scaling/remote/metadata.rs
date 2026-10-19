@@ -186,16 +186,14 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             .checked_add(view.reserved_copy_bytes)
             .and_then(|v| v.checked_add(1024 * 1024 * 1024))
             .ok_or(Error::Placement)?;
-        let age = Duration::from_millis(capacity.age_ms).saturating_add(started.elapsed());
-        if capacity.node != target
-            || age > Duration::from_secs(5)
-            || capacity.free_bytes.saturating_sub(capacity.reserved_bytes) < needed
-            || capacity.cpu_per_mille >= 900
-            || capacity.bytes_per_second >= 256 * 1024 * 1024
-            || capacity.connections >= 4096
-            || capacity.ack_bytes >= 256 * 1024 * 1024
+        if capacity.node != target {
+            return Err(Error::Authority);
+        }
+        let capacity = capacity.measured(target, started.elapsed())?;
+        let placement = crate::scaling::Placement::new(crate::scaling::PlacementPolicy::default())?;
+        if let Some(reason) = placement.capacity_block(&capacity, needed, std::time::Instant::now())
         {
-            return Err(Error::Placement);
+            return Err(Error::Capacity { reason });
         }
         let command = metadata::Command::prepare_membership_with_capacity(
             view.revision,
