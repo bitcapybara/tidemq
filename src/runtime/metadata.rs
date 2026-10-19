@@ -717,6 +717,7 @@ impl Service {
             self.data_write(group, DataCommand::InstallFence(command), deadline)
                 .await?;
         }
+        self.routes.write().await.remove(&request.grant.partition);
         let voters = self.authoritative_group(group, deadline).await?.voters;
         let authority = DataAuthority::new(
             replica.raft.clone(),
