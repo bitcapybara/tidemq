@@ -122,6 +122,7 @@ impl Service {
     ) -> Result<Arc<ControlLease>> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
+        self.authoritative_group(group, deadline).await?;
         let fence = replica
             .state
             .try_with_application(|state| {
@@ -186,6 +187,7 @@ impl Service {
         order: Option<SubmissionOrder>,
     ) -> Result<Frame> {
         let partition = route.partition;
+        self.admit_partition(partition, route.epoch, frame_kind(frame)?)?;
         let lease = self.data_lease(route.group_id, partition, deadline).await?;
         if lease.grant().epoch != route.epoch || lease.grant().owner_node != route.owner_node {
             return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
