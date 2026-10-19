@@ -23,3 +23,6 @@ pub use types::{
     CommitPosition, FenceEvidence, FenceRecord, Grant, OwnershipPhase, RecoveredOwnership,
     RecoveryCheckpoint, RecoveryEvidence,
 };
+
+#[cfg(test)]
+pub(crate) use lease::test_lease;

@@ -131,6 +131,10 @@ impl ControlLease {
         &self.grant
     }
 
+    pub fn expires_at(&self) -> Instant {
+        self.expires_at
+    }
+
     pub fn check(&self, fence: &FenceRecord, _work: Work) -> Result<(), Error> {
         self.check_at(fence, Instant::now())
     }
@@ -219,6 +223,17 @@ impl Finalization {
 
 fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+pub(crate) fn test_lease(grant: Grant, policy: ControlPolicy) -> Result<ControlLease, Error> {
+    ControlLease::from_verified(
+        grant,
+        1,
+        Instant::now(),
+        policy,
+        Arc::new(Semaphore::new(policy.max_finalizations)),
+    )
 }
 
 #[cfg(test)]
