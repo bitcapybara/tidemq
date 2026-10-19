@@ -53,7 +53,7 @@ pub struct PeerPool {
 
 impl PeerPool {
     /// Stop callers first; every cached peer/class RPC then shares one bounded drain deadline.
-    pub(crate) async fn close(&self, deadline: Instant) {
+    pub(crate) async fn close(&self, deadline: Instant) -> Result<()> {
         let slots = self
             .slots
             .lock()
@@ -66,6 +66,10 @@ impl PeerPool {
                 rpc.close(deadline).await;
             }
         }
+        self.client
+            .close(deadline)
+            .await
+            .map_err(|source| Error::Transport { source })
     }
 
     pub fn new(

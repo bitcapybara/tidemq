@@ -72,13 +72,12 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         tokio::select! { _ = shutdown.changed() => return, _ = ticker.tick() => {} }
         let started = Instant::now();
         let deadline = started + Duration::from_millis(900);
-        let ready = !service.draining.load(Ordering::Acquire)
+        let mut ready = !service.draining.load(Ordering::Acquire)
             && service
                 .authority
                 .query(Query::TopicName("__readiness".into()), deadline)
                 .await
                 .is_ok();
-        health.ready.store(ready, Ordering::Release);
         let memory = sampler.sample(deadline).await.ok();
         let capacity = sample_capacity(
             &service,
@@ -90,6 +89,17 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         )
         .await
         .ok();
+        if !service.data.is_empty() {
+            ready &= capacity.is_some();
+        }
+        for replica in service.data.values() {
+            if ready && service.require_leader(replica).is_ok() {
+                ready = tokio::time::timeout_at(deadline, replica.raft.ensure_linearizable())
+                    .await
+                    .is_ok_and(|result| result.is_ok());
+            }
+        }
+        health.ready.store(ready, Ordering::Release);
         let logging = service
             .log_health
             .lock()
