@@ -45,40 +45,48 @@ impl Service {
         loop {
             tokio::select! { _ = shutdown.changed() => return Ok(()), _ = ticker.tick() => {} }
             let deadline = Instant::now() + Duration::from_secs(2);
-            if let Some(replica) = &self.metadata
-                && self.require_leader(replica).is_ok()
-            {
-                let _guard = self.metadata_mutation.lock().await;
-                if let Err(error) = self.reconcile_metadata(deadline).await {
-                    tracing::debug!(
-                        event_code = "runtime_metadata_reconcile_wait",
-                        error_code = error.failure().code,
-                        "Metadata startup reconciliation will retry"
-                    );
-                }
+            tokio::select! {
+                _ = shutdown.changed() => return Ok(()),
+                result = self.reconcile_once(deadline) => result?,
             }
-            for (group, replica) in &self.data {
-                if self.require_leader(replica).is_ok() {
-                    let config = data_config(
-                        self.cluster,
-                        self.config.runtime.group(*group)?,
-                        self.config.runtime.retention,
-                    );
-                    let initialized = replica
-                        .state
-                        .try_with_application(|state| state.config() == Some(&config))
-                        .await
-                        .map_err(|source| Error::operation("read data initialization", source))?;
-                    if !initialized {
-                        let _ = wire::within(
-                            deadline,
-                            replica.raft.client_write(DataCommand::Initialize(config)),
-                        )
-                        .await;
-                    }
+        }
+    }
+
+    async fn reconcile_once(&self, deadline: Instant) -> Result<()> {
+        if let Some(replica) = &self.metadata
+            && self.require_leader(replica).is_ok()
+        {
+            let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
+            if let Err(error) = self.reconcile_metadata(deadline).await {
+                tracing::debug!(
+                    event_code = "runtime_metadata_reconcile_wait",
+                    error_code = error.failure().code,
+                    "Metadata startup reconciliation will retry"
+                );
+            }
+        }
+        for (group, replica) in &self.data {
+            if self.require_leader(replica).is_ok() {
+                let config = data_config(
+                    self.cluster,
+                    self.config.runtime.group(*group)?,
+                    self.config.runtime.retention,
+                );
+                let initialized = replica
+                    .state
+                    .try_with_application(|state| state.config() == Some(&config))
+                    .await
+                    .map_err(|source| Error::operation("read data initialization", source))?;
+                if !initialized {
+                    let _ = wire::within(
+                        deadline,
+                        replica.raft.client_write(DataCommand::Initialize(config)),
+                    )
+                    .await;
                 }
             }
         }
+        Ok(())
     }
 
     async fn reconcile_metadata(&self, deadline: Instant) -> Result<()> {
