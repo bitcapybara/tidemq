@@ -132,18 +132,17 @@ async fn run(cli: Cli) -> Result<()> {
                 .await
                 .map_err(runtime_error);
             #[cfg(all(feature = "heap-profiling", unix))]
-            if let Some(mut profile) = profile {
-                if tokio::time::timeout_at(
+            if let Some(mut profile) = profile
+                && tokio::time::timeout_at(
                     shutdown_deadline
                         .min(tokio::time::Instant::now() + std::time::Duration::from_secs(1)),
                     &mut profile,
                 )
                 .await
                 .is_err()
-                {
-                    profile.abort();
-                    let _ = profile.await;
-                }
+            {
+                profile.abort();
+                let _ = profile.await;
             }
             let trace_shutdown = logging.shutdown_tracing(shutdown_deadline).await;
             business_shutdown?;

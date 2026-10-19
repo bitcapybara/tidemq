@@ -75,7 +75,7 @@ TIDEMQ_PERF_OTELCOL_BIN=/absolute/path/to/verified/otelcol \
   bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/system-small-otlp small recommended-otlp 4
 ```
 
-该用例要求绝对路径的官方 core Collector 0.162.0，复用仓库 [collector.yaml](../deploy/observability/collector.yaml)，监听 `127.0.0.1:4318/18888`。Collector 清空继承环境，仅设置 PATH、`GOMAXPROCS=2`、`GOMEMLIMIT=192MiB`；memory limiter 128 MiB、spike 32 MiB，使用 `nop` 接收后丢弃，不连接持久追踪后端。TideMQ 保持推荐日志，显式开启 `[tracing]`：1% head sampling、每秒最多 128 span、queue 256 条、batch 32 条、导出间隔与总 timeout 均为 500 ms。每 span 4096 B 的队列逻辑许可约 1 MiB，不是 RSS；队列、导出失败与退出的口径见[追踪手册](operations/tracing.zh-CN.md)。
+该用例要求绝对路径的官方 core Collector 0.162.0，复用仓库 [collector.yaml](../deploy/observability/collector.yaml)，监听 `127.0.0.1:4318/18888`。Collector 清空继承环境，仅设置 PATH、`GOMAXPROCS=2`、`GOMEMLIMIT=96MiB`；Go 软限制与 Compose 示例一致，native 运行不具备容器的 CPU/内存硬限制。memory limiter 128 MiB、spike 32 MiB，使用 `nop` 接收后丢弃，不连接持久追踪后端。TideMQ 保持推荐日志，显式开启 `[tracing]`：1% head sampling、每秒最多 128 span、queue 256 条、batch 32 条、导出间隔与总 timeout 均为 500 ms。每 span 4096 B 的队列逻辑许可约 1 MiB，不是 RSS；队列、导出失败与退出的口径见[追踪手册](operations/tracing.zh-CN.md)。
 
 `collector/identity.txt` 与 `version.txt` 记录实际二进制/配置 SHA-256、版本和环境；PID 单独保存在 `process.pid`。Collector 在负载前、负载与冷却后、TideMQ 排空退出后各抓一次自身指标，每次 HTTP 最多 2 s、正文最多 256 KiB。`resources-*.txt` 保留实际暴露的进程自监控指标，包括 `otelcol_process_cpu_seconds_total` 与 `otelcol_process_memory_rss_bytes`，缺失时明确不可用；短跑前后 RSS 不是全程峰值。Collector 的 CPU/RSS 与 TideMQ 的独立口径分别报告，不相加成服务 RSS。
 

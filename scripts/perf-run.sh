@@ -98,7 +98,7 @@ collector_snapshot() {
   local label=$1 path="$output/collector/metrics-$1.txt"
   : > "$path"
   kill -0 "$collector_pid" 2>/dev/null || { printf 'Owned Collector is not running for %s capture\n' "$label" >&2; return 1; }
-  if ! curl --fail --silent --show-error --max-time 2 --max-filesize 262144 \
+  if ! curl --disable --proxy '' --noproxy '*' --retry 0 --fail --silent --show-error --max-time 2 --max-filesize 262144 \
     http://127.0.0.1:18888/metrics | head -c 262145 > "$path"; then
     printf 'Collector %s metrics capture failed\n' "$label" >&2; return 1
   fi
@@ -145,18 +145,18 @@ if [[ -n "$collector_bin" ]]; then
   [[ ${#binary_hash} == 64 && ${#config_hash} == 64 ]] || { printf 'Collector identity hashes are invalid\n' >&2; exit 1; }
   {
     printf 'binary=%s\nbinary_sha256=%s\nconfig_sha256=%s\n' "$collector_bin" "$binary_hash" "$config_hash"
-    printf 'GOMAXPROCS=2\nGOMEMLIMIT=192MiB\nmetrics_body_limit_bytes=262144\nstdout_limit_bytes=33554432\n'
+    printf 'GOMAXPROCS=2\nGOMEMLIMIT=96MiB\nmetrics_body_limit_bytes=262144\nstdout_limit_bytes=33554432\n'
   } > "$output/collector/identity.txt"
   env -i PATH=/usr/bin:/bin "$collector_bin" validate --config "$output/collector/config.yaml" \
     > >(head -c 65536 > "$output/collector/config-validation.txt") 2>&1
-  env -i PATH=/usr/bin:/bin GOMAXPROCS=2 GOMEMLIMIT=192MiB "$collector_bin" --config "$output/collector/config.yaml" \
+  env -i PATH=/usr/bin:/bin GOMAXPROCS=2 GOMEMLIMIT=96MiB "$collector_bin" --config "$output/collector/config.yaml" \
     > >(head -c 33554432 > "$output/collector/server.log") 2>&1 &
   collector_pid=$!
   printf '%s\n' "$collector_pid" > "$output/collector/process.pid"
   ready=false
   for _ in {1..150}; do
     kill -0 "$collector_pid" 2>/dev/null || { printf 'Collector exited before readiness\n' >&2; exit 1; }
-    if curl --fail --silent --max-time 1 --max-filesize 262144 http://127.0.0.1:18888/metrics >/dev/null; then ready=true; break; fi
+    if curl --disable --proxy '' --noproxy '*' --retry 0 --fail --silent --max-time 1 --max-filesize 262144 http://127.0.0.1:18888/metrics >/dev/null; then ready=true; break; fi
     sleep 0.1
   done
   [[ "$ready" == true ]] || { printf 'Collector readiness deadline expired\n' >&2; exit 1; }

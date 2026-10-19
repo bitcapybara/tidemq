@@ -2,6 +2,8 @@
 
 验收先检查持久正确性，再做性能。每类测试说明实际边界；参考模型、真实 QUIC/磁盘、RustFS 和独立 CLI 进程分别报告。当前待收敛的组合回归见[实施状态](implementation-status.zh-CN.md)，不能由测试文件存在推断已经通过。
 
+2026-10-20 合流后的实际命令、236 项普通测试、九项真实后端 ignored、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。
+
 ## 可复现验证
 
 ```sh
@@ -10,6 +12,7 @@ cargo clippy --workspace --tests --examples --no-deps --locked -j2 -- -D warning
 cargo test --workspace --locked -j2
 cargo test --workspace --doc --locked
 cargo test -p tidemq-sdk --locked --features metrics
+cargo test -p tidemq-sdk --locked --features 'metrics opentelemetry'
 ```
 
 不运行 cargo check。生产代码的额外 panic 审计与允许 unwrap 的测试分开：
@@ -25,6 +28,7 @@ scripts/rustfs-precheck.sh
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test s3_rustfs -- --ignored --nocapture
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test lifecycle_persistence -- --ignored --nocapture
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test runtime_queue actual_runtime_sdk -- --ignored --nocapture
+TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --test tracing_export official_collector_accepts_real_otlp_and_releases_ports -- --exact --ignored
 ```
 
 ## 证据索引
@@ -41,6 +45,7 @@ TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --
 | S08 [运行时](../tests/runtime_queue.rs)、[Broker 故障](../tests/runtime_support/broker_failover.rs) | 实际 SDK 的生产/接收/持久 ACK；独立 RF3 CLI 强杀 Storage/失多数派恢复；九进程 Broker 自动接管及旧 mTLS 身份被 Fenced；稳定 UDP 入口 Gateway 强杀/丢包/重排/MTU 黑洞；原 Client/Producer/Consumer 恢复；RF1/RF3 全部热正文回收后 33 条冷读 | 同进程 Runtime 与独立 OS 子进程分别识别；真实 RustFS 需显式 ignored。单机不是三区，恢复单例不是 P99 |
 | S09 [成员迁移](../tests/scaling_raft.rs)、[远程闭合迁移](../tests/scaling_remote.rs) | learner/joint/stable、隔离后保留原计划、joint 中换主、完成证明私有、容量新鲜度与预算、真实 native RF3 自动替换、缺样不创建计划 | 远程接口的部分 fixture 是语义 codec loopback；完整 Runtime mTLS 组合另验 |
 | S10 [观测边界](../tests/observability_boundaries.rs)、[分配器](../tests/allocator_diagnostics.rs)、[堆采样](../tests/heap_profile.rs)、quota/retention 单元测试 | 字节许可、控制保留、有限指标、日志丢弃/失败/脱敏、临时过滤、真实 RSS、cgroup 解析、迟滞、同 allocator profile；原生 Prometheus/Grafana 实际 RF1 查询、29 面板和匿名只读权限，见[部署证据](../deploy/observability/README.zh-CN.md) | Linux 实机/cgroup OOM、长期趋势、容器限额与浏览器画面未验；Collector 与正式开销单独记录 |
+| S11 [追踪导出](../tests/tracing_export.rs)、[四角色链路](../tests/runtime_support/tracing.rs) | 官方 OTLP HTTP/protobuf、TLS 拒绝、宿主设施共存、外部 sampled 仍受本地预算限制、慢/503/超大响应/关闭与恢复；真实 SDK→Gateway→Broker 父关系、owned 提交及持久 ACK、原期限清理；官方 native Collector 实际 accepted 与退出端口释放 | native Collector 用例需显式 ignored；默认 nop 不持久化 trace。域名/私有 CA/mTLS 由本地 Collector 代理；公网成功链路、Linux 与容器运行未验 |
 | M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
 | P01 [性能工具与报告口径](performance.zh-CN.md) | 外部 SDK、独立服务进程、warmup/measure/cooldown、原 PendingBatch、unique ID/offset 与最终持久 ACK、PID 资源和 allocator/build 身份 | 有限预检不等于生产 P99.9、长稳或公平竞品对标；样本数不足不得报告高分位 |
 

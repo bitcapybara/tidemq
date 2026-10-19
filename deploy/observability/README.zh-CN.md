@@ -30,4 +30,4 @@ Grafana 默认使用仓库 JSON 看板，数据源名字为 TideMQ Prometheus；
 docker compose -f deploy/observability/compose.yaml --profile observability down
 ```
 
-验证证据：官方 Compose 5.6.0 CLI 已执行 config 校验；原生 Prometheus 3.15.0 已校验配置、14 条规则，以及 readiness/capacity、trace loss/Collector downtime 两组告警触发/恢复测试。2026-10-20 使用官方原生 Grafana 13.2.4、Prometheus 3.15.0 和真实 RF1 进程完成链路验证：四个看板共 29 个面板通过 provisioning 加载，均不可编辑；Grafana 数据源实际查询到 `up{job="tidemq"}=1`，匿名管理员接口返回 403。验证后按拥有关系停止全部子进程。此项验证覆盖服务端 API 与真实数据源，未验证浏览器画面。当前机器未安装 Docker，未运行这组容器，不声称镜像运行、容器资源限额或宿主网络模式已经验收。
+验证证据：官方 Compose 5.6.0 CLI 已执行 config 校验；原生 Prometheus 3.15.0 已校验配置、14 条规则，以及 readiness/capacity、trace loss/Collector downtime 两组告警触发/恢复测试。2026-10-20 使用官方原生 Collector core 0.162.0、Grafana 13.2.4、Prometheus 3.15.0 和真实 RF1 进程完成链路验证：四个看板共 29 个面板通过 provisioning 加载，均不可编辑；Grafana 数据源实际查询到 `up{job="tidemq"}=1` 和 `up{job="tidemq-collector"}=1`，匿名管理员接口返回 403。四个自有子进程正常退出，随后五个 TCP 与两个 UDP 监听端口均可重新绑定。此项验证覆盖服务端 API 与真实数据源，未验证浏览器画面；Collector 的真实 span 接收另见[OTLP 证据](../../docs/evidence/2026-10-20-otlp.zh-CN.md)。当前机器未安装 Docker，未运行这组容器，不声称镜像运行、容器资源限额或宿主网络模式已经验收。
