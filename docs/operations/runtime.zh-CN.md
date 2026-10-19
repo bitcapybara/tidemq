@@ -50,3 +50,8 @@ ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记�
 `stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_network_faults` 使用一个稳定 UDP 监听和两个明确后端，原 SDK 不更换地址或业务身份。它对真实报文按固定频率丢包、保留至多两个报文制造短时乱序，并在 Gateway CLI 子进程被 SIGKILL 后制造短期 1199 字节 MTU 黑洞；黑洞期间不能获得成功写回执。恢复到 1200 字节后，原 PendingBatch 按原 epoch/sequence/digest 重试，原 Consumer 继续提交 ACK，且 SDK 实际建立新 QUIC 连接到存活 Gateway。测试只在丢包、乱序和 MTU 丢弃计数均非零时通过。
 
 这是单机有限代理的真实传输回归，不代表生产负载均衡器的 CID 路由、NAT 行为或真实三区网络已经验证。生产多 Gateway 的外部证书须覆盖相同服务 DNS SAN，SDK 使用该服务名；内部 mTLS 仍按独立 node 身份和精确证书 pin 验证。故障恢复期间允许有界暂停，旧 QUIC 连接不承诺保持不变。
+
+
+后台压缩与新归档共用每数据组的单 owned 维护循环：先对账原对象 ID，再推进 retention、floor 快照和本地 reclaim，通过 BackgroundSnapshot 配额后每轮至多检查八个对象并替换一个候选。完全没有新写时仍会检查部分失效对象。压缩从带短期 pin 的 S3 正文复制所有存活区间，持久化替换任务，经当前全 voter 检查点后，下一轮才可删除无引用旧对象；Pinned 和恢复依赖作为保留条件。`tidemq_lifecycle_compacted_total` 与 `tidemq_lifecycle_deleted_total` 可分别验证替换和真正删除的推进。
+
+`actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_reclaims_sources` 使用真实 RustFS、Raft、SDK 和默认 192/32 MiB 应用/控制预算。它将测试保留时间设为零，验证原正文已本地回收、部分 ACK 推进 floor、自动压缩及旧 S3 对象删除后，同一个 Consumer 仍能读取存活后缀并提交 ACK。生产保留时间仍使用显式配置；测试不会修改默认策略。

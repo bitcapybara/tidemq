@@ -1160,10 +1160,7 @@ async fn actual_runtime_sdk_rf3_separate_leaders_archive_and_replay_s3() {
     .await;
 }
 
-async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) {
-    let rustfs = rustfs::RustFs::start().await;
-    rustfs.create_bucket().await;
-    let mut fixture = Fixture::new(nodes, metadata, storage).await;
+async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {
     let credentials_file = fixture.directory.join("object-credentials.toml");
     let (access, secret) = rustfs.credentials();
     tokio::fs::write(
@@ -1188,6 +1185,109 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     {
         config.runtime.objects = Some(objects.clone());
     }
+}
+
+async fn wait_runtime_counter(fixture: &Fixture, node: u64, name: &str) -> String {
+    let until = deadline();
+    loop {
+        let metrics = http(
+            fixture.running.get(&node).unwrap().management_address,
+            "/metrics",
+        )
+        .await;
+        let value = metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if value > 0 {
+            return metrics;
+        }
+        assert!(
+            Instant::now() < until,
+            "Automatic runtime did not advance {name}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
+async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_reclaims_sources() {
+    let rustfs = rustfs::RustFs::start().await;
+    rustfs.create_bucket().await;
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    enable_objects(&mut fixture, &rustfs).await;
+    let config = fixture.configs.get_mut(&1).unwrap();
+    config.runtime.archive_interval_ms = 4000;
+    config.runtime.retention.minimum_age_ms = 0;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    assert_eq!(durable_produce(&producer, b"expired-prefix").await, 0);
+    let bucket = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    while std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        == bucket
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(durable_produce(&producer, b"retained-suffix").await, 1);
+    let archived =
+        wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_reclaimed_bytes_total ").await;
+    assert!(
+        archived.contains("tidemq_lifecycle_published_total 1"),
+        "Both time buckets must share the first automatic object"
+    );
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig {
+            max_buffered_messages: 1,
+            ..ConsumerConfig::default()
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    durable_consume(&consumer, 0).await;
+    wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_compacted_total ").await;
+    wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_deleted_total ").await;
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let retained = consumer.next().await.unwrap().unwrap();
+    assert_eq!(retained.offset(), 1);
+    assert_eq!(retained.body(), b"retained-suffix");
+    assert_eq!(
+        consumer
+            .ack(&retained, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        2
+    );
+    client.close(deadline()).await;
+    drop(retained);
+    drop(consumer);
+    drop(producer);
+    drop(client);
+    fixture.close().await;
+}
+
+async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) {
+    let rustfs = rustfs::RustFs::start().await;
+    rustfs.create_bucket().await;
+    let mut fixture = Fixture::new(nodes, metadata, storage).await;
+    enable_objects(&mut fixture, &rustfs).await;
     if nodes.len() == 1 {
         for config in fixture.configs.values_mut() {
             config.runtime.groups.push(GroupConfig {

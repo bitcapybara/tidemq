@@ -18,6 +18,7 @@ use super::{Error, Result};
 #[derive(Default)]
 struct Progress {
     objects: Option<Id>,
+    compactions: Option<Id>,
     partitions: Option<PartitionKey>,
     inspected: bool,
     blocked: bool,
@@ -281,6 +282,7 @@ impl Service {
             .map_err(|source| Error::operation("read bounded archive candidates", source))?
             .map_err(super::data::data_rejection)?;
         progress.partitions = page.next;
+        let mut checked_compaction = false;
         for candidate in page.partitions {
             self.advance_retention(group, candidate.partition, deadline)
                 .await?;
@@ -328,10 +330,7 @@ impl Service {
                         Error::operation("checkpoint logical retention floor", source)
                     })?;
             }
-            if !progress.inspected
-                || progress.blocked
-                || candidate.published_end >= candidate.committed_end
-            {
+            if !progress.inspected || progress.blocked {
                 continue;
             }
             let allowed = self
@@ -344,6 +343,24 @@ impl Service {
                 )
                 .is_ok();
             if !allowed {
+                continue;
+            }
+            if !checked_compaction {
+                checked_compaction = true;
+                progress.inspected = false;
+                let step = coordinator
+                    .compact_next(progress.compactions, deadline.into_std())
+                    .await
+                    .map_err(|source| {
+                        Error::operation("compact one bounded archive candidate", source)
+                    })?;
+                progress.compactions = step.next_after;
+                progress.inspected = true;
+                if step.replacement.is_some() {
+                    break;
+                }
+            }
+            if candidate.published_end >= candidate.committed_end {
                 continue;
             }
             let end = candidate
