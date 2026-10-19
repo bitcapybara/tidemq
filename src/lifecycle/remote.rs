@@ -51,12 +51,20 @@ pub(crate) trait LifecycleRpc: Send + Sync {
 
 pub(crate) type RpcFuture<'a, T> = BoxFuture<'a, T>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct FloorTarget {
+    partition: crate::metadata::PartitionKey,
+    before: u64,
+    manifest_generation: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SnapshotRequest {
     cluster_id: Id,
     group_id: u64,
-    object_id: Id,
+    object_id: Option<Id>,
     generation: u64,
+    floor: Option<FloorTarget>,
     voters: BTreeSet<u64>,
 }
 
@@ -64,8 +72,9 @@ struct SnapshotRequest {
 pub(crate) struct SnapshotEvidence {
     pub(crate) cluster_id: Id,
     pub(crate) group_id: u64,
-    pub(crate) object_id: Id,
+    pub(crate) object_id: Option<Id>,
     pub(crate) generation: u64,
+    floor: Option<FloorTarget>,
     pub(crate) voters: BTreeSet<u64>,
     pub(crate) node_id: u64,
     pub(crate) snapshot_id: String,
@@ -125,10 +134,40 @@ impl ReplicaCheckpoint {
         let request = SnapshotRequest {
             cluster_id: self.cluster_id,
             group_id: self.group_id,
-            object_id,
+            object_id: Some(object_id),
             generation,
+            floor: None,
             voters: voters.clone(),
         };
+        self.build_request(request, position, deadline).await
+    }
+
+    pub(crate) async fn build_floor(
+        &self,
+        proof: &super::types::FloorEvidence,
+        deadline: Instant,
+    ) -> Result<SnapshotEvidence> {
+        let request = SnapshotRequest {
+            cluster_id: self.cluster_id,
+            group_id: self.group_id,
+            object_id: None,
+            generation: 0,
+            floor: Some(FloorTarget {
+                partition: proof.partition,
+                before: proof.before,
+                manifest_generation: proof.manifest_generation,
+            }),
+            voters: proof.voters.clone(),
+        };
+        self.build_request(request, proof.position, deadline).await
+    }
+
+    async fn build_request(
+        &self,
+        request: SnapshotRequest,
+        position: LogId<u64>,
+        deadline: Instant,
+    ) -> Result<SnapshotEvidence> {
         let proof = match &self.backend {
             CheckpointBackend::Local(replica) => {
                 build_snapshot(replica, &request, deadline).await?
@@ -149,9 +188,10 @@ impl ReplicaCheckpoint {
         };
         if proof.cluster_id != self.cluster_id
             || proof.group_id != self.group_id
-            || proof.object_id != object_id
-            || proof.generation != generation
-            || proof.voters != *voters
+            || proof.object_id != request.object_id
+            || proof.generation != request.generation
+            || proof.floor != request.floor
+            || proof.voters != request.voters
             || proof.node_id != self.node_id
             || proof.position < position
             || proof.snapshot_id.is_empty()
@@ -217,14 +257,24 @@ async fn build_snapshot(
         let position = replica
             .state
             .try_with_applied(|state, applied| {
-                state
-                    .lifecycle()
-                    .intent(request.object_id)
-                    .filter(|intent| {
+                let valid = match (request.object_id, request.floor) {
+                    (Some(id), None) => state.lifecycle().intent(id).is_some_and(|intent| {
                         intent.phase == super::types::IntentPhase::Published
                             && intent.checkpoint_generation == Some(request.generation)
-                    })
-                    .and(applied)
+                    }),
+                    (None, Some(floor)) => {
+                        state
+                            .producer(floor.partition)
+                            .is_some_and(|producer| producer.retained_floor() >= floor.before)
+                            && state
+                                .lifecycle()
+                                .manifest(floor.partition)
+                                .map_or(0, |manifest| manifest.generation)
+                                >= floor.manifest_generation
+                    }
+                    _ => false,
+                };
+                if valid { applied } else { None }
             })
             .await
             .map_err(|source| Error::Storage { source })?;
@@ -257,6 +307,7 @@ async fn build_snapshot(
         group_id: request.group_id,
         object_id: request.object_id,
         generation: request.generation,
+        floor: request.floor,
         voters: request.voters.clone(),
         node_id: replica.node_id(),
         snapshot_id: snapshot.meta.snapshot_id,
@@ -277,6 +328,7 @@ enum Mutation {
     Object(Id),
     Pinned,
     Released,
+    Retired,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -453,12 +505,16 @@ impl MetadataBackend for RemoteMetadata {
     fn execute(&self, command: CatalogCommand, deadline: Instant) -> BoxFuture<'_, CatalogOutcome> {
         Box::pin(async move {
             let data_group = command_group(&command);
+            let expected = command.clone();
             let (target, reply) = self
                 .call(LIFECYCLE_COMMAND, data_group, command, deadline)
                 .await?;
             match reply {
                 Reply::Mutation { proof, outcome } => {
                     self.verify(target, &proof)?;
+                    if !matches_mutation(&expected, &outcome) {
+                        return Err(Error::Authorization);
+                    }
                     match outcome {
                         Mutation::Object(id) => match self
                             .query(data_group, Query::Object(id), deadline)
@@ -470,6 +526,7 @@ impl MetadataBackend for RemoteMetadata {
                         },
                         Mutation::Pinned => Ok(CatalogOutcome::Pinned),
                         Mutation::Released => Ok(CatalogOutcome::Released),
+                        Mutation::Retired => Ok(CatalogOutcome::Retired),
                     }
                 }
                 Reply::Rejected(reason) => Err(Error::Rejected { reason }),
@@ -548,6 +605,7 @@ impl MetadataHandler {
             CatalogOutcome::Object(object) => Mutation::Object(object.object_id()),
             CatalogOutcome::Pinned => Mutation::Pinned,
             CatalogOutcome::Released => Mutation::Released,
+            CatalogOutcome::Retired => Mutation::Retired,
         };
         let proof = self
             .local
@@ -612,6 +670,11 @@ impl MetadataHandler {
         command: &CatalogCommand,
     ) -> Result<()> {
         let objects = match command {
+            CatalogCommand::RetireBefore(proof) | CatalogCommand::FloorCheckpoint { proof, .. } => {
+                return self
+                    .scope(peer, proof.group_id, &[], &[proof.partition])
+                    .await;
+            }
             CatalogCommand::Register(plan) => {
                 if plan.descriptor.partitions.len() > 64 || plan.replaces.len() > 64 {
                     return Err(Error::Wire);
@@ -694,11 +757,59 @@ fn command_group(command: &CatalogCommand) -> u64 {
     }
 }
 
+fn matches_mutation(command: &CatalogCommand, outcome: &Mutation) -> bool {
+    match (command, outcome) {
+        (CatalogCommand::Pin(_), Mutation::Pinned)
+        | (CatalogCommand::ReleasePin { .. }, Mutation::Released)
+        | (
+            CatalogCommand::RetireBefore(_) | CatalogCommand::FloorCheckpoint { .. },
+            Mutation::Retired,
+        ) => true,
+        (CatalogCommand::Register(plan), Mutation::Object(id)) => {
+            plan.descriptor.identity.object_id == *id
+        }
+        (
+            CatalogCommand::Uploaded { object_id }
+            | CatalogCommand::Publish { object_id }
+            | CatalogCommand::RequestCancel { object_id }
+            | CatalogCommand::FinishCancel { object_id, .. }
+            | CatalogCommand::Checkpoint { object_id, .. }
+            | CatalogCommand::BeginDelete { object_id }
+            | CatalogCommand::Deleted { object_id },
+            Mutation::Object(id),
+        ) => *object_id == *id,
+        _ => false,
+    }
+}
+
 fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Result<()> {
     let valid = match (query, view) {
-        (Query::Health, View::Health)
-        | (Query::Pin(_), View::Pin(_))
-        | (Query::Diagnose(_), View::Diagnostic(_)) => true,
+        (Query::Capacity, View::Capacity(usage)) => {
+            usage.objects <= super::types::MAX_OBJECTS
+                && usage.deleted_objects <= usage.objects
+                && usage.read_pins <= super::types::MAX_PINS
+        }
+        (Query::Objects { after, limit }, View::Objects(page)) => {
+            page.objects.len() <= *limit
+                && *limit <= 64
+                && page
+                    .objects
+                    .iter()
+                    .all(|(id, _)| after.is_none_or(|after| *id > after))
+                && page.objects.windows(2).all(|pair| {
+                    pair.first()
+                        .zip(pair.get(1))
+                        .is_some_and(|(a, b)| a.0 < b.0)
+                })
+                && page
+                    .next_after
+                    .is_none_or(|cursor| page.objects.last().is_some_and(|(id, _)| *id == cursor))
+        }
+        (Query::Health, View::Health) => true,
+        (Query::Pin(id), View::Pin(pin)) => pin
+            .as_ref()
+            .is_none_or(|pin| pin.id == *id && pin.objects.len() <= 64 && pin.ttl_millis <= 10_000),
+        (Query::Diagnose(id), View::Diagnostic(diagnostic)) => diagnostic.object_id == *id,
         (Query::DataVoters, View::DataVoters(group)) => {
             group.group_id == data_group && matches!(group.voters.len(), 1 | 3)
         }
@@ -732,16 +843,7 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                     }) && generations.contains_key(&range.partition)
                 })
         }
-        (Query::Reclaim { partition, end }, View::Reclaim { generation, plan }) => {
-            *generation > 0
-                && plan.descriptor.identity.cluster_id == cluster
-                && plan.descriptor.partitions.iter().any(|i| {
-                    i.topic_id == partition.topic_id
-                        && i.partition_id == partition.partition
-                        && i.offsets.start < *end
-                        && i.offsets.end >= *end
-                })
-        }
+        (Query::Reclaim { .. }, View::Reclaim { .. }) => true,
         _ => false,
     };
     if valid {
@@ -784,4 +886,103 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
         return Err(Error::Wire);
     }
     serde_json::from_slice(bytes).map_err(|_| Error::Wire)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::{NodeRecord, NodeSpec};
+
+    struct NoRpc;
+    impl LifecycleRpc for NoRpc {
+        fn request(
+            &self,
+            _: u64,
+            _: u64,
+            _: TrafficClass,
+            _: u32,
+            _: Bytes,
+            _: Instant,
+        ) -> RpcFuture<'_, Bytes> {
+            Box::pin(async { Err(Error::Wire) })
+        }
+        fn control_lease(&self, _: FenceRecord, _: Instant) -> RpcFuture<'_, ControlLease> {
+            Box::pin(async { Err(Error::Wire) })
+        }
+    }
+
+    fn proof(cluster_id: Id) -> QuorumView {
+        QuorumView {
+            cluster_id,
+            group_id: 77,
+            node_id: 2,
+            revision: 5,
+            mode: DeploymentMode::LocalRf1,
+            voters: vec![2],
+            nodes: vec![NodeRecord {
+                spec: NodeSpec {
+                    node_id: 2,
+                    zone: "zone-a".into(),
+                    endpoint: "127.0.0.1:19002".parse().unwrap(),
+                    roles: BTreeSet::from([NodeRole::Metadata]),
+                    schedulable: true,
+                },
+                generation: 1,
+            }],
+            position: LogId::new(openraft::CommittedLeaderId::new(1, 2), 8),
+            view: View::Health,
+        }
+    }
+
+    #[test]
+    fn remote_proof_requires_exact_target_and_never_downgrades_three_voters() {
+        let cluster = Id::random().unwrap();
+        let mut proof = proof(cluster);
+        let remote = RemoteMetadata {
+            rpc: Arc::new(NoRpc),
+            cluster_id: cluster,
+            group_id: 77,
+            nodes: vec![2],
+            mode: DeploymentMode::LocalRf1,
+        };
+        remote.verify(2, &proof).unwrap();
+        assert!(remote.verify(1, &proof).is_err());
+        proof.cluster_id = Id::random().unwrap();
+        assert!(remote.verify(2, &proof).is_err());
+        proof.cluster_id = cluster;
+        let production = RemoteMetadata {
+            rpc: Arc::new(NoRpc),
+            cluster_id: cluster,
+            group_id: 77,
+            nodes: vec![1, 2, 3],
+            mode: DeploymentMode::ThreeReplica,
+        };
+        assert!(production.verify(2, &proof).is_err());
+    }
+
+    #[test]
+    fn bounded_wire_codec_and_result_identity_reject_malformed_payloads() {
+        assert!(encode(&vec![b'x'; MAX_BODY]).is_err());
+        assert!(decode::<Reply>(&vec![b' '; MAX_BODY + 1]).is_err());
+        assert!(decode::<Reply>(br#"{"Unknown":null}"#).is_err());
+        let id = Id::random().unwrap();
+        let other = Id::random().unwrap();
+        assert!(matches_mutation(
+            &CatalogCommand::Deleted { object_id: id },
+            &Mutation::Object(id)
+        ));
+        assert!(!matches_mutation(
+            &CatalogCommand::Deleted { object_id: id },
+            &Mutation::Object(other)
+        ));
+        let query = Query::Objects {
+            after: Some(id),
+            limit: 1,
+        };
+        let page = View::Objects(super::super::ObjectPage {
+            objects: vec![(id, super::super::ObjectPhase::Deleted)],
+            next_after: Some(id),
+        });
+        assert!(validate_view(&query, &page, Id::random().unwrap(), 9).is_err());
+    }
 }

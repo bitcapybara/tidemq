@@ -21,14 +21,42 @@ pub(crate) struct Intent {
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DataState {
     intents: BTreeMap<Id, Intent>,
+    pending: std::collections::BTreeSet<Id>,
     manifests: BTreeMap<PartitionKey, super::Manifest>,
     reclaim_ends: BTreeMap<PartitionKey, u64>,
     checkpoint_generation: u64,
+    checkpointed_floors: BTreeMap<PartitionKey, u64>,
 }
 
 impl DataState {
+    pub fn recovery_digest(&self) -> Result<[u8; 32], Rejection> {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"tidemq-lifecycle-data-v1\0");
+        postcard::to_io(self, &mut hash).map_err(|_| Rejection::InvalidSnapshot)?;
+        Ok(*hash.finalize().as_bytes())
+    }
+    pub fn checkpointed_floor(&self, partition: PartitionKey) -> u64 {
+        self.checkpointed_floors
+            .get(&partition)
+            .copied()
+            .unwrap_or(0)
+    }
+
     pub fn object_count(&self) -> usize {
         self.intents.len()
+    }
+
+    pub fn pending_objects(&self, after: Option<Id>, limit: usize) -> Result<Vec<Id>, Rejection> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        if limit == 0 || limit > 64 {
+            return Err(Rejection::Capacity);
+        }
+        Ok(self
+            .pending
+            .range((after.map_or(Unbounded, Excluded), Unbounded))
+            .take(limit)
+            .copied()
+            .collect())
     }
     pub fn published_end(&self, partition: PartitionKey) -> u64 {
         self.manifests
@@ -67,6 +95,13 @@ impl DataState {
 
     pub(crate) fn apply(&mut self, command: DataCommand) -> Result<DataOutcome, Rejection> {
         match command {
+            DataCommand::FloorCheckpoint { partition, before } => {
+                self.checkpointed_floors
+                    .entry(partition)
+                    .and_modify(|floor| *floor = (*floor).max(before))
+                    .or_insert(before);
+                Ok(DataOutcome::FloorCheckpoint)
+            }
             DataCommand::Authorize(plan) => self.authorize(plan),
             DataCommand::Abort(plan) => self.abort(plan),
             DataCommand::Published { plan, generations } => self.published(plan, &generations),
@@ -113,6 +148,7 @@ impl DataState {
                 checkpoint_generation: None,
             },
         );
+        self.pending.insert(id);
         Ok(DataOutcome::Authorized)
     }
 
@@ -139,6 +175,7 @@ impl DataState {
             intent.phase = IntentPhase::Aborted;
             intent.generation += 1;
         }
+        self.pending.remove(&id);
         Ok(DataOutcome::Aborted {
             generation: intent.generation,
         })
@@ -188,6 +225,7 @@ impl DataState {
             manifest.segments.sort_by_key(|s| s.offsets.start);
             manifest.published_end = manifest.published_end.max(index.offsets.end);
             manifest.generation = generation;
+            manifest.publication_generation = generation;
             updates.push((partition, manifest));
         }
         for old_id in &plan.replaces {
@@ -216,6 +254,7 @@ impl DataState {
             .ok_or(Rejection::InvalidSnapshot)?;
         intent.phase = IntentPhase::Published;
         intent.generation += 1;
+        self.pending.remove(&id);
         Ok(DataOutcome::Published)
     }
 
@@ -243,8 +282,15 @@ impl DataState {
         generation: u64,
     ) -> Result<DataOutcome, Rejection> {
         let previous = self.local_reclaim_end(partition);
-        if end < previous || end > self.published_end(partition) || generation == 0 {
+        if end < previous || end > self.published_end(partition) {
             return Err(Rejection::InvalidRange);
+        }
+        if end <= self.checkpointed_floor(partition) {
+            self.reclaim_ends.insert(partition, end);
+            return Ok(DataOutcome::Reclaimed);
+        }
+        if generation == 0 {
+            return Err(Rejection::CheckpointRequired);
         }
         let manifest = self
             .manifests
@@ -285,7 +331,24 @@ impl DataState {
                 return Err(Rejection::InvalidSnapshot);
             }
         }
+        if self.pending.len()
+            != self
+                .intents
+                .values()
+                .filter(|intent| intent.phase == IntentPhase::Authorized)
+                .count()
+            || self.pending.iter().any(|id| {
+                self.intents
+                    .get(id)
+                    .is_none_or(|intent| intent.phase != IntentPhase::Authorized)
+            })
+        {
+            return Err(Rejection::InvalidSnapshot);
+        }
         for (partition, manifest) in &self.manifests {
+            if manifest.generation == 0 || manifest.publication_generation != manifest.generation {
+                return Err(Rejection::InvalidSnapshot);
+            }
             let mut next = 0;
             for segment in &manifest.segments {
                 let intent = self
@@ -308,6 +371,9 @@ impl DataState {
             if next != manifest.published_end || self.local_reclaim_end(*partition) > next {
                 return Err(Rejection::InvalidSnapshot);
             }
+        }
+        if self.checkpointed_floors.len() > 8_192 {
+            return Err(Rejection::InvalidSnapshot);
         }
         Ok(())
     }

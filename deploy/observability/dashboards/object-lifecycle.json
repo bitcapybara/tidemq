@@ -1,0 +1,225 @@
+{
+  "id": null,
+  "uid": "tidemq-lifecycle",
+  "title": "TideMQ Object Lifecycle",
+  "tags": [
+    "tidemq",
+    "lifecycle"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "label": "Prometheus",
+        "current": {},
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Durable stage completion rate",
+      "description": "Example dashboard; stage retries are idempotent attempts. Inspect authoritative object blockers before deletion.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tidemq_lifecycle_registered_total[5m])",
+          "legendFormat": "registered",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "rate(tidemq_lifecycle_uploaded_total[5m])",
+          "legendFormat": "verified upload",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "rate(tidemq_lifecycle_published_total[5m])",
+          "legendFormat": "published",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "refId": "D",
+          "expr": "rate(tidemq_lifecycle_deleted_total[5m])",
+          "legendFormat": "deleted",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Reconciliation and bounded warnings",
+      "description": "Example dashboard; stage retries are idempotent attempts. Inspect authoritative object blockers before deletion.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(tidemq_lifecycle_retries_total[5m])",
+          "legendFormat": "attempts",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "rate(tidemq_lifecycle_failures_total[5m])",
+          "legendFormat": "failed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "rate(tidemq_lifecycle_suppressed_logs_total[5m])",
+          "legendFormat": "warnings suppressed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Lifecycle operation latency",
+      "description": "Example dashboard; stage retries are idempotent attempts. Inspect authoritative object blockers before deletion.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(tidemq_lifecycle_operation_seconds_bucket[5m])))",
+          "legendFormat": "P99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Active workers and local reclamation",
+      "description": "Example dashboard; stage retries are idempotent attempts. Inspect authoritative object blockers before deletion.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "tidemq_lifecycle_active",
+          "legendFormat": "workers",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "rate(tidemq_lifecycle_reclaimed_bytes_total[5m])",
+          "legendFormat": "reclaimed bytes/s",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${prometheus}"
+          }
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "type": "link",
+      "title": "Producer runbook",
+      "url": "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/producer-troubleshooting.zh-CN.md",
+      "targetBlank": true
+    }
+  ]
+}
