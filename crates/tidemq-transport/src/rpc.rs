@@ -415,13 +415,20 @@ impl RpcClient {
             .await;
         }
         self.inner.state.close();
-        if let Some(session) = &self.inner._session {
-            session.close();
+        let tasks = self
+            .inner
+            .tasks
+            .lock()
+            .map(|mut tasks| std::mem::take(&mut *tasks))
+            .unwrap_or_default();
+        for task in &tasks {
+            task.abort();
         }
-        if let Ok(mut tasks) = self.inner.tasks.lock() {
-            for task in std::mem::take(&mut *tasks) {
-                task.abort();
-            }
+        for task in tasks {
+            let _ = timeout_at(deadline, task).await;
+        }
+        if let Some(session) = &self.inner._session {
+            let _ = session.shutdown(deadline).await;
         }
     }
 }

@@ -25,6 +25,7 @@ struct Batch {
     uncertain: AtomicBool,
     in_flight: AtomicBool,
     _bytes: OwnedSemaphorePermit,
+    _producer_bytes: OwnedSemaphorePermit,
     _slot: OwnedSemaphorePermit,
     _domain_slot: OwnedSemaphorePermit,
     _charge: crate::metrics::Charge,
@@ -293,7 +294,7 @@ impl Producer {
 
     fn prepare(
         &self,
-        payload: public::ProduceBatch,
+        mut payload: public::ProduceBatch,
         request_slot: OwnedSemaphorePermit,
         domain_slot: OwnedSemaphorePermit,
         deadline: Instant,
@@ -313,6 +314,15 @@ impl Producer {
             .clone()
             .try_acquire_many_owned(size)
             .map_err(|_| Error::Admission)?;
+        let producer_memory = self
+            .client
+            .inner
+            .producer_bytes
+            .clone()
+            .try_acquire_many_owned(size)
+            .map_err(|_| Error::Admission)?;
+        // Small caller-owned Bytes views may retain a much larger backing allocation.
+        payload.messages = compact_messages(payload.messages)?;
         let operation = Id::random()?;
         let frame = self.client.frame(
             FrameKind::ProduceBatch,
@@ -334,6 +344,7 @@ impl Producer {
                 uncertain: AtomicBool::new(false),
                 in_flight: AtomicBool::new(true),
                 _bytes: memory,
+                _producer_bytes: producer_memory,
                 _slot: request_slot,
                 _domain_slot: domain_slot,
                 _charge: self.client.inner.metrics.charge(size, false),
@@ -530,6 +541,28 @@ impl Producer {
         }
         Ok(())
     }
+}
+
+fn compact_messages(messages: Vec<public::Message>) -> Result<Vec<public::Message>> {
+    let mut compact = Vec::new();
+    compact
+        .try_reserve_exact(messages.len())
+        .map_err(|_| Error::Admission)?;
+    for message in messages {
+        compact.push(public::Message {
+            key: copy_payload(&message.key)?,
+            body: copy_payload(&message.body)?,
+        });
+    }
+    Ok(compact)
+}
+
+fn copy_payload(bytes: &[u8]) -> Result<bytes::Bytes> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(bytes.len())
+        .map_err(|_| Error::Admission)?;
+    copy.extend_from_slice(bytes);
+    Ok(copy.into())
 }
 
 struct Attempt {

@@ -48,3 +48,5 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 `produce` and `consume` examples use `TIDEMQ_ENDPOINT`, `TIDEMQ_CA_PEM`, `TIDEMQ_TOKEN`, and `TIDEMQ_TOPIC_ID`. Consumption also requires `TIDEMQ_SUBSCRIPTION_ID`; `TIDEMQ_ORDERING=key` selects key-serial scheduling. See [the SDK guide](../../docs/guide/rust-sdk.zh-CN.md) for lifecycle, errors, memory and takeover contracts.
 
 The SDK tests run against a real UDP/TLS protocol peer. They do not replace the runtime RF1/RF3, failover, load-balancer, Linux or three-zone durability and performance suites.
+
+The shared pending-byte budget reserves at least one quarter for consumption, including one maximum delivery and its metadata. Read credit is reserved before issuing the request. Retained producer payloads are compact copies, so small `Bytes` views do not pin arbitrarily large caller allocations. The final consumer clone releases its local claim without acknowledging or deleting the durable assignment.

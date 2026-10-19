@@ -166,6 +166,60 @@ fn frame(
     )
     .unwrap()
 }
+
+#[tokio::test]
+async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
+    let pki = pki();
+    let mut server = external_server(&pki, config());
+    let address = server.local_addr();
+    let client = external_client(&pki, config());
+    let session = client
+        .connect(
+            target(&server),
+            &credentials(),
+            TrafficClass::Control,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let accepted = timeout(Duration::from_secs(1), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let rpc = tidemq::transport::rpc::RpcClient::from_session(session.clone(), Default::default())
+        .await
+        .unwrap();
+    rpc.close(deadline()).await;
+    accepted.shutdown(deadline()).await.unwrap();
+    assert!(session.connection().is_closed());
+    assert!(
+        session
+            .connection()
+            .open(StreamPurpose::Core, deadline())
+            .await
+            .is_err()
+    );
+    drop(accepted);
+    drop(session);
+    drop(rpc);
+    server.shutdown().await;
+    timeout(Duration::from_secs(1), async {
+        loop {
+            match std::net::UdpSocket::bind(address) {
+                Ok(socket) => {
+                    drop(socket);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::time::sleep(Duration::from_millis(5)).await
+                }
+                Err(error) => panic!("Unexpected listener release failure: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
 fn produce() -> Frame {
     let id = Id::random().unwrap();
     frame(

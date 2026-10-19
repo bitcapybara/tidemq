@@ -42,6 +42,19 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
+    fn producer_bytes(&self) -> Result<usize> {
+        let total = usize::try_from(self.max_pending_bytes).map_err(|_| Error::Admission)?;
+        let one_delivery = (self.protocol.max_message_bytes as usize)
+            .checked_add(crate::consumer::delivery_overhead())
+            .ok_or(Error::Admission)?;
+        total
+            .checked_sub((total / 4).max(one_delivery))
+            .filter(|available| *available > 256)
+            .ok_or(Error::Configuration {
+                reason: "pending bytes must reserve room for production and one maximum delivery",
+            })
+    }
+
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
@@ -84,6 +97,7 @@ impl ClientConfig {
             });
         }
         self.protocol.validate()?;
+        self.producer_bytes()?;
         self.transport.validate()?;
         MemoryBudget::new(MemoryLimits {
             total_bytes: self.transport_memory_bytes,
@@ -124,6 +138,7 @@ pub(crate) struct Inner {
     target: PeerTarget,
     pool: Pool,
     pub bytes: Arc<Semaphore>,
+    pub producer_bytes: Arc<Semaphore>,
     pub requests: Arc<Semaphore>,
     pub metrics: Arc<Metrics>,
     pub consumer_claims: std::sync::Mutex<HashSet<(Id, u32, Id)>>,
@@ -221,6 +236,7 @@ impl Client {
             tidemq_transport::Client::bind(bind, tls, config.transport.clone(), budget)?;
         let client = Self {
             inner: Arc::new(Inner {
+                producer_bytes: Arc::new(Semaphore::new(config.producer_bytes()?)),
                 bytes: Arc::new(Semaphore::new(config.max_pending_bytes as usize)),
                 requests: Arc::new(Semaphore::new(config.max_pending_requests as usize)),
                 config,

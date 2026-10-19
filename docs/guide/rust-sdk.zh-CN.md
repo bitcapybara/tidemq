@@ -78,3 +78,11 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 `produce` 示例需要 `TIDEMQ_ENDPOINT`、`TIDEMQ_CA_PEM`、`TIDEMQ_TOKEN`、`TIDEMQ_TOPIC_ID`；`consume` 再需要 `TIDEMQ_SUBSCRIPTION_ID`，设置 `TIDEMQ_ORDERING=key` 演示同 key 串行，否则并行。消息必须来自真实服务端，示例不内嵌伪造 broker。
 
 `sdk/rust/tests/quic_client.rs` 使用真实 UDP/TLS 的协议测试 peer，覆盖流水、回包丢失/取消/物理重连、固定 lanes、屏障/ACK 洞、同 key 失败、seek 隔离、ACK 切批和宿主 registry。它不证明 RF1/RF3 持久性、真实 Gateway 接管、Linux/负载均衡/三区性能；这些由集成运行时和后续端到端验收给出。
+
+## 小内存预算与句柄释放
+
+`max_pending_bytes` 是 SDK 逻辑在途数据和交付元数据的共享上限，传输端另有显式 `transport_memory_bytes` 预算。生产者最多占用共享上限扣除消费保留部分：保留至少四分之一，并且足以容纳一条最大消息及交付元数据。未决生产批次占满生产额度时，消费仍有准入空间；ACK 和控制继续使用独立核心传输额度。宿主持有的交付或 PendingBatch clone 会继续持有相应额度。
+
+消费 Read 在发出前预扣消息体、令牌及交付元数据的全部 credit，按返回交付拆分许可，未用部分归还；服务端不能用逻辑载荷字节越过调用者队列预算。小队列会降低请求条数，以容纳一条实际可装入的消息。SDK 为需跨未知结果保留的生产内容创建有界副本，避免一个很小的 Bytes 切片长期保留调用方的大块底层分配；这会增加一次复制，性能报告需包含该成本。
+
+最后一个 Consumer clone 释放后，本地 claim 额度回收；这不修改服务端持久 assignment，也不会替业务 ACK。连接关闭会终止并等待 SDK/RPC 所有的接收、发送和 stream acceptance 任务，最多等待传入 deadline。上游 QUIC endpoint 的异步释放可能仍需短暂调度与协议关闭过程；重启验证检测实际 UDP 端口释放，不通过复用端口绕过。

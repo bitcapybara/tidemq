@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, Mutex as StdMutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
@@ -14,7 +14,7 @@ use tidemq_protocol::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc},
-    task::JoinSet,
+    task::{JoinHandle, JoinSet},
     time::{Instant, timeout_at},
 };
 
@@ -186,6 +186,7 @@ pub struct Session {
     connection: Connection,
     initial: Mutex<Vec<FramedStream>>,
     incoming: Mutex<IncomingStreams>,
+    pump: StdMutex<Option<JoinHandle<()>>>,
 }
 
 struct IncomingStreams {
@@ -214,6 +215,45 @@ impl Session {
 
     pub fn close(&self) {
         self.connection.close();
+        if let Ok(pump) = self.pump.lock()
+            && let Some(pump) = pump.as_ref()
+        {
+            pump.abort();
+        }
+    }
+
+    pub async fn shutdown(&self, deadline: Instant) -> Result<()> {
+        self.close();
+        let pump = self.pump.lock().map_err(|_| Error::Poisoned)?.take();
+        if let Some(pump) = pump {
+            match timeout_at(deadline, pump).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) if error.is_cancelled() => {}
+                Ok(Err(error)) => {
+                    return Err(Error::Io {
+                        operation: "join stream acceptance pump",
+                        source: std::io::Error::other(error),
+                    });
+                }
+                Err(_) => {
+                    return Err(Error::Deadline {
+                        operation: "stop stream acceptance pump",
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.connection.close();
+        if let Ok(pump) = self.pump.get_mut()
+            && let Some(pump) = pump.take()
+        {
+            pump.abort();
+        }
     }
 }
 
@@ -311,7 +351,8 @@ pub(super) fn start_session(
 ) -> Arc<Session> {
     let (core_tx, core_rx) = mpsc::channel(state.config.core_streams);
     let (ordinary_tx, ordinary_rx) = mpsc::channel(ordinary_capacity(state.class, &state.config));
-    let session = Arc::new(Session {
+    let pump = tokio::spawn(pump_streams(state.clone(), acceptor, core_tx, ordinary_tx));
+    Arc::new(Session {
         connection: Connection {
             state: state.clone(),
         },
@@ -320,9 +361,8 @@ pub(super) fn start_session(
             core: core_rx,
             ordinary: ordinary_rx,
         }),
-    });
-    tokio::spawn(pump_streams(state, acceptor, core_tx, ordinary_tx));
-    session
+        pump: StdMutex::new(Some(pump)),
+    })
 }
 
 async fn pump_streams(
