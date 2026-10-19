@@ -3,17 +3,90 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tidemq_protocol::Id;
-use tidemq_protocol::common::{ErrorCode, Outcome};
+use tidemq_protocol::common::{ErrorCode, Outcome, TrafficClass};
+use tidemq_protocol::state::OffsetRange;
 use tokio::sync::watch;
 use tokio::time::Instant;
 
 use crate::broker::{DataCommand, DataResponse, WriterFence};
+use crate::budget::MemoryBudget;
 use crate::lifecycle::{Coordinator, ObjectPhase, RangeRequest};
 use crate::metadata::PartitionKey;
 use crate::ownership::Work;
+use crate::producer::{MessageData, ProducerState, Rejection};
 
 use super::service::Service;
 use super::{Error, Result};
+
+const ARCHIVE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+const ARCHIVE_MAX_MESSAGES: usize = 8192;
+const ARCHIVE_PAGE_BYTES: u64 = 1024 * 1024;
+const ARCHIVE_PAGE_MESSAGES: usize = 1024;
+
+fn select_archive_range(
+    producer: &ProducerState,
+    start: u64,
+    committed_end: u64,
+    budget: &MemoryBudget,
+    deadline: Instant,
+) -> Result<OffsetRange> {
+    let reservation = ARCHIVE_PAGE_MESSAGES
+        .checked_mul(std::mem::size_of::<MessageData>())
+        .and_then(|bytes| bytes.checked_add(ARCHIVE_PAGE_BYTES as usize))
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .ok_or_else(|| Error::invalid("Archive page reservation exceeds its finite bound"))?;
+    let _permit = budget
+        .try_reserve(TrafficClass::Bulk, reservation)
+        .map_err(|source| Error::operation("reserve bounded archive selection page", source))?;
+    let count = u64::try_from(ARCHIVE_MAX_MESSAGES)
+        .map_err(|_| Error::invalid("Archive message bound does not fit an offset"))?;
+    let end = start.saturating_add(count).min(committed_end);
+    if start >= end || committed_end > producer.committed_end() {
+        return Err(Error::invalid(
+            "Archive candidate is not a committed nonempty range",
+        ));
+    }
+    let mut next = start;
+    let mut bytes = 0_u64;
+    while next < end && bytes < ARCHIVE_MAX_BYTES {
+        if Instant::now() >= deadline {
+            return Err(Error::unavailable());
+        }
+        let messages = usize::try_from(end.saturating_sub(next))
+            .map_err(|_| Error::invalid("Archive message count does not fit the platform"))?
+            .min(ARCHIVE_PAGE_MESSAGES)
+            .min(producer.limits().max_batch_messages);
+        let max_bytes = ARCHIVE_MAX_BYTES
+            .saturating_sub(bytes)
+            .min(ARCHIVE_PAGE_BYTES)
+            .min(producer.limits().max_batch_bytes);
+        let page = match producer.archive_read(next, messages, max_bytes) {
+            Ok(page) => page,
+            // The remaining byte allowance may be smaller than the next complete message.
+            Err(Rejection::ReadLimit) if next > start => break,
+            Err(source) => {
+                return Err(Error::operation(
+                    "select bounded committed archive page",
+                    source,
+                ));
+            }
+        };
+        if page.messages.is_empty() {
+            return Err(Error::invalid(
+                "Archive page did not advance its committed range",
+            ));
+        }
+        for message in &page.messages {
+            bytes = message
+                .logical_bytes()
+                .and_then(|length| bytes.checked_add(length))
+                .ok_or_else(|| Error::invalid("Archive byte counter overflowed"))?;
+        }
+        next = page.next_offset;
+        // Each page contains Bytes references only; release them before reading another page.
+    }
+    Ok(OffsetRange { start, end: next })
+}
 
 #[derive(Default)]
 struct Progress {
@@ -282,8 +355,9 @@ impl Service {
             .map_err(|source| Error::operation("read bounded archive candidates", source))?
             .map_err(super::data::data_rejection)?;
         progress.partitions = page.next;
+        let candidate_count = page.partitions.len();
         let mut checked_compaction = false;
-        for candidate in page.partitions {
+        for (index, candidate) in page.partitions.into_iter().enumerate() {
             self.advance_retention(group, candidate.partition, deadline)
                 .await?;
             let Some(coordinator) = self.objects.get(&group) else {
@@ -363,17 +437,28 @@ impl Service {
             if candidate.published_end >= candidate.committed_end {
                 continue;
             }
-            let end = candidate
-                .committed_end
-                .min(candidate.published_end.saturating_add(16));
+            let offsets = super::wire::within(
+                deadline,
+                replica.state.try_with_application(|state| {
+                    select_archive_range(
+                        state
+                            .producer(candidate.partition)
+                            .ok_or_else(Error::unavailable)?,
+                        candidate.published_end,
+                        candidate.committed_end,
+                        &self.budget,
+                        deadline,
+                    )
+                }),
+            )
+            .await?
+            .map_err(|source| Error::operation("read byte-bounded archive range", source))??;
+            let end = offsets.end;
             let prepared = coordinator
                 .prepare(
                     vec![RangeRequest {
                         partition: candidate.partition,
-                        offsets: tidemq_protocol::state::OffsetRange {
-                            start: candidate.published_end,
-                            end,
-                        },
+                        offsets,
                     }],
                     Vec::new(),
                     deadline.into_std(),
@@ -407,6 +492,13 @@ impl Service {
                 .reclaim(candidate.partition, end, deadline.into_std())
                 .await
                 .map_err(|source| Error::operation("reclaim published hot bodies", source))?;
+            // Resume after this partition so a hot backlog cannot starve the rest of the page.
+            progress.partitions =
+                if index.saturating_add(1) < candidate_count || page.next.is_some() {
+                    Some(candidate.partition)
+                } else {
+                    None
+                };
             break;
         }
         Ok(())
@@ -471,5 +563,153 @@ impl Service {
             return Err(Error::invalid("Unexpected retention command outcome"));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use crate::budget::MemoryLimits;
+    use crate::producer::{AppendBatch, ProducerLimits, RegisterProducer};
+
+    use super::*;
+
+    fn budget() -> MemoryBudget {
+        MemoryBudget::new(MemoryLimits {
+            total_bytes: 192 * 1024 * 1024,
+            control_reserved_bytes: 32 * 1024 * 1024,
+        })
+        .unwrap()
+    }
+
+    fn producer(partition: u32, count: usize, message_bytes: usize) -> ProducerState {
+        let mut state =
+            ProducerState::new(Id::random().unwrap(), partition, ProducerLimits::default())
+                .unwrap();
+        let session = state
+            .register(
+                1,
+                RegisterProducer {
+                    producer_id: Id::random().unwrap(),
+                    expected_registration_epoch: 1,
+                },
+            )
+            .unwrap();
+        let message = MessageData {
+            key: Bytes::from_static(b"k"),
+            body: Bytes::from(vec![b'x'; message_bytes - 1]),
+        };
+        let messages = vec![message; count];
+        let batch_size = state
+            .limits()
+            .max_batch_messages
+            .min(state.limits().max_batch_bytes as usize / message_bytes);
+        let mut first_sequence = 0;
+        for messages in messages.chunks(batch_size) {
+            let content_digest = tidemq_protocol::producer::canonical_produce_digest_parts(
+                state.topic_id(),
+                partition,
+                session.producer_id,
+                session.producer_epoch,
+                first_sequence,
+                messages
+                    .iter()
+                    .map(|message| (message.key.as_ref(), message.body.as_ref())),
+            )
+            .unwrap();
+            let result = state
+                .append(
+                    2,
+                    AppendBatch {
+                        topic_id: state.topic_id(),
+                        partition_id: partition,
+                        producer_id: session.producer_id,
+                        producer_epoch: session.producer_epoch,
+                        first_sequence,
+                        messages: messages.to_vec(),
+                        content_digest,
+                    },
+                )
+                .unwrap();
+            first_sequence += u64::from(result.message_count);
+        }
+        state
+    }
+
+    #[test]
+    fn archive_tick_advances_small_messages_past_sixteen_with_a_finite_count_and_deadline() {
+        let budget = budget();
+        let available = budget.available_bytes();
+        let state = producer(0, ARCHIVE_MAX_MESSAGES + 1, 8);
+        let until = Instant::now() + Duration::from_secs(1);
+        let range = select_archive_range(&state, 0, state.committed_end(), &budget, until).unwrap();
+        assert_eq!(
+            range,
+            OffsetRange {
+                start: 0,
+                end: 8192
+            }
+        );
+        assert_eq!(budget.available_bytes(), available);
+        let remaining =
+            select_archive_range(&state, range.end, state.committed_end(), &budget, until).unwrap();
+        assert_eq!(
+            remaining,
+            OffsetRange {
+                start: 8192,
+                end: 8193
+            }
+        );
+        let snapshot = select_archive_range(&state, 0, 33, &budget, until).unwrap();
+        assert_eq!(snapshot.end, 33);
+        assert!(
+            select_archive_range(&state, 0, state.committed_end(), &budget, Instant::now())
+                .is_err()
+        );
+        assert_eq!(budget.available_bytes(), available);
+    }
+
+    #[test]
+    fn archive_tick_bounds_large_messages_and_shares_the_original_budget_across_partitions() {
+        let budget = budget();
+        let available = budget.available_bytes();
+        let states = [producer(0, 33, 256 * 1024 - 7), producer(1, 33, 256 * 1024)];
+        for state in &states {
+            let range = select_archive_range(
+                state,
+                0,
+                state.committed_end(),
+                &budget,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .unwrap();
+            assert_eq!(range.end, 32);
+            let bytes = (range.start..range.end)
+                .map(|offset| state.message_bytes_at(offset).unwrap())
+                .sum::<u64>();
+            assert!(bytes <= ARCHIVE_MAX_BYTES);
+            assert!(bytes + state.message_bytes_at(range.end).unwrap() > ARCHIVE_MAX_BYTES);
+            assert_eq!(budget.available_bytes(), available);
+        }
+        let busy = budget
+            .try_reserve(
+                TrafficClass::Bulk,
+                u32::try_from(budget.available_data_bytes()).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            select_archive_range(
+                &states[0],
+                0,
+                states[0].committed_end(),
+                &budget,
+                Instant::now() + Duration::from_secs(1),
+            )
+            .is_err()
+        );
+        assert!(budget.available_core_bytes() > 0);
+        drop(busy);
+        assert_eq!(budget.available_bytes(), available);
     }
 }

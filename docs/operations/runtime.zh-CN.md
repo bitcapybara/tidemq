@@ -38,7 +38,7 @@ TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --
 
 ## 阶段定位与自动放置
 
-`tidemq_operations_total` 与 `tidemq_stage_duration_seconds` 按固定 Read、Ack、Control 操作和结果记录本进程请求完成，Total 使用单调时钟，取消时保留 Unknown。Produce 继续使用 Broker 的提交指标。WAL 真实 Admission、Queue、Append、Sync 和 Apply 阶段接入同一注册表；`/diagnostics` 的 `metadata_storage` 与各 `data_groups.storage` 提供 committed/applied、apply failure、journal runtime 与恢复状态，帮助区分传输等待、共识等待和磁盘同步。
+`tidemq_operations_total` 与 `tidemq_stage_duration_seconds` 按固定 Read、Ack、Control 操作和结果记录本进程请求完成，Total 使用单调时钟，取消时保留 Unknown。Produce 继续使用 Broker 的提交指标。WAL 的真实 WalAdmission、WalQueue、Append、Sync、CommitPersist 和 Apply 阶段接入同一注册表；其中 CommitPersist 表示提交标记持久化，Broker 的 Admission、Queue 和 Commit 保持各自的请求语义，避免混合分布；`/diagnostics` 的 `metadata_storage` 与各 `data_groups.storage` 提供 committed/applied、apply failure、journal runtime 与恢复状态，帮助区分传输等待、共识等待和磁盘同步。
 
 ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记录。`tidemq_control_validity_remaining_seconds` 是有限本地已验证 lease 集合的最小剩余时间；无证据、过期或暂时无法读取时为零。`tidemq_admitted_bytes` 是共用 MemoryBudget 当前已许可占用，不能替代 RSS 或分配器统计。
 
@@ -55,3 +55,5 @@ ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记�
 后台压缩与新归档共用每数据组的单 owned 维护循环：先对账原对象 ID，再推进 retention、floor 快照和本地 reclaim，通过 BackgroundSnapshot 配额后每轮至多检查八个对象并替换一个候选。完全没有新写时仍会检查部分失效对象。压缩从带短期 pin 的 S3 正文复制所有存活区间，持久化替换任务，经当前全 voter 检查点后，下一轮才可删除无引用旧对象；Pinned 和恢复依赖作为保留条件。`tidemq_lifecycle_compacted_total` 与 `tidemq_lifecycle_deleted_total` 可分别验证替换和真正删除的推进。
 
 `actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_reclaims_sources` 使用真实 RustFS、Raft、SDK 和默认 192/32 MiB 应用/控制预算。它将测试保留时间设为零，验证原正文已本地回收、部分 ACK 推进 floor、自动压缩及旧 S3 对象删除后，同一个 Consumer 仍能读取存活后缀并提交 ACK。生产保留时间仍使用显式配置；测试不会修改默认策略。
+
+后台归档每个数据组每轮至多生成一个 pack，按实际 key 与正文总字节选择连续已提交范围，最多 8 MiB、8192 条消息。选择过程复用 `archive_read` 的有限页（最多 1024 条、1 MiB，并进一步收敛到该 Producer 的配置限制），页面引用先占用共享 MemoryBudget，退出即释放，再由原有 pack 构建许可接管。它不会复制或遍历完整积压，不提高默认 192/32 MiB 预算；单条消息必须满足已有消息及页上限。原 5 秒截止时间和定时周期保持有效，达到条数、字节或时间边界后交给下一轮；分区游标从本轮实际归档位置继续，避免一个分区长期占用全部机会。
