@@ -1,6 +1,6 @@
 # 消费与持久 ACK
 
-当前 `subscription` 模块是供服务端组合的数据组状态机；本文描述消费契约。对外 SDK 网络 API 和可运行服务入口以 SDK/快速开始文档中的已实现范围为准，不把纯状态接口当成已经运行的端到端服务。
+同仓库 Rust SDK 通过实际 QUIC 调用数据组持久订阅；[SDK 指南](rust-sdk.zh-CN.md)给出 Claim、接收与 ACK 用法，[运行指南](running.zh-CN.md)给出服务入口。正文可能来自 WAL 热路径或 S3 冷路径，两者共用相同 offset、attempt 与持久 ACK 权威。
 
 1. 创建订阅时选定仍被保留的 start offset；记录返回的不可复用 subscription UUID。
 2. 以新的 session UUID 和当前 cursor/assignment 做 Claim。普通 Claim 不会抢占另一个活跃 session；显式接管必须带旧 session 并具备权限。
