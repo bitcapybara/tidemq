@@ -32,6 +32,10 @@ pub trait Application:
         + 'static;
 
     fn apply(&mut self, command: Self::Command) -> Self::Response;
+    /// Local failures must stop this replica instead of producing a divergent business result.
+    fn try_apply(&mut self, command: Self::Command) -> std::io::Result<Self::Response> {
+        Ok(self.apply(command))
+    }
     fn validate(&self) -> std::io::Result<()>;
 }
 

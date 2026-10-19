@@ -12,7 +12,9 @@ use crate::observability::metrics::Stage;
 use crate::wal::{self, Error, FRAME_HEADER_BYTES, Result};
 
 use super::snapshot::{self, Envelope};
-use super::store::{Applied, FORMAT_VERSION, LogState, SNAPSHOT_FILE, storage_error};
+use super::store::{
+    Applied, FORMAT_VERSION, LogState, SNAPSHOT_FILE, ensure_application_available, storage_error,
+};
 use super::{Application, DiskLog, DiskStateMachine, LogEntry, SnapshotFile, TypeConfig};
 
 pub(crate) fn recover<A: Application>(applied: &mut Applied<A>, log: &LogState<A>) -> Result<()> {
@@ -56,7 +58,7 @@ pub(crate) fn recover<A: Application>(applied: &mut Applied<A>, log: &LogState<A
                 reason: "committed recovery range contains a gap",
             });
         }
-        apply_entry(applied, entry.clone());
+        apply_entry(applied, entry.clone())?;
         expected = expected.checked_add(1).ok_or(Error::Limit {
             name: "recovery index",
         })?;
@@ -73,16 +75,24 @@ pub(crate) fn recover<A: Application>(applied: &mut Applied<A>, log: &LogState<A
         .map_err(|error| Error::io("application recovery", error))
 }
 
-fn apply_entry<A: Application>(state: &mut Applied<A>, entry: LogEntry<A>) -> A::Response {
-    state.last_applied = Some(entry.log_id);
-    match entry.payload {
+fn apply_entry<A: Application>(state: &mut Applied<A>, entry: LogEntry<A>) -> Result<A::Response> {
+    ensure_application_available(state)?;
+    let response = match entry.payload {
         EntryPayload::Blank => A::Response::default(),
         EntryPayload::Membership(membership) => {
             state.membership = StoredMembership::new(Some(entry.log_id), membership);
             A::Response::default()
         }
-        EntryPayload::Normal(command) => state.application.apply(command),
-    }
+        EntryPayload::Normal(command) => match state.application.try_apply(command) {
+            Ok(response) => response,
+            Err(source) => {
+                state.failed = true;
+                return Err(Error::io("application apply", source));
+            }
+        },
+    };
+    state.last_applied = Some(entry.log_id);
+    Ok(response)
 }
 
 impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
@@ -95,6 +105,8 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
         StorageError<u64>,
     > {
         let applied = self.0.applied.read().await;
+        ensure_application_available(&applied)
+            .map_err(|error| storage_error(ErrorSubject::StateMachine, ErrorVerb::Read, error))?;
         Ok((applied.last_applied, applied.membership.clone()))
     }
 
@@ -119,6 +131,7 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
         &mut self,
     ) -> std::result::Result<Box<SnapshotFile>, StorageError<u64>> {
         let result = async {
+            ensure_application_available(&*self.0.applied.read().await)?;
             let mut incoming = self.0.incoming.lock().await;
             if let Some(previous) = incoming.take() {
                 match fs::remove_file(&previous).await {
@@ -185,6 +198,7 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
             }
             let _serial = self.0.snapshot_serial.lock().await;
             let mut applied = self.0.applied.write().await;
+            ensure_application_available(&applied)?;
             if meta.last_log_id < applied.last_applied {
                 return Err(Error::Configuration {
                     reason: "snapshot would revert applied state",
@@ -195,6 +209,7 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
                 application: envelope.application,
                 last_applied: meta.last_log_id,
                 membership: meta.last_membership.clone(),
+                failed: false,
             };
             *self.0.snapshot_meta.write().await = Some(meta.clone());
             tracing::info!(event = "raft_snapshot_installed", node_id = self.0.identity.node_id,
@@ -216,6 +231,8 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
         &mut self,
     ) -> std::result::Result<Option<Snapshot<TypeConfig<A>>>, StorageError<u64>> {
         let _serial = self.0.snapshot_serial.lock().await;
+        ensure_application_available(&*self.0.applied.read().await)
+            .map_err(|error| storage_error(ErrorSubject::StateMachine, ErrorVerb::Read, error))?;
         let meta = self.0.snapshot_meta.read().await.clone();
         match meta {
             Some(meta) => snapshot::open_snapshot(
@@ -250,6 +267,7 @@ impl<A: Application> DiskStateMachine<A> {
             return Ok(Vec::new());
         };
         let mut applied = self.0.applied.write().await;
+        ensure_application_available(&applied)?;
         let mut previous = applied.last_applied;
         for entry in &batch {
             if previous.is_some_and(|previous| entry.log_id.index <= previous.index) {
@@ -268,7 +286,7 @@ impl<A: Application> DiskStateMachine<A> {
         let responses = batch
             .into_iter()
             .map(|entry| apply_entry(&mut applied, entry))
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         if let Some(metrics) = &self.0.metrics {
             metrics.observe(Stage::Apply, start.elapsed().as_secs_f64());
         }
@@ -290,7 +308,11 @@ impl<A: Application> DiskStateMachine<A> {
     #[tracing::instrument(name = "raft_snapshot_build", level = "debug", skip_all, fields(node_id = self.0.identity.node_id, group_id = self.0.identity.group.group_id))]
     async fn build_durable_snapshot(&self) -> Result<Snapshot<TypeConfig<A>>> {
         let _serial = self.0.snapshot_serial.lock().await;
-        let applied = self.0.applied.read().await.clone();
+        let applied = {
+            let applied = self.0.applied.read().await;
+            ensure_application_available(&applied)?;
+            applied.clone()
+        };
         let identity = tidemq_protocol::Id::random().map_err(|error| Error::Writer {
             reason: error.to_string(),
         })?;

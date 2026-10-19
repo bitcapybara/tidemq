@@ -200,6 +200,7 @@ pub(crate) async fn load<A: Application>(
     let meta = envelope.meta;
     Ok((
         Applied {
+            failed: false,
             application: envelope.application,
             last_applied: meta.last_log_id,
             membership: meta.last_membership.clone(),

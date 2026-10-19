@@ -110,3 +110,11 @@ payload 使用 postcard 1.1.3 二进制编码，写入经过有界 `std::io::Wri
 `sync_all`、rename 和目录同步依赖操作系统/文件系统及存储设备正确兑现持久化语义。Linux/macOS 使用实际平台 API；SIGKILL 只验证进程崩溃，不认证宿主掉电、控制器缓存或硬件故障模型。
 
 官方依据：[OpenRaft 0.9.25](https://docs.rs/openraft/0.9.25/openraft/)、[RaftLogStorage](https://docs.rs/openraft/0.9.25/openraft/storage/trait.RaftLogStorage.html)、[RaftStateMachine](https://docs.rs/openraft/0.9.25/openraft/storage/trait.RaftStateMachine.html)、[RaftNetwork](https://docs.rs/openraft/0.9.25/openraft/network/trait.RaftNetwork.html)、[postcard to_io](https://docs.rs/postcard/1.1.3/postcard/fn.to_io.html)、[postcard take_from_bytes](https://docs.rs/postcard/1.1.3/postcard/fn.take_from_bytes.html)。
+
+## 本地 apply 故障与确定性
+
+Application::try_apply 默认调用确定性 apply；存在 fallible allocator 操作的应用须 override，将本地分配/内部状态损坏作为 io::Error 返回。此类错误不能转换为普通业务拒绝：不同副本的内存余量可能不同，记录不同业务响应会分叉。
+
+storage 在 try_apply 成功后才推进 last_applied。失败会锁存 application_failed，向 OpenRaft 返回 StorageError 停止该副本；之后拒绝新 apply、权威查询、快照生成/安装。应用可能已部分变更，原诊断方法只供本地排查；MetadataAuthority、DataAuthority 和业务权威读取使用 try_with_applied/try_with_application，仍须先取得真实 Raft barrier。不能用失败状态生成恢复证据或新快照。更早已复制出的完整健康快照不包含失败状态。
+
+已提交的日志不因本地分配失败被跳过或改写。重启从最后有效快照与已提交 tail 重新 try_apply；资源故障仍存在则启动失败。tests/application_failure.rs 注入部分状态修改后的分配错误，验证旧 applied 位置不前移、快照字节不变、所有权威读取拒绝，并在重启重放同一 committed entry 后恢复正确值。没有通过全状态 clone 在每条热写前做备份；业务应用仍应先完成纯检查和 fallible reserve，再做权威状态修改。

@@ -103,6 +103,7 @@ pub(crate) struct Applied<A: Application> {
     pub application: A,
     pub last_applied: Option<LogId<u64>>,
     pub membership: StoredMembership<u64, BasicNode>,
+    pub failed: bool,
 }
 
 impl<A: Application> Default for Applied<A> {
@@ -111,8 +112,18 @@ impl<A: Application> Default for Applied<A> {
             application: A::default(),
             last_applied: None,
             membership: StoredMembership::default(),
+            failed: false,
         }
     }
+}
+
+pub(crate) fn ensure_application_available<A: Application>(state: &Applied<A>) -> Result<()> {
+    if state.failed {
+        return Err(Error::Writer {
+            reason: "application stopped after a fatal local apply failure".into(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) struct Shared<A: Application> {
@@ -147,6 +158,7 @@ pub struct StorageDiagnostics {
     pub vote: Option<Vote<u64>>,
     pub committed_log: Option<LogId<u64>>,
     pub applied_log: Option<LogId<u64>>,
+    pub application_failed: bool,
     pub purged_log: Option<LogId<u64>>,
     pub snapshot_log: Option<LogId<u64>>,
     pub retained_log_entries: usize,
@@ -254,6 +266,7 @@ impl<A: Application> DiskLog<A> {
             vote: log.vote,
             committed_log: log.committed,
             applied_log: applied.last_applied,
+            application_failed: applied.failed,
             purged_log: log.purged,
             snapshot_log: snapshot.as_ref().and_then(|meta| meta.last_log_id),
             retained_log_entries: log.entries.len(),
@@ -277,9 +290,26 @@ impl<A: Application> DiskLog<A> {
 }
 
 impl<A: Application> DiskStateMachine<A> {
+    /// A fatal local apply failure invalidates every authoritative read until disk recovery.
+    /// Obtain a real Raft read barrier first and keep the projection bounded and free of IO.
+    pub async fn try_with_application<R>(&self, query: impl FnOnce(&A) -> R) -> Result<R> {
+        self.try_with_applied(|application, _| query(application))
+            .await
+    }
+
+    pub async fn try_with_applied<R>(
+        &self,
+        query: impl FnOnce(&A, Option<LogId<u64>>) -> R,
+    ) -> Result<R> {
+        let applied = self.0.applied.read().await;
+        ensure_application_available(&applied)?;
+        Ok(query(&applied.application, applied.last_applied))
+    }
+
     /// Borrows local state for a bounded synchronous query. The closure must not perform IO,
     /// scan retained history, or copy the entire state. Obtain a Raft read barrier first when
-    /// authority or linearizability is required; this method alone only reads the local replica.
+    /// authority or linearizability is required; this diagnostic-only method can show failed
+    /// partial state. Authoritative callers must use `try_with_application` instead.
     pub async fn with_application<R>(&self, query: impl FnOnce(&A) -> R) -> R {
         self.with_applied(|application, _| query(application)).await
     }
