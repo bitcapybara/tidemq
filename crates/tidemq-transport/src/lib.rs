@@ -1,6 +1,7 @@
 //! Authenticated, bounded QUIC lanes. Transport receipt never means durable commit.
 
 pub mod budget;
+pub mod rpc;
 
 mod auth;
 mod endpoint;
