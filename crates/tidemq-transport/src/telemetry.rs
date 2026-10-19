@@ -3,13 +3,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use prometheus_client::{
     collector::Collector,
     encoding::{DescriptorEncoder, EncodeMetric},
-    metrics::counter::ConstCounter,
+    metrics::{counter::ConstCounter, gauge::ConstGauge},
 };
 use serde::Serialize;
 
 #[derive(Debug, Default)]
 pub struct TransportMetrics {
     pub(super) connections: AtomicU64,
+    pub(super) active_connections: AtomicU64,
     pub(super) rejected: AtomicU64,
     pub(super) streams: AtomicU64,
     pub(super) frames_sent: AtomicU64,
@@ -29,6 +30,8 @@ pub struct TransportMetrics {
 #[derive(Clone, Debug, Serialize)]
 pub struct TransportSnapshot {
     pub connections_total: u64,
+    /// Physical connection resources still retained, including draining handles.
+    pub active_connections: u64,
     pub rejected_total: u64,
     pub streams_total: u64,
     pub frames_sent_total: u64,
@@ -61,6 +64,7 @@ impl TransportMetrics {
     pub fn snapshot(&self) -> TransportSnapshot {
         TransportSnapshot {
             connections_total: self.connections.load(Ordering::Relaxed),
+            active_connections: self.active_connections.load(Ordering::Relaxed),
             rejected_total: self.rejected.load(Ordering::Relaxed),
             streams_total: self.streams.load(Ordering::Relaxed),
             frames_sent_total: self.frames_sent.load(Ordering::Relaxed),
@@ -82,6 +86,13 @@ impl TransportMetrics {
 impl Collector for TransportMetrics {
     // Inline fixed descriptors make the scrape's series and allocation bounds explicit.
     fn encode(&self, mut encoder: DescriptorEncoder) -> std::result::Result<(), std::fmt::Error> {
+        let active = ConstGauge::new(self.active_connections.load(Ordering::Relaxed));
+        active.encode(encoder.encode_descriptor(
+            "active_connections",
+            "Physical connection resources including retained draining handles",
+            None,
+            active.metric_type(),
+        )?)?;
         let counters = [
             (
                 "connections",

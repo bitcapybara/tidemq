@@ -4,6 +4,7 @@ mod budget;
 mod drain;
 mod membership;
 mod placement;
+pub mod remote;
 mod telemetry;
 mod types;
 
@@ -53,6 +54,18 @@ pub enum Error {
     Storage { source: crate::wal::Error },
     #[snafu(display("Scaling authority is unavailable or does not match the stable topology"))]
     Authority,
+    #[snafu(display("Scaling trusted peer request failed"))]
+    Remote {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    #[snafu(display("Scaling native snapshot observation failed"))]
+    Snapshot {
+        source: Box<openraft::StorageError<u64>>,
+    },
+    #[snafu(display("Scaling snapshot file observation failed"))]
+    SnapshotIo { source: std::io::Error },
+    #[snafu(display("Scaling observation worker failed"))]
+    Worker { source: tokio::task::JoinError },
     #[snafu(display("Scaling state lock is poisoned"))]
     Poisoned,
 }
