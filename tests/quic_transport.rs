@@ -361,6 +361,53 @@ async fn trusted_tls_pipelines_large_frames_across_small_windows() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_connections_follow_retained_resources_without_counting_clones() {
+    let pki = pki();
+    let mut server = external_server(&pki, config());
+    let client = external_client(&pki, config());
+    let session = client
+        .connect(
+            target(&server),
+            &credentials(),
+            TrafficClass::Produce,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let accepted = server.accept().await.unwrap();
+    let session_clone = session.clone();
+    let connection = session.connection();
+    let connection_clone = connection.clone();
+    assert_eq!(client.metrics.snapshot().active_connections, 1);
+    assert_eq!(server.metrics.snapshot().active_connections, 1);
+    session.shutdown(deadline()).await.unwrap();
+    accepted.shutdown(deadline()).await.unwrap();
+    assert_eq!(client.metrics.snapshot().active_connections, 1);
+    drop(session_clone);
+    drop(session);
+    drop(connection);
+    assert_eq!(client.metrics.snapshot().active_connections, 1);
+    drop(connection_clone);
+    drop(accepted);
+    tokio::time::timeout_at(deadline(), async {
+        while client.metrics.snapshot().active_connections != 0
+            || server.metrics.snapshot().active_connections != 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("closed connection resources must release their admission envelope");
+    assert_eq!(client.metrics.snapshot().connections_total, 1);
+    let mut registry = prometheus_client::registry::Registry::with_prefix("tidemq_quic_test");
+    registry.register_collector(Box::new(client.metrics.clone()));
+    let mut text = String::new();
+    prometheus_client::encoding::text::encode(&mut text, &registry).unwrap();
+    assert!(text.contains("# TYPE tidemq_quic_test_active_connections gauge"));
+    assert!(text.contains("tidemq_quic_test_active_connections 0"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn untrusted_certificate_and_wrong_hostname_are_rejected() {
     let pki = pki();
     let server = external_server(&pki, config());
