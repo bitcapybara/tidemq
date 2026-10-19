@@ -27,7 +27,9 @@ use crate::{
 };
 
 pub use tick::TickReport;
-pub use wire::{Query, Reply, decode_query, decode_reply, encode_query, encode_reply};
+pub use wire::{
+    Query, ReplicaFailure, Reply, decode_query, decode_reply, encode_query, encode_reply,
+};
 
 /// Calls use the configured certificate-bound target, fresh request IDs and the original deadline.
 pub trait Rpc: Send + Sync + 'static {
@@ -171,7 +173,8 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                     .try_acquire_owned()
                     .map_err(|_| Error::Overloaded)?,
             ),
-            Query::View { .. }
+            Query::Capacity { .. }
+            | Query::View { .. }
             | Query::ObserveStable { .. }
             | Query::Finish { .. }
             | Query::Group { .. } => Some(
@@ -183,7 +186,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             _ => None,
         };
         let result = match query {
-            Query::Capacity { group, node } => self.capacity_reply(group, node),
+            Query::Capacity { group, node } => self.capacity_reply(group, node, deadline).await,
             Query::Group { group } => self.group(group, deadline).await,
             Query::View { plan } => self
                 .view(&plan, deadline)
@@ -233,9 +236,33 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         Ok(())
     }
 
-    fn capacity_reply(&self, group: u64, node: u64) -> Result<Reply> {
-        if node != self.config.node_id || !self.replicas.data.contains_key(&group) {
+    async fn capacity_reply(&self, group: u64, node: u64, deadline: Instant) -> Result<Reply> {
+        if node != self.config.node_id {
             return Err(Error::Authority);
+        }
+        let replica = self.replicas.data.get(&group).ok_or(Error::Authority)?;
+        // This local failed gate is neither quorum nor membership-completion evidence.
+        let application_failed = tokio::time::timeout_at(deadline, async {
+            replica.state.0.applied.read().await.failed
+        })
+        .await;
+        match application_failed {
+            Ok(true) => {
+                return Ok(Reply::ReplicaFailed {
+                    group,
+                    node,
+                    failure: ReplicaFailure::ApplicationFailed,
+                });
+            }
+            Err(_) => return Ok(Reply::CapacityUnavailable),
+            Ok(false) => {}
+        }
+        if replica.raft.metrics().borrow().running_state.is_err() {
+            return Ok(Reply::ReplicaFailed {
+                group,
+                node,
+                failure: ReplicaFailure::RaftStopped,
+            });
         }
         let Some(report) = self.capacity.snapshot() else {
             return Ok(Reply::CapacityUnavailable);
