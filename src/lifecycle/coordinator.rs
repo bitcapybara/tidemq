@@ -88,13 +88,16 @@ pub struct GuardedPage {
 }
 
 impl GuardedPage {
+    pub(crate) fn valid_until(&self) -> Result<Instant> {
+        guarded_page_expiry(
+            self.pin.as_ref().map(|pin| pin.expires_at),
+            self.leases.iter().map(ControlLease::expires_at),
+        )
+    }
+
     pub fn check(&self) -> Result<()> {
         self.pin.as_ref().ok_or(Error::Deadline)?.check()?;
-        if self
-            .leases
-            .iter()
-            .any(|lease| Instant::now() >= lease.expires_at())
-        {
+        if Instant::now() >= self.valid_until()? {
             return Err(Error::Deadline);
         }
         Ok(())
@@ -133,6 +136,15 @@ impl GuardedPage {
         }
         Ok(())
     }
+}
+
+fn guarded_page_expiry(
+    pin: Option<Instant>,
+    leases: impl Iterator<Item = Instant>,
+) -> Result<Instant> {
+    let pin = pin.ok_or(Error::Deadline)?;
+    let lease = leases.min().ok_or(Error::Configuration)?;
+    Ok(pin.min(lease))
 }
 
 impl Coordinator {
@@ -1301,4 +1313,36 @@ fn copied(bytes: &[u8]) -> Result<bytes::Bytes> {
         .map_err(|source| Error::Allocation { source })?;
     owned.extend_from_slice(bytes);
     Ok(bytes::Bytes::from(owned))
+}
+
+#[cfg(test)]
+mod guard_expiry_tests {
+    use super::*;
+
+    #[test]
+    fn cold_page_expiry_includes_its_pin_and_every_independent_control_lease() {
+        let now = Instant::now();
+        let pin = now + Duration::from_millis(400);
+        let leases = [
+            now + Duration::from_millis(900),
+            now + Duration::from_millis(200),
+            now + Duration::from_millis(100),
+        ];
+        assert_eq!(
+            guarded_page_expiry(Some(pin), leases.into_iter()).unwrap(),
+            now + Duration::from_millis(100)
+        );
+        assert_eq!(
+            guarded_page_expiry(Some(now + Duration::from_millis(50)), leases.into_iter()).unwrap(),
+            now + Duration::from_millis(50)
+        );
+        assert!(matches!(
+            guarded_page_expiry(None, leases.into_iter()),
+            Err(Error::Deadline)
+        ));
+        assert!(matches!(
+            guarded_page_expiry(Some(pin), std::iter::empty()),
+            Err(Error::Configuration)
+        ));
+    }
 }

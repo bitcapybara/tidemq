@@ -1435,9 +1435,8 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     )
     .await
     .unwrap();
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 33);
     for offset in 0..33 {
-        let delivery = consumer.next().await.unwrap().unwrap();
+        let delivery = consumer.recv(deadline()).await.unwrap().unwrap();
         assert_eq!(delivery.offset(), offset);
         assert_eq!(delivery.body(), b"cold-body");
         assert_eq!(

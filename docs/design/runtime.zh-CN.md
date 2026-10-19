@@ -23,6 +23,10 @@ Metadata Leader 的 owned reconcile 任务使用受信只读 Probe 自动识别 
 
 消费者的 B/D 分界 H 由 assignment 冻结。连续 enqueue 的 `received_before>=H` 只授权开始 D；ACK frontier 尚小于 H 时仍允许 B 的旧消息重投。D 严格从 H 开始。ACK hole ranges 仅帮助判断连续收到前缀，不能作为业务 ACK。
 
+Read 的消息数和字节数都是上限。首条正文和冷页准备完成、首次 `RecordDelivery` 之前，运行时固定一次新投递工作片：截止时间取开始后 250ms 与剩余有效期一半的较早值。有效期取原请求 deadline、当前 writer lease、持有冷页的 pin 与全部控制 lease 的最早到期时间；工作片后续只能缩短，不能续期或重置。起始权限刷新提示按实际控制 TTL 和请求剩余时间的一半计算，支持合法短 TTL，不扩大授权期限。
+
+已有明确持久交付前缀时，超过工作片或需要另一冷页便停止新投递，并经原 session、代次、ACK ranges 和冷页检查后返回部分批次。每个 token 仍须等待对应 `RecordDelivery` 持久成功；已开始写入的 Unknown 或错误仍使整个 Read 返回错误，不能伪装成部分成功。首条准备阶段受原期限约束；没有可用预算时返回不可用或期限错误，不反复返回空批。冷页正常返回后显式释放 pin，异常路径仍由既有 TTL/reaper 回收；接收屏障与 ACK 前沿语义保持一致。
+
 ## 后台对象与容量
 
 后台先分页核对 Catalog 原对象 ID 和本地 pending 索引，再构造新归档。Published 的本地完成状态和 checkpoint 分开对账，checkpoint 失败不会误当成可回收。逻辑保留 floor 在数据组里同序提交，使用同锁的 revision、时间边界和所有有效订阅的保护下界；对象 manifest 退休必须从数据 quorum 读真实 floor，并取得当前全部 voter 的持久快照证据。
