@@ -34,6 +34,10 @@ for text in "COMPOSE_PROJECT_NAME=$project\n\n" "COMPOSE_PROJECT_NAME=$project" 
 done
 ln -s "$task_dir/project.env" "$task_dir/symlink.env"
 reject read_project "$task_dir/symlink.env"
+[[ $(quorum_voters metadata-quorum) == '11 12' ]]
+[[ $(quorum_voters storage-quorum) == '21 22' ]]
+reject quorum_voters storage-kill
+reject quorum_voters unknown
 
 mock_project=$project; mock_service=node-1; mock_image=$expected_image
 mock_running=false; mock_paused=false; mock_status=exited:0

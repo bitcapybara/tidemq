@@ -144,6 +144,7 @@ bash "$REPO/scripts/docker-validate.sh" "$STATE" oom
 # bash "$REPO/scripts/docker-validate.sh" "$STATE" storage-kill
 # bash "$REPO/scripts/docker-validate.sh" "$STATE" broker-kill
 # bash "$REPO/scripts/docker-validate.sh" "$STATE" metadata-quorum
+# bash "$REPO/scripts/docker-validate.sh" "$STATE" storage-quorum
 # bash "$REPO/scripts/docker-validate.sh" "$STATE" gateway-kill
 ```
 
@@ -154,6 +155,7 @@ bash "$REPO/scripts/docker-validate.sh" "$STATE" oom
 | `storage-kill` | 21/22/23 的 group 2 leader/term 至少 2 份一致；只杀实际选择的 leader；离线期间新增 8 条提交且持久 ACK，剩余副本确认另一 leader 和更高 term |
 | `broker-kill` | 至少 2/3 Metadata 返回相同 `active` owner/epoch/route generation；只杀该 Broker；离线期间新增 8 条提交且持久 ACK，再确认另一 owner 和更高 epoch |
 | `metadata-quorum` | pause 11/12 并等待 4 秒租约失效；验证原 PendingBatch 没有成功回执，恢复 quorum 后完成 |
+| `storage-quorum` | pause Storage 21/22 并等待 4 秒；验证原 PendingBatch 没有成功回执，恢复原两个副本后重试并完成全部 80 条持久 ACK |
 | `gateway-kill` | 杀连接入口 41，验证未完成的原 PendingBatch，启动原容器恢复；只证明 Gateway 冷重启 |
 | `oom` | RF1 完成 warmup 后，将专用 node-1 的 memory/swap 从 384 MiB 强制降到 Docker 允许的最小 6 MiB；必须观察 `OOMKilled=true`、退出 137，再恢复原限额与原容器，完成原 PendingBatch；daemon 拒绝调整或未发生 OOM 都判失败 |
 
