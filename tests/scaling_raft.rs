@@ -1,5 +1,8 @@
 #[path = "replication_support/quic.rs"]
 mod quic;
+#[path = "replication_support/scaling.rs"]
+mod scaling_support;
+use scaling_support::metadata;
 #[path = "replication_support/mod.rs"]
 mod support;
 
@@ -10,68 +13,13 @@ use std::time::Duration;
 use prometheus_client::registry::Registry;
 use quic::{Cluster, GROUP, WAIT};
 use support::{Command, Response, State};
-use tidemq::metadata::{self, DeploymentMode, MetadataLimits, MetadataState, NodeRole, NodeSpec};
 use tidemq::replication::rpc::GroupRole;
 use tidemq::scaling::{
-    Capacity, Error, MembershipApplication, MembershipCoordinator, MembershipPlan, RepairBudget,
-    RepairLimits, ScalingMetrics,
+    Capacity, Error, MembershipCoordinator, MembershipPlan, RepairBudget, RepairLimits,
+    ScalingMetrics,
 };
 use tidemq_protocol::Id;
 use tokio::time::Instant;
-
-impl MembershipApplication for State {
-    fn membership_identity(&self) -> Option<(Id, u64)> {
-        self.cluster.map(|id| (id, self.group))
-    }
-}
-
-async fn metadata(cluster: Id) -> Cluster<MetadataState> {
-    let meta =
-        Cluster::<MetadataState>::with_identity(&[1, 2, 3], cluster, 77, GroupRole::Metadata).await;
-    meta.initialize().await;
-    let raft = &meta.node(1).raft;
-    let write = |command: metadata::Command| async move {
-        assert!(raft.client_write(command).await.unwrap().data.is_applied());
-    };
-    write(metadata::Command::bootstrap(
-        Id::random().unwrap(),
-        cluster,
-        77,
-        DeploymentMode::ThreeReplica,
-        MetadataLimits::default(),
-    ))
-    .await;
-    for id in 1..=4 {
-        let revision = meta.node(1).state.application().await.revision();
-        let spec = NodeSpec {
-            node_id: id,
-            zone: format!("zone-{}", if id == 4 { 3 } else { id }),
-            endpoint: format!("127.0.0.1:{}", 7400 + id).parse().unwrap(),
-            roles: if id < 4 {
-                BTreeSet::from([NodeRole::Metadata, NodeRole::Storage, NodeRole::Broker])
-            } else {
-                BTreeSet::from([NodeRole::Storage, NodeRole::Broker])
-            },
-            schedulable: true,
-        };
-        write(metadata::Command::put_node(
-            Id::random().unwrap(),
-            revision,
-            spec,
-            0,
-        ))
-        .await;
-    }
-    let revision = meta.node(1).state.application().await.revision();
-    write(metadata::Command::create_group(
-        Id::random().unwrap(),
-        revision,
-        GROUP,
-        BTreeSet::from([1, 2, 3]),
-    ))
-    .await;
-    meta
-}
 
 fn capacity() -> [Capacity; 1] {
     [Capacity {
