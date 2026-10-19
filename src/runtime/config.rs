@@ -20,6 +20,9 @@ pub struct RuntimeConfig {
     pub delivery_key_file: PathBuf,
     pub bootstrap: bool,
     pub objects: Option<ObjectConfig>,
+    pub capacity: crate::quota::Limits,
+    pub retention: crate::retention::Policy,
+    pub archive_interval_ms: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -37,6 +40,9 @@ impl Default for RuntimeConfig {
             delivery_key_file: "secrets/delivery.key".into(),
             bootstrap: false,
             objects: None,
+            capacity: crate::quota::Limits::default(),
+            retention: crate::retention::Policy::default(),
+            archive_interval_ms: 1_000,
         }
     }
 }
@@ -108,6 +114,17 @@ impl Role {
 impl RuntimeConfig {
     pub fn validate(&self, config: &Config) -> Result<()> {
         config.validate().map_err(Error::foundation)?;
+        self.capacity
+            .validate()
+            .map_err(|source| Error::operation("validate capacity limits", source))?;
+        self.retention
+            .validate()
+            .map_err(|source| Error::operation("validate retention policy", source))?;
+        if !(100..=60_000).contains(&self.archive_interval_ms) {
+            return Err(Error::invalid(
+                "Archive interval must be between 100 and 60000 milliseconds",
+            ));
+        }
         if self.peers.is_empty()
             || self.peers.len() > 32
             || self.groups.is_empty()

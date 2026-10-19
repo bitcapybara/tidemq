@@ -64,11 +64,14 @@ pub(crate) async fn start(
 
 async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch::Receiver<bool>) {
     let sampler = crate::quota::memory::MemorySampler::default();
+    let physical = super::physical::PhysicalSampler::new(service.config.data_dir.clone());
+    let disk = crate::quota::disk::DiskSampler::new(service.config.data_dir.clone()).ok();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! { _ = shutdown.changed() => return, _ = ticker.tick() => {} }
-        let deadline = Instant::now() + Duration::from_millis(750);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(900);
         let ready = !service.draining.load(Ordering::Acquire)
             && service
                 .authority
@@ -76,10 +79,17 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
                 .await
                 .is_ok();
         health.ready.store(ready, Ordering::Release);
-        let memory = sampler
-            .sample(Instant::now() + Duration::from_millis(250))
-            .await
-            .ok();
+        let memory = sampler.sample(deadline).await.ok();
+        let capacity = sample_capacity(
+            &service,
+            &physical,
+            disk.as_ref(),
+            memory,
+            started,
+            deadline,
+        )
+        .await
+        .ok();
         let logging = service
             .log_health
             .lock()
@@ -116,8 +126,90 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             let metrics = metrics.borrow();
             groups.push(serde_json::json!({"group_id":group,"leader":metrics.current_leader,"term":metrics.current_term,"last_applied":metrics.last_applied,"voters":replica.voters}));
         }
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len()});
+        let quota = service
+            .quota
+            .lock()
+            .ok()
+            .map(|quota| quota.diagnose(std::time::Instant::now()));
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota});
     }
+}
+
+async fn sample_capacity(
+    service: &Service,
+    physical: &super::physical::PhysicalSampler,
+    disk: Option<&crate::quota::disk::DiskSampler>,
+    memory: Option<crate::quota::memory::Snapshot>,
+    started: Instant,
+    deadline: Instant,
+) -> Result<serde_json::Value> {
+    let memory = memory.ok_or_else(Error::unavailable)?;
+    let mut groups = Vec::new();
+    let mut usage = crate::quota::Usage {
+        process_memory_bytes: memory.process_rss_bytes,
+        ..Default::default()
+    };
+    for (group, replica) in &service.data {
+        let data = replica
+            .state
+            .try_with_application(crate::broker::DataApplication::capacity_usage)
+            .await
+            .map_err(|source| Error::operation("sample committed local capacity", source))?
+            .map_err(super::data::data_rejection)?;
+        usage.logical_backlog_bytes = usage
+            .logical_backlog_bytes
+            .checked_add(data.logical_backlog_upper_bytes)
+            .ok_or_else(Error::unavailable)?;
+        groups.push((
+            *group,
+            replica.log.diagnostics().await.snapshot_log.is_some(),
+        ));
+        if let Some(coordinator) = service.objects.get(group) {
+            let objects = coordinator
+                .capacity_usage(deadline.into_std())
+                .await
+                .map_err(|source| {
+                    Error::operation("sample authoritative object capacity", source)
+                })?;
+            usage.physical_storage_bytes = usage
+                .physical_storage_bytes
+                .checked_add(objects.registered_physical_upper_bytes)
+                .ok_or_else(Error::unavailable)?;
+            usage.shared_reclaim_lag_bytes = usage
+                .shared_reclaim_lag_bytes
+                .checked_add(objects.reclaim_lag_upper_bytes)
+                .ok_or_else(Error::unavailable)?;
+        }
+    }
+    if let Some(metadata) = &service.metadata {
+        groups.push((
+            service.config.runtime.metadata_group,
+            metadata.log.diagnostics().await.snapshot_log.is_some(),
+        ));
+    }
+    let (local_bytes, disk) = tokio::join!(physical.sample(groups, deadline), async {
+        disk.ok_or_else(Error::unavailable)?
+            .sample(deadline)
+            .await
+            .map_err(|source| Error::operation("sample configured data filesystem", source))
+    });
+    let disk = disk?;
+    usage.physical_storage_bytes = usage
+        .physical_storage_bytes
+        .checked_add(local_bytes?)
+        .ok_or_else(Error::unavailable)?;
+    service
+        .quota
+        .lock()
+        .map_err(|_| Error::unavailable())?
+        .observe(usage, started.into_std());
+    *service
+        .disk_capacity
+        .lock()
+        .map_err(|_| Error::unavailable())? = Some((disk, started));
+    Ok(
+        serde_json::json!({"usage":usage,"data_filesystem":disk,"sample_started_at_age_ms":started.elapsed().as_millis(),"physical_scope":"local_replica_file_lengths_plus_registered_object_upper_bound"}),
+    )
 }
 
 async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>) -> Result<()> {

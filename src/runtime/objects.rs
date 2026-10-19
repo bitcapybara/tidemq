@@ -94,7 +94,15 @@ pub(crate) async fn coordinators(
         .map_err(|_| Error::invalid("Object credentials file is not UTF-8"))?;
     let credentials: ObjectCredentials =
         toml::from_str(text).map_err(|_| Error::invalid("Object credentials file is malformed"))?;
-    if credentials.access_key.is_empty()
+    if !credentials
+        .access_key
+        .bytes()
+        .all(|byte| byte.is_ascii_graphic())
+        || !credentials
+            .secret_key
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic())
+        || credentials.access_key.is_empty()
         || credentials.access_key.len() > 256
         || credentials.secret_key.is_empty()
         || credentials.secret_key.len() > 256
