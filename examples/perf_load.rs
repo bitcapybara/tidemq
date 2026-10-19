@@ -61,6 +61,9 @@ struct Args {
     batch_messages: u32,
     #[arg(long, default_value_t = 4)]
     workers: usize,
+    /// Reused Request streams per active data class; Core and ACK limits stay fixed.
+    #[arg(long, default_value_t = 4)]
+    request_lanes: usize,
     #[arg(long, default_value_t = 32)]
     ack_messages: usize,
     #[arg(long, default_value_t = 0)]
@@ -112,6 +115,10 @@ impl Args {
         ensure!(
             (1..=64).contains(&self.workers),
             "Workers must be in 1..=64"
+        );
+        ensure!(
+            matches!(self.request_lanes, 2 | 4),
+            "Request lanes must be either 2 or 4 for the fixed-budget comparison"
         );
         ensure!(
             (1..=128).contains(&self.ack_messages),
@@ -171,6 +178,7 @@ struct Report {
     status: &'static str,
     generator_allocator: &'static str,
     configuration: Args,
+    sdk_configuration: serde_json::Value,
     identity: sample::Identity,
     warmup: Option<workload::PhaseReport>,
     measured: workload::PhaseReport,
@@ -217,8 +225,8 @@ async fn run(args: &Args) -> Result<Report> {
     let roots = sample::read_bounded(&args.ca, 65_536).await?;
     let credential = sample::read_bounded(&args.token_file, 8_192).await?;
     let credential = String::from_utf8(credential).context("Token file must be UTF-8")?;
-    let mut config = ClientConfig::new(args.endpoint.to_string());
-    config.request_timeout_ms = args.request_timeout_ms;
+    let config = client_config(args);
+    let sdk_configuration = sdk_configuration(&config);
     let client = Client::with_target(
         config,
         ClientTls {
@@ -250,9 +258,11 @@ async fn run(args: &Args) -> Result<Report> {
     let mut cooldown = Vec::new();
     cooldown.try_reserve_exact(args.cooldown_secs as usize + 1)?;
     let started = Instant::now();
-    for _ in 0..=args.cooldown_secs {
+    for second in 0..=args.cooldown_secs {
         cooldown.push(sample::resource(args, started).await);
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        if second < args.cooldown_secs {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
     client.close(client.deadline()?).await;
     let passed = measured.terminal_error.is_none()
@@ -264,6 +274,7 @@ async fn run(args: &Args) -> Result<Report> {
         status: if passed { "passed" } else { "failed" },
         generator_allocator: "std::alloc::System; four Tokio worker threads",
         configuration: args.clone(),
+        sdk_configuration,
         identity,
         warmup,
         measured,
@@ -275,6 +286,32 @@ async fn run(args: &Args) -> Result<Report> {
             "P99 requires 1000 samples and P99.9 requires 10000; missing tails are null",
             "Configured observability label must be checked against the captured service config and runtime capabilities",
         ],
+    })
+}
+
+fn client_config(args: &Args) -> ClientConfig {
+    let mut config = ClientConfig::new(args.endpoint.to_string());
+    config.request_timeout_ms = args.request_timeout_ms;
+    config.request_lanes = args.request_lanes;
+    config
+}
+
+fn sdk_configuration(config: &ClientConfig) -> serde_json::Value {
+    serde_json::json!({
+        "request_lanes": config.request_lanes,
+        "max_pending_requests": config.max_pending_requests,
+        "max_pending_bytes": config.max_pending_bytes,
+        "transport_memory_bytes": config.transport_memory_bytes,
+        "transport_control_reserved_bytes": config.transport_control_reserved_bytes,
+        "max_connections": config.transport.max_connections,
+        "max_handshakes": config.transport.max_handshakes,
+        "max_streams": config.transport.max_streams,
+        "core_streams": config.transport.core_streams,
+        "max_ack_streams": config.transport.max_ack_streams,
+        "connection_window_bytes": config.transport.connection_window_bytes,
+        "stream_window_bytes": config.transport.stream_window_bytes,
+        "send_buffer_bytes": config.transport.send_buffer_bytes,
+        "liveness_timeout_ms": config.liveness_timeout.as_millis(),
     })
 }
 
@@ -339,5 +376,25 @@ mod tests {
         assert!(args.validate().is_err());
         args.mode = Mode::Replay;
         args.validate().unwrap();
+    }
+
+    #[test]
+    fn lane_comparison_accepts_only_two_or_four_and_preserves_all_fixed_budgets() {
+        let mut args = args();
+        for lanes in [0, 1, 3, 8] {
+            args.request_lanes = lanes;
+            assert!(args.validate().is_err());
+        }
+        let snapshots = [2, 4].map(|lanes| {
+            args.request_lanes = lanes;
+            args.validate().unwrap();
+            let config = client_config(&args);
+            config.validate().unwrap();
+            let mut snapshot = sdk_configuration(&config);
+            assert_eq!(snapshot.get("request_lanes").unwrap(), lanes);
+            snapshot.as_object_mut().unwrap().remove("request_lanes");
+            snapshot
+        });
+        assert_eq!(snapshots.first(), snapshots.last());
     }
 }
