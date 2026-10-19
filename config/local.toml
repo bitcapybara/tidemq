@@ -7,8 +7,8 @@ data_dir = "data/node-1"
 replication_factor = 1
 
 [memory]
-total_bytes = 67108864
-control_reserved_bytes = 4194304
+total_bytes = 201326592
+control_reserved_bytes = 33554432
 max_connections = 128
 max_streams_per_connection = 64
 max_pending_requests = 256

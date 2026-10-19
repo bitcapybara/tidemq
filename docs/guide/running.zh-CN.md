@@ -34,7 +34,7 @@ bash deploy/local/run.sh /tmp/tidemq-rf3 target/debug/tidemq
 
 ## 接入 RustFS 或 S3
 
-先创建桶，并提供服务端可访问的 S3 endpoint。开发环境可运行经验证的 RustFS 1.0.3；生产 endpoint 使用 HTTPS。为 Storage/Combined 配置添加：
+先创建桶，并提供服务端可访问的 S3 endpoint。生成器和本地示例默认分配 192 MiB 应用预算、32 MiB 控制保留以及至少 64 MiB 额外 RSS 水位空间；开启对象存储时验证这些下限，避免临时打包占用和最终对象缓冲永远无法同时准入。修改预算时也必须相应调整 RSS 水位。开发环境可运行经验证的 RustFS 1.0.3；生产 endpoint 使用 HTTPS。为 Storage/Combined 配置添加：
 
 ```toml
 [runtime.objects]
