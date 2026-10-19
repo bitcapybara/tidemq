@@ -39,6 +39,8 @@ Gateway 扩容承接新连接；缩容由 `reconnect_gateway` 执行有限受控
 
 `ScalingMetrics::register` 接收服务端唯一、无前缀根 registry，不安装全局设施。只有八个 stage：Queue、Learner、Membership、Metadata、Prewarm、Drain、ServiceRecovery、ReplicaRepair，没有 Topic/组/节点/operation 标签。指标为 `tidemq_scaling_stage_duration_seconds{stage}` 和 `tidemq_scaling_unknown_outcomes_total`。前者记录本地单调时间，bucket 为 1ms、10ms、100ms、500ms、1s、5s、10s、30s、120s、600s、+Inf。进程重启会丢失未完成操作的本地计时起点，不能从 wall clock 拼接假精确时延。
 
+`PressureSampler` 每次读取实际进程 getrusage CPU 累计量和 transport 已收发应用字节累计量，至少两次有效观测计算速率；采样间隔必须在 250ms 至五秒内，计数回退或 CPU 配额变化需要重新建立基线。Linux 以 available_parallelism 与 cgroup v2 当前及最多 32 层祖先 cpu.max 的最小值归一化，包含小数核配额；不支持或无法读取配额时容量不可用。macOS 使用宿主实际可用 CPU，source 明示口径。该字节率是应用帧收发速率，不能当作包括 IP/UDP/TLS 开销的网卡吞吐。采样只有一个 owned blocking worker，超时后继续持有名额直到真实结束；首样和缺样都不能填零。
+
 传输层 `TransportSnapshot::active_connections` 和 Prometheus `active_connections` gauge 统计仍保有连接资源的物理连接，关闭但仍被 stream/Connection 持有的排空资源继续计入；Session/Connection 克隆不重复计数，最后一个 ConnectionState 释放时归零。容量与排空不得使用累计 connections_total 替代此值。
 
 服务恢复与恢复完整副本分别统计。计划 Broker 移交从预热开始至新路由验证成功记 ServiceRecovery；存储修复从本地原计划开始至 stable+metadata 完成记 ReplicaRepair。它们不能代替客户端故障发生至 SDK 第一次成功的全链路测量。日志只在逻辑完成边界输出 operation/group/generation，不在状态机重放或每个字节/重试输出日志，不含正文、token 或私钥。
