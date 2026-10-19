@@ -290,6 +290,11 @@ impl<A: Application> DiskLog<A> {
 }
 
 impl<A: Application> DiskStateMachine<A> {
+    /// Immutable identity persisted with the exclusively owned replica directory.
+    pub fn storage_identity(&self) -> &StorageIdentity {
+        &self.0.identity
+    }
+
     /// A fatal local apply failure invalidates every authoritative read until disk recovery.
     /// Obtain a real Raft read barrier first and keep the projection bounded and free of IO.
     pub async fn try_with_application<R>(&self, query: impl FnOnce(&A) -> R) -> Result<R> {
@@ -304,6 +309,21 @@ impl<A: Application> DiskStateMachine<A> {
         let applied = self.0.applied.read().await;
         ensure_application_available(&applied)?;
         Ok(query(&applied.application, applied.last_applied))
+    }
+
+    /// Projects authority and committed membership under the same applied lock.
+    /// Obtain a real quorum read barrier first and keep the projection bounded and free of IO.
+    pub async fn try_with_membership<R>(
+        &self,
+        query: impl FnOnce(&A, Option<LogId<u64>>, &StoredMembership<u64, BasicNode>) -> R,
+    ) -> Result<R> {
+        let applied = self.0.applied.read().await;
+        ensure_application_available(&applied)?;
+        Ok(query(
+            &applied.application,
+            applied.last_applied,
+            &applied.membership,
+        ))
     }
 
     /// Borrows local state for a bounded synchronous query. The closure must not perform IO,

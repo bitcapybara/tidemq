@@ -1,0 +1,17 @@
+{
+  "title": "TideMQ Scaling",
+  "uid": "tidemq-scaling",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": ["tidemq"],
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Scaling stage P99", "type": "timeseries", "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0},
+     "targets": [{"refId": "A", "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(tidemq_scaling_stage_duration_seconds_bucket[5m])))", "legendFormat": "{{stage}}"}],
+     "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}},
+    {"id": 2, "title": "Unknown outcomes requiring original-plan reconciliation", "type": "timeseries", "gridPos": {"h": 9, "w": 12, "x": 12, "y": 0},
+     "targets": [{"refId": "A", "expr": "sum(rate(tidemq_scaling_unknown_outcomes_total[5m]))", "legendFormat": "attempts"}],
+     "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []}}
+  ]
+}
