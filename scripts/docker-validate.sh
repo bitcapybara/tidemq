@@ -439,9 +439,9 @@ main() {
         printf '%s:%s\n' "$original_memory" "$original_swap" > "$evidence/oom-original-limits.txt"
         capture_cgroup before "$id"
         remember "$id" "node-$target" oom
-        mutate "$id" "node-$target" update --memory 16777216 --memory-swap 16777216 > /dev/null
+        mutate "$id" "node-$target" update --memory 6291456 --memory-swap 6291456 > /dev/null
         dk inspect --format '{{.HostConfig.Memory}}:{{.HostConfig.MemorySwap}}' "$id" > "$evidence/oom-lowered-limits.txt"
-        [[ $(cat "$evidence/oom-lowered-limits.txt") == 16777216:16777216 ]] || return 1
+        [[ $(cat "$evidence/oom-lowered-limits.txt") == 6291456:6291456 ]] || return 1
         OP_DEADLINE=$((SECONDS + 120))
         until [[ $(dk inspect --format '{{.State.OOMKilled}}:{{.State.Running}}:{{.State.ExitCode}}' "$id") == true:false:137 ]]; do
           [[ $SECONDS -lt $OP_DEADLINE ]] || return 1
@@ -449,7 +449,7 @@ main() {
         done
         dk inspect --format '{{json .State}}' "$id" > "$evidence/oom-killed-state.json"
         dk inspect --type container "$id" | jq '.[0] | {Memory:.HostConfig.Memory,MemorySwap:.HostConfig.MemorySwap,State}' > "$evidence/oom-lowered-state.json"
-        jq -e '.Memory == 16777216 and .MemorySwap == 16777216 and .State.OOMKilled == true and .State.Running == false and .State.ExitCode == 137' \
+        jq -e '.Memory == 6291456 and .MemorySwap == 6291456 and .State.OOMKilled == true and .State.Running == false and .State.ExitCode == 137' \
           "$evidence/oom-lowered-state.json" > /dev/null
         OP_DEADLINE=0
       else
