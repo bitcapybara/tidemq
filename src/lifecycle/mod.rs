@@ -1,13 +1,17 @@
 //! Durable object publication, replacement, pins and reclamation.
 
+mod backend;
 mod catalog;
 mod coordinator;
 mod data;
+pub(crate) mod remote;
+pub use remote::ReplicaCheckpoint;
 mod telemetry;
 mod types;
 
+pub use backend::MetadataReplica;
 pub use catalog::Catalog;
-pub use coordinator::{Coordinator, DataReplica, GuardedPage, MetadataReplica, PreparedObject};
+pub use coordinator::{Coordinator, DataReplica, GuardedPage, PreparedObject};
 pub use data::DataState;
 pub use telemetry::LifecycleMetrics;
 pub use types::VerifiedColdDelivery;
@@ -51,6 +55,10 @@ pub enum Error {
     Worker { source: tokio::task::JoinError },
     #[snafu(display("Object lifecycle admission is exhausted"))]
     Overloaded,
+    #[snafu(display("Object lifecycle wire request is invalid"))]
+    Wire,
+    #[snafu(display("Object lifecycle peer is not authorized"))]
+    Authorization,
     #[snafu(display("Object lifecycle allocation failed"))]
     Allocation {
         source: std::collections::TryReserveError,

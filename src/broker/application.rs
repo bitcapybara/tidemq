@@ -658,10 +658,9 @@ impl DataApplication {
                     .producer(partition)
                     .ok_or(DataRejection::PartitionMissing)?;
                 if index.offsets.end > producer.committed_end()
-                    || !plan
-                        .grants
-                        .iter()
-                        .any(|grant| operation.grants.contains(grant))
+                    || !plan.grants.iter().any(|grant| {
+                        grant.partition == partition && operation.grants.contains(grant)
+                    })
                 {
                     return Err(DataRejection::Lifecycle(Rejection::InvalidRange));
                 }

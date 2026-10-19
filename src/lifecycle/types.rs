@@ -145,7 +145,7 @@ pub enum Blocker {
     None,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub object_id: Id,
     pub phase: ObjectPhase,
