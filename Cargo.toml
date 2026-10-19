@@ -39,7 +39,7 @@ default = ["allocator-system"]
 allocator-system = []
 allocator-mimalloc = ["dep:mimalloc"]
 allocator-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
-heap-profiling = ["allocator-jemalloc", "dep:libc", "tikv-jemalloc-ctl/profiling", "tikv-jemallocator/profiling", "tikv-jemallocator/profiling_libunwind"]
+heap-profiling = ["allocator-jemalloc", "tikv-jemalloc-ctl/profiling", "tikv-jemallocator/profiling", "tikv-jemallocator/profiling_libunwind"]
 
 [dependencies]
 anyhow = "=1.0.104"
@@ -48,7 +48,7 @@ blake3.workspace = true
 bytes.workspace = true
 clap = { version = "=4.6.7", features = ["derive"] }
 getrandom.workspace = true
-libc = { version = "=0.2.191", optional = true }
+libc = "=0.2.191"
 mimalloc = { version = "=0.1.52", features = ["extended"], optional = true }
 prometheus-client.workspace = true
 prost.workspace = true

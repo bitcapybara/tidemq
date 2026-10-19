@@ -48,3 +48,12 @@ Compaction 读取并校验原始历史，先生成完整替代对象，然后在
 `LifecycleMetrics::register` 注册到无前缀根 registry，全部指标名以 `tidemq_lifecycle_` 开头，使用 8 个无标签 Counter、1 个 Gauge、1 个具有固定 bucket 的 Histogram，约 20 个 series。对象、分区、操作 ID 不做标签。`Coordinator::diagnose` 通过新鲜读取返回单对象阶段、引用/pin 数、checkpoint 代次和阻塞原因，不返回消息正文、key 或凭证。
 
 初步回归覆盖永久终止的快照 round trip、compaction 双屏障、热回收与逻辑下界分离、去重原结果、拒写回调原子性，以及正文请求挂住时 HEAD/DELETE 独立推进。实际 Raft + RustFS 的阶段重启与回收验证见对应集成测试；验证记录必须区分本机进程故障、RF3 协议与真实三可用区。
+
+### 2026-10-19 本地验证记录
+
+- `cargo clippy -p tidemq --tests --no-deps -j2 -- -D warnings`：无告警；从固定开发树运行。
+- `cargo test --workspace -j2`：145 passed、3 ignored，28 suites，23.22 秒。ignored 包括需要显式外部可执行文件的 S3/RustFS 用例。
+- `TIDEMQ_TEST_RUSTFS_BIN=.../rustfs cargo test -p tidemq --test lifecycle_persistence -- --ignored`：2 passed，2.54 秒；RustFS 1.0.3 strict 模式、aws-sdk-s3 1.152.0、两个实际 RF1 Raft 组和磁盘快照/重启。
+- `cargo test -p tidemq --test s3_boundaries`：7 passed，0.67 秒；包括挂住 Range 正文时 HEAD 和 DELETE 的保留并发槽验证。
+
+以上证据是 macOS 本机进程与真实磁盘/S3 API 验证，不等同机器掉电、跨进程远程适配完成或三可用区验收。
