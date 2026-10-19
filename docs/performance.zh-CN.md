@@ -37,10 +37,11 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 
 这里的冷读指经过真实对象存储读取路径，至少发生一次冷读缓存 miss；不声称 RustFS、操作系统页缓存或物理磁盘缓存已经被驱逐，也不由一次 miss 推导全部消息都来自对象存储。完整冷热占比应结合最终源分类指标、归档/本地回收状态与 S3 字节证据核对。
 
-完整的短跑矩阵共 16 次：三种 allocator 各运行四个推荐观测场景、同一 System 二进制的必要观测与详细诊断对照，以及 System 在 small/replay 上的 2/4 Request lane 对照。默认和基线均为 4 lanes：
+完整的短跑矩阵共 17 次：原 16 次包含三种 allocator 各运行四个推荐观测场景、同一 System 二进制的必要观测与详细诊断对照，以及 System 在 small/replay 上的 2/4 Request lane 对照；第 17 次在相同 System-small 推荐日志配置上启用可选 OTLP。默认和基线均为 4 lanes：
 
 ```bash
 TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
+TIDEMQ_PERF_OTELCOL_BIN=/absolute/path/to/verified/otelcol \
   bash scripts/perf-matrix.sh target/perf-candidates target/perf-results/matrix
 ```
 
@@ -66,6 +67,21 @@ bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/lanes
 | minimal | 配置 `logging.filter = "warn"` | 所有必要指标、管理采样、警告与错误；不关闭共识、计数或容量检查 |
 | recommended | 服务默认 `warn,tidemq=info` | 默认有界 JSON 日志、指标和每秒资源采样；性能基线的参考模式 |
 | detailed | 同一二进制 `serve --trace-seconds 300` | 限时 runtime 请求 span/完成记录，自动恢复默认过滤；不启用逐包日志或 heap dump |
+
+以上三档均关闭可选 OTLP，只比较日志、默认指标与限时日志诊断的开销；不能用它们声称已测得导出成本。第 17 次 `recommended-otlp` 单独测服务端可选导出，保持 small 的 4096 条测量、256 条预热、128 B 正文、32 条 batch、4 个 worker 和 4 lanes。SDK 仍不安装宿主 subscriber 或 exporter。
+
+```bash
+TIDEMQ_PERF_OTELCOL_BIN=/absolute/path/to/verified/otelcol \
+  bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/system-small-otlp small recommended-otlp 4
+```
+
+该用例要求绝对路径的官方 core Collector 0.162.0，复用仓库 [collector.yaml](../deploy/observability/collector.yaml)，监听 `127.0.0.1:4318/18888`。Collector 清空继承环境，仅设置 PATH、`GOMAXPROCS=2`、`GOMEMLIMIT=192MiB`；memory limiter 128 MiB、spike 32 MiB，使用 `nop` 接收后丢弃，不连接持久追踪后端。TideMQ 保持推荐日志，显式开启 `[tracing]`：1% head sampling、每秒最多 128 span、queue 256 条、batch 32 条、导出间隔与总 timeout 均为 500 ms。每 span 4096 B 的队列逻辑许可约 1 MiB，不是 RSS；队列、导出失败与退出的口径见[追踪手册](operations/tracing.zh-CN.md)。
+
+`collector/identity.txt` 与 `version.txt` 记录实际二进制/配置 SHA-256、版本和环境；PID 单独保存在 `process.pid`。Collector 在负载前、负载与冷却后、TideMQ 排空退出后各抓一次自身指标，每次 HTTP 最多 2 s、正文最多 256 KiB。`resources-*.txt` 保留实际暴露的进程自监控指标，包括 `otelcol_process_cpu_seconds_total` 与 `otelcol_process_memory_rss_bytes`，缺失时明确不可用；短跑前后 RSS 不是全程峰值。Collector 的 CPU/RSS 与 TideMQ 的独立口径分别报告，不相加成服务 RSS。
+
+`collector/evidence.json` 保存 `otelcol_receiver_accepted_spans_total`、`otelcol_receiver_refused_spans_total`、`otelcol_receiver_failed_spans_total` 的真实接收/拒绝/失败计数与采集失败数；不存在的系列为 null。计数涵盖该 owned Collector 的启动、预热、测量、冷却和服务关闭，不冒充仅测量阶段的样本数。TideMQ 每阶段的原始指标另含 `tidemq_runtime_trace_*` 准入、采样/容量丢弃、pending、尝试/字节、失败/超时；排队导出的完成时间可能落入后续区间，应结合最终接收计数解释。服务先退出，Collector 再以 SIGINT 排空；两者实际 exit status 和强制停止标志分别写入 `service-exit.json` 与 `collector-exit.json`，沿用有界清理期限。
+
+1% 有限短跑可能没有任何 span 被接收。此时用例保留业务报告、标为缺少导出成本证据并返回失败；接收计数为零或 null 时不得声称测得导出成本。Collector 日志同样限制为 32 MiB。即使接收成功，`nop`、本地明文 HTTP 与单次短跑也不证明后端持久化、远程 HTTPS、Collector 故障成本、SDK 宿主 exporter 或生产 SLO。
 
 `perf_load --observability` 只是记录实际模式的名字，不会修改服务。启动脚本负责配置真实开关。详细档 TTL 必须覆盖预热和测量；两次阶段上限各为 120 s，启动、注册与清理另占时间，应按报告的阶段起始 Unix 时间和服务日志核验完整覆盖。更长手动负载需要分段，不能把 TTL 到期后的区间继续标为详细档。原始配置摘要和日志应与报告一起核对。
 
