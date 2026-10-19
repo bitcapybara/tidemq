@@ -11,6 +11,8 @@ use serde::Serialize;
 pub struct TransportMetrics {
     pub(super) connections: AtomicU64,
     pub(super) active_connections: AtomicU64,
+    pub(super) liveness_probes: AtomicU64,
+    pub(super) liveness_failures: AtomicU64,
     pub(super) rejected: AtomicU64,
     pub(super) streams: AtomicU64,
     pub(super) frames_sent: AtomicU64,
@@ -32,6 +34,8 @@ pub struct TransportSnapshot {
     pub connections_total: u64,
     /// Physical connection resources still retained, including draining handles.
     pub active_connections: u64,
+    pub liveness_probes_total: u64,
+    pub liveness_failures_total: u64,
     pub rejected_total: u64,
     pub streams_total: u64,
     pub frames_sent_total: u64,
@@ -65,6 +69,8 @@ impl TransportMetrics {
         TransportSnapshot {
             connections_total: self.connections.load(Ordering::Relaxed),
             active_connections: self.active_connections.load(Ordering::Relaxed),
+            liveness_probes_total: self.liveness_probes.load(Ordering::Relaxed),
+            liveness_failures_total: self.liveness_failures.load(Ordering::Relaxed),
             rejected_total: self.rejected.load(Ordering::Relaxed),
             streams_total: self.streams.load(Ordering::Relaxed),
             frames_sent_total: self.frames_sent.load(Ordering::Relaxed),
@@ -94,6 +100,16 @@ impl Collector for TransportMetrics {
             active.metric_type(),
         )?)?;
         let counters = [
+            (
+                "liveness_probes",
+                "Native new-packet acknowledgement probes",
+                &self.liveness_probes,
+            ),
+            (
+                "liveness_failures",
+                "Native liveness probes without timely authenticated progress",
+                &self.liveness_failures,
+            ),
             (
                 "connections",
                 "Authenticated physical connections",
