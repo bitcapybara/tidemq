@@ -35,7 +35,9 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 
 预热使用独立 topic，样本不会混入测量。消费慢场景中的 20 ms 等待计入 offered-to-durable-ACK，ACK RPC 本身单独计时。回放中的“生产后再分配”只确定冻结的 B 类边界，不自动证明物理对象读取；`--require-cold` 要求同一独立服务的 `tidemq_s3_cache_misses_total` 增加。没有此证据会输出失败报告，不把热数据重读称为冷读。
 
-完整的短跑矩阵会依次运行三种 allocator、四个推荐观测场景，再对同一 System 二进制运行必要观测与详细诊断对照：
+这里的冷读指经过真实对象存储读取路径，至少发生一次冷读缓存 miss；不声称 RustFS、操作系统页缓存或物理磁盘缓存已经被驱逐，也不由一次 miss 推导全部消息都来自对象存储。完整冷热占比应结合最终源分类指标、归档/本地回收状态与 S3 字节证据核对。
+
+完整的短跑矩阵共 16 次：三种 allocator 各运行四个推荐观测场景、同一 System 二进制的必要观测与详细诊断对照，以及 System 在 small/replay 上的 2/4 Request lane 对照。默认和基线均为 4 lanes：
 
 ```bash
 TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
@@ -43,6 +45,19 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 ```
 
 这是有限的闭环负载。并行数不足或服务变慢时，产生的 offered load 也会下降；报告不声称校正 coordinated omission，也不把这组短跑作为饱和吞吐上界。固定运行顺序可能受温度、后台活动和页缓存影响；正式比较需要重复、多次交错顺序和受控硬件。
+
+## 同预算的 Request lane 对照
+
+`perf-run.sh` 第五个参数与 `perf_load --request-lanes` 只接受 `2` 或 `4`。对照保持同一 System 服务/负载二进制、场景、四个生产 worker、ACK 和 Core 保留。只改变每个活跃 P/D/B connection 复用的 Request stream 数，C 仍持续驱动两个 Core streams，ACK 仍使用独立短流且最多八个。类别按实际操作建立 connection；不强行创建未使用类别，也不改变内部 C/R/B 布局。
+
+```bash
+bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/lanes2-small small recommended 2
+bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/lanes4-small small recommended 4
+```
+
+`sdk_configuration` 记录实际传给 SDK 的参数。默认共享逻辑在途上限 16 MiB，原生 transport envelope 为 128 MiB、控制保留 16 MiB；每 connection 的最大 streams 仍为 16，connection window 64 KiB、stream window/send buffer 各 16 KiB。原生每 connection 预留公式为 `send_buffer × max_streams + connection_window`，两种 lane 数均为 320 KiB，不因少开 Request lane 就扩大窗口或挪用 Core 保留。这些额度是各自的逻辑准入范围，不能相加为 RSS。
+
+应连同 `produce_batch`、`ack_batch`、`control_query` 的样本数/分位、SDK 准入等待与保留字节、QUIC flow-blocked/send-wait 及服务 RSS/allocator/容量观察解释结果。不同新建 topic/producer 的 affinity 哈希及短跑样本量会影响 stream 使用；单组对照不证明 2 或 4 是全局最佳值。共享 connection、每请求短流及跨真实故障域的布局仍需独立实验。
 
 ## 观测成本比较
 
@@ -71,6 +86,7 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 | `resources` | 独立服务 PID 累计 CPU 时间、OS RSS 与服务实际诊断中的进程/cgroup/allocator/容量；不存在的值是 null |
 | `client_metrics_before/after` | SDK 自身的请求、重试、Unknown 与逻辑准入快照；包含 SDK 内部已透明恢复、未暴露给负载器的事件 |
 | `client_transport_before/after` | 真实 SDK QUIC 连接/stream、应用帧字节、原生流控阻塞、丢包与 PING 探测；应用帧字节不冒充线速 UDP 字节 |
+| `sdk_configuration` | 实际 Request lanes、SDK pending 上限、原生 transport/Core 保留、stream 上限和流控窗口；用于核对同预算对照 |
 
 `logical_bytes` 是计划正文与 key 总量；另存实际提交/ACK 的逻辑字节和字节吞吐，不把失败阶段的计划量当作成功量。`produce_unknown` 与 `produce_recovered_original_identity` 仅统计暴露给负载器的 Unknown/显式恢复，SDK 内部重试应结合其前后快照判断。`artifact-sizes.txt` 记录报告、最终 metrics/diagnostics、服务/RustFS 日志的实际输出字节及本地数据目录的文件系统占用；后者不是累计写入 I/O，也不能与对象字节或 RSS 相加。固定 WAL quorum/fsync 语义，对照中不关闭持久化。
 
@@ -78,12 +94,12 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 
 OS `ps` 的累计 CPU 分辨率依平台，不能从短至几毫秒的差值推导稳定 CPU 利用率。RSS 每秒采样；阶段超过 240 s 时适当放宽间隔，每阶段最多 242 个点，只能称为采样最大值。allocator 单点统计超过 8192 B 时，周期样本明确省略详细统计，初始完整诊断仍保留。RSS、allocator resident 和 cgroup usage 不相加；cgroup 可能包含文件缓存或其他进程。
 
-工具用固定大小位图校验每个消息 identity 和实际 offset 恰好出现一次，并核对最终持久 ACK frontier 等于计划消息数。生产 Unknown 只重试当前 worker 保留的原 batch；注册 Unknown 使用原 producer ID/registration epoch，不创建替代身份。重试次数和总阶段期限有限。终止错误、未恢复 Unknown、重复/缺失消息、控制失败和观测失败使报告失败；不丢弃失败样本后只报成功吞吐。
+工具用固定大小位图校验每个消息 identity 和实际 offset 恰好出现一次，并核对最终持久 ACK frontier 等于计划消息数。生产 Unknown 只重试当前 worker 保留的原 batch；注册 Unknown 使用原 producer ID/registration epoch，不创建替代身份。重试次数和总阶段期限有限。终止错误、未恢复 Unknown、重复/缺失消息、控制失败和观测失败使报告失败；不丢弃失败样本后只报成功吞吐。`status = passed` 仅表示该有限负载的语义与观测校验通过，不代表达到生产性能 SLO。
 
 服务日志、证书、token、S3 凭据和诊断产物放在 0700 目录中，不能提交到仓库或公开分享。报告包含运行身份和配置路径，但不复制 token、正文、私钥、WAL 或对象内容。脚本只停止自己启动的 PID；排空超时会记录失败并停止该私有试跑进程，原始数据保留供排查。
 
 ## 仍需独立放行的实验
 
-本工具固定当前正式 C/P/D/B 与内部 C/R/B 布局，不额外引入混合连接或短流后端。相同总预算下的连接/stream 布局对照、网络丢包与限速、RF3 三区 quorum、跨 Gateway 故障、长时间突发/排空/冷却、Linux cgroup/OOM、同 allocator 的符号化存活栈和竞品同语义对照仍须分别取得证据。实际内存诊断能力见 [allocator 发布构建证据](evidence/2026-10-19-allocator-release.zh-CN.md)，该 jemalloc profiling 证据不能冒充 mimalloc 或 System 的现场采样。
+本工具固定当前正式 C/P/D/B 与内部 C/R/B 类别隔离，仅对已有的 2/4 Request lanes 做同预算对照。混合连接/短流后端、网络丢包与限速、RF3 三区 quorum、跨 Gateway 故障、长时间突发/排空/冷却、Linux cgroup/OOM、同 allocator 的符号化存活栈和竞品同语义对照仍须分别取得证据。实际内存诊断能力见 [allocator 发布构建证据](evidence/2026-10-19-allocator-release.zh-CN.md)，该 jemalloc profiling 证据不能冒充 mimalloc 或 System 的现场采样。
 
 allocator 生产默认保持未定案。短跑吞吐、一次 RSS 差值或 malloc 微基准均不足以冻结它；还必须满足目标平台、长期内存与同 allocator 排查能力的计划关卡。

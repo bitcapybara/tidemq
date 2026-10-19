@@ -2,10 +2,15 @@
 set -euo pipefail
 umask 077
 
-build=${1:?Usage: perf-run.sh allocator-build-directory new-trial-directory [small|large|slow|replay] [minimal|recommended|detailed]}
+build=${1:?Usage: perf-run.sh allocator-build-directory new-trial-directory [small|large|slow|replay] [minimal|recommended|detailed] [2|4]}
 output=${2:?A new private trial directory is required}
 scenario=${3:-small}
 observability=${4:-recommended}
+request_lanes=${5:-4}
+case "$request_lanes" in
+  2|4) ;;
+  *) printf 'Request lanes must be either 2 or 4\n' >&2; exit 2 ;;
+esac
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 build=$(cd "$build" && pwd -P)
 if [[ -e "$output" ]]; then printf 'Trial output already exists\n' >&2; exit 1; fi
@@ -101,7 +106,7 @@ env -i PATH=/usr/bin:/bin "$build/perf_load" --endpoint 127.0.0.1:7410 --server-
   --ca "$output/cluster/ca.pem" --token-file "$output/cluster/access.token" \
   --management 127.0.0.1:8410 --service-pid "$service_pid" --service-binary "$build/tidemq" \
   --service-config "$config" --build-identity "$build/identity.json" --output "$output/report.json" \
-  --workers 4 --ack-messages 32 --phase-timeout-secs 120 --cooldown-secs 3 \
+  --workers 4 --request-lanes "$request_lanes" --ack-messages 32 --phase-timeout-secs 120 --cooldown-secs 3 \
   --observability "$observability" "${load[@]}" || status=$?
 curl --fail --silent --max-time 2 http://127.0.0.1:8410/metrics > "$output/metrics-final.txt" || status=1
 curl --fail --silent --max-time 2 http://127.0.0.1:8410/diagnostics > "$output/diagnostics-final.json" || status=1
@@ -110,7 +115,7 @@ stop_one "$rustfs_pid" || status=1; rustfs_pid=''
 if [[ $(wc -c < "$output/service.log") -ge 33554432 ]]; then
   printf 'Service log reached its exact 32 MiB output limit\n' >&2; status=1
 fi
-printf '{"service_tokio_worker_threads":4,"generator_tokio_worker_threads":4,"service_and_generator_environment":"cleared_except_explicit_PATH_and_service_TOKIO_WORKER_THREADS","server_stdout_limit_bytes":33554432,"exit_status":%s}\n' "$status" > "$output/execution.json"
+printf '{"service_tokio_worker_threads":4,"generator_tokio_worker_threads":4,"request_lanes":%s,"service_and_generator_environment":"cleared_except_explicit_PATH_and_service_TOKIO_WORKER_THREADS","server_stdout_limit_bytes":33554432,"exit_status":%s}\n' "$request_lanes" "$status" > "$output/execution.json"
 {
   for artifact in report.json metrics-final.txt diagnostics-final.json service.log; do
     if [[ -f "$output/$artifact" ]]; then printf '%s %s\n' "$artifact" "$(wc -c < "$output/$artifact")"; fi
