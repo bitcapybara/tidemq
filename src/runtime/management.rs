@@ -63,6 +63,7 @@ pub(crate) async fn start(
 }
 
 async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch::Receiver<bool>) {
+    let sampler = crate::quota::memory::MemorySampler::default();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -75,6 +76,29 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
                 .await
                 .is_ok();
         health.ready.store(ready, Ordering::Release);
+        let memory = sampler
+            .sample(Instant::now() + Duration::from_millis(250))
+            .await
+            .ok();
+        let logging = service
+            .log_health
+            .lock()
+            .ok()
+            .and_then(|health| health.clone());
+        let sampled = super::telemetry::Snapshot {
+            ready,
+            process_memory: memory,
+            log_dropped_events: logging.as_ref().map(|health| health.dropped_events()),
+            log_sink_errors: logging
+                .as_ref()
+                .map(|health| health.sink_errors.load(Ordering::Relaxed)),
+            log_oversized_events: logging
+                .as_ref()
+                .map(|health| health.oversized_events.load(Ordering::Relaxed)),
+        };
+        if let Ok(mut metrics) = service.runtime_metrics.0.lock() {
+            *metrics = sampled.clone();
+        }
         let allocator = crate::allocator::snapshot().await.ok();
         let metadata = if let Some(replica) = &service.metadata {
             Some(
@@ -92,7 +116,7 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             let metrics = metrics.borrow();
             groups.push(serde_json::json!({"group_id":group,"leader":metrics.current_leader,"term":metrics.current_term,"last_applied":metrics.last_applied,"voters":replica.voters}));
         }
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len()});
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len()});
     }
 }
 

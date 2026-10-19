@@ -444,6 +444,16 @@ impl Service {
                 .map_err(|source| Error::operation("read ownership grant", source))?
                 .ok_or_else(Error::unavailable)?
         };
+        self.complete_route(grant, diagnostic.phase, deadline).await
+    }
+
+    async fn complete_route(
+        &self,
+        grant: Grant,
+        phase: crate::ownership::OwnershipPhase,
+        deadline: Instant,
+    ) -> Result<metadata::Route> {
+        let partition = grant.partition;
         let voters: BTreeSet<_> = self
             .config
             .runtime
@@ -453,7 +463,7 @@ impl Service {
             .copied()
             .collect();
         let target = self.leader(grant.group_id, deadline).await?;
-        if diagnostic.phase < crate::ownership::OwnershipPhase::Fenced {
+        if phase < crate::ownership::OwnershipPhase::Fenced {
             let started = MonoInstant::now();
             let bytes = self
                 .rpc
@@ -478,7 +488,7 @@ impl Service {
                 .map_err(|source| Error::operation("validate fresh fence evidence", source))?;
             self.meta_write(observed, deadline).await?;
         }
-        if diagnostic.phase < crate::ownership::OwnershipPhase::Recovered {
+        if phase < crate::ownership::OwnershipPhase::Recovered {
             let started = MonoInstant::now();
             let bytes = self
                 .rpc
@@ -533,6 +543,82 @@ impl Service {
         };
         self.routes.write().await.remove(&partition);
         Ok(route)
+    }
+
+    pub(crate) async fn execute_takeover(
+        &self,
+        partition: PartitionKey,
+        target_owner: u64,
+        expected_epoch: u64,
+        expected_route_generation: u64,
+        deadline: Instant,
+    ) -> Result<metadata::Route> {
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        self.require_leader(replica)?;
+        let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
+        wire::within(deadline, replica.raft.ensure_linearizable())
+            .await?
+            .map_err(|_| Error::unavailable())?;
+        let diagnostic = replica
+            .state
+            .try_with_application(|state| state.diagnose_ownership(partition))
+            .await
+            .map_err(|source| Error::operation("read takeover progress", source))?
+            .ok_or_else(not_found)?;
+        let target = replica
+            .state
+            .try_with_application(|state| state.node(target_owner).cloned())
+            .await
+            .map_err(|source| Error::operation("read takeover target", source))?
+            .ok_or_else(not_found)?;
+        if !target.spec.schedulable || !target.spec.roles.contains(&metadata::NodeRole::Broker) {
+            return Err(forbidden());
+        }
+        let desired_epoch = expected_epoch
+            .checked_add(1)
+            .ok_or_else(|| Error::invalid("Ownership epoch is exhausted"))?;
+        if diagnostic.epoch == desired_epoch {
+            let grant = replica
+                .state
+                .try_with_application(|state| state.grant(partition).cloned())
+                .await
+                .map_err(|source| Error::operation("read in-progress takeover", source))?
+                .ok_or_else(Error::unavailable)?;
+            if grant.owner_node != target_owner
+                || grant.expected_route_generation != expected_route_generation
+            {
+                return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, false));
+            }
+            if diagnostic.phase == crate::ownership::OwnershipPhase::Active {
+                return replica
+                    .state
+                    .try_with_application(|state| state.route(partition).cloned())
+                    .await
+                    .map_err(|source| Error::operation("read completed takeover", source))?
+                    .ok_or_else(Error::unavailable);
+            }
+            return self.complete_route(grant, diagnostic.phase, deadline).await;
+        }
+        if diagnostic.epoch != expected_epoch
+            || diagnostic.route_generation != expected_route_generation
+        {
+            return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, false));
+        }
+        let command = Command::grant_ownership(
+            self.meta_revision().await?,
+            self.cluster,
+            partition,
+            target_owner,
+            expected_epoch,
+            expected_route_generation,
+        )
+        .map_err(metadata_rejection)?;
+        let metadata::Outcome::OwnershipGranted(grant) = self.meta_write(command, deadline).await?
+        else {
+            return Err(Error::invalid("Unexpected takeover grant outcome"));
+        };
+        self.complete_route(grant, crate::ownership::OwnershipPhase::Granted, deadline)
+            .await
     }
 
     pub async fn ownership_command(

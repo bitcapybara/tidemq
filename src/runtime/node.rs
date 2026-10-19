@@ -90,6 +90,15 @@ impl RunningNode {
         let mut metrics = Metrics::default();
         let dispatch = Arc::new(DispatchMetrics::default());
         dispatch.register(metrics.registry_mut());
+        let runtime_metrics = super::telemetry::RuntimeMetrics::default();
+        metrics
+            .registry_mut()
+            .sub_registry_with_prefix("tidemq_runtime")
+            .register_collector(Box::new(runtime_metrics.clone()));
+        metrics
+            .registry_mut()
+            .sub_registry_with_prefix("tidemq_internal_client")
+            .register_collector(Box::new(client.metrics.clone()));
         let producer = ProducerMetrics::default();
         metrics
             .registry_mut()
@@ -199,6 +208,16 @@ impl RunningNode {
         };
         let external_address = external.as_ref().map(Server::local_addr);
         let internal_address = internal.local_addr();
+        metrics
+            .registry_mut()
+            .sub_registry_with_prefix("tidemq_internal_server")
+            .register_collector(Box::new(internal.metrics.clone()));
+        if let Some(external) = &external {
+            metrics
+                .registry_mut()
+                .sub_registry_with_prefix("tidemq_external_server")
+                .register_collector(Box::new(external.metrics.clone()));
+        }
         let service = Arc::new(Service::new(
             config,
             cluster,
@@ -211,6 +230,7 @@ impl RunningNode {
             budget.clone(),
             producer,
             metrics,
+            runtime_metrics,
         )?);
         let (shutdown, stopped) = watch::channel(false);
         let dispatcher = DispatchConfig {
@@ -245,6 +265,35 @@ impl RunningNode {
             shutdown,
             tasks,
         })
+    }
+
+    pub fn attach_logging(&self, health: crate::observability::logging::LogHealth) -> Result<()> {
+        *self
+            .service
+            .log_health
+            .lock()
+            .map_err(|_| Error::invalid("Runtime logging health is unavailable"))? = Some(health);
+        Ok(())
+    }
+
+    /// Trusted local control entry point; public clients cannot submit ownership commands.
+    pub async fn takeover(
+        &self,
+        partition: crate::metadata::PartitionKey,
+        target_owner: u64,
+        expected_epoch: u64,
+        expected_route_generation: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::metadata::Route> {
+        self.service
+            .execute_takeover(
+                partition,
+                target_owner,
+                expected_epoch,
+                expected_route_generation,
+                deadline,
+            )
+            .await
     }
 
     pub async fn shutdown(mut self) -> Result<()> {
@@ -284,6 +333,12 @@ async fn open_replica<A: Application>(
     )
     .await
     .map_err(|source| Error::operation("open durable Raft replica", source))?;
+    let recovered = store.log.diagnostics().await;
+    let pristine = recovered.vote.is_none()
+        && recovered.committed_log.is_none()
+        && recovered.snapshot_log.is_none()
+        && recovered.purged_log.is_none()
+        && recovered.retained_log_entries == 0;
     let raft_config = openraft::Config {
         cluster_name: format!("tidemq-{cluster}-{group}"),
         heartbeat_interval: 100,
@@ -306,16 +361,7 @@ async fn open_replica<A: Application>(
     )
     .await
     .map_err(|source| Error::operation("start Raft replica", source))?;
-    if config.runtime.bootstrap
-        && voters.iter().min().copied() == Some(config.node_id)
-        && raft
-            .metrics()
-            .borrow()
-            .membership_config
-            .membership()
-            .nodes()
-            .next()
-            .is_none()
+    if config.runtime.bootstrap && voters.iter().min().copied() == Some(config.node_id) && pristine
     {
         let members: BTreeMap<_, _> = voters
             .iter()

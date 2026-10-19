@@ -51,6 +51,22 @@ pub struct PeerPool {
 }
 
 impl PeerPool {
+    /// Stop callers first; every cached peer/class RPC then shares one bounded drain deadline.
+    pub(crate) async fn close(&self, deadline: Instant) {
+        let slots = self
+            .slots
+            .lock()
+            .map(|slots| slots.values().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for slot in slots {
+            if let Ok(mut cached) = tokio::time::timeout_at(deadline, slot.lock()).await
+                && let Some(rpc) = cached.take()
+            {
+                rpc.close(deadline).await;
+            }
+        }
+    }
+
     pub fn new(
         client: Arc<Client>,
         credentials: ClientCredentials,

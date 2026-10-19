@@ -90,6 +90,8 @@ async fn run(cli: Cli) -> Result<()> {
             let node = tidemq::runtime::RunningNode::start(config)
                 .await
                 .map_err(runtime_error)?;
+            node.attach_logging(logging.health.clone())
+                .map_err(runtime_error)?;
             tracing::info!(event_code = "service_started", node_id, role, internal_address = %node.internal_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ runtime is accepting connections");
             shutdown_signal().await?;
             node.shutdown().await.map_err(runtime_error)?;

@@ -13,7 +13,6 @@ use crate::transport::{Authorization, TokenGrant};
 pub(crate) struct Access {
     pub principal: String,
     pub scope: String,
-    pub kinds: Vec<FrameKind>,
 }
 
 #[derive(Clone)]
@@ -107,15 +106,13 @@ impl AccessTable {
         Ok(access)
     }
     pub fn delegated(&self, principal: &str, scope: &str, kind: FrameKind) -> Result<Access> {
-        let kinds = self
-            .principals
+        self.principals
             .get(&(principal.to_owned(), scope.to_owned()))
             .filter(|kinds| kinds.contains(&kind))
             .ok_or_else(forbidden)?;
         Ok(Access {
             principal: principal.to_owned(),
             scope: scope.to_owned(),
-            kinds: kinds.clone(),
         })
     }
 }

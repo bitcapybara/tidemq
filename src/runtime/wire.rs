@@ -83,6 +83,8 @@ pub(crate) struct Pending {
 }
 
 impl PeerRpc {
+    // These independent identity, class, ordering, and deadline fields bind one wire attempt.
+    #[allow(clippy::too_many_arguments)]
     pub async fn submit(
         &self,
         target: u64,

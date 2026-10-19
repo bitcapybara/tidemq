@@ -44,6 +44,8 @@ pub(crate) struct Service {
     pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
     pub metrics: Metrics,
+    pub runtime_metrics: super::telemetry::RuntimeMetrics,
+    pub log_health: std::sync::Mutex<Option<crate::observability::logging::LogHealth>>,
     pub draining: AtomicBool,
     pub routes: RwLock<BTreeMap<PartitionKey, CachedRoute>>,
     pub leaders: RwLock<BTreeMap<u64, (u64, Instant)>>,
@@ -53,6 +55,7 @@ pub(crate) struct Service {
 }
 
 impl Service {
+    // Keep process-owned facilities explicit at the single runtime assembly boundary.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Config,
@@ -66,6 +69,7 @@ impl Service {
         budget: MemoryBudget,
         producer: ProducerMetrics,
         metrics: Metrics,
+        runtime_metrics: super::telemetry::RuntimeMetrics,
     ) -> Result<Self> {
         let mut brokers = BTreeMap::new();
         for (group, replica) in &data {
@@ -106,6 +110,8 @@ impl Service {
             delivery_key,
             budget,
             metrics,
+            runtime_metrics,
+            log_health: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
             routes: RwLock::new(BTreeMap::new()),
             leaders: RwLock::new(BTreeMap::new()),
@@ -145,6 +151,10 @@ impl Service {
                 .await
                 .map_err(|source| Error::operation("close metadata WAL", source))?;
         }
+        self.rpc
+            .pool
+            .close(Instant::now() + Duration::from_secs(2))
+            .await;
         Ok(())
     }
 
@@ -222,7 +232,8 @@ impl Service {
         };
         for node in voters {
             let request = Request::control(wire::LEADER, &())?;
-            if let Ok(bytes) = self.rpc.call(*node, group, request, deadline).await {
+            let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
+            if let Ok(bytes) = self.rpc.call(*node, group, request, attempt_deadline).await {
                 let leader: Option<u64> = wire::decode_json(&bytes)?;
                 if let Some(leader) = leader.filter(|leader| voters.contains(leader)) {
                     self.leaders
@@ -329,6 +340,8 @@ impl Service {
             .await
     }
 
+    // Explicit routing and deadline fields prevent accidental loss at a trust boundary.
+    #[allow(clippy::too_many_arguments)]
     async fn forward(
         &self,
         target: u64,

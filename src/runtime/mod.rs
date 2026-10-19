@@ -7,6 +7,7 @@ mod management;
 mod metadata;
 mod node;
 mod service;
+mod telemetry;
 pub(crate) mod wire;
 
 use std::path::Path;

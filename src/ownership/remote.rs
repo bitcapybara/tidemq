@@ -160,7 +160,12 @@ impl RemoteMetadataAuthority {
         let deadline = deadline.min(expires);
         for node in &self.voters {
             let request = Request::control(wire::AUTHORITY, &query)?;
-            let result = self.rpc.call(*node, self.group, request, deadline).await;
+            let attempt_deadline =
+                deadline.min(Instant::now() + std::time::Duration::from_millis(500));
+            let result = self
+                .rpc
+                .call(*node, self.group, request, attempt_deadline)
+                .await;
             let bytes = match result {
                 Ok(bytes) => bytes,
                 Err(_) if Instant::now() < deadline => continue,
@@ -284,6 +289,7 @@ impl RemoteMetadataAuthority {
     }
 }
 
+// Compare each independent authority identity before constructing a process-local capability.
 #[allow(clippy::too_many_arguments)]
 fn validate_data_proof(
     cluster: Id,
