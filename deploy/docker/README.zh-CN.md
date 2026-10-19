@@ -132,7 +132,36 @@ dc --profile tools run --rm --no-deps validator \
   --messages 64 --message-bytes 1024 --replay-settle-ms 5000
 ```
 
-故障编排另用 `--stage-fault --require-unavailable`，协调固定小文件 `waiting-fault.json` → `fault-injected` → `fault-observed.json` → `recovered` → `report.json`。只有在 SDK 明确进入对应阶段时才注入本项目内的故障；操作者须保留实际过程、report 和完整退出状态。不要以容器启动或单次健康检查替代持久 ACK、重放及恢复验证。`validator --help` 给出精确参数，故障编排 harness 由仓库的验证脚本负责。
+使用 Linux Bash harness 保留容器和可复核证据，接口为 `scripts/docker-validate.sh STATE CASE`。需要目标机已有的 Docker、jq 和 GNU coreutils；同一项目逐项执行，不能同时运行多个故障场景。环境仍只需前面设置的 `TIDEMQ_IMAGE`、`RUSTFS_BINARY`。脚本严格验证 `project.env` 的唯一规范行，始终显式传项目名，并在每次 kill/pause/update/start 或写阶段标记前核验精确容器 ID、Compose 项目/服务 label 和实际 Image ID。每个 validator 在启动前固定唯一 [Compose run name 与 case label](https://docs.docker.com/reference/cli/docker/compose/run/)；先确认该精确名字不存在，再创建。若 CLI 超时但 daemon 可能已经创建容器，trap 最多用 5 秒按该精确名字找回 ID，并额外核对 Name/case label 后处理，绝不泛扫其他 driver；无法确认会在失败报告中保留名字、label 和 `unresolved` 状态。
+
+```bash
+bash "$REPO/scripts/docker-validate-selftest.sh"
+bash "$REPO/scripts/docker-validate.sh" "$STATE" smoke
+bash "$REPO/scripts/docker-validate.sh" "$STATE" replay
+# RF1 only:
+bash "$REPO/scripts/docker-validate.sh" "$STATE" oom
+# RF3 only, after switching STATE to the separately prepared RF3 project:
+# bash "$REPO/scripts/docker-validate.sh" "$STATE" storage-kill
+# bash "$REPO/scripts/docker-validate.sh" "$STATE" broker-kill
+# bash "$REPO/scripts/docker-validate.sh" "$STATE" metadata-quorum
+# bash "$REPO/scripts/docker-validate.sh" "$STATE" gateway-kill
+```
+
+| CASE | 验证内容 |
+| --- | --- |
+| `smoke` | 64 条 × 1024 字节，完整唯一收发和持久 ACK |
+| `replay` | 64 条 × 64 KiB，先生产、等待 5000 ms，再从原 H 消费 |
+| `storage-kill` | 21/22/23 的 group 2 leader/term 至少 2 份一致；只杀实际选择的 leader；离线期间新增 8 条提交且持久 ACK，剩余副本确认另一 leader 和更高 term |
+| `broker-kill` | 至少 2/3 Metadata 返回相同 `active` owner/epoch/route generation；只杀该 Broker；离线期间新增 8 条提交且持久 ACK，再确认另一 owner 和更高 epoch |
+| `metadata-quorum` | pause 11/12 并等待 4 秒租约失效；验证原 PendingBatch 没有成功回执，恢复 quorum 后完成 |
+| `gateway-kill` | 杀连接入口 41，验证未完成的原 PendingBatch，启动原容器恢复；只证明 Gateway 冷重启 |
+| `oom` | RF1 完成 warmup 后，将 node-1 的 memory/swap 从 384 MiB 降到 16 MiB；必须观察 `OOMKilled=true`、退出 137，再恢复原限额与原容器，完成原 PendingBatch |
+
+故障场景按固定小文件 `waiting-fault.json` → `fault-injected` → `fault-observed.json` → `recovered` → `report.json` 协调，最终完整持久 ACK 范围为 80 条。driver output 子目录必须由 driver 自己创建；host 不预建它。每个阶段标记和退出等待最多 120 秒，Docker 命令在独立进程组内有硬超时，并夹在该阶段期限内，避免 Compose plugin 子进程越过 CLI 期限。Metadata/Broker 的诊断响应是 `local_applied`，2/3 诊断一致仍不是线性一致读证明；脚本保存原始响应及所选 tuple。Storage 诊断同样是进程内有界采样，故障前后都需一致证据，不能把单次旧采样当成准确 leader。
+
+每次在 `$STATE/evidence/<case>.<random>/` 保存 driver report、终态/exit、各角色状态与挂载、受限日志、metrics、diagnostics、故障标记和选择依据。OOM 还保存角色容器自身的 `memory.max/current/events`、实际降低后的 HostConfig/State、原限额和恢复后的 cgroup 文件，不修改宿主全局 cgroup。每次 telemetry 快照最多 30 秒；单份日志/HTTP 输出最多 256 KiB、JSON report 最多 64 KiB、阶段标记最多 4 KiB。故障中不可访问的节点会留下错误证据；故障前后正常节点的必需采集失败会让该 case 失败。
+
+失败 trap 只恢复本次记录且再次核验身份的原容器，恢复原内存/swap 并 unpause，不创建替代节点；它在共享 5 秒预算内 TERM/必要时 KILL 本次 validator，记录真实终态。所有容器和卷都保留，脚本不执行清理。只有 driver 退出 0、report 为 passed、64/80 条唯一收发与持久 ACK 全部相符时才报告通过。无 Docker self-test 覆盖解析、拒绝错误身份、未知启动找回、标记限额、Storage/Broker 一致性、离线持久进度、恢复及错误退出/report，并用 fake Docker/plugin/sleeper 验证整个进程组超时退出；Linux 必须通过 GNU timeout 检查，缺少 GNU coreutils 的 macOS 会明确跳过这一项。它不替代真实 Docker/OOM/故障验证。
 
 诊断通过项目内 holder 执行，例如 `dc exec -T network curl --fail --silent --max-time 2 http://127.0.0.1:8410/diagnostics` 或 `/metrics`。RF3 管理端口按 `8400 + node_id * 10` 计算。`dc logs --tail 100 node-1` 只读取该项目的有界 Docker 日志；不将 SDK token、S3 密钥或完整配置输出到日志。默认未启用 OTLP。
 
