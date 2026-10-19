@@ -57,3 +57,5 @@ ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记�
 `actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_reclaims_sources` 使用真实 RustFS、Raft、SDK 和默认 192/32 MiB 应用/控制预算。它将测试保留时间设为零，验证原正文已本地回收、部分 ACK 推进 floor、自动压缩及旧 S3 对象删除后，同一个 Consumer 仍能读取存活后缀并提交 ACK。生产保留时间仍使用显式配置；测试不会修改默认策略。
 
 后台归档每个数据组每轮至多生成一个 pack，按实际 key 与正文总字节选择连续已提交范围，最多 8 MiB、8192 条消息。选择过程复用 `archive_read` 的有限页（最多 1024 条、1 MiB，并进一步收敛到该 Producer 的配置限制），页面引用先占用共享 MemoryBudget，退出即释放，再由原有 pack 构建许可接管。它不会复制或遍历完整积压，不提高默认 192/32 MiB 预算；单条消息必须满足已有消息及页上限。原 5 秒截止时间和定时周期保持有效，达到条数、字节或时间边界后交给下一轮；分区游标从本轮实际归档位置继续，避免一个分区长期占用全部机会。
+
+冷读在一个受保护页面内批量获取最多 256 条、1 MiB 数据，并为每条已持久化投递绑定原对象的私有证明。开始批量 Read 前会按需刷新临近到期的控制证明，仍遵守原控制 TTL 和请求总截止时间；页面一直保留到帧编码完成，随后再次校验并释放 pin。Read 中途失败或回复丢失时，已持久化投递不代表业务 ACK：后缀完成只会留下 ACK 孔，丢失前缀继续受保护，并在 ACK 超时（默认 30 秒）后重投。客户端必须补齐该前缀后才能推进连续业务 ACK 前沿，旧 attempt token 仍被拒绝。`lost_partial_cold_reply_preserves_the_prefix_until_visibility_retry_and_business_ack` 对 25 条丢失响应、8 条后缀 ACK、持久快照恢复和最终前沿 33 做了回归。
