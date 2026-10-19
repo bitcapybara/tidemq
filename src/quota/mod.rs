@@ -100,6 +100,7 @@ pub enum Kind {
     PhysicalStorage,
     SharedReclaimLag,
     ProcessMemory,
+    ContainerMemory,
 }
 
 const KINDS: [Kind; 4] = [
@@ -116,6 +117,7 @@ impl fmt::Display for Kind {
             Self::PhysicalStorage => "physical storage",
             Self::SharedReclaimLag => "shared object reclamation lag",
             Self::ProcessMemory => "process memory pressure",
+            Self::ContainerMemory => "container memory pressure",
         })
     }
 }
@@ -172,6 +174,8 @@ pub struct Metrics {
     blocked: Family<Labels, Gauge>,
     rejected: Counter,
     unavailable_observations: Counter,
+    container_blocked: Gauge,
+    container_available: Gauge,
 }
 
 impl Metrics {
@@ -200,6 +204,16 @@ impl Metrics {
             "Admission checks with absent or stale capacity observations",
             self.unavailable_observations.clone(),
         );
+        registry.register(
+            "tidemq_capacity_container_blocked",
+            "Container headroom hysteresis",
+            self.container_blocked.clone(),
+        );
+        registry.register(
+            "tidemq_capacity_container_observation_available",
+            "Whether the last container sample has enough limit fields",
+            self.container_available.clone(),
+        );
     }
 }
 
@@ -209,6 +223,9 @@ pub struct Quota {
     blocked: [bool; 4],
     observed_at: Option<Instant>,
     metrics: Metrics,
+    container: Option<(memory::Snapshot, Instant)>,
+    container_required: bool,
+    container_blocked: bool,
 }
 
 impl Quota {
@@ -220,7 +237,46 @@ impl Quota {
             blocked: [false; 4],
             observed_at: None,
             metrics,
+            container: None,
+            container_required: false,
+            container_blocked: false,
         })
+    }
+
+    /// Container usage is checked independently; it must never be added to process RSS.
+    pub fn observe_container(&mut self, mut snapshot: memory::Snapshot, observed_at: Instant) {
+        use memory::CgroupLimit;
+        if self
+            .container
+            .as_ref()
+            .is_some_and(|(_, previous)| observed_at < *previous)
+        {
+            return;
+        }
+        if self.container_required && snapshot.cgroup_limit == CgroupLimit::Unsupported {
+            snapshot.cgroup_limit = CgroupLimit::Unavailable;
+        }
+        self.container_required |= snapshot.cgroup_limit != CgroupLimit::Unsupported;
+        match (snapshot.cgroup_limit, snapshot.cgroup_current_bytes) {
+            (CgroupLimit::Bounded(limit), Some(current)) => {
+                if u128::from(current) * 10 >= u128::from(limit) * 9 {
+                    self.container_blocked = true;
+                } else if u128::from(current) * 10 <= u128::from(limit) * 8 {
+                    self.container_blocked = false;
+                }
+            }
+            (CgroupLimit::Unbounded | CgroupLimit::Unsupported, _) => {
+                self.container_blocked = false
+            }
+            _ => {}
+        }
+        self.metrics
+            .container_available
+            .set(i64::from(container_available(&snapshot)));
+        self.metrics
+            .container_blocked
+            .set(i64::from(self.container_blocked));
+        self.container = Some((snapshot, observed_at));
     }
 
     pub fn observe(&mut self, usage: Usage, observed_at: Instant) {
@@ -281,6 +337,28 @@ impl Quota {
                 return Err(Error::Pressure { kind });
             }
         }
+        self.check_container(now)
+    }
+
+    fn check_container(&self, now: Instant) -> Result<()> {
+        if self.container_required {
+            let (snapshot, observed_at) = self.container.as_ref().ok_or(Error::Unmeasured)?;
+            if !container_available(snapshot) {
+                self.metrics.unavailable_observations.inc();
+                return Err(Error::Unmeasured);
+            }
+            if now.saturating_duration_since(*observed_at).as_millis()
+                > u128::from(self.limits.max_sample_age_ms)
+            {
+                self.metrics.unavailable_observations.inc();
+                return Err(Error::Stale);
+            }
+            if self.container_blocked {
+                return Err(Error::Pressure {
+                    kind: Kind::ContainerMemory,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -293,6 +371,18 @@ impl Quota {
                     .unwrap_or(u64::MAX)
             }),
             max_sample_age_ms: self.limits.max_sample_age_ms,
+            container: self
+                .container
+                .map(|(snapshot, observed)| ContainerDiagnostic {
+                    limit: snapshot.cgroup_limit,
+                    current_bytes: snapshot.cgroup_current_bytes,
+                    blocked: self.container_blocked,
+                    available: container_available(&snapshot),
+                    sample_age_ms: u64::try_from(
+                        now.saturating_duration_since(observed).as_millis(),
+                    )
+                    .unwrap_or(u64::MAX),
+                }),
         }
     }
 }
@@ -304,6 +394,24 @@ pub struct Diagnostic {
     pub blocked: [bool; 4],
     pub sample_age_ms: Option<u64>,
     pub max_sample_age_ms: u64,
+    pub container: Option<ContainerDiagnostic>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ContainerDiagnostic {
+    pub limit: memory::CgroupLimit,
+    pub current_bytes: Option<u64>,
+    pub blocked: bool,
+    pub available: bool,
+    pub sample_age_ms: u64,
+}
+
+fn container_available(snapshot: &memory::Snapshot) -> bool {
+    match snapshot.cgroup_limit {
+        memory::CgroupLimit::Unsupported | memory::CgroupLimit::Unbounded => true,
+        memory::CgroupLimit::Bounded(_) => snapshot.cgroup_current_bytes.is_some(),
+        memory::CgroupLimit::Unavailable => false,
+    }
 }
 
 /// Conservative deployment envelopes are budgets; allocator statistics remain a separate observation.
@@ -347,6 +455,77 @@ impl MemoryEnvelope {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn finite_container_headroom_limits_low_rss_work_and_preserves_essential_progress() {
+        let mut quota = Quota::new(Limits::default(), Metrics::default()).unwrap();
+        let now = Instant::now();
+        quota.observe(
+            Usage {
+                process_memory_bytes: 10,
+                ..Default::default()
+            },
+            now,
+        );
+        let mut snapshot = memory::Snapshot {
+            process_rss_bytes: 10,
+            cgroup_current_bytes: Some(95),
+            cgroup_limit_bytes: Some(100),
+            cgroup_limit: memory::CgroupLimit::Bounded(100),
+            source: "bounded_test_observation",
+        };
+        for current in [95, 85] {
+            snapshot.cgroup_current_bytes = Some(current);
+            quota.observe_container(snapshot, now);
+            for work in [
+                Work::Produce,
+                Work::Prefetch,
+                Work::Cache,
+                Work::BackgroundSnapshot,
+            ] {
+                assert!(matches!(
+                    quota.admit(work, now),
+                    Err(Error::Pressure {
+                        kind: Kind::ContainerMemory
+                    })
+                ));
+            }
+            for work in [
+                Work::Read,
+                Work::Acknowledge,
+                Work::Control,
+                Work::GarbageCollect,
+            ] {
+                quota.admit(work, now).unwrap();
+            }
+        }
+        snapshot.cgroup_current_bytes = Some(80);
+        quota.observe_container(snapshot, now);
+        quota.admit(Work::Produce, now).unwrap();
+        snapshot.cgroup_limit = memory::CgroupLimit::Unavailable;
+        snapshot.cgroup_limit_bytes = None;
+        quota.observe_container(snapshot, now);
+        assert!(matches!(
+            quota.admit(Work::Produce, now),
+            Err(Error::Unmeasured)
+        ));
+        snapshot.cgroup_limit = memory::CgroupLimit::Unsupported;
+        quota.observe_container(snapshot, now);
+        assert!(matches!(
+            quota.admit(Work::Produce, now),
+            Err(Error::Unmeasured)
+        ));
+        snapshot.cgroup_limit = memory::CgroupLimit::Unbounded;
+        quota.observe_container(snapshot, now);
+        quota.admit(Work::Produce, now).unwrap();
+        let later = now + Duration::from_millis(1_001);
+        quota.observe(Usage::default(), later);
+        assert!(matches!(
+            quota.admit(Work::Produce, later),
+            Err(Error::Stale)
+        ));
+        quota.admit(Work::Acknowledge, later).unwrap();
+    }
 
     #[test]
     fn high_low_hysteresis_keeps_ack_read_gc_and_control_available() {

@@ -20,6 +20,10 @@
 
 当前验证包括高低水位迟滞、全水位下 ACK/控制准入、样本过期、有限指标 series、RSS 真实采样、字段单位/溢出与 cgroup 路径逃逸拒绝。运行入口与持久保留索引的最终接入仍在后续组合提交进行。
 
+cgroup v2 另有独立 headroom 门：观察当前组及至可见挂载根最多 64 层的 `memory.current`/`memory.max`，选择使用比例最高的有限祖先，包含兄弟进程对共同祖先的占用。当前组 `max` 不能掩盖祖先有限约束；不把最小 limit 与不对应的 current 拼接。达到 90% 停止新生产、预取、缓存和可选快照，回落至 80% 才恢复。RSS 与容器用量分别检查、分别诊断，不能相加。
+
+有限、明确无限、平台不支持和读取不可用是不同状态。已需要 cgroup 约束后读取失败或突然变成不支持，新增工作保守拒绝；字段不全或样本陈旧也不准入。消费、ACK、控制和 GC 继续使用各自有限资源。字段诊断呈现选中祖先的 current/limit，但不导出祖先路径作为指标标签。不可见祖先和其他进程未来增长无法由本进程保证，部署仍须预留内存及约束同组工作；Linux 实机与隔离 OOM 实验尚未运行。依据为 [Linux cgroup v2 memory controller](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html#memory)。
+
 ## 持久组合与口径
 
 DataApplication 的每个分区现在持有 RetentionState；生产新批次通过 append_admitted 原子登记时间和逻辑字节，重复批次不登记。floor 前进复查同一个 apply 锁内的实际 committed_end 与全部活跃订阅最小 ACK 前沿，并同步生产者的逻辑下界。生产者原结果、消息 offset 和 local_reclaim_end 保持各自含义；floor 前进不隐含上传或正文回收。时间采用批次携带的可信服务端准入时间，不使用客户端时间。
