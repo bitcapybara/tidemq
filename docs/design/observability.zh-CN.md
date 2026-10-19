@@ -1,6 +1,6 @@
 # 观测与诊断契约
 
-服务入口拥有全局 tracing subscriber、有限日志队列和统一 prometheus-client Registry。SDK 只发事件并提供可选 collector，由宿主初始化；当前没有内置 OTLP exporter。基础标签仅使用有限 operation/stage/outcome，request/tenant/topic/partition/object ID 留在受控事件或诊断。
+服务入口拥有全局 tracing subscriber、有限日志队列和统一 prometheus-client Registry。可选 OTLP 默认关闭，由入口拥有官方 OpenTelemetry SDK/exporter 和单个有界 Tokio worker；SDK 的可选桥接只读取宿主上下文。基础标签仅使用有限 operation/stage/outcome，request/tenant/topic/partition/object ID 留在受控事件或诊断。白名单、采样、字段/字节/退出预算和 Collector 故障行为见[追踪手册](../operations/tracing.zh-CN.md)。
 
 逻辑 operation_id 与每次 request_id/attempt 分开，跨 Gateway、异步任务和重试传递有界请求级 traceparent。trace 不参与去重、fence 或持久状态，也不绑定整个长连接；无效或未采集上下文不改变业务事实。临时详细过滤最多 300 秒后恢复；未采集历史不能事后补齐。错误计数和限速摘要独立于日志输出。
 
@@ -28,4 +28,4 @@
 
 管理 HTTP 仅 loopback，四项并发连接和有限请求/响应/期限；抓取读取已注册计数/快照，不扫描正文。诊断包括本地 applied/quorum/成员、WAL、容量样本年龄、真实 RSS/cgroup、allocator、transport 与 placement。指标只描述观察，不授权 ACK、写入、发布或 GC。profile 独占 native worker，并有期限/体积/权限约束。
 
-实际采集配置、看板、告警及 Prometheus 抓取证据见[指标手册](../operations/metrics.zh-CN.md)。日志/Collector 故障不能改变持久事实；队列丢失、sink 错误与采集失败单独可见。压力中的 Collector 中断、Linux OOM/长稳和三档正式成本仍需对应实验。[性能报告](../performance.zh-CN.md)必须保留真实 allocator/构建、开关与完整失败样本，不以占位 histogram 或一次 CPU/RSS 差值证明定位精度和开销。
+实际采集配置、看板、告警及 Prometheus 抓取证据见[指标手册](../operations/metrics.zh-CN.md)。日志/Collector 故障不能改变持久事实；队列丢失、sink 错误与采集失败单独可见。本地 OTLP 接收器覆盖断开、慢响应、503、超大响应和恢复，并核对 trace parent 与真实生产/持久 ACK；官方 native Collector 证据与适用范围记录在追踪手册。Linux OOM/长稳、真实 3AZ 与三档正式成本仍需对应实验。[性能报告](../performance.zh-CN.md)必须保留真实 allocator/构建、开关与完整失败样本，不以占位 histogram 或一次 CPU/RSS 差值证明定位精度和开销。

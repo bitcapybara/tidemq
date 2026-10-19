@@ -171,6 +171,11 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             log_oversized_events: logging
                 .as_ref()
                 .map(|health| health.oversized_events.load(Ordering::Relaxed)),
+            tracing: service
+                .trace_health
+                .lock()
+                .ok()
+                .and_then(|health| health.as_ref().map(|health| health.snapshot())),
         };
         if let Ok(mut metrics) = service.runtime_metrics.0.lock() {
             *metrics = sampled.clone();

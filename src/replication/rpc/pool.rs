@@ -217,6 +217,7 @@ impl PeerPool {
         })?;
         let mut frame = new_frame(kind, class, id, id, payload, millis, &self.config.protocol)
             .map_err(|source| Error::Protocol { source })?;
+        frame.traceparent = crate::observability::tracing::current_traceparent();
         frame.payload = Bytes::from_owner(ChargedPayload {
             bytes: frame.payload,
             _permit: permit,

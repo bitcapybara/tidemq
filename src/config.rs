@@ -35,6 +35,7 @@ pub struct Config {
     pub memory: MemoryConfig,
     pub protocol: ProtocolLimits,
     pub logging: LoggingConfig,
+    pub tracing: crate::observability::tracing::TracingConfig,
     pub tls: TlsConfig,
     pub runtime: crate::runtime::RuntimeConfig,
 }
@@ -52,6 +53,7 @@ impl Default for Config {
             memory: MemoryConfig::default(),
             protocol: ProtocolLimits::default(),
             logging: LoggingConfig::default(),
+            tracing: crate::observability::tracing::TracingConfig::default(),
             tls: TlsConfig::default(),
             runtime: crate::runtime::RuntimeConfig::default(),
         }
@@ -107,6 +109,7 @@ impl Config {
         self.protocol.validate().context(ProtocolSnafu)?;
         self.memory.validate(self.protocol.max_frame_bytes)?;
         self.logging.validate()?;
+        self.tracing.validate()?;
         Ok(())
     }
 }

@@ -20,6 +20,8 @@ use tokio::time::Instant;
 
 #[path = "runtime_support/broker_failover.rs"]
 mod broker_failover;
+#[path = "runtime_support/tracing.rs"]
+mod tracing_tests;
 
 // Shared S3 fixtures include additional helpers exercised by their own integration suites.
 #[allow(dead_code)]

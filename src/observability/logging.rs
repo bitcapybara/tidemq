@@ -7,7 +7,7 @@ use snafu::ResultExt;
 use tracing_appender::non_blocking::{ErrorCounter, NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::{EnvFilter, Registry, reload};
+use tracing_subscriber::{EnvFilter, Layer, Registry, reload};
 
 use crate::config::LoggingConfig;
 use crate::error::{LogFilterSnafu, LogReloadSnafu, LoggingSnafu};
@@ -30,6 +30,24 @@ pub struct Logging {
     _worker: WorkerGuard,
     pub health: LogHealth,
     pub control: LogControl,
+    tracing: Option<super::tracing::Tracing>,
+}
+
+impl Logging {
+    pub fn trace_instance_id(&self) -> Option<&str> {
+        self.tracing
+            .as_ref()
+            .map(|tracing| tracing.instance_id.as_str())
+    }
+    pub fn trace_health(&self) -> Option<super::tracing::TraceHealth> {
+        self.tracing.as_ref().map(|tracing| tracing.health.clone())
+    }
+    pub async fn shutdown_tracing(&mut self, deadline: tokio::time::Instant) -> Result<()> {
+        if let Some(tracing) = &mut self.tracing {
+            tracing.shutdown(deadline).await?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -92,14 +110,30 @@ impl LogControl {
 }
 
 fn parse_filter(value: &str) -> Result<EnvFilter> {
-    EnvFilter::builder()
+    let filter = EnvFilter::builder()
         .with_regex(false)
         .parse(value)
-        .context(LogFilterSnafu)
+        .context(LogFilterSnafu)?;
+    // Dedicated OTLP spans do not allocate formatter state when optional tracing is disabled.
+    let trace_filter = "tidemq_trace=off".parse().context(LogFilterSnafu)?;
+    Ok(filter.add_directive(trace_filter))
 }
 
 pub fn initialize(config: &LoggingConfig) -> Result<Logging> {
+    initialize_with_tracing(config, &super::tracing::TracingConfig::default())
+}
+
+pub fn initialize_with_tracing(
+    config: &LoggingConfig,
+    tracing_config: &super::tracing::TracingConfig,
+) -> Result<Logging> {
     config.validate()?;
+    tracing_config.validate()?;
+    let tracing = if tracing_config.enabled {
+        Some(super::tracing::Tracing::start(tracing_config)?)
+    } else {
+        None
+    };
     let filter = parse_filter(&config.filter)?;
     let sink_errors = Arc::new(AtomicU64::new(0));
     let sink = CheckedWriter {
@@ -121,21 +155,28 @@ pub fn initialize(config: &LoggingConfig) -> Result<Logging> {
         dropped: health.oversized_events.clone(),
     };
     let (layer, handle) = reload::Layer::new(filter);
-    let registry = tracing_subscriber::registry().with(layer);
     if config.json {
-        let subscriber =
-            registry.with(tracing_subscriber::fmt::layer().json().with_writer(bounded));
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(bounded)
+                .with_filter(layer),
+        );
+        let subscriber = subscriber.with(tracing.as_ref().map(|tracing| tracing.layer()));
         tracing::subscriber::set_global_default(subscriber).context(LoggingSnafu)?;
     } else {
-        let subscriber = registry.with(
+        let subscriber = tracing_subscriber::registry().with(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
-                .with_writer(bounded),
+                .with_writer(bounded)
+                .with_filter(layer),
         );
+        let subscriber = subscriber.with(tracing.as_ref().map(|tracing| tracing.layer()));
         tracing::subscriber::set_global_default(subscriber).context(LoggingSnafu)?;
     }
     Ok(Logging {
         _worker: worker,
+        tracing,
         health,
         control: LogControl {
             handle,
@@ -310,10 +351,12 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(80)).await;
         let current = control.handle.with_current(ToString::to_string).unwrap();
-        assert_eq!(current, "debug");
+        assert_eq!(current, "tidemq_trace=off,debug");
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if control.handle.with_current(ToString::to_string).unwrap() == "warn" {
+                if control.handle.with_current(ToString::to_string).unwrap()
+                    == "tidemq_trace=off,warn"
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;

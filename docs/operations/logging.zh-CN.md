@@ -8,4 +8,6 @@
 
 模块过滤禁用 regex。临时过滤限制 1024 字节与 1—300s，要求活动 Tokio runtime，代次隔离旧恢复计时器；无效表达式不覆盖原过滤。当前 API 在服务端库，管理入口/操作审计由 T10 接入。SDK 不安装该设施。
 
+可选 OTLP 与日志使用同一 subscriber 的独立 per-layer filter。专用 `tidemq_trace` span 不交给 stdout formatter，日志诊断过滤不放大 OTLP target/字段白名单。OTLP 有自己的有限队列、字节/速率/超时和丢弃指标，关闭时不创建导出任务；见[追踪手册](tracing.zh-CN.md)。
+
 ERROR 不保证永不丢。worker 退出 flush 期限受上游实现限制，flush 不是 fsync，强杀可能丢尾日志。观测失败不能阻塞提交/ACK，关键业务状态必须能通过持久权威和独立计数诊断。

@@ -17,6 +17,7 @@ pub(crate) struct Snapshot {
     pub log_dropped_events: Option<u64>,
     pub log_sink_errors: Option<u64>,
     pub log_oversized_events: Option<u64>,
+    pub tracing: Option<crate::observability::tracing::TraceSnapshot>,
 }
 
 impl Collector for RuntimeMetrics {
@@ -84,6 +85,9 @@ impl Collector for RuntimeMetrics {
                     counter.metric_type(),
                 )?)?;
             }
+        }
+        if let Some(tracing) = snapshot.tracing {
+            tracing.encode(&mut encoder)?;
         }
         Ok(())
     }

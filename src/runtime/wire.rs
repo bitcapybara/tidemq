@@ -105,7 +105,7 @@ impl PeerRpc {
         };
         drop(request);
         let operation_id = payload.operation_id.clone();
-        let frame = new_frame(
+        let mut frame = new_frame(
             FrameKind::InternalCommand,
             class,
             request_id,
@@ -115,6 +115,7 @@ impl PeerRpc {
             &self.limits,
         )
         .map_err(|source| Error::operation("frame internal request", source))?;
+        frame.traceparent = crate::observability::tracing::current_traceparent();
         drop(payload);
         let rpc = self
             .pool

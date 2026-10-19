@@ -313,6 +313,15 @@ impl RunningNode {
         Ok(())
     }
 
+    pub fn attach_tracing(&self, health: crate::observability::tracing::TraceHealth) -> Result<()> {
+        *self
+            .service
+            .trace_health
+            .lock()
+            .map_err(|_| Error::invalid("Runtime trace health is unavailable"))? = Some(health);
+        Ok(())
+    }
+
     /// Trusted local control entry point; public clients cannot submit ownership commands.
     pub async fn route(
         &self,
@@ -458,12 +467,17 @@ impl RunningNode {
             .map_err(|source| Error::operation("reclaim published local bodies", source))
     }
 
-    pub async fn shutdown(mut self) -> Result<()> {
+    pub async fn shutdown(self) -> Result<()> {
+        self.shutdown_until(tokio::time::Instant::now() + Duration::from_secs(5))
+            .await
+    }
+
+    /// Share the service entry point's original total deadline with optional exporters.
+    pub async fn shutdown_until(mut self, deadline: tokio::time::Instant) -> Result<()> {
         self.service
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = self.shutdown.send(true);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let mut failure = None;
         for mut task in std::mem::take(&mut self.tasks) {
             match tokio::time::timeout_at(deadline, &mut task).await {

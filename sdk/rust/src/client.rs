@@ -418,7 +418,7 @@ impl Client {
     }
 
     #[allow(clippy::too_many_arguments)] // Both entry points share identical deadline and retry behavior.
-    #[tracing::instrument(skip_all, fields(kind = kind.as_str_name(), class = class.as_str_name(), operation_id = ?operation))]
+    #[tracing::instrument(target = "tidemq_trace", name = "tidemq.sdk.request", skip_all, fields(kind = kind.as_str_name(), class = class.as_str_name(), operation_id = ?operation))]
     async fn request_inner<M: Message, R: Message + Default>(
         &self,
         kind: FrameKind,

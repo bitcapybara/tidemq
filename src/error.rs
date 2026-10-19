@@ -30,6 +30,8 @@ pub enum Error {
     Logging {
         source: tracing::subscriber::SetGlobalDefaultError,
     },
+    #[snafu(display("Trace export failed: {reason}"))]
+    TraceExport { reason: &'static str },
     #[snafu(display("Invalid log filter"))]
     LogFilter {
         source: tracing_subscriber::filter::ParseError,

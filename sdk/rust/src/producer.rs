@@ -200,7 +200,7 @@ impl Producer {
     }
 
     /// Enqueues batches in sequence order while responses are read independently.
-    #[tracing::instrument(skip_all, fields(producer_epoch = self.epoch))]
+    #[tracing::instrument(target = "tidemq_trace", name = "tidemq.sdk.produce", skip_all, fields(producer_epoch = self.epoch))]
     pub async fn produce(
         &self,
         messages: Vec<public::Message>,

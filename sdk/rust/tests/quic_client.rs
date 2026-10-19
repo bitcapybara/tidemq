@@ -982,7 +982,7 @@ async fn sdk_uses_the_existing_host_subscriber_and_omits_credentials() {
     tracing::info!("host-subscriber-survived");
     let text = String::from_utf8(output.lock().unwrap().clone()).unwrap();
     assert!(text.contains("host-subscriber-survived"));
-    assert!(text.contains("request_inner"));
+    assert!(text.contains("tidemq.sdk.request"));
     assert!(!text.contains(TOKEN));
 }
 

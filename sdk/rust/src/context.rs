@@ -24,8 +24,8 @@ pub async fn scope_traceparent<T>(
 }
 
 pub(crate) fn current_traceparent() -> Result<String> {
-    TRACEPARENT
-        .try_with(|context| {
+    let explicit = TRACEPARENT
+        .try_with(|context| -> Result<String> {
             let mut output = String::new();
             output
                 .try_reserve_exact(context.len())
@@ -33,5 +33,25 @@ pub(crate) fn current_traceparent() -> Result<String> {
             output.push_str(context);
             Ok(output)
         })
-        .unwrap_or_else(|_| Ok(String::new()))
+        .unwrap_or_else(|_| Ok(String::new()))?;
+    if !explicit.is_empty() {
+        return Ok(explicit);
+    }
+    #[cfg(feature = "opentelemetry")]
+    {
+        use opentelemetry::trace::TraceContextExt;
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        let context = tracing::Span::current().context();
+        let span = context.span();
+        let context = span.span_context();
+        if context.is_valid() {
+            return Ok(format!(
+                "00-{}-{}-{:02x}",
+                context.trace_id(),
+                context.span_id(),
+                context.trace_flags().to_u8()
+            ));
+        }
+    }
+    Ok(String::new())
 }
