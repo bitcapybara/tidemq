@@ -52,6 +52,12 @@ struct PeerState {
     drop_first_admin: bool,
     pair_produces: bool,
     assignment: Option<public::AssignmentResult>,
+    claims: Vec<public::ClaimAssignment>,
+    unassigned: bool,
+    reject_reads: u32,
+    other_hot_key: bool,
+    idempotent_claim: bool,
+    drop_claim_reply: bool,
     bulk_reads: usize,
     hot_reads: usize,
     barriers: Vec<u64>,
@@ -228,6 +234,30 @@ fn response<M: Message>(request: &Frame, kind: FrameKind, payload: &M) -> Frame 
     .unwrap()
 }
 
+fn fenced(request: &Frame) -> Frame {
+    response(
+        request,
+        FrameKind::Error,
+        &tidemq_protocol::common::ErrorReply {
+            code: tidemq_protocol::common::ErrorCode::Fenced.into(),
+            outcome: tidemq_protocol::common::Outcome::Rejected.into(),
+            retryable: true,
+            ..Default::default()
+        },
+    )
+}
+
+fn advance_owner(state: &mut PeerState, unassigned: bool) {
+    let assignment = state.assignment.as_mut().unwrap();
+    assignment.assignment_generation += 1;
+    assignment.delivery_generation = assignment.assignment_generation;
+    assignment.received_before = assignment.acknowledged_before;
+    assignment.issued_before = assignment.acknowledged_before;
+    state.bulk_reads = 0;
+    state.hot_reads = 0;
+    state.unassigned = unassigned;
+}
+
 fn handle(
     request: &Frame,
     purpose: StreamPurpose,
@@ -355,7 +385,7 @@ fn handle(
                 FrameKind::SubscriptionStatusResult,
                 &public::SubscriptionStatusResult {
                     assignment: Some(previous),
-                    assigned: state.assignment.is_some(),
+                    assigned: state.assignment.is_some() && !state.unassigned,
                 },
             )
         }
@@ -366,6 +396,19 @@ fn handle(
                 claim.session_id.as_ref(),
                 session.connection().session_id().as_bytes()
             );
+            state.claims.push(claim.clone());
+            if state.idempotent_claim
+                && !state.unassigned
+                && let Some(previous) = state.assignment.clone()
+            {
+                state.bulk_reads = 0;
+                return Some(response(request, FrameKind::AssignmentResult, &previous));
+            }
+            let acknowledged_before = state
+                .assignment
+                .as_ref()
+                .map(|previous| previous.acknowledged_before)
+                .unwrap_or(if state.seek_count > 0 { 2 } else { 0 });
             let assignment = public::AssignmentResult {
                 subscription_id: claim.subscription_id,
                 topic_id: claim.topic_id,
@@ -374,20 +417,37 @@ fn handle(
                 cursor_generation: claim.expected_cursor_generation,
                 assignment_generation: claim.expected_assignment_generation + 1,
                 delivery_generation: claim.expected_assignment_generation + 1,
-                acknowledged_before: if state.seek_count > 0 { 2 } else { 0 },
-                next_delivery_offset: if state.seek_count > 0 { 2 } else { 0 },
+                acknowledged_before,
+                next_delivery_offset: acknowledged_before,
                 cold_before: 2,
-                received_before: if state.seek_count > 0 { 2 } else { 0 },
-                issued_before: if state.seek_count > 0 { 2 } else { 0 },
+                received_before: acknowledged_before,
+                issued_before: acknowledged_before,
             };
             state.assignment = Some(assignment.clone());
+            state.unassigned = false;
+            state.bulk_reads = 0;
+            if state.drop_claim_reply {
+                state.drop_claim_reply = false;
+                return None;
+            }
             response(request, FrameKind::AssignmentResult, &assignment)
         }
         FrameKind::Read => {
             let read: public::ReadRequest =
                 decode_payload(request.payload.clone(), &limits).unwrap();
+            if state.reject_reads > 0 {
+                state.reject_reads -= 1;
+                return Some(fenced(request));
+            }
             let class = TrafficClass::try_from(request.traffic_class).unwrap();
             let assignment = state.assignment.as_mut().unwrap();
+            if state.unassigned
+                || read.cursor_generation != assignment.cursor_generation
+                || read.assignment_generation != assignment.assignment_generation
+                || read.session_id != assignment.session_id
+            {
+                return Some(fenced(request));
+            }
             assert_eq!(read.session_id, assignment.session_id);
             let mut ranges = Vec::new();
             let offset = if class == TrafficClass::Bulk {
@@ -409,7 +469,9 @@ fn handle(
             };
             let delivery = public::Delivery {
                 offset,
-                key: if state.fill_credit {
+                key: if state.other_hot_key && offset == 2 {
+                    Bytes::from_static(b"unrelated-key")
+                } else if state.fill_credit {
                     Bytes::new()
                 } else {
                     Bytes::from_static(b"same-key")
@@ -447,6 +509,13 @@ fn handle(
             let barrier: public::ReceiveBarrier =
                 decode_payload(request.payload.clone(), &limits).unwrap();
             let assignment = state.assignment.as_mut().unwrap();
+            if state.unassigned
+                || barrier.cursor_generation != assignment.cursor_generation
+                || barrier.assignment_generation != assignment.assignment_generation
+                || barrier.session_id != assignment.session_id
+            {
+                return Some(fenced(request));
+            }
             assert!(barrier.received_before <= assignment.issued_before);
             state.barriers.push(barrier.received_before);
             assignment.received_before = assignment.received_before.max(barrier.received_before);
@@ -456,6 +525,13 @@ fn handle(
             assert_eq!(purpose, StreamPurpose::Ack);
             assert!(request.encoded_len() <= limits.max_control_frame_bytes as usize);
             let ack: public::AckBatch = decode_payload(request.payload.clone(), &limits).unwrap();
+            let assignment = state.assignment.as_ref().unwrap();
+            if ack.cursor_generation != assignment.cursor_generation
+                || ack.assignment_generation != assignment.assignment_generation
+                || ack.session_id != assignment.session_id
+            {
+                return Some(fenced(request));
+            }
             state.acknowledgements.push(ack.delivery_tokens.len());
             let mut accepted = 0;
             let mut already = 0;
@@ -1030,6 +1106,290 @@ async fn unknown_produce_retries_original_identity_without_reassigning_sequence(
             .iter()
             .all(|session| *session == peer.client.session_id())
     );
+}
+
+#[tokio::test]
+async fn owner_recovery_preserves_failed_keys_and_invalidates_old_tokens_across_clones() {
+    for unassigned in [false, true] {
+        let peer = peer(false, false).await;
+        let consumer = Consumer::claim(
+            peer.client.clone(),
+            id(1),
+            0,
+            id(2),
+            ConsumerConfig {
+                ordering: DeliveryOrdering::KeySerial,
+                ..ConsumerConfig::default()
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+        let clone = consumer.clone();
+        consumer.fill(deadline()).await.unwrap();
+        consumer.fill(deadline()).await.unwrap();
+        let old = consumer.next().await.unwrap().unwrap();
+        consumer.fail(old.clone()).await.unwrap();
+        {
+            let mut state = peer.state.lock().unwrap();
+            advance_owner(&mut state, unassigned);
+            state.other_hot_key = true;
+        }
+        clone.fill(deadline()).await.unwrap();
+        assert_eq!(peer.client.metrics().snapshot().active_deliveries, 2);
+        consumer.fill(deadline()).await.unwrap();
+        assert!(clone.next().await.unwrap().is_none());
+        assert!(matches!(
+            consumer.ack(&old, deadline()).await,
+            Err(Error::StaleDelivery)
+        ));
+        drop(old);
+        consumer.fill(deadline()).await.unwrap();
+        let unrelated = clone.next().await.unwrap().unwrap();
+        assert_eq!(unrelated.offset(), 2);
+        clone.ack(&unrelated, deadline()).await.unwrap();
+        assert!(consumer.next().await.unwrap().is_none());
+        consumer.retry_failed(0).await.unwrap();
+        let first = clone.next().await.unwrap().unwrap();
+        assert_eq!(first.offset(), 0);
+        clone.ack(&first, deadline()).await.unwrap();
+        let second = consumer.next().await.unwrap().unwrap();
+        assert_eq!(second.offset(), 1);
+        assert_eq!(
+            consumer
+                .ack(&second, deadline())
+                .await
+                .unwrap()
+                .acknowledged_before,
+            3
+        );
+        let state = peer.state.lock().unwrap();
+        assert_eq!(state.claims.len(), 2);
+        assert!(
+            state
+                .claims
+                .iter()
+                .all(|claim| claim.replace_session_id.is_empty())
+        );
+        assert_eq!(state.acknowledgements, vec![1, 1, 1]);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_reclaim_cannot_resume_its_obsolete_queue_and_recovery_keeps_the_session() {
+    let peer = peer(false, false).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    peer.state.lock().unwrap().drop_claim_reply = true;
+    let clone = consumer.clone();
+    let task = tokio::spawn(async move { clone.reclaim(deadline()).await });
+    let stop = deadline();
+    while peer.state.lock().unwrap().claims.len() < 2 {
+        assert!(Instant::now() < stop);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(matches!(consumer.next().await, Err(Error::StaleDelivery)));
+    consumer.fill(deadline()).await.unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    let fresh = consumer.next().await.unwrap().unwrap();
+    assert_eq!(fresh.offset(), 0);
+    let state = peer.state.lock().unwrap();
+    assert_eq!(state.claims.len(), 3);
+    assert!(
+        state
+            .claims
+            .iter()
+            .all(|claim| claim.session_id == bytes(peer.client.session_id())
+                && claim.replace_session_id.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn same_generation_refresh_rebuilds_enqueue_evidence_before_unlocking_keys() {
+    let peer = peer(false, false).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig {
+            ordering: DeliveryOrdering::KeySerial,
+            ..ConsumerConfig::default()
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    let failed = consumer.next().await.unwrap().unwrap();
+    consumer.fail(failed).await.unwrap();
+    {
+        let mut state = peer.state.lock().unwrap();
+        state.reject_reads = 3;
+        state.idempotent_claim = true;
+        state.other_hot_key = true;
+    }
+    consumer.fill(deadline()).await.unwrap();
+    assert!(consumer.next().await.unwrap().is_none());
+    consumer.fill(deadline()).await.unwrap();
+    assert!(consumer.next().await.unwrap().is_none());
+    consumer.fill(deadline()).await.unwrap();
+    let unrelated = consumer.next().await.unwrap().unwrap();
+    assert_eq!(unrelated.offset(), 2);
+    consumer.retry_failed(0).await.unwrap();
+    let original = consumer.next().await.unwrap().unwrap();
+    assert_eq!(original.offset(), 0);
+    assert_eq!(peer.state.lock().unwrap().claims.len(), 2);
+}
+
+#[tokio::test]
+async fn old_ack_is_not_rewritten_and_recv_recovers_from_the_durable_frontier() {
+    let peer = peer(false, false).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    let first = consumer.next().await.unwrap().unwrap();
+    assert_eq!(first.offset(), 0);
+    consumer.ack(&first, deadline()).await.unwrap();
+    let old = consumer.next().await.unwrap().unwrap();
+    advance_owner(&mut peer.state.lock().unwrap(), true);
+    assert!(matches!(
+        consumer.ack(&old, deadline()).await,
+        Err(Error::Remote {
+            code: tidemq_protocol::common::ErrorCode::Fenced,
+            ..
+        })
+    ));
+    let fresh = consumer.recv(deadline()).await.unwrap().unwrap();
+    assert_eq!(fresh.offset(), 1);
+    assert!(matches!(
+        consumer.ack(&old, deadline()).await,
+        Err(Error::StaleDelivery)
+    ));
+    assert_eq!(
+        consumer
+            .ack(&fresh, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        2
+    );
+    let state = peer.state.lock().unwrap();
+    assert_eq!(state.claims.len(), 2);
+    assert_eq!(state.assignment.as_ref().unwrap().acknowledged_before, 2);
+    assert_eq!(state.acknowledgements, vec![1, 1]);
+}
+
+#[tokio::test]
+async fn automatic_owner_recovery_never_reuses_explicit_takeover_consent_for_another_session() {
+    let peer = peer(false, false).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig {
+            replace_session_id: Some(id(9)),
+            ..ConsumerConfig::default()
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    {
+        let mut state = peer.state.lock().unwrap();
+        advance_owner(&mut state, false);
+        state.assignment.as_mut().unwrap().session_id = bytes(id(9));
+    }
+    assert!(matches!(
+        consumer.fill(deadline()).await,
+        Err(Error::Remote {
+            code: tidemq_protocol::common::ErrorCode::AssignmentBusy,
+            ..
+        })
+    ));
+    assert_eq!(peer.state.lock().unwrap().claims.len(), 1);
+    assert_eq!(
+        peer.state
+            .lock()
+            .unwrap()
+            .assignment
+            .as_ref()
+            .unwrap()
+            .session_id,
+        bytes(id(9))
+    );
+    consumer.reclaim(deadline()).await.unwrap();
+    let state = peer.state.lock().unwrap();
+    assert_eq!(state.claims.len(), 2);
+    assert_eq!(
+        state.claims.last().unwrap().replace_session_id,
+        bytes(id(9))
+    );
+}
+
+#[tokio::test]
+async fn last_allowed_assignment_refresh_can_issue_its_final_read_without_holding_the_state_lock() {
+    let peer = peer(false, false).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    peer.state.lock().unwrap().reject_reads = 9;
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(peer.state.lock().unwrap().claims.len(), 4);
+}
+
+#[tokio::test]
+async fn repeated_fences_stop_at_the_shared_deadline_and_finite_recovery_budget() {
+    let peer = peer(false, false).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    peer.state.lock().unwrap().reject_reads = 50;
+    let begin = Instant::now();
+    assert!(
+        consumer
+            .fill(begin + Duration::from_millis(500))
+            .await
+            .is_err()
+    );
+    assert!(begin.elapsed() < Duration::from_secs(1));
+    assert!(peer.state.lock().unwrap().claims.len() <= 4);
 }
 
 #[tokio::test]
