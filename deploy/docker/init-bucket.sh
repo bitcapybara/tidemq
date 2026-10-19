@@ -17,6 +17,7 @@ url = "http://127.0.0.1:19000/tidemq-deploy-validation"
 request = "$1"
 user = "$access:$secret"
 aws-sigv4 = "aws:amz:us-east-1:s3"
+header = "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 noproxy = "*"
 connect-timeout = 1
 max-time = 5
