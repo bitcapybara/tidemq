@@ -112,7 +112,7 @@ impl PeerPool {
         })
     }
 
-    async fn connection(
+    pub(crate) async fn connection(
         &self,
         target: u64,
         class: TrafficClass,
@@ -143,7 +143,10 @@ impl PeerPool {
             .connect(peer.clone(), &self.credentials, class, deadline)
             .await
             .map_err(|source| Error::Transport { source })?;
-        let lanes = if class == TrafficClass::Replication {
+        let lanes = if matches!(
+            class,
+            TrafficClass::Replication | TrafficClass::Produce | TrafficClass::Delivery
+        ) {
             self.config.replication_lanes
         } else {
             self.config.bulk_lanes
