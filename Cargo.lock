@@ -3058,6 +3058,7 @@ dependencies = [
 name = "tidemq-protocol"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "bytes",
  "getrandom 0.4.3",
  "prost",

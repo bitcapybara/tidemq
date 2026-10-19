@@ -4,6 +4,7 @@ mod error;
 pub mod framing;
 pub mod identity;
 pub mod limits;
+pub mod producer;
 pub mod state;
 
 pub use error::{Error, Result};
