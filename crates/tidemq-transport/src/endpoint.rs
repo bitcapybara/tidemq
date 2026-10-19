@@ -1,4 +1,11 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use bytes::Bytes;
 use s2n_quic::{
@@ -16,7 +23,7 @@ use tidemq_protocol::{
     public::HelloResult,
 };
 use tokio::{
-    sync::{Mutex, Semaphore, mpsc},
+    sync::{Mutex, RwLock, Semaphore, mpsc},
     task::{JoinHandle, JoinSet},
     time::{Instant, timeout_at},
 };
@@ -281,9 +288,41 @@ impl Server {
         self.incoming.recv().await
     }
     /// Stops accepting and cancels active handshakes; callers drain/close accepted sessions first.
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(mut self) -> Result<()> {
         self.task.abort();
         let _ = (&mut self.task).await;
+        let mut address = self.address;
+        let bind: SocketAddr = if address.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        }
+        .parse()
+        .map_err(|_| Error::Configuration {
+            reason: "shutdown socket address is invalid",
+        })?;
+        if address.ip().is_unspecified() {
+            address.set_ip(if address.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            });
+        }
+        // s2n-quic 1.91 acceptor Drop does not wake idle I/O; a local datagram releases it.
+        let deadline = super::policy::deadline_after(std::time::Duration::from_secs(1))?;
+        timeout_at(deadline, async {
+            let socket = tokio::net::UdpSocket::bind(bind).await?;
+            socket.send_to(&[0], address).await?;
+            Ok::<_, std::io::Error>(())
+        })
+        .await
+        .map_err(|_| Error::Deadline {
+            operation: "wake idle server endpoint for shutdown",
+        })?
+        .map_err(|source| Error::Io {
+            operation: "wake idle server endpoint for shutdown",
+            source,
+        })
     }
 }
 
@@ -310,6 +349,9 @@ pub struct Client {
     has_identity: bool,
     slots: Arc<Semaphore>,
     pool: Mutex<HashMap<PoolKey, PoolSlot>>,
+    closed: AtomicBool,
+    lifecycle: RwLock<()>,
+    sessions: std::sync::Mutex<Vec<Weak<Session>>>,
     pub metrics: Arc<TransportMetrics>,
 }
 
@@ -372,6 +414,9 @@ impl Client {
             expected_nodes: tls.expected_nodes,
             has_identity,
             pool: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+            lifecycle: RwLock::new(()),
+            sessions: std::sync::Mutex::new(Vec::new()),
             metrics,
         })
     }
@@ -384,6 +429,9 @@ impl Client {
         class: TrafficClass,
         deadline: Instant,
     ) -> Result<Arc<Session>> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
         target.validate()?;
         let key = PoolKey {
             target: target.clone(),
@@ -415,6 +463,9 @@ impl Client {
             .map_err(|_| Error::Deadline {
                 operation: "wait for pooled connection",
             })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
         if let Some(session) = entry
             .as_ref()
             .filter(|session| !session.connection().is_closed())
@@ -434,6 +485,14 @@ impl Client {
         class: TrafficClass,
         deadline: Instant,
     ) -> Result<Arc<Session>> {
+        let _connecting = timeout_at(deadline, self.lifecycle.read())
+            .await
+            .map_err(|_| Error::Deadline {
+                operation: "wait for client lifecycle",
+            })?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
         target.validate()?;
         credentials.digest()?;
         if class == TrafficClass::Unspecified
@@ -464,7 +523,17 @@ impl Client {
         )
         .await;
         match result {
-            Ok(result) => result,
+            Ok(Ok(session)) => {
+                let mut sessions = self.sessions.lock().map_err(|_| Error::Closed)?;
+                sessions.retain(|entry| entry.strong_count() != 0);
+                if let Err(source) = sessions.try_reserve(1) {
+                    session.close();
+                    return Err(Error::Allocation { source });
+                }
+                sessions.push(Arc::downgrade(&session));
+                Ok(session)
+            }
+            Ok(Err(error)) => Err(error),
             Err(_) => {
                 add(&self.metrics.deadlines, 1);
                 Err(Error::Deadline {
@@ -472,6 +541,44 @@ impl Client {
                 })
             }
         }
+    }
+
+    /// Closes cached and direct sessions, then waits for native endpoint connections to drain.
+    pub async fn close(&self, deadline: Instant) -> Result<()> {
+        self.closed.store(true, Ordering::Release);
+        let _closing = timeout_at(deadline, self.lifecycle.write())
+            .await
+            .map_err(|_| Error::Deadline {
+                operation: "drain client connection attempts",
+            })?;
+        let sessions = {
+            let mut sessions = self.sessions.lock().map_err(|_| Error::Closed)?;
+            std::mem::take(&mut *sessions)
+        };
+        for session in sessions.iter().filter_map(Weak::upgrade) {
+            session.close();
+        }
+        let mut pool =
+            timeout_at(deadline, self.pool.lock())
+                .await
+                .map_err(|_| Error::Deadline {
+                    operation: "drain client connection cache",
+                })?;
+        pool.clear();
+        drop(pool);
+        for session in sessions.iter().filter_map(Weak::upgrade) {
+            session.shutdown(deadline).await?;
+        }
+        let mut endpoint = self.endpoint.clone();
+        timeout_at(deadline, endpoint.wait_idle())
+            .await
+            .map_err(|_| Error::Deadline {
+                operation: "drain native client endpoint",
+            })?
+            .map_err(|source| Error::Connection {
+                operation: "drain native client endpoint",
+                source,
+            })
     }
 
     // Keep authentication and initial lanes under one close-on-failure transaction.
