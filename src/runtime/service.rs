@@ -50,6 +50,8 @@ pub(crate) struct Service {
     pub budget: MemoryBudget,
     pub metrics: Metrics,
     pub runtime_metrics: super::telemetry::RuntimeMetrics,
+    pub ownership_metrics: crate::ownership::OwnershipMetrics,
+    pub scaling_diagnostic: std::sync::Mutex<serde_json::Value>,
     pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
     pub scaling: super::scaling::RuntimeScaling,
     pub quota: std::sync::Mutex<crate::quota::Quota>,
@@ -84,6 +86,7 @@ impl Service {
         producer: ProducerMetrics,
         mut metrics: Metrics,
         runtime_metrics: super::telemetry::RuntimeMetrics,
+        ownership_metrics: crate::ownership::OwnershipMetrics,
         quota: crate::quota::Quota,
         repair: crate::scaling::RepairBudget,
         transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
@@ -139,6 +142,8 @@ impl Service {
             budget,
             metrics,
             runtime_metrics,
+            ownership_metrics,
+            scaling_diagnostic: std::sync::Mutex::new(serde_json::json!({"status":"starting"})),
             transport_metrics,
             scaling,
             quota: std::sync::Mutex::new(quota),
@@ -353,6 +358,35 @@ impl Service {
     }
 
     async fn public(
+        &self,
+        access: Access,
+        frame: &Frame,
+        deadline: Instant,
+        order: Option<SubmissionOrder>,
+        hops: u32,
+    ) -> Result<Frame> {
+        let operation = match FrameKind::try_from(frame.kind) {
+            Ok(FrameKind::Read) => Some(Operation::Read),
+            Ok(FrameKind::AckBatch) => Some(Operation::Ack),
+            Ok(
+                FrameKind::ProduceBatch
+                | FrameKind::OpenProducer
+                | FrameKind::ProducerStatus
+                | FrameKind::RetireProducer,
+            ) => None,
+            _ => Some(Operation::Control),
+        };
+        let mut timer = super::telemetry::OperationTimer::new(
+            operation.and_then(|operation| self.metrics.operation(operation)),
+        );
+        let result = self
+            .public_dispatch(access, frame, deadline, order, hops)
+            .await;
+        timer.finish(&result, &self.config.protocol);
+        result
+    }
+
+    async fn public_dispatch(
         &self,
         access: Access,
         frame: &Frame,
@@ -721,10 +755,12 @@ impl Service {
                         .authorize_partition(&access, partition, deadline)
                         .await?;
                     if route.group_id != group
-                        || route.owner_node != peer.node_id
                         || !matches!(peer.role.as_str(), "broker" | "combined")
                     {
                         return Err(forbidden());
+                    }
+                    if route.owner_node != peer.node_id {
+                        return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
                     }
                 }
                 let reply = self

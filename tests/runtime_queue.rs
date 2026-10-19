@@ -151,18 +151,18 @@ impl Fixture {
     async fn wait_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let gateway = self
-                .running
-                .values()
-                .find(|node| node.external_address.is_some())
-                .unwrap();
-            let reply = http(gateway.management_address, "/readyz").await;
-            if reply.starts_with("HTTP/1.1 200") {
+            let mut ready = true;
+            for node in self.running.values() {
+                ready &= http(node.management_address, "/readyz")
+                    .await
+                    .starts_with("HTTP/1.1 200");
+            }
+            if ready {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "Runtime became ready before the test deadline: {reply}"
+                "Not all runtime roles obtained fresh readiness before the deadline"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -217,6 +217,13 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "Preserved runtime evidence directory {}",
+                self.directory.display()
+            );
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
@@ -269,7 +276,7 @@ async fn create(client: &Client) -> (Id, Id) {
     )
 }
 
-async fn start_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
+async fn spawn_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
     let config = fixture.configs.get(&node).unwrap();
     let path = fixture.directory.join(format!("process-{node}.toml"));
     tokio::fs::write(&path, toml::to_string(config).unwrap())
@@ -280,7 +287,7 @@ async fn start_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
         .append(true)
         .open(fixture.directory.join(format!("process-{node}.log")))
         .unwrap();
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tidemq"))
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_tidemq"))
         .arg("serve")
         .arg("--config")
         .arg(&path)
@@ -288,7 +295,17 @@ async fn start_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .unwrap();
+        .unwrap()
+}
+
+async fn start_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
+    let mut child = spawn_process(fixture, node).await;
+    wait_process(fixture, node, &mut child).await;
+    child
+}
+
+async fn wait_process(fixture: &Fixture, node: u64, child: &mut tokio::process::Child) {
+    let config = fixture.configs.get(&node).unwrap();
     let until = Instant::now() + Duration::from_secs(15);
     loop {
         assert!(
@@ -307,7 +324,7 @@ async fn start_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
         })
         .await;
         if matches!(attempt, Ok(Ok(ref response)) if response.starts_with("HTTP/1.1 200")) {
-            return child;
+            return;
         }
         assert!(
             Instant::now() < until,
@@ -402,6 +419,214 @@ async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() 
     fixture.close().await;
 }
 
+async fn durable_produce(producer: &Producer, body: &'static [u8]) -> u64 {
+    let until = Instant::now() + Duration::from_secs(20);
+    if let Ok(receipt) = producer
+        .produce(
+            vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(body),
+            }],
+            Instant::now() + Duration::from_secs(2),
+        )
+        .await
+    {
+        return receipt.first_offset;
+    }
+    let pending = producer.pending_batches().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let batch = pending.first().unwrap();
+    let identity = (
+        batch.operation_id(),
+        batch.producer_epoch(),
+        batch.first_sequence(),
+        batch.digest().to_vec(),
+    );
+    loop {
+        let result = producer
+            .retry(batch, until.min(Instant::now() + Duration::from_secs(2)))
+            .await;
+        if let Ok(receipt) = result {
+            assert_eq!(
+                identity,
+                (
+                    batch.operation_id(),
+                    batch.producer_epoch(),
+                    batch.first_sequence(),
+                    batch.digest().to_vec()
+                )
+            );
+            return receipt.first_offset;
+        }
+        assert!(
+            Instant::now() < until,
+            "Original producer identity could not recover: {result:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn durable_consume(consumer: &Consumer, offset: u64) {
+    let until = Instant::now() + Duration::from_secs(20);
+    let delivery = loop {
+        if let Some(delivery) = consumer.next().await.unwrap() {
+            break delivery;
+        }
+        let _ = consumer
+            .fill(until.min(Instant::now() + Duration::from_secs(2)))
+            .await;
+        assert!(
+            Instant::now() < until,
+            "Original consumer could not resume after data leader recovery"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(delivery.offset(), offset);
+    assert_eq!(
+        consumer
+            .ack(&delivery, until)
+            .await
+            .unwrap()
+            .acknowledged_before,
+        offset + 1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quorum() {
+    let nodes = [
+        (11, Role::Metadata),
+        (12, Role::Metadata),
+        (13, Role::Metadata),
+        (21, Role::Storage),
+        (22, Role::Storage),
+        (23, Role::Storage),
+        (31, Role::Broker),
+        (41, Role::Gateway),
+    ];
+    let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.capacity.process_memory = tidemq::quota::Limits::default().process_memory;
+    }
+    let mut processes = BTreeMap::new();
+    for (node, _) in nodes {
+        processes.insert(node, spawn_process(&fixture, node).await);
+    }
+    for (node, process) in &mut processes {
+        wait_process(&fixture, *node, process).await;
+    }
+    let client = fixture.client(41).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    for offset in 0..4 {
+        assert_eq!(
+            durable_produce(&producer, b"quorum-persisted").await,
+            offset
+        );
+    }
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    for offset in 0..4 {
+        durable_consume(&consumer, offset).await;
+    }
+    let diagnostics = http(
+        fixture.configs.get(&21).unwrap().management_listen,
+        "/diagnostics",
+    )
+    .await;
+    let diagnostics: serde_json::Value =
+        serde_json::from_str(diagnostics.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let leader = diagnostics
+        .get("data_groups")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .first()
+        .unwrap()
+        .get("leader")
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    processes.get_mut(&leader).unwrap().kill().await.unwrap();
+    let single_failure = Instant::now();
+    assert_eq!(
+        durable_produce(&producer, b"after-one-storage-crash").await,
+        4
+    );
+    durable_consume(&consumer, 4).await;
+    eprintln!(
+        "Independent RF3 single-storage recovery completed in {:?}",
+        single_failure.elapsed()
+    );
+    let second = [21, 22, 23]
+        .into_iter()
+        .find(|node| *node != leader)
+        .unwrap();
+    processes.get_mut(&second).unwrap().kill().await.unwrap();
+    let result = producer
+        .produce(
+            vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"minority-unknown"),
+            }],
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "A data minority must never issue a successful producer receipt"
+    );
+    let pending = producer.pending_batches().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let original = pending.first().unwrap();
+    let identity = (
+        original.operation_id(),
+        original.producer_epoch(),
+        original.first_sequence(),
+        original.digest().to_vec(),
+    );
+    for node in [leader, second] {
+        processes.insert(node, spawn_process(&fixture, node).await);
+    }
+    for node in [leader, second] {
+        wait_process(&fixture, node, processes.get_mut(&node).unwrap()).await;
+    }
+    let status = client
+        .admin()
+        .subscription_status(topic, 0, subscription, deadline())
+        .await
+        .unwrap();
+    assert_eq!(status.assignment.unwrap().acknowledged_before, 5);
+    let receipt = producer.retry(original, deadline()).await.unwrap();
+    assert_eq!(receipt.first_offset, 5);
+    assert_eq!(
+        identity,
+        (
+            original.operation_id(),
+            original.producer_epoch(),
+            original.first_sequence(),
+            original.digest().to_vec()
+        )
+    );
+    durable_consume(&consumer, 5).await;
+    client.close(deadline()).await;
+    for process in processes.values_mut() {
+        process.kill().await.unwrap();
+        let _ = process.wait().await.unwrap();
+    }
+    fixture.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
@@ -449,6 +674,53 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     )
     .await;
     assert!(metrics.contains("tidemq_producer_new_messages_total 1"));
+    for operation in ["Read", "Ack", "Control"] {
+        let prefix =
+            format!("tidemq_operations_total{{operation=\"{operation}\",outcome=\"Committed\"}} ");
+        assert!(
+            metrics
+                .lines()
+                .find_map(|line| line.strip_prefix(&prefix))
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            metrics.contains(&format!("stage=\"Total\",operation=\"{operation}\""))
+                || metrics.contains(&format!("operation=\"{operation}\",stage=\"Total\""))
+        );
+    }
+    for stage in ["Grant", "Fence", "Recover", "Activate"] {
+        let prefix = format!(
+            "tidemq_ownership_transitions_total{{stage=\"{stage}\",outcome=\"Committed\"}} "
+        );
+        assert!(
+            metrics
+                .lines()
+                .find_map(|line| line.strip_prefix(&prefix))
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
+    }
+    assert!(
+        metrics
+            .lines()
+            .filter(
+                |line| line.starts_with("tidemq_stage_duration_seconds_count")
+                    && line.contains("stage=\"Sync\"")
+            )
+            .any(|line| line
+                .split_whitespace()
+                .last()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0)
+    );
+
     assert_eq!(metrics.matches("# EOF").count(), 1);
     let diagnostics = http(
         fixture.running.get(&1).unwrap().management_address,
@@ -573,7 +845,6 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
             .first_offset,
         8
     );
-    consumer.reclaim(deadline()).await.unwrap();
     assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
     let delivery = consumer.next().await.unwrap().unwrap();
     assert_eq!(delivery.offset(), 8);
@@ -597,9 +868,33 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
 async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
+    run_runtime_s3(&[(1, Role::Combined)], &[1], &[1]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
+async fn actual_runtime_sdk_rf3_separate_leaders_archive_and_replay_s3() {
+    run_runtime_s3(
+        &[
+            (11, Role::Metadata),
+            (12, Role::Metadata),
+            (13, Role::Metadata),
+            (21, Role::Storage),
+            (22, Role::Storage),
+            (23, Role::Storage),
+            (31, Role::Broker),
+            (41, Role::Gateway),
+        ],
+        &[11, 12, 13],
+        &[21, 22, 23],
+    )
+    .await;
+}
+
+async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) {
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
-    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(nodes, metadata, storage).await;
     let credentials_file = fixture.directory.join("object-credentials.toml");
     let (access, secret) = rustfs.credentials();
     tokio::fs::write(
@@ -609,16 +904,28 @@ async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
     .await
     .unwrap();
     private_file(credentials_file.clone()).await;
-    fixture.configs.get_mut(&1).unwrap().runtime.objects = Some(tidemq::runtime::ObjectConfig {
+    let objects = tidemq::runtime::ObjectConfig {
         endpoint: rustfs.endpoint().into(),
         region: "us-east-1".into(),
         bucket: "tidemq-sdk-test".into(),
         prefix: "runtime-test".into(),
         credentials_file,
         allow_http_loopback: true,
-    });
+    };
+    for config in fixture
+        .configs
+        .values_mut()
+        .filter(|config| config.role.stores_data())
+    {
+        config.runtime.objects = Some(objects.clone());
+    }
+    let gateway = nodes
+        .iter()
+        .find(|(_, role)| role.serves_gateway())
+        .unwrap()
+        .0;
     fixture.start_all().await;
-    let client = fixture.client(1).await;
+    let client = fixture.client(gateway).await;
     let (topic, subscription) = create(&client).await;
     let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
         .await
@@ -633,31 +940,45 @@ async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
         )
         .await
         .unwrap();
-    let partition = tidemq::metadata::PartitionKey {
-        topic_id: topic,
-        partition: 0,
-    };
-    fixture
-        .running
-        .get(&1)
-        .unwrap()
-        .archive(
-            2,
-            vec![tidemq::lifecycle::RangeRequest {
-                partition,
-                offsets: tidemq_protocol::state::OffsetRange::new(0, 1).unwrap(),
-            }],
-            deadline(),
+    let until = deadline();
+    loop {
+        let metrics = http(
+            fixture.running.get(&gateway).unwrap().management_address,
+            "/metrics",
         )
-        .await
-        .unwrap();
-    fixture
-        .running
-        .get(&1)
-        .unwrap()
-        .reclaim_local(partition, 1, deadline())
-        .await
-        .unwrap();
+        .await;
+        let reclaimed = metrics
+            .lines()
+            .find(|line| line.starts_with("tidemq_lifecycle_reclaimed_bytes_total "))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        // Gateways export process-local counters; inspect the actual data Leader's coordinator.
+        let mut reclaimed = reclaimed;
+        for node in storage {
+            let metrics = http(
+                fixture.running.get(node).unwrap().management_address,
+                "/metrics",
+            )
+            .await;
+            reclaimed = reclaimed.max(
+                metrics
+                    .lines()
+                    .find(|line| line.starts_with("tidemq_lifecycle_reclaimed_bytes_total "))
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0),
+            );
+        }
+        if reclaimed > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "Default background archive did not publish, checkpoint and reclaim in time"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     let consumer = Consumer::claim(
         client.clone(),
         topic,
@@ -680,12 +1001,21 @@ async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
         1
     );
     let metrics = http(
-        fixture.running.get(&1).unwrap().management_address,
+        fixture.running.get(&gateway).unwrap().management_address,
         "/metrics",
     )
     .await;
     assert_eq!(metrics.matches("# EOF").count(), 1);
-    assert!(metrics.contains("tidemq_lifecycle_published_total 1"));
+    let mut published = false;
+    for node in storage {
+        published |= http(
+            fixture.running.get(node).unwrap().management_address,
+            "/metrics",
+        )
+        .await
+        .contains("tidemq_lifecycle_published_total 1");
+    }
+    assert!(published);
     client.close(deadline()).await;
     drop(consumer);
     drop(producer);

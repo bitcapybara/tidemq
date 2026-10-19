@@ -24,6 +24,67 @@ struct Progress {
 }
 
 impl Service {
+    pub(crate) async fn rebalance(
+        self: Arc<Self>,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<()> {
+        let groups = self
+            .config
+            .runtime
+            .groups
+            .iter()
+            .map(|group| (group.group_id, group.standby.iter().copied().collect()))
+            .collect::<BTreeMap<_, _>>();
+        let mut placement =
+            crate::scaling::Placement::new(crate::scaling::PlacementPolicy::default())
+                .map_err(|source| Error::operation("initialize placement ticker", source))?;
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! { _ = shutdown.changed() => return Ok(()), _ = ticker.tick() => {} }
+            let Some(replica) = &self.metadata else {
+                continue;
+            };
+            if self.require_leader(replica).is_err() {
+                continue;
+            }
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let result = tokio::select! {
+                _ = shutdown.changed() => return Ok(()),
+                result = self.scaling.service.tick(&mut placement, &groups, deadline) => result,
+            };
+            let diagnostic = serde_json::json!({"placement":placement.diagnose(),"last_tick":result.as_ref().ok(),"successful":result.is_ok()});
+            if let Ok(mut cached) = self.scaling_diagnostic.lock() {
+                *cached = diagnostic;
+            }
+        }
+    }
+
+    pub(crate) fn sample_ownership_validity(&self) {
+        let now = std::time::Instant::now();
+        let remaining = self
+            .leases
+            .lock()
+            .ok()
+            .and_then(|leases| {
+                leases
+                    .values()
+                    .map(|slot| {
+                        slot.try_lock()
+                            .ok()
+                            .and_then(|lease| {
+                                lease
+                                    .as_ref()
+                                    .map(|lease| lease.expires_at().saturating_duration_since(now))
+                            })
+                            .unwrap_or_default()
+                    })
+                    .min()
+            })
+            .unwrap_or_default();
+        self.ownership_metrics.validity_remaining(remaining);
+    }
+
     pub(crate) async fn expire_pins(
         self: Arc<Self>,
         mut shutdown: watch::Receiver<bool>,
