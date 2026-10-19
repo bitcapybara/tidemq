@@ -148,7 +148,7 @@ async fn concurrency_is_bounded_and_configuration_redacts_credentials() {
     let store = S3Store::new(
         config,
         Limits {
-            max_in_flight: 1,
+            max_in_flight: 2,
             ..Limits::default()
         },
         budget,
@@ -163,7 +163,9 @@ async fn concurrency_is_bounded_and_configuration_redacts_credentials() {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(matches!(
-        store.head(pack.descriptor()).await,
+        store
+            .read_range(pack.descriptor(), 0, pack.descriptor().total_bytes)
+            .await,
         Err(Error::Overloaded)
     ));
     reader.await.unwrap().unwrap();
@@ -272,7 +274,7 @@ async fn decoder_admission_is_shared_across_cold_reader_instances() {
     let store = S3Store::new(
         support::config(&endpoint, pack.descriptor().identity.cluster_id),
         Limits {
-            max_in_flight: 1,
+            max_in_flight: 2,
             ..Limits::default()
         },
         budget.clone(),
@@ -308,4 +310,82 @@ async fn decoder_admission_is_shared_across_cold_reader_instances() {
     reading.await.unwrap().unwrap();
     task.await.unwrap();
     assert_eq!(budget.available_data_bytes(), before);
+}
+
+#[tokio::test]
+async fn hung_data_request_preserves_head_and_delete_execution_capacity() {
+    let budget = support::budget();
+    let pack = support::pack(&budget, 100, 2);
+    let body = pack.bytes();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release_body = release.clone();
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let data_started = started.clone();
+    let get_headers = support::response_headers(&pack, 206, 0, body.len());
+    let head_headers = support::response_headers(&pack, 200, 0, body.len());
+    let server = tokio::spawn(async move {
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let release_body = release_body.clone();
+            let data_started = data_started.clone();
+            let get_headers = get_headers.clone();
+            let head_headers = head_headers.clone();
+            let body = body.clone();
+            tasks.spawn(async move {
+                let mut request = vec![0; 16 * 1024];
+                let count = stream.read(&mut request).await.unwrap();
+                if request[..count].starts_with(b"GET ") {
+                    stream.write_all(get_headers.as_bytes()).await.unwrap();
+                    data_started.notify_one();
+                    release_body.notified().await;
+                    stream.write_all(&body).await.unwrap();
+                } else if request[..count].starts_with(b"HEAD ") {
+                    stream.write_all(head_headers.as_bytes()).await.unwrap();
+                } else {
+                    assert!(request[..count].starts_with(b"DELETE "));
+                    stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                }
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    });
+    let store = S3Store::new(
+        support::config(&endpoint, pack.descriptor().identity.cluster_id),
+        Limits {
+            max_in_flight: 2,
+            ..Limits::default()
+        },
+        budget,
+    )
+    .unwrap();
+    let reading_store = store.clone();
+    let descriptor = pack.descriptor().clone();
+    let reading = tokio::spawn(async move {
+        reading_store
+            .read_range(&descriptor, 0, descriptor.total_bytes)
+            .await
+    });
+    started.notified().await;
+    assert!(matches!(
+        store
+            .read_range(pack.descriptor(), 0, pack.descriptor().total_bytes)
+            .await,
+        Err(Error::Overloaded)
+    ));
+    tokio::time::timeout(Duration::from_secs(1), store.head(pack.descriptor()))
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), store.delete(pack.descriptor()))
+        .await
+        .unwrap()
+        .unwrap();
+    release.notify_one();
+    reading.await.unwrap().unwrap();
+    server.await.unwrap();
 }
