@@ -33,11 +33,15 @@ async fn cancelled_cross_task_buffers_return_capacity_and_preserve_control() {
         });
         receiver.await.unwrap();
         assert!(budget.try_reserve(TrafficClass::Bulk, 1).is_err());
-        let control = budget.try_reserve(TrafficClass::Control, 20).unwrap();
+        let control = budget.try_reserve(TrafficClass::Control, 5).unwrap();
+        let core = budget.try_reserve_core(10).unwrap();
+        let handshake = budget.try_reserve_handshake(5).unwrap();
         assert_eq!(budget.available_bytes(), 0);
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         drop(control);
+        drop(core);
+        drop(handshake);
         assert_eq!(budget.available_bytes(), 100);
     }
 }

@@ -27,6 +27,11 @@ pub struct CreateTopic {
     pub partitions: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTopic {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct TopicResult {
     #[prost(bytes = "bytes", tag = "1")]
     pub topic_id: ::prost::bytes::Bytes,
@@ -43,6 +48,15 @@ pub struct CreateSubscription {
     pub name: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
     pub start_offset: u64,
+    #[prost(enumeration = "DeliveryMode", tag = "4")]
+    pub delivery_mode: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSubscription {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubscriptionResult {
@@ -52,6 +66,188 @@ pub struct SubscriptionResult {
     pub topic_id: ::prost::bytes::Bytes,
     #[prost(uint64, tag = "3")]
     pub cursor_generation: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OpenProducer {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub expected_registration_epoch: u64,
+    #[prost(uint64, tag = "5")]
+    pub owner_epoch: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProducerSessionResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub producer_epoch: u64,
+    #[prost(uint64, tag = "3")]
+    pub next_sequence: u64,
+    #[prost(uint64, tag = "4")]
+    pub expires_at_ms: u64,
+    #[prost(uint64, tag = "5")]
+    pub next_registration_epoch: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProducerStatus {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub producer_epoch: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProducerStatusResult {
+    #[prost(enumeration = "ProducerSessionState", tag = "1")]
+    pub state: i32,
+    #[prost(message, optional, tag = "2")]
+    pub session: ::core::option::Option<ProducerSessionResult>,
+    #[prost(uint64, tag = "3")]
+    pub next_registration_epoch: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RetireProducer {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub producer_epoch: u64,
+    #[prost(uint64, tag = "5")]
+    pub owner_epoch: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ProducerRetired {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub producer_epoch: u64,
+    #[prost(bool, tag = "3")]
+    pub already_retired: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClaimAssignment {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub expected_cursor_generation: u64,
+    #[prost(uint64, tag = "5")]
+    pub expected_assignment_generation: u64,
+    #[prost(bytes = "bytes", tag = "6")]
+    pub session_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "7")]
+    pub replace_session_id: ::prost::bytes::Bytes,
+    #[prost(uint64, optional, tag = "8")]
+    pub cold_before: ::core::option::Option<u64>,
+    #[prost(uint64, tag = "9")]
+    pub owner_epoch: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AssignmentResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "3")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub session_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub cursor_generation: u64,
+    #[prost(uint64, tag = "6")]
+    pub assignment_generation: u64,
+    #[prost(uint64, tag = "7")]
+    pub delivery_generation: u64,
+    #[prost(uint64, tag = "8")]
+    pub acknowledged_before: u64,
+    #[prost(uint64, tag = "9")]
+    pub next_delivery_offset: u64,
+    #[prost(uint64, tag = "10")]
+    pub cold_before: u64,
+    #[prost(uint64, tag = "11")]
+    pub received_before: u64,
+    #[prost(uint64, tag = "12")]
+    pub issued_before: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscriptionStatus {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscriptionStatusResult {
+    #[prost(message, optional, tag = "1")]
+    pub assignment: ::core::option::Option<AssignmentResult>,
+    #[prost(bool, tag = "2")]
+    pub assigned: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SeekSubscription {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub expected_cursor_generation: u64,
+    #[prost(uint64, tag = "5")]
+    pub expected_assignment_generation: u64,
+    #[prost(uint64, tag = "6")]
+    pub target_offset: u64,
+    #[prost(uint64, tag = "7")]
+    pub owner_epoch: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SeekResult {
+    #[prost(uint64, tag = "1")]
+    pub cursor_generation: u64,
+    #[prost(uint64, tag = "2")]
+    pub assignment_generation: u64,
+    #[prost(uint64, tag = "3")]
+    pub delivery_generation: u64,
+    #[prost(uint64, tag = "4")]
+    pub acknowledged_before: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteSubscription {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub expected_cursor_generation: u64,
+    #[prost(uint64, tag = "5")]
+    pub expected_assignment_generation: u64,
+    #[prost(uint64, tag = "6")]
+    pub owner_epoch: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscriptionDeleted {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(bool, tag = "2")]
+    pub already_deleted: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Message {
@@ -104,6 +300,10 @@ pub struct ReadRequest {
     pub max_messages: u32,
     #[prost(uint32, tag = "7")]
     pub max_bytes: u32,
+    #[prost(uint64, tag = "8")]
+    pub delivery_generation: u64,
+    #[prost(bytes = "bytes", tag = "9")]
+    pub session_id: ::prost::bytes::Bytes,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Delivery {
@@ -116,12 +316,40 @@ pub struct Delivery {
     #[prost(bytes = "bytes", tag = "4")]
     pub delivery_token: ::prost::bytes::Bytes,
 }
+/// Ranges contain only persisted ACK holes in the current assignment.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AcknowledgedRange {
+    #[prost(uint64, tag = "1")]
+    pub start: u64,
+    #[prost(uint64, tag = "2")]
+    pub end: u64,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DeliveryBatch {
     #[prost(message, repeated, tag = "1")]
     pub deliveries: ::prost::alloc::vec::Vec<Delivery>,
     #[prost(uint64, tag = "2")]
     pub next_offset: u64,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "4")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "5")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "6")]
+    pub cursor_generation: u64,
+    #[prost(uint64, tag = "7")]
+    pub assignment_generation: u64,
+    #[prost(uint64, tag = "8")]
+    pub delivery_generation: u64,
+    #[prost(bytes = "bytes", tag = "9")]
+    pub session_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "10")]
+    pub cold_before: u64,
+    #[prost(uint64, tag = "11")]
+    pub issued_before: u64,
+    #[prost(message, repeated, tag = "12")]
+    pub acknowledged_ranges: ::prost::alloc::vec::Vec<AcknowledgedRange>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AckBatch {
@@ -135,6 +363,12 @@ pub struct AckBatch {
     pub assignment_generation: u64,
     #[prost(bytes = "bytes", repeated, tag = "5")]
     pub delivery_tokens: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+    #[prost(bytes = "bytes", tag = "6")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "7")]
+    pub delivery_generation: u64,
+    #[prost(bytes = "bytes", tag = "8")]
+    pub session_id: ::prost::bytes::Bytes,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct AckResult {
@@ -157,4 +391,71 @@ pub struct ReceiveBarrier {
     pub assignment_generation: u64,
     #[prost(uint64, tag = "5")]
     pub received_before: u64,
+    #[prost(bytes = "bytes", tag = "6")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "7")]
+    pub delivery_generation: u64,
+    #[prost(bytes = "bytes", tag = "8")]
+    pub session_id: ::prost::bytes::Bytes,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum DeliveryMode {
+    Unspecified = 0,
+    Parallel = 1,
+    KeySerial = 2,
+}
+impl DeliveryMode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "DELIVERY_MODE_UNSPECIFIED",
+            Self::Parallel => "PARALLEL",
+            Self::KeySerial => "KEY_SERIAL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "DELIVERY_MODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "PARALLEL" => Some(Self::Parallel),
+            "KEY_SERIAL" => Some(Self::KeySerial),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ProducerSessionState {
+    Unspecified = 0,
+    NotRegistered = 1,
+    Active = 2,
+    Expired = 3,
+}
+impl ProducerSessionState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PRODUCER_SESSION_STATE_UNSPECIFIED",
+            Self::NotRegistered => "NOT_REGISTERED",
+            Self::Active => "ACTIVE",
+            Self::Expired => "EXPIRED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PRODUCER_SESSION_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "NOT_REGISTERED" => Some(Self::NotRegistered),
+            "ACTIVE" => Some(Self::Active),
+            "EXPIRED" => Some(Self::Expired),
+            _ => None,
+        }
+    }
 }
