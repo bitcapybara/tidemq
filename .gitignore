@@ -1,1 +1,6 @@
 /target
+/.codegraph/
+/certs/
+/data/
+*.prof
+*.heap

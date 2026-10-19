@@ -1,0 +1,32 @@
+syntax = "proto3";
+package tidemq.internal.v1;
+import "common.proto";
+
+message PeerHello {
+  bytes cluster_id = 1;
+  uint64 node_id = 2;
+  string role = 3;
+  tidemq.common.v1.TrafficClass traffic_class = 4;
+}
+
+message RaftRequest {
+  uint64 group_id = 1;
+  bytes rpc_id = 2;
+  bytes encoded_rpc = 3;
+}
+
+message RaftResult { bytes rpc_id = 1; bytes encoded_result = 2; }
+message SnapshotChunk {
+  uint64 group_id = 1;
+  bytes snapshot_id = 2;
+  uint64 offset = 3;
+  bytes data = 4;
+  bool finished = 5;
+}
+
+message InternalCommand {
+  uint64 group_id = 1;
+  bytes operation_id = 2;
+  bytes encoded_command = 3;
+}
+message InternalResult { bytes operation_id = 1; bytes encoded_result = 2; }

@@ -1,0 +1,17 @@
+[package]
+name = "tidemq-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust client facilities for the TideMQ QUIC protocol."
+readme = "README.md"
+
+[dependencies]
+tidemq-protocol.workspace = true
+snafu.workspace = true
+tracing.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

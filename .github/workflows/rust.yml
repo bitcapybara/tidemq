@@ -1,0 +1,42 @@
+name: Rust
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --tests --no-deps --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --doc --locked
+      - run: cargo build -p tidemq-protocol --features codegen --locked
+      - run: cargo fmt --all
+      - run: git diff --exit-code -- crates/tidemq-protocol/src/generated
+      - run: cargo run --locked -- validate-config --config config/local.toml
+      - run: cargo run --locked --no-default-features --features allocator-mimalloc -- allocator-probe --blocks 2
+
+  allocator:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        backend: [allocator-mimalloc, allocator-jemalloc]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.backend }}
+      - run: cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features ${{ matrix.backend }} -- -D warnings
+      - run: cargo test -p tidemq --locked --no-default-features --features ${{ matrix.backend }}

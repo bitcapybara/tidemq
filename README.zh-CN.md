@@ -6,7 +6,7 @@
 
 TideMQ 面向数据采集与流处理，将消息服务、复制式预写日志（WAL）、对象存储和控制元数据分层，使计算与存储能够独立扩缩容。
 
-> **项目状态：** 当前包含架构草案与初始 Rust Cargo 骨架。可执行程序仅输出项目状态，尚未实现消息收发、复制、订阅或对象存储功能。以下能力均为设计目标，性能与恢复目标仍需验证。
+> **项目状态：** 已开始基础实现：三个 package、有界生成协议、配置校验、有界结构化日志、有限指标 schema 和分配器诊断。消息收发、复制、订阅和对象存储正在后续任务中实现，性能与恢复目标仍需验证。详见[实施状态](docs/implementation-status.zh-CN.md)。
 
 ## 设计目标
 
@@ -53,21 +53,22 @@ TideMQ 面向数据采集与流处理，将消息服务、复制式预写日志�
 
 ## 开始使用
 
-安装支持 Rust 2024 edition 的工具链，然后构建并运行项目骨架：
+仓库固定 Rust 1.96.0 及 rustfmt/Clippy。校验本地配置并检查当前进程：
 
 ```sh
-cargo build --locked
-cargo run --locked
+cargo run --locked -- validate-config --config config/local.toml
+cargo run --locked -- diagnose --config config/local.toml
+cargo run --locked -- allocator-probe
 ```
 
-当前程序只提示 TideMQ 仍在开发中，不会启动消息队列服务。
+以上命令不启动消息队列。诊断描述当前短生命周期进程，不查询其他运行中节点。同仓库 Rust SDK 在 sdk/rust，目前提供身份、协议及资源配置；网络生产/消费 API 在 T06 交付。
 
 本地验证命令：
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy -p tidemq --tests --no-deps
-cargo test --locked
+cargo clippy --workspace --tests --no-deps
+cargo test --workspace --locked
 ```
 
 ## 完整文档与实施路线
@@ -81,7 +82,7 @@ cargo test --locked
 5. 实现 Gateway 与受控扩缩容。
 6. 在对齐持久化和交付语义的前提下，完成三可用区性能对标与故障验证。
 
-共识库、网络协议、发布取消规则、投递令牌语义、去重有效期、保留与配额值、死信策略、对象大小和部署预算仍需确定。完整草案中的 AutoMQ 数据为外部参考，不是 TideMQ 的实测结果。
+已批准的基线选择 OpenRaft、s2n-quic、Protobuf、同仓库 Rust SDK、aws-sdk-s3 和本地 RustFS；分配器由二进制拥有，mimalloc/jemalloc/System 仍按性能和诊断关卡评估。参见[文档导航](docs/README.zh-CN.md)、[当前设计](docs/design/architecture.zh-CN.md)与[要求覆盖](docs/requirements-coverage.zh-CN.md)。负载数值和生产预算仍需验证；历史草案中的 AutoMQ 数据是外部参考，不是 TideMQ 实测。
 
 ## 许可证
 

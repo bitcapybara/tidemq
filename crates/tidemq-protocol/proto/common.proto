@@ -1,0 +1,84 @@
+syntax = "proto3";
+package tidemq.common.v1;
+
+enum TrafficClass {
+  TRAFFIC_CLASS_UNSPECIFIED = 0;
+  CONTROL = 1;
+  PRODUCE = 2;
+  DELIVERY = 3;
+  BULK = 4;
+  REPLICATION = 5;
+}
+
+enum FrameKind {
+  FRAME_KIND_UNSPECIFIED = 0;
+  HELLO = 1;
+  HELLO_RESULT = 2;
+  ERROR = 3;
+  CREATE_TOPIC = 10;
+  TOPIC_RESULT = 11;
+  CREATE_SUBSCRIPTION = 12;
+  SUBSCRIPTION_RESULT = 13;
+  PRODUCE_BATCH = 20;
+  PRODUCE_RESULT = 21;
+  READ = 22;
+  DELIVERY_BATCH = 23;
+  ACK_BATCH = 24;
+  ACK_RESULT = 25;
+  CANCEL = 26;
+  RECEIVE_BARRIER = 27;
+  RAFT_VOTE = 40;
+  RAFT_APPEND = 41;
+  RAFT_SNAPSHOT = 42;
+  RAFT_RESULT = 43;
+  DIAGNOSE = 50;
+  DIAGNOSTIC_RESULT = 51;
+  INTERNAL_COMMAND = 60;
+  INTERNAL_RESULT = 61;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  INVALID_REQUEST = 1;
+  UNAUTHENTICATED = 2;
+  FORBIDDEN = 3;
+  FENCED = 4;
+  QUOTA_EXCEEDED = 5;
+  UNAVAILABLE = 6;
+  DEADLINE_EXCEEDED = 7;
+  RESULT_UNKNOWN = 8;
+  SEQUENCE_GAP = 9;
+  CONTENT_CONFLICT = 10;
+  DEDUPLICATION_EXPIRED = 11;
+  STALE_DELIVERY = 12;
+  OFFSET_EXPIRED = 13;
+  NOT_FOUND = 14;
+  INTERNAL_ERROR = 15;
+}
+
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  REJECTED = 1;
+  COMMITTED = 2;
+  UNKNOWN = 3;
+}
+
+message Frame {
+  uint32 protocol_version = 1;
+  bytes request_id = 2;
+  bytes operation_id = 3;
+  TrafficClass traffic_class = 4;
+  FrameKind kind = 5;
+  string traceparent = 6;
+  bytes payload = 7;
+  uint64 remaining_timeout_ms = 8;
+}
+
+message ErrorReply {
+  ErrorCode code = 1;
+  string message = 2;
+  bool retryable = 3;
+  Outcome outcome = 4;
+}
+
+message CancelRequest { bytes request_id = 1; }

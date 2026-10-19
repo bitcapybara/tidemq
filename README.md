@@ -6,7 +6,7 @@ A cloud-native message queue built on object storage, designed for high throughp
 
 TideMQ targets data ingestion and stream processing. Its architecture separates message serving, replicated write-ahead logs (WALs), object storage, and control metadata so that compute and storage can scale independently.
 
-> **Status:** Architecture draft and initial Rust Cargo scaffold. The binary currently prints the project status; messaging, replication, subscriptions, and object storage are not implemented. The capabilities below are design goals, and performance and recovery targets remain unvalidated.
+> **Status:** Foundation implementation: a three-package workspace, generated bounded protocol, configuration validation, bounded structured logging, finite metric schema, and allocator diagnostics. Messaging, replication, subscriptions, and object storage are under development. Performance and recovery targets remain unvalidated. See the [implementation status](docs/implementation-status.zh-CN.md).
 
 ## Design goals
 
@@ -53,21 +53,22 @@ Candidate recovery targets are typically within 1 second for planned migration, 
 
 ## Getting started
 
-Install Rust with support for edition 2024, then build and run the scaffold:
+The repository pins Rust 1.96.0 with rustfmt and Clippy. Validate the local configuration and inspect the current process:
 
 ```sh
-cargo build --locked
-cargo run --locked
+cargo run --locked -- validate-config --config config/local.toml
+cargo run --locked -- diagnose --config config/local.toml
+cargo run --locked -- allocator-probe
 ```
 
-The current binary only reports that TideMQ is in development. It does not start a message queue server.
+These commands do not start a message queue. Diagnostics describe the current short-lived process, not another running node. The Rust SDK lives in `sdk/rust`; its current API covers protocol identities and resource configuration. Network producer and consumer APIs follow in T06.
 
 For local validation:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy -p tidemq --tests --no-deps
-cargo test --locked
+cargo clippy --workspace --tests --no-deps
+cargo test --workspace --locked
 ```
 
 ## Documentation and implementation roadmap
@@ -81,7 +82,7 @@ The [complete architecture draft in Chinese](docs/architecture.zh-CN.md) preserv
 5. Add Gateways and controlled scaling.
 6. Benchmark and validate failures across three availability zones with matched durability and delivery semantics.
 
-Consensus libraries, wire protocol, publication cancellation rules, delivery-token semantics, deduplication lifetime, retention and quota values, dead-letter policy, object sizing, and deployment budgets still require decisions. The AutoMQ figures cited in the full draft are external references, not TideMQ benchmark results.
+The approved baseline selects OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The binary owns allocator selection; mimalloc, jemalloc, and System remain under evaluation. See the [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), and [requirement coverage](docs/requirements-coverage.zh-CN.md). Workload values and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
 
 ## License
 

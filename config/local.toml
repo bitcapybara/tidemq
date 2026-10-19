@@ -1,0 +1,33 @@
+node_id = 1
+cluster_id = "00000000-0000-4000-8000-000000000001"
+role = "combined"
+listen = "127.0.0.1:7443"
+management_listen = "127.0.0.1:9419"
+data_dir = "data/node-1"
+replication_factor = 1
+
+[memory]
+total_bytes = 67108864
+control_reserved_bytes = 4194304
+max_connections = 128
+max_streams_per_connection = 64
+max_pending_requests = 256
+
+[protocol]
+max_frame_bytes = 1048576
+max_control_frame_bytes = 16384
+max_message_bytes = 262144
+max_batch_messages = 1024
+max_payload_fields = 1100
+max_traceparent_bytes = 55
+
+[logging]
+filter = "warn,tidemq=info"
+json = true
+queue_events = 1024
+max_event_bytes = 16384
+
+[tls]
+certificate = "certs/server.pem"
+private_key = "certs/server-key.pem"
+trust_roots = "certs/ca.pem"
