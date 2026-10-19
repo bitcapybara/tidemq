@@ -505,6 +505,7 @@ pub(crate) fn data_config(cluster: Id, group: &GroupConfig) -> DataGroupConfig {
         max_hot_messages: 65_536,
         producer: ProducerLimits::default(),
         subscription: crate::subscription::Limits::default(),
+        retention: crate::retention::Policy::default(),
     }
 }
 
