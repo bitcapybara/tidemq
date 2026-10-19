@@ -12,8 +12,8 @@ mod tests;
 
 pub use admission::BrokerLimits;
 pub use application::{
-    DataApplication, DataCommand, DataGroupConfig, DataRejection, DataResponse, ProducerCommand,
-    WriterFence,
+    ArchiveCandidate, ArchivePage, CapacityUsage, DataApplication, DataCommand, DataGroupConfig,
+    DataRejection, DataResponse, ProducerCommand, WriterFence,
 };
 pub use error::{Error, Result};
 pub use runtime::{Broker, HotRead, ProducerStatus, ProducerSubmission, RequestContext};

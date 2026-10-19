@@ -6,13 +6,13 @@ use tokio::{sync::Semaphore, time::Instant};
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("A process memory sample is already running"))]
+    #[snafu(display("A resource observation is already running"))]
     Busy,
-    #[snafu(display("Process memory sampling exceeded its deadline"))]
+    #[snafu(display("Resource observation exceeded its deadline"))]
     Deadline { source: tokio::time::error::Elapsed },
-    #[snafu(display("The process memory sampler stopped"))]
+    #[snafu(display("The resource observation worker stopped"))]
     Task { source: tokio::task::JoinError },
-    #[snafu(display("Process memory is unavailable"))]
+    #[snafu(display("Resource observation is unavailable"))]
     Unavailable { source: io::Error },
 }
 
@@ -39,20 +39,24 @@ impl Default for MemorySampler {
 impl MemorySampler {
     /// A timed-out native read retains its single worker slot until the read actually ends.
     pub async fn sample(&self, deadline: Instant) -> Result<Snapshot, Error> {
-        let permit = self
-            .slot
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| Error::Busy)?;
-        let task = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            read_snapshot().map_err(|source| Error::Unavailable { source })
-        });
-        tokio::time::timeout_at(deadline, task)
-            .await
-            .map_err(|source| Error::Deadline { source })?
-            .map_err(|source| Error::Task { source })?
+        observe(&self.slot, deadline, read_snapshot).await
     }
+}
+
+pub(super) async fn observe<T: Send + 'static>(
+    slot: &Arc<Semaphore>,
+    deadline: Instant,
+    read: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> Result<T, Error> {
+    let permit = slot.clone().try_acquire_owned().map_err(|_| Error::Busy)?;
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        read().map_err(|source| Error::Unavailable { source })
+    });
+    tokio::time::timeout_at(deadline, task)
+        .await
+        .map_err(|source| Error::Deadline { source })?
+        .map_err(|source| Error::Task { source })?
 }
 
 #[cfg(any(target_os = "linux", test))]
