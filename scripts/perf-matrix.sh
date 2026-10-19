@@ -10,11 +10,15 @@ mkdir -p "$output"
 status=0
 for allocator in system mimalloc jemalloc; do
   for scenario in small large slow replay; do
-    bash "$root/scripts/perf-run.sh" "$builds/$allocator" "$output/$allocator-$scenario-recommended" "$scenario" recommended || status=1
+    bash "$root/scripts/perf-run.sh" "$builds/$allocator" "$output/$allocator-$scenario-recommended-lanes4" "$scenario" recommended 4 || status=1
   done
 done
 # Keep observability comparisons on the same System binary and identical small-message workload.
 for mode in minimal detailed; do
-  bash "$root/scripts/perf-run.sh" "$builds/system" "$output/system-small-$mode" small "$mode" || status=1
+  bash "$root/scripts/perf-run.sh" "$builds/system" "$output/system-small-$mode-lanes4" small "$mode" 4 || status=1
+done
+# Change only Request lane count; reuse the same System binary and fixed memory limits.
+for scenario in small replay; do
+  bash "$root/scripts/perf-run.sh" "$builds/system" "$output/system-$scenario-recommended-lanes2" "$scenario" recommended 2 || status=1
 done
 exit "$status"

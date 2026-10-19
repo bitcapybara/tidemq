@@ -58,6 +58,8 @@ pub struct PhaseReport {
     pub client_metrics_after: serde_json::Value,
     pub client_transport_before: serde_json::Value,
     pub client_transport_after: serde_json::Value,
+    pub server_metrics_before: String,
+    pub server_metrics_after: String,
     pub terminal_error: Option<String>,
 }
 
@@ -119,7 +121,8 @@ pub async fn phase(
     } else {
         None
     };
-    let cold_before = sample::cold_misses(args.management).await?;
+    let server_metrics_before = sample::metrics(args.management).await?;
+    let cold_before = sample::cold_misses(&server_metrics_before)?;
     let client_metrics_before = client_metrics(client);
     let client_transport_before = serde_json::to_value(client.transport_metrics().snapshot())?;
     let started = Instant::now();
@@ -176,7 +179,8 @@ pub async fn phase(
         }
     }
     let (produce, consume, produce_elapsed_ns) = produced?;
-    let cold_after = sample::cold_misses(args.management).await?;
+    let server_metrics_after = sample::metrics(args.management).await?;
+    let cold_after = sample::cold_misses(&server_metrics_after)?;
     let physical_cold = cold_before
         .zip(cold_after)
         .is_some_and(|(before, after)| after > before);
@@ -263,6 +267,8 @@ pub async fn phase(
         client_metrics_after: client_metrics(client),
         client_transport_before,
         client_transport_after: serde_json::to_value(client.transport_metrics().snapshot())?,
+        server_metrics_before,
+        server_metrics_after,
         terminal_error,
     })
 }

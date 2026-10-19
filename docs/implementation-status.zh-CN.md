@@ -1,24 +1,31 @@
 # 实施状态
 
-2026-10-19：用户已批准完整计划。协调集成分支为 feat/yyx/integration-main，开发由 wt 创建固定目录分支，公共接口与 Cargo/lockfile 由协调者维护。不推送或合并远端 main。
+2026-10-19：完整计划已获用户批准，当前在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库。所有本地提交均保留在开发分支，尚未推送或合并远端 main。
 
-| 任务 | 当前状态 | 验证范围与未完成边界 |
+| 任务 | 已实现与已有行为证据 | 剩余验收边界 |
 | --- | --- | --- |
-| T00 | 核心实现已验证，分配器诊断可行性持续验证 | 四 package（service/protocol/transport/SDK）、schema/codec/ID/边界、配置/控制预算、日志/指标和 allocator 快照；不是完整运行时或生产选型 |
-| T01 | 核心传输已合入并验证 | 实际 s2n-quic、TLS/mTLS、连接池/流、有界 IO、有限观测；业务分派、调度、Core 自动修复及真实 LB 仍待 T06/T10/T12 |
-| T02 | 持久化与真实 OpenRaft 已合入并验证 | WAL/vote/log/commit/snapshot、官方 storage-v2 Suite、RF1/RF3 quorum/换主/成员变化、SIGKILL恢复和物理日志压缩；RF3 当前用受控内存网络，真实 QUIC RPC 与三区待验 |
-| T03—T05 | 独立 worktree 并行开发 | 控制权威/owner fencing、生产幂等、持久订阅；共享注册/分配/seek/屏障协议和内容摘要已合入 |
-| T06—T11 | 等待当前业务接口 | 公共 transport 已独立以供 SDK 复用；不宣布真实业务链路、S3、回收或弹性可用 |
-| T12 | 第一批模型/RustFS 预检已合入 | 参考模型与真实基础边界测试通过；后续增量覆盖实际服务故障 |
-| T13 | 未开始 | 默认分配器/窗口/并发、性能及三区目标均未实测 |
-| T14 | 文档随任务更新 | 最终导航/示例/设计/告警与运行验证尚未完成 |
+| T00 基础与内存 | 四个 package、schema/codec/ID/边界、Snafu 错误、有限日志/指标、配置、应用许可与控制预留；System/mimalloc/jemalloc 实际二进制可识别；同 jemalloc 发布构建可符号化采样 | 生产 allocator 需匹配环境负载选择；Linux/OOM 与长稳待验 |
+| T01 QUIC | 实际 s2n-quic 1.91、TLS/mTLS、有限分类连接池/流/队列、独立读写、单请求取消、原生新包 ACK 活性探测、端点关闭释放 | 真实 LB/NAT/CID、同预算 connection/stream 性能矩阵待验 |
+| T02 持久化 | fsync WAL/vote/log/commit/snapshot、官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 恢复、物理日志压缩与失败关闭 | 真实掉电、跨区故障和长稳待验；同机不代表独立故障域 |
+| T03 控制与所有权 | 独立元数据组、CRUD 容量与永久身份、grant/fence/recover/activate、有限 TTL、陈旧路由拒绝、可恢复计划操作 | 分角色运行时接管回归与最终故障组合持续验证 |
+| T04 生产 | 同组持久 producer/epoch/sequence/摘要/原结果、显式注册、固定过期、owned 提交；稳定版本 key 路由 helper | 无持久 outbox；有限原结果窗口届满不能自动以新身份重发 |
+| T05 订阅 | 同组持久 attempt/token/ACK、连续前沿/ACK 洞、seek/代次、冷读 H/接收屏障与 B 重试、窗口硬上限 | 外部业务副作用仍需幂等；KeySerial 与接管组合回归持续验证 |
+| T06 Rust SDK | 原生 QUIC Admin/Producer/Consumer、总 deadline/有限重试、保留 PendingBatch、独立宿主观测、同进程原对象跨 CLI 强杀重启恢复 | 自动 Consumer 所有权恢复与真实多 Gateway 入口故障继续验收；SDK 重启无自动 outbox |
+| T07 S3 | 固定 aws-sdk-s3、不可变 pack/校验/索引/Range、合装、multipart 取消对账、有界缓存；真实 RustFS 基础及 AWS SDK 测试 | 生产 S3/网络故障、持续中断容量与掉电待验 |
+| T08 生命周期 | 两权威注册/授权/发布/完成/取消、原对象对账、pin/恢复保护、替换验证/换引用、全 voter 持久检查点、floor/本地回收、DELETING 重试 | 新 voter 加入与冷回收的运行时组合、对象永久账本规模待验；账本硬上限 4096 |
+| T09 保留与配额 | 同 apply 年龄/ACK/CAS floor、有界时间索引、独立逻辑/物理/共享滞后/RSS 水位、真实磁盘/RSS 采样、cgroup v2 可见祖先 headroom、已有 ACK/control/GC 保留准入 | Linux 实机/OOM、持续归档中断和高压力下隔离待验 |
+| T10 运行时 | serve、组合/独立角色、实际内外 QUIC、管理健康/就绪/指标/诊断、TLS/静态授权、正常关闭、配置生成器；真实 RF1、分角色 RF3 SDK 热路径和 RustFS 冷路径 | 分角色 OS 故障、Broker 接管、自动伸缩组合回归持续验证 |
+| T11 弹性 | 私有稳定成员证明、learner/joint/stable、真实 Raft 迁移、独立修复预算、真实容量/CPU/网络/连接/ACK 评分、保留原计划的自动 tick | 运行时 owned ticker 与实际多角色 explicit/automatic repair 联调、冷却/长期均衡待验 |
+| T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS 回归、真实 CLI SIGKILL 与原 SDK 恢复 | 全量最终回归、RF3 独立 OS 进程故障、LB/三区、掉电待验 |
+| T13 性能 | 实际外部 SDK 负载、总量与持久 ACK 正确性校验、有限延迟直方图、三 allocator 与三档观测脚本、PID 资源样本 | 冻结版本的正式本地报告、长稳/生产规模/竞品公平对标与三区资源预算待验 |
+| T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；统一导航与逐条覆盖更新中 | 文档命令/链接/监控配置和最终实现一致性核验 |
 
-## 已有本地证据
+## 证据口径
 
-- macOS arm64，Rust/Cargo 1.96.0：集成分支全 workspace Clippy 无告警，共享传输提取前默认构建 74 项测试通过（含 SDK rustdoc 与基础边界/二进制测试）。
-- 真实 binary 读取 config/local.toml 的 validate-config 返回 valid=true。
-- allocator-mimalloc 构建 Clippy 无告警；真实 binary 的 2MiB 探针返回 backend=mimalloc、native_version=30302 和可读统计。jemalloc 统计与 profiling 构建 Clippy 通过，release 构建同 allocator 的统计和可符号化栈[实测记录](evidence/2026-10-19-allocator-release.zh-CN.md)已保存；真实 binary 返回原生 5.3.1 统计、生成持有/释放 profile，atos 已解析已知分配函数。探针不证明生产收益、Linux 能力或 mimalloc 栈捕获。
-- 发布/取消/快照保护参考模型枚举 18 状态、540 转换；订阅模型枚举 411 状态、972 次旧 token 尝试。这些是有限参考模型，尚不代表业务实现已满足。
-- CodeGraph 已初始化。本机无容器运行时，T12 已实际运行官方 RustFS 1.0.3 macOS arm64 隔离实例，验证 strict/新桶继承/已有覆盖、建桶、PUT/GET/HEAD、Range 206/416、删除以及 SIGKILL 后重启读取；aws-sdk-s3/multipart 与掉电持久性尚未验证。
+测试与复现入口见[测试方法](testing-benchmarks.zh-CN.md)，逐条对应见[要求覆盖](requirements-coverage.zh-CN.md)。本机为 macOS arm64，Rust/Cargo 1.96.0；真实 QUIC 测试使用本机 UDP/TLS 和真实磁盘。分角色 RF3 的早期回归在一个测试进程启动多个独立 Runtime；CLI RF1 强杀测试另用独立 OS 进程。两者不能混称为 RF3 独立进程故障。
 
-阶段 A 尚未整体放行。QUIC 与持久 quorum 已各自验证，组合运行时、完整业务故障模型、同生产 allocator 选型及生产负载栈采集仍需对应证据；本地多进程不替代三可用区测试。
+最近一次整体回归暴露了 Broker 接管后旧路由缓存重试导致 ProducerBlocked 的问题；已定位并在集成修复，最终全量结果以复测记录为准。不会将局部通过或编译成功写成阶段整体放行。
+
+RustFS 1.0.3 原生隔离实例已覆盖 PUT/GET/HEAD、206/416、multipart、AWS SDK、原对象恢复、发布/检查点/本地回收和冷读持久 ACK；仅启动脚本基础预检不包含这些后续证据。同机 SIGKILL 不证明宿主掉电安全。分配器实际发布构建证据见[采样记录](evidence/2026-10-19-allocator-release.zh-CN.md)。
+
+阶段 A—D 的本地核心行为已有证据；阶段 E 的运行时自动接管/伸缩与最终组合仍在验收。阶段 F 尚未创建云资源，没有三可用区 SLA、生产 allocator 结论或 Kafka/Pulsar/AutoMQ 性能结论。候选秒级恢复目标需要从故障发生至原 SDK 再次持久成功单独计时，测试总用时不能当作恢复延迟。

@@ -6,7 +6,7 @@ A cloud-native message queue built on object storage, designed for high throughp
 
 TideMQ targets data ingestion and stream processing. Its architecture separates message serving, replicated write-ahead logs (WALs), object storage, and control metadata so that compute and storage can scale independently.
 
-> **Status:** Foundation implementation: a four-package workspace, authenticated bounded QUIC transport, durable WAL/OpenRaft storage, generated bounded protocol, configuration validation, structured logging, finite metrics, and allocator diagnostics. The messaging runtime, subscriptions, and object integration are under development. Performance and recovery targets remain unvalidated. See the [implementation status](docs/implementation-status.zh-CN.md).
+> **Status:** The local runtime and in-repository Rust SDK support durable production, per-message acknowledgements, authenticated QUIC, separate metadata/data Raft groups, RustFS/S3 archival, cold reads, retention, and safe object reclamation. Native QUIC RF3, role separation, process restart, and membership recovery have local tests. Scaling integration and workload measurements are in progress; three-zone durability, production performance, and recovery percentiles remain unvalidated. See the [implementation status](docs/implementation-status.zh-CN.md).
 
 ## Design goals
 
@@ -47,21 +47,22 @@ The design keeps four completion points distinct: producer acknowledgement, dura
 
 ## Deployment and recovery
 
-The planned deployment modes are a combined single node for development, multiple nodes on a private network with a shared object backend, and separate compute, storage, and metadata pools across three cloud availability zones. Single-node mode has no node-level high availability and is not an automatic production fallback.
+The runtime provides combined RF1 and separate Gateway, Broker, storage, and metadata roles. The local generator supports RF1 and RF3 configurations. Production deployment across three cloud availability zones needs separate infrastructure and validation. Single-node mode has no node-level high availability and is not an automatic production fallback.
 
 Candidate recovery targets are typically within 1 second for planned migration, P99 at most 5 seconds for a Broker or Gateway failure, and P99 at most 10 seconds for a single-zone failure. These are design and benchmark targets, not an SLA. Measurements include failure detection, leader election, fencing, state recovery, routing, and SDK reconnection. Gateway failure can break existing connections; the SDK must reconnect and restore sessions.
 
 ## Getting started
 
-The repository pins Rust 1.96.0 with rustfmt and Clippy. Validate the local configuration and inspect the current process:
+The repository pins Rust 1.96.0 with rustfmt and Clippy. Create private local certificates, credentials, and a fresh RF1 configuration, then start the service:
 
 ```sh
-cargo run --locked -- validate-config --config config/local.toml
-cargo run --locked -- diagnose --config config/local.toml
-cargo run --locked -- allocator-probe
+cargo build --locked
+deploy/local/generate.sh rf1 /tmp/tidemq-demo
+target/debug/tidemq validate-config --config /tmp/tidemq-demo/node-1.toml
+target/debug/tidemq serve --config /tmp/tidemq-demo/node-1.toml
 ```
 
-These commands do not start a message queue. Diagnostics describe the current short-lived process, not another running node. The Rust SDK lives in `sdk/rust`; its current API covers protocol identities and resource configuration. Network producer and consumer APIs follow in T06.
+The generator requires a new directory and OpenSSL. It creates short-lived development identities; retain the private token file locally. See [running TideMQ](docs/guide/running.zh-CN.md) and the [Rust SDK](sdk/rust/README.md) for topic creation, production, consumption, durable ACKs, and RF3 deployment. Management endpoints expose the running process on loopback; the separate `diagnose` command describes its own short-lived process.
 
 For local validation:
 
@@ -82,7 +83,7 @@ The [complete architecture draft in Chinese](docs/architecture.zh-CN.md) preserv
 5. Add Gateways and controlled scaling.
 6. Benchmark and validate failures across three availability zones with matched durability and delivery semantics.
 
-The approved baseline selects OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The binary owns allocator selection; mimalloc, jemalloc, and System remain under evaluation. See the [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), and [requirement coverage](docs/requirements-coverage.zh-CN.md). Workload values and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
+The implemented baseline uses OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The binary owns allocator selection; mimalloc, jemalloc, and System remain under evaluation. See the [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), [requirement coverage](docs/requirements-coverage.zh-CN.md), and [reproducible workload tools](docs/performance.zh-CN.md). Workload values and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
 
 ## License
 

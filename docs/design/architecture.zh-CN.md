@@ -1,10 +1,10 @@
 # 当前实现设计与提交权威
 
-2026-10-19 用户确认开发计划。当前先实现基础契约；实际功能和验证范围见[实施状态](../implementation-status.zh-CN.md)。
+2026-10-19 用户确认开发计划。本文记录已接入运行时的权威边界；具体功能和验证范围见[实施状态](../implementation-status.zh-CN.md)。
 
 ## 仓库边界
 
-三个 package：tidemq 是服务端，tidemq-protocol 提供 ID/有界 framing/公共与内部 schema，tidemq-sdk 位于 sdk/rust。SDK 不依赖服务端、Raft、WAL、S3，也不选择进程 allocator 或安装全局 subscriber。根 manifest、lockfile、公共 schema/导出和核心观测由协调者维护。
+四个 package：tidemq 是服务端，tidemq-protocol 提供 ID/有界 framing/公共与内部 schema，tidemq-transport 提供共享认证 QUIC/RPC/字节准入，tidemq-sdk 位于 sdk/rust。SDK 不依赖服务端、Raft、WAL、S3，也不选择进程 allocator 或安装全局 subscriber。根 manifest、lockfile、公共 schema/导出和核心观测由协调者维护。
 
 ## 持久权威与安全契约
 
@@ -24,3 +24,7 @@
 ## 部署与验收
 
 本地 RF1 不具备 HA；RF3 内网进程测试不等于三可用区故障。对象依赖使用 aws-sdk-s3，本地统一使用 RustFS，S3 HTTP/HTTPS 与业务 QUIC 分开。生产三区、性能对标及恢复目标必须单独实测；未经确认不创建付费资源。
+
+`serve` 按本节点配置组装角色，内部只接受带 cluster/node/role/group 证据的 mTLS 请求；对外接受经过 scope 校验的语义请求，不能提交原始 Raft 命令。元数据和数据 leader 无须同机，Gateway/Broker/生命周期/成员迁移通过封闭内部协议访问权威。磁盘应用格式为元数据 version 2、数据 version 2；本开发分支没有历史格式自动迁移器，禁止为启动新版本而自动清空旧目录。
+
+角色与部署见[运行时设计](runtime.zh-CN.md)，对象安全见[生命周期](object-lifecycle.zh-CN.md)，容量口径见[保留与配额](retention-quota.zh-CN.md)，迁移见[弹性设计](scaling.zh-CN.md)。

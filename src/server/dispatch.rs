@@ -27,6 +27,14 @@ pub trait WireService: Send + Sync + 'static {
         deadline: Instant,
         order: Option<SubmissionOrder>,
     ) -> impl Future<Output = std::result::Result<Option<Frame>, Self::Error>> + Send;
+
+    /// Opt in only for replies that must reach the peer before closing the endpoint.
+    fn response_requires_flush(&self, _peer: &Authorization, _request: &Frame) -> bool {
+        false
+    }
+
+    /// Called after a requested native flush; transport receipt does not establish business commit.
+    fn response_sent(&self, _peer: &Authorization, _request: &Frame, _response: &Frame) {}
 }
 
 /// A producer lane retains order only until submission, then waits for its reply independently.
@@ -64,6 +72,7 @@ impl Default for DispatchConfig {
 struct Reply {
     frame: Frame,
     deadline: Instant,
+    notification: Option<(Authorization, ReceivedFrame)>,
 }
 struct Job {
     peer: Authorization,
@@ -192,7 +201,7 @@ pub async fn run<S: WireService>(
             Some(job) = ack_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
             Some(job) = data_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
             session = server.accept() => match session {
-                Some(session) => { sessions.spawn(serve_session(session, dispatcher.clone(), shutdown.clone())); },
+                Some(session) => { sessions.spawn(serve_session(session, service.clone(), dispatcher.clone(), shutdown.clone())); },
                 None => break,
             }
         }
@@ -274,6 +283,9 @@ async fn execute<S: WireService>(
         order,
     } = job;
     let deadline = frame.deadline();
+    let notification_peer = service
+        .response_requires_flush(&peer, frame.frame())
+        .then(|| peer.clone());
     let result = if Instant::now() >= deadline {
         overload(frame.frame(), &limits, ErrorCode::DeadlineExceeded)
     } else {
@@ -289,12 +301,16 @@ async fn execute<S: WireService>(
             }
         }
     };
-    if let Some(mut frame) = result {
-        frame.payload = Bytes::from_owner(ReplyMemory {
-            bytes: frame.payload,
+    if let Some(mut response) = result {
+        response.payload = Bytes::from_owner(ReplyMemory {
+            bytes: response.payload,
             _permit: memory,
         });
-        let _ = reply.try_send(Reply { frame, deadline });
+        let _ = reply.try_send(Reply {
+            frame: response,
+            deadline,
+            notification: notification_peer.map(|peer| (peer, frame)),
+        });
     }
 }
 
@@ -308,8 +324,9 @@ impl AsRef<[u8]> for ReplyMemory {
     }
 }
 
-async fn serve_session(
+async fn serve_session<S: WireService>(
     session: Arc<Session>,
+    service: Arc<S>,
     dispatcher: Arc<Dispatcher>,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -318,6 +335,7 @@ async fn serve_session(
     for stream in session.take_initial_streams().await {
         streams.spawn(serve_stream(
             stream,
+            service.clone(),
             peer.clone(),
             dispatcher.clone(),
             shutdown.clone(),
@@ -329,7 +347,7 @@ async fn serve_session(
             _ = shutdown.changed() => break,
             _ = streams.join_next(), if !streams.is_empty() => {},
             stream = session.accept() => match stream {
-                Some(stream) => { streams.spawn(serve_stream(stream, peer.clone(), dispatcher.clone(), shutdown.clone())); },
+                Some(stream) => { streams.spawn(serve_stream(stream, service.clone(), peer.clone(), dispatcher.clone(), shutdown.clone())); },
                 None => break,
             }
         }
@@ -344,8 +362,9 @@ async fn serve_session(
     session.close();
 }
 
-async fn serve_stream(
+async fn serve_stream<S: WireService>(
     stream: FramedStream,
+    service: Arc<S>,
     peer: Authorization,
     dispatcher: Arc<Dispatcher>,
     mut shutdown: watch::Receiver<bool>,
@@ -380,6 +399,7 @@ async fn serve_stream(
                             let _ = replies.try_send(Reply {
                                 frame: response,
                                 deadline: frame.deadline(),
+                                notification: None,
                             });
                         }
                         continue;
@@ -400,6 +420,7 @@ async fn serve_stream(
                 let _ = replies.try_send(Reply {
                     frame: response,
                     deadline: frame.deadline(),
+                    notification: None,
                 });
             }
         }
@@ -409,6 +430,12 @@ async fn serve_stream(
         while let Some(reply) = outgoing.recv().await {
             if sender.send(&reply.frame, reply.deadline).await.is_err() {
                 return;
+            }
+            if let Some((peer, request)) = reply.notification {
+                if sender.flush(reply.deadline).await.is_err() {
+                    return;
+                }
+                service.response_sent(&peer, request.frame(), &reply.frame);
             }
         }
         let _ = sender.finish();
