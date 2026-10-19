@@ -168,6 +168,36 @@ fn frame(
 }
 
 #[tokio::test]
+async fn idle_endpoints_close_without_waiting_for_future_connection_activity() {
+    let pki = pki();
+    let client = external_client(&pki, config());
+    let server = external_server(&pki, config());
+    let address = server.local_addr();
+    tokio::task::yield_now().await;
+    client
+        .close(Instant::now() + Duration::from_secs(1))
+        .await
+        .unwrap();
+    server.shutdown().await.unwrap();
+    timeout(Duration::from_secs(1), async {
+        loop {
+            match std::net::UdpSocket::bind(address) {
+                Ok(socket) => {
+                    drop(socket);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::time::sleep(Duration::from_millis(1)).await
+                }
+                Err(error) => panic!("Unexpected listener release failure: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
     let pki = pki();
     let mut server = external_server(&pki, config());

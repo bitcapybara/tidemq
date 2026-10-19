@@ -291,38 +291,8 @@ impl Server {
     pub async fn shutdown(mut self) -> Result<()> {
         self.task.abort();
         let _ = (&mut self.task).await;
-        let mut address = self.address;
-        let bind: SocketAddr = if address.is_ipv4() {
-            "0.0.0.0:0"
-        } else {
-            "[::]:0"
-        }
-        .parse()
-        .map_err(|_| Error::Configuration {
-            reason: "shutdown socket address is invalid",
-        })?;
-        if address.ip().is_unspecified() {
-            address.set_ip(if address.is_ipv4() {
-                std::net::Ipv4Addr::LOCALHOST.into()
-            } else {
-                std::net::Ipv6Addr::LOCALHOST.into()
-            });
-        }
-        // s2n-quic 1.91 acceptor Drop does not wake idle I/O; a local datagram releases it.
         let deadline = super::policy::deadline_after(std::time::Duration::from_secs(1))?;
-        timeout_at(deadline, async {
-            let socket = tokio::net::UdpSocket::bind(bind).await?;
-            socket.send_to(&[0], address).await?;
-            Ok::<_, std::io::Error>(())
-        })
-        .await
-        .map_err(|_| Error::Deadline {
-            operation: "wake idle server endpoint for shutdown",
-        })?
-        .map_err(|source| Error::Io {
-            operation: "wake idle server endpoint for shutdown",
-            source,
-        })
+        wake_endpoint(self.address, deadline).await
     }
 }
 
@@ -570,15 +540,23 @@ impl Client {
             session.shutdown(deadline).await?;
         }
         let mut endpoint = self.endpoint.clone();
-        timeout_at(deadline, endpoint.wait_idle())
-            .await
-            .map_err(|_| Error::Deadline {
-                operation: "drain native client endpoint",
-            })?
-            .map_err(|source| Error::Connection {
-                operation: "drain native client endpoint",
-                source,
-            })
+        let address = endpoint.local_addr().map_err(|source| Error::Io {
+            operation: "read client endpoint address",
+            source,
+        })?;
+        // Poll wait_idle first so its close interest exists before waking idle native I/O.
+        let (idle, wakeup) = timeout_at(deadline, async {
+            tokio::join!(biased; endpoint.wait_idle(), wake_endpoint(address, deadline))
+        })
+        .await
+        .map_err(|_| Error::Deadline {
+            operation: "drain native client endpoint",
+        })?;
+        wakeup?;
+        idle.map_err(|source| Error::Connection {
+            operation: "drain native client endpoint",
+            source,
+        })
     }
 
     // Keep authentication and initial lanes under one close-on-failure transaction.
@@ -675,6 +653,39 @@ impl Client {
         );
         Ok(session)
     }
+}
+
+async fn wake_endpoint(mut address: SocketAddr, deadline: Instant) -> Result<()> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    let bind = SocketAddr::new(
+        if address.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V6(Ipv6Addr::UNSPECIFIED)
+        },
+        0,
+    );
+    if address.ip().is_unspecified() {
+        address.set_ip(if address.is_ipv4() {
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        } else {
+            IpAddr::V6(Ipv6Addr::LOCALHOST)
+        });
+    }
+    // Pinned s2n-quic 1.91 close interest does not wake idle I/O without a datagram or timer.
+    timeout_at(deadline, async {
+        let socket = tokio::net::UdpSocket::bind(bind).await?;
+        socket.send_to(&[0], address).await?;
+        Ok::<_, std::io::Error>(())
+    })
+    .await
+    .map_err(|_| Error::Deadline {
+        operation: "wake idle endpoint for shutdown",
+    })?
+    .map_err(|source| Error::Io {
+        operation: "wake idle endpoint for shutdown",
+        source,
+    })
 }
 
 async fn server_loop(
