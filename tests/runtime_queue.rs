@@ -915,6 +915,16 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         partition: 0,
     };
     let previous = control.route(partition, deadline()).await.unwrap();
+    for node in [21, 22, 23] {
+        let cached = fixture
+            .running
+            .get(&node)
+            .unwrap()
+            .route(partition, deadline())
+            .await
+            .unwrap();
+        assert_eq!(cached.owner_node, previous.owner_node);
+    }
     let moved = control
         .takeover(
             partition,

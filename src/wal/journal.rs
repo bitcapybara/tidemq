@@ -230,7 +230,7 @@ impl Journal {
                 reason: "journal record admission is closed".to_owned(),
             })?;
         if let Some(metrics) = &self.metrics {
-            metrics.observe(Stage::Admission, admission_start.elapsed().as_secs_f64());
+            metrics.observe(Stage::WalAdmission, admission_start.elapsed().as_secs_f64());
         }
         self.send(Request::Append(Pending {
             data,
@@ -433,7 +433,7 @@ impl Writer {
             })?;
             frames.push(encoded);
             if let Some(metrics) = &self.metrics {
-                metrics.observe(Stage::Queue, item.admitted_at.elapsed().as_secs_f64());
+                metrics.observe(Stage::WalQueue, item.admitted_at.elapsed().as_secs_f64());
             }
         }
         for frame in frames {

@@ -31,7 +31,7 @@ metadata/data leader 不必相同；每个 `remote::Service` 仅持有本节点�
 
 运行时的 owned ticker 调用 `remote::Service::tick(&mut Placement, fixed_standby_map, deadline)`，不创建第二套调度器。配置最多 16 个数据组，每组当前 voter 和固定 standby 的并集最多 32 个节点；每轮只评估一个组并最多推进一个计划。选择按 round-robin 排序，优先原 pending 计划、已停止调度的节点和已确认不可达的副本。pending 只恢复原 operation/复制预留，Unknown 不切换目标。
 
-每轮最多并发四个只读容量 RPC，每次上限 500ms，仍受原总 deadline 限制。`CapacityUnavailable` 表示本地采样器无有效数据，不能当作故障；只有真实 RPC 不可达连续至少三轮且跨越至少三秒，才可作为故障修复候选，实际执行仍须当前多数派、learner 追赶和原计划证明。普通均衡要求 voter 和 standby 容量观测齐全，归一化 CPU/流量/连接/ACK 得分至少改善 200，完成后同组冷却 60 秒。故障或已停止调度节点的修复可以绕过冷却，不能绕过目标容量、三区或共识检查。源端快照估计后重新采集容量，避免耗时快照使旧观测被沿用。
+每轮最多并发四个只读容量 RPC，每次上限 500ms，仍受原总 deadline 限制。`CapacityUnavailable` 表示本地采样器无有效数据，不能当作故障；真实 RPC 不可达连续至少三轮且跨越至少三秒，才可作为网络故障修复候选。节点仍可通信时，仅该组实际 OpenRaft `running_state` 已退出或实际 applied failed gate 已关闭，才返回绑定确切 group/node 的 `ReplicaFailed`；它只影响被查组，不将同节点其他健康组判死，也不接受调用者自报健康布尔值。读取本地状态超时仍返回容量不可用。故障信号只用于候选选择，实际执行仍须当前多数派、learner 追赶和原计划证明。普通均衡要求 voter 和 standby 容量观测齐全，归一化 CPU/流量/连接/ACK 得分至少改善 200，完成后同组冷却 60 秒。故障或已停止调度节点的修复可以绕过冷却，不能绕过目标容量、三区或共识检查。源端快照估计后重新采集容量，避免耗时快照使旧观测被沿用。
 
 `Placement::diagnose` 返回固定的 group、operation、原因枚举和单调观测年龄；原因包括缺样/过期、磁盘余量、CPU、应用字节率、活动连接、ACK 逻辑状态、拓扑、冷却、已均衡、准入和 Unknown，没有无界指标标签。冷却和不可达连续次数属于本进程采样历史，重启重新建立；持久 migration slot、复制预留和 generation 高水位继续用于恢复与防旧操作复活。
 

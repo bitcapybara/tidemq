@@ -490,8 +490,15 @@ impl Service {
                 )
                 .await;
         }
-        self.data_public(access, &forwarded, route, deadline, order)
-            .await
+        let group = route.group_id;
+        let result = self
+            .data_public(access, &forwarded, route, deadline, order)
+            .await;
+        if let Err(error) = &result {
+            self.invalidate_forward(&forwarded, group, error.failure().code)
+                .await;
+        }
+        result
     }
 
     // Explicit routing and deadline fields prevent accidental loss at a trust boundary.
@@ -749,9 +756,15 @@ impl Service {
                 )?;
                 if request.hops == 2 {
                     let partition = super::data::partition(&inner, &self.config.protocol)?;
-                    let route = self
+                    let mut route = self
                         .authorize_partition(&access, partition, deadline)
                         .await?;
+                    if route.owner_node != peer.node_id {
+                        self.routes.write().await.remove(&partition);
+                        route = self
+                            .authorize_partition(&access, partition, deadline)
+                            .await?;
+                    }
                     if route.group_id != group
                         || !matches!(peer.role.as_str(), "broker" | "combined")
                     {

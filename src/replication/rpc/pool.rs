@@ -248,7 +248,7 @@ impl PeerPool {
                 let queued = Instant::now();
                 let paced = repair.pace(frame.payload.len(), deadline).await;
                 if let Some(metrics) = &self.metrics {
-                    metrics.observe(Stage::Queue, queued.elapsed().as_secs_f64());
+                    metrics.observe(Stage::RepairPace, queued.elapsed().as_secs_f64());
                 }
                 paced.map_err(|source| Error::Repair { source })?;
             }

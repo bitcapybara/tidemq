@@ -219,16 +219,28 @@ impl Service {
             .collect::<BTreeSet<_>>();
         for (id, phase) in page.objects {
             if phase == ObjectPhase::Published {
+                let diagnostic = coordinator
+                    .diagnose(id, deadline.into_std())
+                    .await
+                    .map_err(|source| Error::operation("read archive checkpoint status", source))?;
+                if diagnostic.manifest_references == 0 {
+                    match coordinator.collect(id, deadline.into_std()).await {
+                        Ok(())
+                        | Err(crate::lifecycle::Error::Rejected {
+                            reason:
+                                crate::lifecycle::Rejection::Pinned
+                                | crate::lifecycle::Rejection::RecoveryDependency,
+                        }) => {}
+                        Err(_) => progress.blocked = true,
+                    }
+                    continue;
+                }
                 if pending.contains(&id)
                     && coordinator.complete(id, deadline.into_std()).await.is_err()
                 {
                     progress.blocked = true;
                     continue;
                 }
-                let diagnostic = coordinator
-                    .diagnose(id, deadline.into_std())
-                    .await
-                    .map_err(|source| Error::operation("read archive checkpoint status", source))?;
                 if diagnostic.checkpoint_generation.is_none()
                     && coordinator
                         .checkpoint(id, deadline.into_std())

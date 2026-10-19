@@ -352,9 +352,8 @@ async fn storage_reports_real_stage_samples_capacity_and_local_state_without_cop
     assert!(diagnostic.remaining_log_entries < StorageOptions::default().max_log_entries);
     assert!(diagnostic.journal_runtime.current_file_bytes > 0);
     let text = metrics.encode().unwrap();
-    for stage in ["Admission", "Queue", "Append", "Sync", "Commit", "Apply"] {
-        let count = text
-            .lines()
+    let count = |stage: &str| {
+        text.lines()
             .find(|line| {
                 line.starts_with("tidemq_stage_duration_seconds_count")
                     && line.contains("operation=\"Control\"")
@@ -363,10 +362,26 @@ async fn storage_reports_real_stage_samples_capacity_and_local_state_without_cop
             .and_then(|line| line.split_whitespace().last())
             .unwrap()
             .parse::<u64>()
-            .unwrap();
+            .unwrap()
+    };
+    for stage in [
+        "WalAdmission",
+        "WalQueue",
+        "Append",
+        "Sync",
+        "CommitPersist",
+        "Apply",
+    ] {
         assert!(
-            count > 0,
+            count(stage) > 0,
             "The storage stage records actual completed observations"
+        );
+    }
+    for stage in ["Admission", "Queue", "Commit", "RepairPace"] {
+        assert_eq!(
+            count(stage),
+            0,
+            "Storage does not mix unrelated stage samples"
         );
     }
     storage.log.close().await.unwrap();

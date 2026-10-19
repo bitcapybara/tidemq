@@ -5,7 +5,7 @@
 | 指标族 | 口径与用途 |
 | --- | --- |
 | `tidemq_operations_total{operation,outcome}` | 固定 Produce/Read/Ack/Control/Archive/Recover 与 Committed/Rejected/Unknown/Failed。按记录节点和权威阶段理解；不能把跨角色转发计数相加当作唯一业务消息数 |
-| `tidemq_stage_duration_seconds{operation,stage}` | 本进程单调分段直方图；Admission/Queue/Decode/Append/Sync/Replicate/Commit/Apply/Response/Total。未接入或无样本的阶段不能解释为零耗时 |
+| `tidemq_stage_duration_seconds{operation,stage}` | 本进程单调分段直方图；Broker Admission/Queue/Commit 与 WAL WalAdmission/WalQueue/CommitPersist 分开，另有 Append/Sync/Replicate/RepairPace/Apply/Total。Decode/Response 未完整观测；无样本不能解释为零耗时。边界见[观测设计](../design/observability.zh-CN.md) |
 | `tidemq_producer_*` | attempts、committed/duplicate/rejected/unknown/failed、new_messages/new_bytes、owned pending。新持久消息与重复原结果分别统计；业务吞吐采用 new_messages |
 | `tidemq_dispatch_*` | 有限 handler 准入/拒绝/错误/活跃与限速日志抑制，独立于日志是否成功写出 |
 | `tidemq_internal_client_*` / `internal_server_*` / `external_server_*` | 连接、active_connections、流、帧/字节、deadline、TLS、丢包和连接/流 credit 阻塞；内部客户端还含 liveness probe/failure。连接总计与当前连接不是同一个值 |
