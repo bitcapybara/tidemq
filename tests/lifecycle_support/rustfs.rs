@@ -20,6 +20,12 @@ pub struct RustFs {
 }
 
 impl RustFs {
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+    pub fn credentials(&self) -> (&str, &str) {
+        (&self.access, &self.secret)
+    }
     pub async fn start() -> Self {
         let binary = std::env::var_os("TIDEMQ_TEST_RUSTFS_BIN")
             .expect("set TIDEMQ_TEST_RUSTFS_BIN to the verified RustFS 1.0.3 executable");
