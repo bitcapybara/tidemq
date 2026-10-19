@@ -1162,7 +1162,21 @@ async fn exercise_runtime_scaling(automatic: bool) {
             .unwrap()
             .zone = "zone-2".into();
     }
-    fixture.start_all().await;
+    let mut storage_process = if automatic {
+        for (node, config) in &fixture.configs {
+            if *node != 23 {
+                fixture
+                    .running
+                    .insert(*node, RunningNode::start(config.clone()).await.unwrap());
+            }
+        }
+        let child = start_process(&fixture, 23).await;
+        fixture.wait_ready().await;
+        Some(child)
+    } else {
+        fixture.start_all().await;
+        None
+    };
     wait_scaling_diagnostic(&fixture, 24, |value| {
         value["placement_capacity_available"] == true
     })
@@ -1202,8 +1216,9 @@ async fn exercise_runtime_scaling(automatic: bool) {
     );
     let held = consumer.next().await.unwrap().unwrap();
     assert_eq!(held.offset(), 1);
-    if automatic {
-        fixture.stop(23).await;
+    if let Some(child) = storage_process.as_mut() {
+        child.kill().await.unwrap();
+        assert!(!child.wait().await.unwrap().success());
     }
     let migration = async {
         if automatic {
