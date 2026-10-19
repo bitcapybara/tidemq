@@ -10,6 +10,10 @@
 
 默认消费允许同一 partition 中多条消息并行完成、乱序 ACK。连续前沿只在所有更早消息均已确认时前进，较晚 ACK 不会掩盖较早失败。
 
+Read 与 SDK `fill` 的消息数是单次上限；服务可在时间预算内返回已经持久化的部分批次。持续接收使用 `Consumer::recv(deadline)`，或按实际 `fill` 数量处理队列并继续拉取，不要求一次填满配置容量。部分批次只说明当前这些 token 已持久签发，不代表业务已 ACK；继续按原 token 逐条确认。
+
+Read 返回 Unknown 时保留同一 `Consumer`，不跳过 offset，也不把未知签发当成成功。需要重新取得分配时使用现有 `Consumer::reclaim`；新代次会使旧 token 失效，外部业务副作用仍需幂等。SDK 将 Remote Unknown 上抛给应用，不自动重试，也不向应用暴露可原样重发的 PendingRead。ACK 继续按原 token 和对应错误分类处理。
+
 可选同 key 串行模式由 SDK 保证一个 key 同时只执行一个 handler，不同 key 可并行。前一条失败时阻塞该 key 的后续 handler；不要为追赶吞吐自动 ACK、跳过或把 DLQ 投递当成原消息成功。没有 key 的消息如何分组、handler 并发和缓冲上限应显式配置。旧 consumer 可能已在外部系统执行副作用后才被 fence，新代次阻止旧 ACK，但无法撤销这些副作用；业务应使用消息身份做幂等，或使用业务系统支持的 fencing。
 
 | 结果 | 调用者处理 |

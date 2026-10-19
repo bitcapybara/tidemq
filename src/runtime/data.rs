@@ -24,6 +24,36 @@ use super::service::{Service, forbidden, frame_kind};
 use super::wire;
 use super::{Error, Result};
 
+struct ReadBudget {
+    started: Instant,
+    admit_until: Instant,
+}
+
+impl ReadBudget {
+    fn new(started: Instant, hard_deadline: Instant) -> Self {
+        let work =
+            (hard_deadline.saturating_duration_since(started) / 2).min(Duration::from_millis(250));
+        Self {
+            started,
+            admit_until: started.checked_add(work).unwrap_or(started),
+        }
+    }
+
+    fn tighten(&mut self, hard_deadline: Instant) {
+        self.admit_until = self
+            .admit_until
+            .min(Self::new(self.started, hard_deadline).admit_until);
+    }
+
+    fn admits(&self, now: Instant) -> bool {
+        now < self.admit_until
+    }
+}
+
+fn read_refresh_hint(ttl: Duration, request_remaining: Duration) -> Duration {
+    ttl.min(request_remaining) / 2
+}
+
 fn payload<T: Message + Default>(frame: &Frame, limits: &ProtocolLimits) -> Result<T> {
     decode_payload(frame.payload.clone(), limits)
         .map_err(|source| Error::operation("decode public business request", source))
@@ -896,9 +926,10 @@ impl Service {
                 group,
                 partition,
                 deadline,
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .min(Duration::from_secs(1)),
+                read_refresh_hint(
+                    self.authority.ttl(),
+                    deadline.saturating_duration_since(Instant::now()),
+                ),
             )
             .await?;
         if renewed.grant() != lease.grant() {
@@ -978,9 +1009,19 @@ impl Service {
             .get(&(group, route.owner_node))
             .ok_or_else(Error::unavailable)?;
         let mut deliveries = Vec::new();
-        let mut cold_pages = Vec::new();
+        let mut cold_page: Option<crate::lifecycle::GuardedPage> = None;
+        let mut read_budget: Option<ReadBudget> = None;
         let mut bytes = 0usize;
         for (offset, attempt) in candidates {
+            if read_budget
+                .as_ref()
+                .is_some_and(|budget| !budget.admits(Instant::now()))
+            {
+                if deliveries.is_empty() {
+                    return Err(Error::unavailable());
+                }
+                break;
+            }
             let read = broker
                 .hot_read(
                     lease,
@@ -996,7 +1037,7 @@ impl Service {
                     request.max_bytes,
                 )
                 .await;
-            let (message, proof, cold_page) = match read {
+            let (message, proof, prepared_page) = match read {
                 Ok(read) => {
                     let Some(message) = read.page().messages.first().cloned() else {
                         break;
@@ -1026,14 +1067,23 @@ impl Service {
                             false,
                         ));
                     }
-                    let cached = cold_pages
-                        .last()
+                    let cached = cold_page
+                        .as_ref()
                         .map(|page| cold_message(page, offset))
                         .transpose()?
                         .flatten();
                     if let Some((message, proof)) = cached {
                         (message, Some(proof), None)
                     } else {
+                        if !deliveries.is_empty() {
+                            break;
+                        }
+                        if let Some(page) = cold_page.take() {
+                            page.check().map_err(|_| Error::unknown())?;
+                            page.release(deadline.into_std())
+                                .await
+                                .map_err(|_| Error::unknown())?;
+                        }
                         let coordinator =
                             self.objects.get(&group).ok_or_else(Error::unavailable)?;
                         let page = coordinator
@@ -1071,6 +1121,25 @@ impl Service {
                 .and_then(|value| value.checked_add(160))
                 .ok_or_else(|| Error::invalid("Delivery response length overflow"))?;
             if next_bytes > request.max_bytes as usize {
+                break;
+            }
+            if let Some(page) = prepared_page {
+                cold_page = Some(page);
+            }
+            let mut hard_deadline = deadline.min(Instant::from_std(lease.expires_at()));
+            if let Some(page) = &cold_page {
+                hard_deadline = hard_deadline.min(Instant::from_std(
+                    page.valid_until().map_err(|_| Error::unknown())?,
+                ));
+            }
+            // Preparation may include S3 I/O; only the first mutation starts this fixed work slice.
+            let budget =
+                read_budget.get_or_insert_with(|| ReadBudget::new(Instant::now(), hard_deadline));
+            budget.tighten(hard_deadline);
+            if !budget.admits(Instant::now()) {
+                if deliveries.is_empty() {
+                    return Err(Error::unavailable());
+                }
                 break;
             }
             let operation = delivery_operation(wire::id(&frame.operation_id)?, offset)?;
@@ -1112,9 +1181,6 @@ impl Service {
                 _ => return Err(Error::invalid("Unexpected durable delivery outcome")),
             }
             bytes = next_bytes;
-            if let Some(page) = cold_page {
-                cold_pages.push(page);
-            }
         }
         let assignment = self
             .check_session(
@@ -1168,7 +1234,7 @@ impl Service {
             },
             &self.config.protocol,
         )?;
-        for page in cold_pages {
+        if let Some(page) = cold_page {
             page.check().map_err(|_| Error::unknown())?;
             page.release(deadline.into_std())
                 .await
@@ -1328,4 +1394,56 @@ fn subscription_error(reason: subscription::Rejection) -> Error {
         _ => ErrorCode::InvalidRequest,
     };
     Error::reject(code, Outcome::Rejected, code == ErrorCode::QuotaExceeded)
+}
+
+#[cfg(test)]
+mod read_budget_tests {
+    use super::*;
+
+    #[test]
+    fn work_slice_stops_new_mutations_and_can_only_shrink() {
+        let started = Instant::now();
+        let mut budget = ReadBudget::new(started, started + Duration::from_secs(3));
+        assert!(budget.admits(started + Duration::from_millis(249)));
+        assert!(!budget.admits(started + Duration::from_millis(250)));
+        budget.tighten(started + Duration::from_millis(300));
+        assert_eq!(budget.admit_until, started + Duration::from_millis(150));
+        budget.tighten(started + Duration::from_secs(8));
+        assert_eq!(budget.admit_until, started + Duration::from_millis(150));
+        budget.tighten(started + Duration::from_millis(100));
+        assert!(!budget.admits(started + Duration::from_millis(60)));
+        assert_eq!(budget.started, started);
+    }
+
+    #[test]
+    fn first_payload_preparation_does_not_consume_the_mutation_slice() {
+        let entered = Instant::now();
+        let ready = entered + Duration::from_millis(400);
+        let budget = ReadBudget::new(ready, entered + Duration::from_secs(1));
+        assert!(budget.admits(ready));
+        assert!(budget.admits(ready + Duration::from_millis(249)));
+        assert!(!budget.admits(ready + Duration::from_millis(250)));
+        let ready = entered + Duration::from_millis(900);
+        let budget = ReadBudget::new(ready, entered + Duration::from_secs(1));
+        assert!(budget.admits(ready + Duration::from_millis(49)));
+        assert!(!budget.admits(ready + Duration::from_millis(50)));
+    }
+
+    #[test]
+    fn short_control_validity_and_request_deadlines_keep_proportional_headroom() {
+        let started = Instant::now();
+        assert_eq!(
+            read_refresh_hint(Duration::from_millis(100), Duration::from_secs(5)),
+            Duration::from_millis(50)
+        );
+        assert_eq!(
+            read_refresh_hint(Duration::from_secs(3), Duration::from_millis(40)),
+            Duration::from_millis(20)
+        );
+        let budget = ReadBudget::new(started, started + Duration::from_millis(100));
+        assert!(budget.admits(started + Duration::from_millis(49)));
+        assert!(!budget.admits(started + Duration::from_millis(50)));
+        assert!(!ReadBudget::new(started, started).admits(started));
+        assert!(!ReadBudget::new(started, started - Duration::from_millis(1)).admits(started));
+    }
 }

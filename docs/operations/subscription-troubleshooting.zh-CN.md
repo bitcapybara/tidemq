@@ -15,6 +15,7 @@
 | 旧代次/token 拒绝 | seek、接管、owner fence 或重投已经替代旧交付 | 获取当前分配；确认 SDK 丢弃迟到块，保留旧 operation 供结果对账，禁止篡改 token |
 | ACK 本地提交快，持久响应慢 | Raft/磁盘/多数派或响应 C 流阶段阻塞 | 分别查排队、WAL sync、复制/commit/apply、控制回复；网络发送成功不能证明持久 ACK |
 | ACK 随生产满额一起停顿 | 运行时 ACK 预留没有生效，或共享盘已耗尽 | 先限制新生产/回放/诊断工作，保留 ACK/控制和磁盘安全余量；恢复后用原 token 重试 |
+| Read 返回少于消息上限 | 有界新投递工作片或冷页边界提前结束，已返回 token 均已持久签发 | 继续使用同一 consumer 拉取，按实际批次处理；若返回 Unknown，分别查 lease/pin 到期、WAL sync 和 quorum 阶段，不通过增大 TTL 或跳过 offset 掩盖 |
 | `IdentityBudget` | 活跃身份和不可复用墓碑达到冻结容量 | 停止创建；保留现有消费/ACK。不要删除墓碑或复用 UUID；需要评审可证明的身份退休/组迁移 |
 
 ## 指标与阶段口径

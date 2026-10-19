@@ -154,6 +154,10 @@ impl RemoteMetadataAuthority {
         self.fresh(query, deadline).await.map(|(value, _)| value)
     }
 
+    pub(crate) fn ttl(&self) -> std::time::Duration {
+        self.policy.ttl
+    }
+
     async fn fresh(&self, query: Query, deadline: Instant) -> Result<(Value, MonoInstant)> {
         let started = MonoInstant::now();
         let expires = Instant::from_std(started)
