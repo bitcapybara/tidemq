@@ -19,6 +19,7 @@ pub struct RuntimeConfig {
     pub access_file: PathBuf,
     pub delivery_key_file: PathBuf,
     pub bootstrap: bool,
+    pub objects: Option<ObjectConfig>,
 }
 
 impl Default for RuntimeConfig {
@@ -35,6 +36,7 @@ impl Default for RuntimeConfig {
             access_file: "secrets/access.toml".into(),
             delivery_key_file: "secrets/delivery.key".into(),
             bootstrap: false,
+            objects: None,
         }
     }
 }
@@ -55,6 +57,28 @@ pub struct PeerConfig {
     pub internal_address: SocketAddr,
     pub server_name: String,
     pub certificate_der: PathBuf,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectConfig {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub prefix: String,
+    pub credentials_file: PathBuf,
+    pub allow_http_loopback: bool,
+}
+
+impl std::fmt::Debug for ObjectConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ObjectConfig")
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("credentials_file", &self.credentials_file)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Role {

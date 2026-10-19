@@ -103,6 +103,8 @@ impl PeerRpc {
             encoded_command: encode_payload(&request, frame_limit(class, &self.limits))
                 .map_err(|source| Error::operation("encode internal request", source))?,
         };
+        drop(request);
+        let operation_id = payload.operation_id.clone();
         let frame = new_frame(
             FrameKind::InternalCommand,
             class,
@@ -113,20 +115,23 @@ impl PeerRpc {
             &self.limits,
         )
         .map_err(|source| Error::operation("frame internal request", source))?;
+        drop(payload);
         let rpc = self
             .pool
             .connection(target, class, deadline)
             .await
             .map_err(|source| Error::operation("connect internal peer", source))?;
-        let response = rpc
-            .submit_affinity(frame, deadline, affinity)
-            .await
-            .map_err(|source| Error::operation("submit internal semantic request", source))?;
+        let response = if class == TrafficClass::Control {
+            rpc.submit(frame, deadline).await
+        } else {
+            rpc.submit_affinity(frame, deadline, affinity).await
+        }
+        .map_err(|source| Error::operation("submit internal semantic request", source))?;
         Ok(Pending {
             response,
             rpc,
             request_id: Bytes::copy_from_slice(request_id.as_bytes()),
-            operation_id: payload.operation_id,
+            operation_id,
             class,
             limits: self.limits.clone(),
         })

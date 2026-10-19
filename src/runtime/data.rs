@@ -87,15 +87,25 @@ pub(crate) fn set_owner_epoch(
 }
 
 pub(crate) fn affinity(frame: &Frame, limits: &ProtocolLimits) -> Result<u64> {
-    if frame.kind != i32::from(FrameKind::ProduceBatch) {
-        return Ok(0);
-    }
-    let request: public::ProduceBatch = payload(frame, limits)?;
     let mut hash = blake3::Hasher::new();
-    hash.update(&request.topic_id);
-    hash.update(&request.partition_id.to_be_bytes());
-    hash.update(&request.producer_id);
-    hash.update(&request.producer_epoch.to_be_bytes());
+    match frame_kind(frame)? {
+        FrameKind::ProduceBatch => {
+            let request: public::ProduceBatch = payload(frame, limits)?;
+            hash.update(&request.topic_id);
+            hash.update(&request.partition_id.to_be_bytes());
+            hash.update(&request.producer_id);
+            hash.update(&request.producer_epoch.to_be_bytes());
+        }
+        FrameKind::Read => {
+            let request: public::ReadRequest = payload(frame, limits)?;
+            hash.update(&request.topic_id);
+            hash.update(&request.partition_id.to_be_bytes());
+            hash.update(&request.subscription_id);
+            hash.update(&request.cursor_generation.to_be_bytes());
+            hash.update(&request.assignment_generation.to_be_bytes());
+        }
+        _ => return Ok(0),
+    }
     let mut bytes = [0; 8];
     for (destination, source) in bytes.iter_mut().zip(hash.finalize().as_bytes()) {
         *destination = *source;
@@ -123,25 +133,47 @@ impl Service {
             .await
             .map_err(|source| Error::operation("read authoritative data fence", source))?
             .ok_or_else(Error::unavailable)?;
-        let mut leases = wire::within(deadline, self.leases.lock()).await?;
-        if let Some(lease) = leases
-            .get(&partition)
+        let slot = {
+            let mut leases = self
+                .leases
+                .lock()
+                .map_err(|_| Error::invalid("Lease cache is unavailable"))?;
+            if leases.len() >= 2048 && !leases.contains_key(&partition) {
+                leases.retain(|_, slot| {
+                    Arc::strong_count(slot) > 1
+                        || slot.try_lock().ok().is_none_or(|lease| {
+                            lease
+                                .as_ref()
+                                .is_some_and(|lease| lease.expires_at() > std::time::Instant::now())
+                        })
+                });
+            }
+            if leases.len() >= 2048 && !leases.contains_key(&partition) {
+                return Err(Error::reject(
+                    ErrorCode::QuotaExceeded,
+                    Outcome::Rejected,
+                    true,
+                ));
+            }
+            leases
+                .entry(partition)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(None)))
+                .clone()
+        };
+        let mut cached = wire::within(deadline, slot.lock()).await?;
+        if let Some(lease) = cached
+            .as_ref()
             .filter(|lease| lease.check(&fence, Work::ControlMutation).is_ok())
         {
             return Ok(lease.clone());
         }
-        if leases.len() >= 2048 && !leases.contains_key(&partition) {
-            leases.retain(|_, lease| lease.expires_at() > std::time::Instant::now());
-        }
-        if leases.len() >= 2048 && !leases.contains_key(&partition) {
-            return Err(Error::reject(
-                ErrorCode::QuotaExceeded,
-                Outcome::Rejected,
-                true,
-            ));
-        }
-        let lease = Arc::new(self.authority.active_lease(&fence, deadline).await?);
-        leases.insert(partition, lease.clone());
+        let lease = Arc::new(
+            self.authority
+                .active_lease(&fence, deadline)
+                .await
+                .map_err(|_| Error::unavailable())?,
+        );
+        *cached = Some(lease.clone());
         Ok(lease)
     }
 
@@ -310,6 +342,22 @@ impl Service {
         deadline: Instant,
         finalizing: bool,
     ) -> Result<subscription::Outcome> {
+        self.subscription_commit(group, partition, lease, command, deadline, finalizing, None)
+            .await
+    }
+
+    // Cold delivery adds one sealed object proof to the same writer, deadline, and finalization checks.
+    #[allow(clippy::too_many_arguments)]
+    async fn subscription_commit(
+        &self,
+        group: u64,
+        partition: PartitionKey,
+        lease: &ControlLease,
+        command: subscription::Command,
+        deadline: Instant,
+        finalizing: bool,
+        cold: Option<crate::lifecycle::VerifiedColdDelivery>,
+    ) -> Result<subscription::Outcome> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         let fence = replica
@@ -340,20 +388,25 @@ impl Service {
         } else {
             deadline.min(Instant::from_std(lease.expires_at()))
         };
-        let response = self
-            .data_write(
-                group,
-                DataCommand::Subscription {
-                    partition,
-                    writer: WriterFence {
-                        node_id: lease.grant().owner_node,
-                        owner_epoch: lease.grant().epoch,
-                    },
-                    command,
-                },
-                deadline,
-            )
-            .await?;
+        let writer = WriterFence {
+            node_id: lease.grant().owner_node,
+            owner_epoch: lease.grant().epoch,
+        };
+        let command = if let Some(proof) = cold {
+            DataCommand::ColdSubscription {
+                partition,
+                writer,
+                proof,
+                command,
+            }
+        } else {
+            DataCommand::Subscription {
+                partition,
+                writer,
+                command,
+            }
+        };
+        let response = self.data_write(group, command, deadline).await?;
         let current = replica
             .state
             .try_with_application(|state| {
@@ -726,6 +779,21 @@ impl Service {
         partition: PartitionKey,
         deadline: Instant,
     ) -> Result<()> {
+        {
+            let cache = self
+                .subscriptions
+                .lock()
+                .map_err(|_| Error::invalid("Subscription configuration cache is unavailable"))?;
+            if let Some((topic, _)) = cache
+                .get(&subscription)
+                .filter(|(_, expires)| *expires > Instant::now())
+            {
+                if *topic == partition.topic_id {
+                    return Ok(());
+                }
+                return Err(forbidden());
+            }
+        }
         let Value::Subscription(Some(record)) = self
             .authority
             .query(Query::Subscription(subscription), deadline)
@@ -736,6 +804,27 @@ impl Service {
         if record.topic_id != partition.topic_id {
             return Err(forbidden());
         }
+        let mut cache = self
+            .subscriptions
+            .lock()
+            .map_err(|_| Error::invalid("Subscription configuration cache is unavailable"))?;
+        if cache.len() >= 4096 && !cache.contains_key(&subscription) {
+            cache.retain(|_, (_, expires)| *expires > Instant::now());
+        }
+        if cache.len() >= 4096 && !cache.contains_key(&subscription) {
+            return Err(Error::reject(
+                ErrorCode::QuotaExceeded,
+                Outcome::Rejected,
+                true,
+            ));
+        }
+        cache.insert(
+            subscription,
+            (
+                record.topic_id,
+                Instant::now() + std::time::Duration::from_secs(1),
+            ),
+        );
         Ok(())
     }
 
@@ -840,6 +929,7 @@ impl Service {
             .get(&(group, route.owner_node))
             .ok_or_else(Error::unavailable)?;
         let mut deliveries = Vec::new();
+        let mut cold_pages = Vec::new();
         let mut bytes = 0usize;
         for (offset, attempt) in candidates {
             let read = broker
@@ -857,8 +947,68 @@ impl Service {
                     request.max_bytes,
                 )
                 .await;
-            let read = match read {
-                Ok(read) => read,
+            let (message, proof, cold_page) = match read {
+                Ok(read) => {
+                    let Some(message) = read.page().messages.first().cloned() else {
+                        break;
+                    };
+                    (message, None, None)
+                }
+                Err(broker::Error::Rejected {
+                    reason:
+                        DataRejection::Producer(crate::producer::Rejection::OffsetExpired { .. }),
+                }) => {
+                    let floor = replica
+                        .state
+                        .try_with_application(|state| {
+                            state
+                                .producer(partition)
+                                .map(|producer| producer.retained_floor())
+                        })
+                        .await
+                        .map_err(|source| {
+                            Error::operation("read logical retention boundary", source)
+                        })?
+                        .ok_or_else(not_found)?;
+                    if offset < floor {
+                        return Err(Error::reject(
+                            ErrorCode::OffsetExpired,
+                            Outcome::Rejected,
+                            false,
+                        ));
+                    }
+                    let coordinator = self.objects.get(&group).ok_or_else(Error::unavailable)?;
+                    let page = coordinator
+                        .read(
+                            partition,
+                            offset,
+                            1,
+                            u64::from(request.max_bytes),
+                            deadline.into_std(),
+                        )
+                        .await
+                        .map_err(|source| Error::operation("read published cold object", source))?;
+                    let message = {
+                        let record = page
+                            .records()
+                            .map_err(|source| Error::operation("validate cold read pin", source))?
+                            .first()
+                            .ok_or_else(Error::unavailable)?;
+                        if record.offset != offset {
+                            return Err(Error::invalid(
+                                "Cold object returned a different message offset",
+                            ));
+                        }
+                        MessageData {
+                            key: Bytes::copy_from_slice(record.key()),
+                            body: Bytes::copy_from_slice(record.body()),
+                        }
+                    };
+                    let proof = page
+                        .verified_delivery(offset)
+                        .map_err(|source| Error::operation("bind cold delivery proof", source))?;
+                    (message, Some(proof), Some(page))
+                }
                 Err(broker::Error::Rejected {
                     reason:
                         DataRejection::Producer(crate::producer::Rejection::OffsetNotCommitted {
@@ -866,9 +1016,6 @@ impl Service {
                         }),
                 }) => break,
                 Err(error) => return Err(broker_error(error)),
-            };
-            let Some(message) = read.page().messages.first() else {
-                break;
             };
             let logical = message
                 .logical_bytes()
@@ -883,7 +1030,7 @@ impl Service {
             }
             let operation = delivery_operation(wire::id(&frame.operation_id)?, offset)?;
             let outcome = self
-                .subscription_write(
+                .subscription_commit(
                     group,
                     partition,
                     lease,
@@ -900,6 +1047,7 @@ impl Service {
                     },
                     deadline,
                     false,
+                    proof,
                 )
                 .await;
             match outcome {
@@ -919,6 +1067,9 @@ impl Service {
                 _ => return Err(Error::invalid("Unexpected durable delivery outcome")),
             }
             bytes = next_bytes;
+            if let Some(page) = cold_page {
+                cold_pages.push(page);
+            }
         }
         let assignment = self
             .check_session(
@@ -947,7 +1098,7 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("read bounded acknowledged holes", source))??;
-        wire::response(
+        let response = wire::response(
             frame,
             FrameKind::DeliveryBatch,
             &public::DeliveryBatch {
@@ -971,7 +1122,14 @@ impl Service {
                     .collect(),
             },
             &self.config.protocol,
-        )
+        )?;
+        for page in cold_pages {
+            page.check().map_err(|_| Error::unknown())?;
+            page.release(deadline.into_std())
+                .await
+                .map_err(|_| Error::unknown())?;
+        }
+        Ok(response)
     }
 }
 

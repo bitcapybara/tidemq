@@ -62,13 +62,13 @@ impl RunningNode {
             .map_err(|source| Error::operation("create process memory budget", source))?;
         let identity = TlsIdentity::new(
             super::read_bounded(&config.tls.certificate, 65_536).await?,
-            super::read_bounded(&config.tls.private_key, 16_384).await?,
+            super::read_secret(&config.tls.private_key, 16_384).await?,
         )
         .map_err(|source| Error::operation("load process TLS identity", source))?;
         let roots = super::read_bounded(&config.tls.trust_roots, 65_536).await?;
         let grants = grants(&config, cluster).await?;
         let access = AccessTable::load(&config.runtime.access_file).await?;
-        let delivery_key = super::read_bounded(&config.runtime.delivery_key_file, 32).await?;
+        let delivery_key = super::read_secret(&config.runtime.delivery_key_file, 32).await?;
         let delivery_key: [u8; 32] = delivery_key
             .as_ref()
             .try_into()
@@ -141,13 +141,13 @@ impl RunningNode {
             pool: pool.clone(),
             limits: config.protocol.clone(),
         };
-        let authority = RemoteMetadataAuthority::new(
+        let authority = Arc::new(RemoteMetadataAuthority::new(
             rpc.clone(),
             cluster,
             config.runtime.metadata_group,
             config.runtime.metadata_voters.iter().copied().collect(),
             ControlPolicy::default(),
-        )?;
+        )?);
         let metadata = if config.runtime.metadata_voters.contains(&config.node_id) {
             Some(
                 open_replica::<MetadataState>(
@@ -178,6 +178,16 @@ impl RunningNode {
                 );
             }
         }
+        let objects = super::objects::coordinators(
+            &config,
+            cluster,
+            &data,
+            rpc.clone(),
+            authority.clone(),
+            budget.clone(),
+            metrics.registry_mut(),
+        )
+        .await?;
         let internal = Server::bind(
             config.runtime.internal_listen,
             ServerTls {
@@ -223,6 +233,7 @@ impl RunningNode {
             cluster,
             metadata,
             data,
+            objects,
             rpc,
             authority,
             access,
@@ -294,6 +305,63 @@ impl RunningNode {
                 deadline,
             )
             .await
+    }
+
+    /// Archive committed ranges through the authenticated lifecycle service and durable manifest.
+    pub async fn archive(
+        &self,
+        group: u64,
+        ranges: Vec<crate::lifecycle::RangeRequest>,
+        deadline: tokio::time::Instant,
+    ) -> Result<Id> {
+        let coordinator = self
+            .service
+            .objects
+            .get(&group)
+            .ok_or_else(Error::unavailable)?;
+        let prepared = coordinator
+            .prepare(ranges, Vec::new(), deadline.into_std())
+            .await
+            .map_err(|source| Error::operation("prepare committed archive ranges", source))?;
+        let id = prepared.object_id();
+        coordinator
+            .register(&prepared, deadline.into_std())
+            .await
+            .map_err(|source| Error::operation("register archive task", source))?;
+        coordinator
+            .authorize(id, deadline.into_std())
+            .await
+            .map_err(|source| Error::operation("authorize archive task", source))?;
+        coordinator
+            .upload(&prepared, deadline.into_std())
+            .await
+            .map_err(|source| Error::operation("upload archive object", source))?;
+        coordinator
+            .publish(id, deadline.into_std())
+            .await
+            .map_err(|source| Error::operation("publish archive manifest", source))?;
+        coordinator
+            .checkpoint(id, deadline.into_std())
+            .await
+            .map_err(|source| Error::operation("checkpoint published archive", source))?;
+        Ok(id)
+    }
+
+    /// Reclaim local bodies only after the lifecycle service verifies published recovery evidence.
+    pub async fn reclaim_local(
+        &self,
+        partition: crate::metadata::PartitionKey,
+        end: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<()> {
+        let route = self.service.route(partition, deadline).await?;
+        self.service
+            .objects
+            .get(&route.group_id)
+            .ok_or_else(Error::unavailable)?
+            .reclaim(partition, end, deadline.into_std())
+            .await
+            .map_err(|source| Error::operation("reclaim published local bodies", source))
     }
 
     pub async fn shutdown(mut self) -> Result<()> {

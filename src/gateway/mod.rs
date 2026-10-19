@@ -38,7 +38,7 @@ struct Token {
 
 impl AccessTable {
     pub async fn load(path: &Path) -> Result<Self> {
-        let bytes = crate::runtime::read_bounded(path, 65_536).await?;
+        let bytes = crate::runtime::read_secret(path, 65_536).await?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|source| Error::operation("decode access configuration", source))?;
         let file: AccessFile = toml::from_str(text)

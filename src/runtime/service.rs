@@ -31,15 +31,17 @@ pub(crate) struct CachedRoute {
     pub expires: Instant,
 }
 type CancelKey = (String, String, Id);
+type LeaseSlot = Arc<Mutex<Option<Arc<crate::ownership::ControlLease>>>>;
 
 pub(crate) struct Service {
     pub config: Config,
     pub cluster: Id,
     pub metadata: Option<Replica<MetadataState>>,
     pub data: BTreeMap<u64, Replica<DataApplication>>,
+    pub objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
     pub brokers: BTreeMap<(u64, u64), Broker>,
     pub rpc: PeerRpc,
-    pub authority: RemoteMetadataAuthority,
+    pub authority: Arc<RemoteMetadataAuthority>,
     pub access: AccessTable,
     pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
@@ -49,8 +51,9 @@ pub(crate) struct Service {
     pub draining: AtomicBool,
     pub routes: RwLock<BTreeMap<PartitionKey, CachedRoute>>,
     pub leaders: RwLock<BTreeMap<u64, (u64, Instant)>>,
-    pub leases: Mutex<BTreeMap<PartitionKey, Arc<crate::ownership::ControlLease>>>,
+    pub leases: std::sync::Mutex<BTreeMap<PartitionKey, LeaseSlot>>,
     pub metadata_mutation: Mutex<()>,
+    pub subscriptions: std::sync::Mutex<BTreeMap<Id, (Id, Instant)>>,
     cancellations: Arc<std::sync::Mutex<BTreeMap<CancelKey, watch::Sender<bool>>>>,
 }
 
@@ -62,8 +65,9 @@ impl Service {
         cluster: Id,
         metadata: Option<Replica<MetadataState>>,
         data: BTreeMap<u64, Replica<DataApplication>>,
+        objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
         rpc: PeerRpc,
-        authority: RemoteMetadataAuthority,
+        authority: Arc<RemoteMetadataAuthority>,
         access: AccessTable,
         delivery_key: [u8; 32],
         budget: MemoryBudget,
@@ -103,6 +107,7 @@ impl Service {
             cluster,
             metadata,
             data,
+            objects,
             brokers,
             rpc,
             authority,
@@ -115,8 +120,9 @@ impl Service {
             draining: AtomicBool::new(false),
             routes: RwLock::new(BTreeMap::new()),
             leaders: RwLock::new(BTreeMap::new()),
-            leases: Mutex::new(BTreeMap::new()),
+            leases: std::sync::Mutex::new(BTreeMap::new()),
             metadata_mutation: Mutex::new(()),
+            subscriptions: std::sync::Mutex::new(BTreeMap::new()),
             cancellations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
         })
     }
@@ -470,6 +476,53 @@ impl Service {
                 }
                 self.create_data_subscription(group, &request.body, deadline)
                     .await?
+            }
+            crate::lifecycle::remote::LIFECYCLE_QUERY
+            | crate::lifecycle::remote::LIFECYCLE_COMMAND => {
+                drop(order);
+                if group != self.config.runtime.metadata_group {
+                    return Err(forbidden());
+                }
+                let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+                self.require_leader(replica)?;
+                let class = TrafficClass::try_from(frame.traffic_class)
+                    .map_err(|_| Error::invalid("Lifecycle traffic class is invalid"))?;
+                crate::lifecycle::remote::MetadataHandler::new(
+                    replica.raft.clone(),
+                    replica.state.clone(),
+                )
+                .handle(
+                    &Authorization::Internal(peer.clone()),
+                    request.kind,
+                    class,
+                    &request.body,
+                    deadline.into_std(),
+                )
+                .await
+                .map_err(|source| {
+                    Error::operation("perform authenticated lifecycle metadata operation", source)
+                })?
+            }
+            crate::lifecycle::remote::LIFECYCLE_CHECKPOINT => {
+                drop(order);
+                let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
+                let class = TrafficClass::try_from(frame.traffic_class)
+                    .map_err(|_| Error::invalid("Checkpoint traffic class is invalid"))?;
+                let data = crate::lifecycle::DataReplica::local(
+                    replica.raft.clone(),
+                    replica.state.clone(),
+                );
+                crate::lifecycle::remote::SnapshotHandler::new(data)
+                    .handle(
+                        &Authorization::Internal(peer.clone()),
+                        class,
+                        &request.body,
+                        deadline.into_std(),
+                    )
+                    .await
+                    .map_err(|source| {
+                        Error::operation("perform authenticated replica checkpoint", source)
+                    })?
             }
             wire::FORWARD => {
                 if !matches!(peer.role.as_str(), "gateway" | "broker" | "combined")

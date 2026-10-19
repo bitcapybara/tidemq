@@ -15,6 +15,13 @@ use tidemq_sdk::{
 };
 use tokio::time::Instant;
 
+// Shared S3 fixtures include additional helpers exercised by their own integration suites.
+#[allow(dead_code)]
+#[path = "lifecycle_support/rustfs.rs"]
+mod rustfs;
+#[path = "s3_support/mod.rs"]
+mod s3;
+
 const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 
 struct Fixture {
@@ -45,6 +52,8 @@ impl Fixture {
         tokio::fs::write(directory.join("delivery.key"), [42_u8; 32])
             .await
             .unwrap();
+        private_file(directory.join("access.toml")).await;
+        private_file(directory.join("delivery.key")).await;
         let mut peers = Vec::new();
         for (node, role) in nodes {
             let key = KeyPair::generate().unwrap();
@@ -64,6 +73,7 @@ impl Fixture {
             )
             .await
             .unwrap();
+            private_file(directory.join(format!("node-{node}.key"))).await;
             tokio::fs::write(directory.join(format!("node-{node}.der")), cert.der())
                 .await
                 .unwrap();
@@ -106,6 +116,7 @@ impl Fixture {
                         access_file: directory.join("access.toml"),
                         delivery_key_file: directory.join("delivery.key"),
                         bootstrap: true,
+                        objects: None,
                     },
                     ..Config::default()
                 };
@@ -196,7 +207,7 @@ impl Fixture {
                 started.elapsed() < Duration::from_secs(6),
                 "Native UDP endpoint retained its bound socket after shutdown"
             );
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
     async fn restart(&mut self, node: u64) {
@@ -414,4 +425,115 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
     drop(second_client);
     drop(client);
     fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
+async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
+    let rustfs = rustfs::RustFs::start().await;
+    rustfs.create_bucket().await;
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let credentials_file = fixture.directory.join("object-credentials.toml");
+    let (access, secret) = rustfs.credentials();
+    tokio::fs::write(
+        &credentials_file,
+        format!("access_key = \"{access}\"\nsecret_key = \"{secret}\"\n"),
+    )
+    .await
+    .unwrap();
+    private_file(credentials_file.clone()).await;
+    fixture.configs.get_mut(&1).unwrap().runtime.objects = Some(tidemq::runtime::ObjectConfig {
+        endpoint: rustfs.endpoint().into(),
+        region: "us-east-1".into(),
+        bucket: "tidemq-sdk-test".into(),
+        prefix: "runtime-test".into(),
+        credentials_file,
+        allow_http_loopback: true,
+    });
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    producer
+        .produce(
+            vec![public::Message {
+                key: Bytes::from_static(b"cold-key"),
+                body: Bytes::from_static(b"cold-body"),
+            }],
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let partition = tidemq::metadata::PartitionKey {
+        topic_id: topic,
+        partition: 0,
+    };
+    fixture
+        .running
+        .get(&1)
+        .unwrap()
+        .archive(
+            2,
+            vec![tidemq::lifecycle::RangeRequest {
+                partition,
+                offsets: tidemq_protocol::state::OffsetRange::new(0, 1).unwrap(),
+            }],
+            deadline(),
+        )
+        .await
+        .unwrap();
+    fixture
+        .running
+        .get(&1)
+        .unwrap()
+        .reclaim_local(partition, 1, deadline())
+        .await
+        .unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let delivery = consumer.next().await.unwrap().unwrap();
+    assert_eq!(delivery.body(), b"cold-body");
+    assert_eq!(
+        consumer
+            .ack(&delivery, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        1
+    );
+    let metrics = http(
+        fixture.running.get(&1).unwrap().management_address,
+        "/metrics",
+    )
+    .await;
+    assert_eq!(metrics.matches("# EOF").count(), 1);
+    assert!(metrics.contains("tidemq_lifecycle_published_total 1"));
+    client.close(deadline()).await;
+    drop(consumer);
+    drop(producer);
+    drop(client);
+    fixture.close().await;
+}
+
+async fn private_file(path: PathBuf) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .unwrap();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
