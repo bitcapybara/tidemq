@@ -1054,7 +1054,7 @@ impl Subscription {
         if receiving_cold && offset >= self.cold_before {
             return Err(Rejection::CutoverPending);
         }
-        let expected = if receiving_cold {
+        let expected = if offset < self.cold_before {
             DeliveryLane::Bulk
         } else {
             DeliveryLane::Realtime

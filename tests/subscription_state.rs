@@ -397,6 +397,27 @@ fn cold_to_hot_switch_requires_continuous_sdk_receive_barrier_independent_of_bus
 }
 
 #[test]
+fn cold_retries_remain_on_bulk_after_realtime_delivery_starts() {
+    let mut f = Fixture::new(Limits::default(), 2);
+    let zero = f.deliver(0, 0, 0, DeliveryLane::Bulk);
+    let one = f.deliver(1, 0, 0, DeliveryLane::Bulk);
+    f.barrier(2).unwrap();
+    let hot = f.deliver(2, 0, 0, DeliveryLane::Realtime);
+    let wrong = f.delivery_command(0, 1, zero.retry_at_ms, DeliveryLane::Realtime);
+    assert_eq!(f.apply(wrong), Err(Rejection::WrongLane));
+    let retry = f.deliver(0, 1, zero.retry_at_ms, DeliveryLane::Bulk);
+    assert_eq!(retry.attempt, 2);
+    assert_eq!(f.ack(vec![zero.token]), Err(Rejection::StaleAttempt));
+    assert_eq!(
+        f.ack(vec![hot.token, one.token])
+            .unwrap()
+            .acknowledged_before,
+        0
+    );
+    assert_eq!(f.ack(vec![retry.token]).unwrap().acknowledged_before, 3);
+}
+
+#[test]
 fn takeover_barrier_cannot_use_old_issued_prefix_and_acknowledged_skip_ranges_are_explicit() {
     let mut f = Fixture::new(Limits::default(), 3);
     let zero = f.deliver(0, 0, 0, DeliveryLane::Bulk);
