@@ -16,11 +16,14 @@ prost.workspace = true
 tokio.workspace = true
 snafu.workspace = true
 tracing.workspace = true
+opentelemetry = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 prometheus-client = { workspace = true, optional = true }
 
 [features]
 default = []
 metrics = ["dep:prometheus-client"]
+opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 
 [dev-dependencies]
 rcgen = { version = "=0.14.10", default-features = false, features = ["pem", "aws_lc_rs"] }

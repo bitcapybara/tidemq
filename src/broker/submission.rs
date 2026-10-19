@@ -5,7 +5,6 @@ use std::time::Instant;
 use openraft::error::RaftError;
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
-use tracing::Instrument;
 
 use crate::observability::metrics::{OperationMetrics, Stage};
 use crate::replication::Raft;
@@ -60,6 +59,7 @@ impl Drop for QueueWait {
 }
 
 pub(super) struct Submission {
+    pub traceparent: String,
     pub context: RequestContext,
     pub command: DataCommand,
     pub observation: Option<CommitObservation>,
@@ -93,6 +93,7 @@ async fn run_queue(
 ) {
     while let Some(submission) = queue.recv().await {
         let Submission {
+            traceparent,
             context,
             command,
             observation,
@@ -135,36 +136,40 @@ async fn run_queue(
             }
         };
         let metrics = metrics.clone();
-        let span = tracing::info_span!("producer_submission", operation_id = %context.operation_id, request_id = %context.request_id, attempt = context.attempt);
-        handle.spawn(
-            async move {
-                let _admission = admission;
-                let _pending = pending;
-                let started = Instant::now();
-                let result = match receiver.await {
-                    Ok(Ok(result)) => Ok(result.data),
-                    Ok(Err(source)) => Err(Error::Commit {
-                        operation_id: context.operation_id,
-                        request_id: context.request_id,
-                        source: Box::new(RaftError::APIError(source)),
-                    }),
-                    Err(_) => Err(Error::Unknown {
-                        operation_id: context.operation_id,
-                        request_id: context.request_id,
-                    }),
-                };
-                if let Some(stages) = stages {
-                    stages.observe(Stage::Commit, started.elapsed().as_secs_f64());
-                }
-                if matches!(&result, Ok(DataResponse::Produced(result)) if !result.duplicate)
-                    && let Some(observation) = observation
-                {
-                    metrics.committed_batch(observation.messages, observation.bytes);
-                }
-                let _ = reply.send(result);
+        let span = tracing::info_span!(target: "tidemq_trace", "producer_submission", operation_id = %context.operation_id, request_id = %context.request_id, attempt = context.attempt);
+        crate::observability::tracing::set_parent(&span, &traceparent, false);
+        handle.spawn(async move {
+            let _admission = admission;
+            let _pending = pending;
+            let started = Instant::now();
+            let result = match crate::observability::tracing::observe_until(
+                receiver,
+                span,
+                context.deadline,
+            )
+            .await
+            {
+                Ok(Ok(result)) => Ok(result.data),
+                Ok(Err(source)) => Err(Error::Commit {
+                    operation_id: context.operation_id,
+                    request_id: context.request_id,
+                    source: Box::new(RaftError::APIError(source)),
+                }),
+                Err(_) => Err(Error::Unknown {
+                    operation_id: context.operation_id,
+                    request_id: context.request_id,
+                }),
+            };
+            if let Some(stages) = stages {
+                stages.observe(Stage::Commit, started.elapsed().as_secs_f64());
             }
-            .instrument(span),
-        );
+            if matches!(&result, Ok(DataResponse::Produced(result)) if !result.duplicate)
+                && let Some(observation) = observation
+            {
+                metrics.committed_batch(observation.messages, observation.bytes);
+            }
+            let _ = reply.send(result);
+        });
     }
 }
 

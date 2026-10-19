@@ -96,7 +96,10 @@ async fn run(cli: Cli) -> Result<()> {
             profile_output,
         }) => {
             let config = Config::load(&config).await?;
-            let logging = tidemq::observability::logging::initialize(&config.logging)?;
+            let mut logging = tidemq::observability::logging::initialize_with_tracing(
+                &config.logging,
+                &config.tracing,
+            )?;
             let node_id = config.node_id;
             let role = config.role.name();
             let node = tidemq::runtime::RunningNode::start(config)
@@ -104,6 +107,9 @@ async fn run(cli: Cli) -> Result<()> {
                 .map_err(runtime_error)?;
             node.attach_logging(logging.health.clone())
                 .map_err(runtime_error)?;
+            if let Some(health) = logging.trace_health() {
+                node.attach_tracing(health).map_err(runtime_error)?;
+            }
             if trace_seconds > 0 {
                 logging.control.temporary_filter(
                     "warn,tidemq=info,tidemq::runtime=trace",
@@ -118,19 +124,30 @@ async fn run(cli: Cli) -> Result<()> {
                     Err(source) => { let error = anyhow::Error::new(source); tracing::warn!(event_code = "runtime_heap_sample_failed", error = %format_args!("{error:#}"), "Bounded live-process heap sample failed"); }
                 }
             }));
-            tracing::info!(event_code = "service_started", node_id, role, internal_address = %node.internal_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ runtime is accepting connections");
+            tracing::info!(event_code = "service_started", node_id, role, trace_instance_id = logging.trace_instance_id().unwrap_or("disabled"), internal_address = %node.internal_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ runtime is accepting connections");
             tokio::select! { result = shutdown_signal() => result?, _ = node.wait_for_shutdown_request() => {} }
-            node.shutdown().await.map_err(runtime_error)?;
+            let shutdown_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            let business_shutdown = node
+                .shutdown_until(shutdown_deadline)
+                .await
+                .map_err(runtime_error);
             #[cfg(all(feature = "heap-profiling", unix))]
             if let Some(mut profile) = profile {
-                if tokio::time::timeout(std::time::Duration::from_secs(1), &mut profile)
-                    .await
-                    .is_err()
+                if tokio::time::timeout_at(
+                    shutdown_deadline
+                        .min(tokio::time::Instant::now() + std::time::Duration::from_secs(1)),
+                    &mut profile,
+                )
+                .await
+                .is_err()
                 {
                     profile.abort();
                     let _ = profile.await;
                 }
             }
+            let trace_shutdown = logging.shutdown_tracing(shutdown_deadline).await;
+            business_shutdown?;
+            trace_shutdown?;
             tracing::info!(
                 event_code = "service_stopped",
                 node_id,

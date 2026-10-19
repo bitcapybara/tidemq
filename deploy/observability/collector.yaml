@@ -1,0 +1,51 @@
+# OpenTelemetry Collector core 0.162.0. The default sink discards traces after reception.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+        max_request_body_size: 65536
+        read_timeout: 1s
+        read_header_timeout: 1s
+        write_timeout: 1s
+        idle_timeout: 1s
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 128
+    spike_limit_mib: 32
+  batch:
+    timeout: 500ms
+    send_batch_size: 32
+    send_batch_max_size: 128
+    metadata_keys: []
+    metadata_cardinality_limit: 1
+exporters:
+  # No storage, network request, exporter queue, retry, or span-content logging.
+  nop: {}
+service:
+  telemetry:
+    logs:
+      level: warn
+      encoding: json
+      sampling:
+        enabled: true
+        tick: 1s
+        initial: 1
+        thereafter: 1000
+    metrics:
+      level: normal
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 18888
+                without_scope_info: true
+                without_type_suffix: false
+                without_units: false
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [nop]

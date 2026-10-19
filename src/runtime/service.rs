@@ -57,6 +57,7 @@ pub(crate) struct Service {
     pub quota: std::sync::Mutex<crate::quota::Quota>,
     pub disk_capacity: std::sync::Mutex<Option<(crate::quota::disk::Snapshot, Instant)>>,
     pub log_health: std::sync::Mutex<Option<crate::observability::logging::LogHealth>>,
+    pub trace_health: std::sync::Mutex<Option<crate::observability::tracing::TraceHealth>>,
     pub draining: AtomicBool,
     pub partition_drains: std::sync::Mutex<BTreeMap<PartitionKey, u64>>,
     pub shutdown_requested: watch::Sender<bool>,
@@ -149,6 +150,7 @@ impl Service {
             quota: std::sync::Mutex::new(quota),
             disk_capacity: std::sync::Mutex::new(None),
             log_health: std::sync::Mutex::new(None),
+            trace_health: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
             partition_drains: std::sync::Mutex::new(BTreeMap::new()),
             shutdown_requested,
@@ -844,7 +846,6 @@ impl WireService for Service {
     }
 
     type Error = Error;
-    #[tracing::instrument(level = "trace", skip_all, fields(node_id = self.config.node_id, role = self.config.role.name(), cluster_id = %self.cluster, request_id = ?wire::id(&frame.request_id), operation_id = ?wire::id(&frame.operation_id), traffic_class = frame.traffic_class, frame_kind = frame.kind, traceparent = frame.traceparent.as_str()))]
     async fn handle(
         &self,
         peer: Authorization,
@@ -852,6 +853,12 @@ impl WireService for Service {
         deadline: Instant,
         order: Option<SubmissionOrder>,
     ) -> Result<Option<Frame>> {
+        let span = crate::observability::tracing::request_span(
+            frame,
+            self.config.node_id,
+            self.config.role.name(),
+        );
+        crate::observability::tracing::observe_until(async {
         let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
         let result = match &peer {
             Authorization::External { .. } => {
@@ -923,6 +930,7 @@ impl WireService for Service {
             Ok(frame) => Ok(Some(frame)),
             Err(error) => wire::error_response(frame, &error, &self.config.protocol).map(Some),
         }
+        }, span, deadline.into_std()).await
     }
 }
 

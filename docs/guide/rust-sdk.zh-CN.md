@@ -75,6 +75,8 @@ SDK 从不安装全局 subscriber/exporter/HTTP 服务或 global allocator。`tr
 
 宿主需要跨进程追踪时，用 `scope_traceparent(w3c_context, sdk_operation_future).await` 为单次有限操作传入上下文。它复用协议的 W3C 校验，拒绝非法/超长值且不执行该操作，任务之间不互相污染；后续未作用域的调用不继承旧 context。宿主新 spawn 的任务需自己设置作用域。上下文只进请求帧，不影响业务摘要、幂等或授权，也不安装 OpenTelemetry 后端。
 
+可选 `opentelemetry` feature 使用 OpenTelemetry 0.33 与 tracing-opentelemetry 0.34，从宿主当前 span 获取 W3C 父上下文；显式 `scope_traceparent` 优先。宿主负责兼容的 layer、provider、采样和有界 exporter，SDK 不创建或替换全局设施。服务端可选导出的配置、隐私白名单及故障边界见[链路追踪](../operations/tracing.zh-CN.md)。
+
 启用 `metrics` feature 后，调用 `client.metrics().register(registry.sub_registry_with_prefix("my_client"))` 复用宿主 registry。指标只有固定系列：请求/重试/未知结果、交付与持久 ACK 计数、操作时延直方图、准入等待累计时间，以及保留字节、批次、Delivery 的逻辑 gauge。completed 后仍被宿主持有的 `PendingBatch`/`Delivery` 也计费，不能把 gauge 直接解释为未提交消息数。
 
 ```bash

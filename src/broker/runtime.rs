@@ -459,6 +459,7 @@ impl Broker {
         let (sender, receiver) = oneshot::channel();
         self.submissions
             .try_send(Submission {
+                traceparent: crate::observability::tracing::current_traceparent(),
                 context,
                 command,
                 observation,

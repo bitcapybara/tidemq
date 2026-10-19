@@ -41,6 +41,8 @@ The host owns Tokio, certificates, credentials, logging, exporter and allocator 
 
 Use `scope_traceparent(valid_w3c_context, sdk_operation).await` to propagate a host trace through one finite operation. Invalid contexts are rejected before polling the operation. Context is task-scoped, never stored on a shared connection, and newly spawned host tasks scope their own context. No OpenTelemetry backend is installed.
 
+The optional `opentelemetry` feature reads the current host tracing span through OpenTelemetry 0.33 and tracing-opentelemetry 0.34. The host supplies its subscriber and bridge layer, including the `tidemq_trace` target. SDK spans skip all arguments; an explicit `scope_traceparent` takes precedence. The feature installs no provider, exporter, subscriber, global propagator or HTTP listener. See [bounded service trace export](../../docs/operations/tracing.zh-CN.md) for the independent server-side policy.
+
 Run from the repository root:
 
 ```bash

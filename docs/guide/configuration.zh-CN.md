@@ -11,6 +11,7 @@
 | `memory.max_connections` / `max_streams_per_connection` / `max_pending_requests` | 有限连接、流、未决请求；范围分别为 1—4096、2—4096、1—65536，实际 transport 还按类别限制池和队列 |
 | `protocol` | 帧、消息、批次条数和解码字段上限联合校验。默认消息 256 KiB 包含 key 与 body，默认帧 1 MiB，消息必须能放进帧 |
 | `logging` | 模块过滤、JSON、有限事件队列与单事件字节。默认 1024×16 KiB；formatter、writer 和活跃事件另占空间，输出交由部署日志管理轮转保留 |
+| `tracing` | 默认关闭。启用后使用官方 OTLP HTTP exporter，默认 1% 采样及 128 spans/s 本地上限；有限队列、batch、字节、超时和退出期限见[链路追踪](../operations/tracing.zh-CN.md)。endpoint 只接受字面 IP，HTTP 限 loopback，HTTPS 要求严格 IP SAN 与内置根离线校验 |
 | `tls` | 证书、私钥和 CA 路径；内部节点还需固定 DER 证书绑定 cluster/node/role/group，不信任自行声明的身份 |
 | `runtime.metadata_group` / `metadata_voters` / `groups` / `peers` | 元数据独立组、数据组和有限节点目录；RF3 voter 须具备不同 zone，元数据不承载正文和逐条 ACK |
 | `runtime.groups[].standby` | 有限空副本候选；不属于 voter，不自行初始化，待安全 learner/joint/stable 迁移 |
