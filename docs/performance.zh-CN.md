@@ -2,6 +2,8 @@
 
 本工具使用仓库中的 Rust SDK，经真实 UDP/TLS/QUIC 连接独立 `tidemq serve` 操作系统进程。生产成功以服务端持久提交回执为准；消费完成以逐消息 token 的持久 ACK 为准。运行工具不代替 RF3、故障恢复和对象生命周期正确性测试。
 
+已完成的本地执行见 [2026-10-20 实测报告](evidence/2026-10-20-local-performance.zh-CN.md)。该轮 17 项均通过有限负载校验；结果尚未证明高吞吐、低延迟目标达成，也不用于选择生产 allocator。
+
 ## 固定构建
 
 从已提交、锁定依赖的源码构建，运行期间不要修改源码。需要 Rust 1.96、C/C++ 工具链、CMake、Bash、OpenSSL、curl，以及已有 allocator 构建依赖。对象回放还需要已核验的 RustFS 1.0.3。构建可能较慢；测量前停止其他编译、测试和负载。不同目录的已有服务不会被脚本停止。
@@ -26,12 +28,14 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
   bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/system-replay replay recommended
 ```
 
-| 场景 | 测量消息 | 正文/批量 | 并行 worker | 消费与控制 |
+| 场景 | 测量消息 | 正文/批量 | 生产 worker | 消费与控制 |
 | --- | ---: | --- | ---: | --- |
 | small | 4096 | 128 B / 32 条 | 4 | 有界批量 ACK；每 50 ms 一个真实 topic 查询 |
 | large | 64 | 262136 B 正文 + 8 B key = 256 KiB / 1 条 | 4 | 同样的 ACK/控制路径；不关闭持久化 |
 | slow | 2048 | 128 B / 32 条 | 4 | 每 ACK 批次人为等待 20 ms，观察业务积压和尾延迟 |
 | replay | 256 | 64 KiB / 4 条 | 4 | 生产后等待 5 s，再创建消费分配；要求真实冷读计数增加 |
+
+四个 Producer worker 并行生产，一个 Consumer 顺序执行 fill、处理和持久 ACK。
 
 预热使用独立 topic，样本不会混入测量。消费慢场景中的 20 ms 等待计入 offered-to-durable-ACK，ACK RPC 本身单独计时。回放中的“生产后再分配”只确定冻结的 B 类边界，不自动证明物理对象读取；`--require-cold` 要求同一独立服务的 `tidemq_s3_cache_misses_total` 增加。没有此证据会输出失败报告，不把热数据重读称为冷读。
 
