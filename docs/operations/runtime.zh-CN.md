@@ -43,3 +43,10 @@ TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --
 ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记录。`tidemq_control_validity_remaining_seconds` 是有限本地已验证 lease 集合的最小剩余时间；无证据、过期或暂时无法读取时为零。`tidemq_admitted_bytes` 是共用 MemoryBudget 当前已许可占用，不能替代 RSS 或分配器统计。
 
 每个 Metadata 进程有一个 owned 的一秒放置循环，只有当前 leader 执行。它从固定 standby 候选和新鲜真实容量样本生成至多一个迁移计划，恢复未完成计划，限制并行探测、复制预算及再均衡冷却时间。缺少容量样本不会被当作节点死亡；真实不可达必须连续多次并持续达到阈值才触发替换。诊断 `placement` 展示固定阻塞原因、计划和年龄，`placement_capacity_available` 表示当前本地样本是否可用于放置。自动成员修复依赖既有可达多数派，无法绕过 quorum。
+
+
+## 有限 UDP 故障验证
+
+`stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_network_faults` 使用一个稳定 UDP 监听和两个明确后端，原 SDK 不更换地址或业务身份。它对真实报文按固定频率丢包、保留至多两个报文制造短时乱序，并在 Gateway CLI 子进程被 SIGKILL 后制造短期 1199 字节 MTU 黑洞；黑洞期间不能获得成功写回执。恢复到 1200 字节后，原 PendingBatch 按原 epoch/sequence/digest 重试，原 Consumer 继续提交 ACK，且 SDK 实际建立新 QUIC 连接到存活 Gateway。测试只在丢包、乱序和 MTU 丢弃计数均非零时通过。
+
+这是单机有限代理的真实传输回归，不代表生产负载均衡器的 CID 路由、NAT 行为或真实三区网络已经验证。生产多 Gateway 的外部证书须覆盖相同服务 DNS SAN，SDK 使用该服务名；内部 mTLS 仍按独立 node 身份和精确证书 pin 验证。故障恢复期间允许有界暂停，旧 QUIC 连接不承诺保持不变。
