@@ -5,5 +5,8 @@ pub mod budget;
 pub mod config;
 pub mod error;
 pub mod observability;
+pub mod replication;
+pub mod transport;
+pub mod wal;
 
 pub use error::{Error, Result};
