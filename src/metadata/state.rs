@@ -63,6 +63,7 @@ pub struct MetadataState {
     pub(crate) metadata_group_id: Option<u64>,
     pub(crate) mode: Option<DeploymentMode>,
     pub(crate) revision: u64,
+    pub(crate) lifecycle: crate::lifecycle::Catalog,
     pub(crate) limits: MetadataLimits,
     pub(crate) topics: BTreeMap<Id, TopicRecord>,
     pub(crate) topic_names: BTreeMap<String, Id>,
@@ -77,6 +78,18 @@ pub struct MetadataState {
 }
 
 impl MetadataState {
+    pub fn lifecycle(&self) -> &crate::lifecycle::Catalog {
+        &self.lifecycle
+    }
+
+    pub fn subscription_by_name(&self, topic_id: Id, name: &str) -> Option<&SubscriptionRecord> {
+        self.subscription_names
+            .get(&topic_id)
+            .and_then(|names| names.get(name))
+            .and_then(|id| self.subscriptions.get(id))
+            .filter(|record| record.status == RecordStatus::Active)
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -150,6 +163,9 @@ impl MetadataState {
 
     /// Deterministic business decisions; successful Raft transport alone is not acceptance.
     pub fn apply(&mut self, command: Command) -> Response {
+        if matches!(command.action, Action::Lifecycle(_)) {
+            return self.apply_new(&command);
+        }
         let digest = match self.command_digest(&command) {
             Ok(digest) => digest,
             Err(reason) => return self.reject(reason),
@@ -296,6 +312,7 @@ impl MetadataState {
             Action::ObserveFence(evidence) => self.observe_fence(evidence),
             Action::ObserveRecovery(evidence) => self.observe_recovery(evidence),
             Action::ActivateRoute(evidence) => self.activate_route(evidence),
+            Action::Lifecycle(operation) => self.apply_lifecycle(operation.clone()),
             Action::Bootstrap { .. } => Err(Rejection::AlreadyInitialized),
         }
     }
@@ -734,4 +751,44 @@ pub(super) fn validate_recovery(
         return Err(Rejection::InvalidEvidence);
     }
     Ok(())
+}
+
+impl MetadataState {
+    fn apply_lifecycle(
+        &mut self,
+        operation: crate::lifecycle::MetadataOperation,
+    ) -> Result<Outcome, Rejection> {
+        use crate::lifecycle::CatalogCommand;
+        if let CatalogCommand::Register(plan) = &operation.command {
+            if self.cluster_id != Some(plan.descriptor.identity.cluster_id) {
+                return Err(Rejection::InvalidEvidence);
+            }
+            for grant in &plan.grants {
+                if self.grant(grant.partition) != Some(grant)
+                    || self.route(grant.partition).is_none()
+                {
+                    return Err(Rejection::Superseded);
+                }
+            }
+        }
+        if let CatalogCommand::Checkpoint {
+            object_id, voters, ..
+        } = &operation.command
+        {
+            let object = self
+                .lifecycle
+                .object(*object_id)
+                .ok_or(Rejection::NotFound)?;
+            let group = self
+                .group(object.descriptor().identity.group_id)
+                .ok_or(Rejection::NotFound)?;
+            if group.voters.iter().copied().collect::<Vec<_>>() != *voters {
+                return Err(Rejection::PlacementViolation);
+            }
+        }
+        self.lifecycle
+            .apply(operation.command)
+            .map(|outcome| Outcome::Lifecycle(crate::lifecycle::MetadataResult { outcome }))
+            .map_err(Rejection::Lifecycle)
+    }
 }

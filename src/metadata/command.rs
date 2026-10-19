@@ -63,6 +63,7 @@ pub(crate) enum Action {
     ObserveFence(FenceEvidence),
     ObserveRecovery(RecoveryEvidence),
     ActivateRoute(RecoveryEvidence),
+    Lifecycle(crate::lifecycle::MetadataOperation),
 }
 
 impl Command {
@@ -254,6 +255,7 @@ pub enum Rejection {
     Superseded,
     RecoveryRequired,
     CounterExhausted,
+    Lifecycle(crate::lifecycle::Rejection),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -267,6 +269,7 @@ pub enum Outcome {
     FenceObserved,
     RecoveryObserved,
     RouteActivated(Route),
+    Lifecycle(crate::lifecycle::MetadataResult),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

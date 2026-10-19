@@ -185,6 +185,7 @@ pub struct ProducerDiagnostic {
     pub partition_id: u32,
     pub committed_end: u64,
     pub retained_floor: u64,
+    pub local_reclaim_end: u64,
     pub hot_messages: usize,
     pub hot_message_capacity: usize,
     pub hot_message_capacity_bytes: usize,
