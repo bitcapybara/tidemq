@@ -31,6 +31,7 @@ enum Sample {
     Measured(Capacity),
     Unavailable,
     Unreachable,
+    Fatal,
 }
 
 impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
@@ -298,11 +299,12 @@ fn select_removed(
         let reachable = samples.get(node);
         let failed =
             placement.unreachable(*node, matches!(reachable, Some(Sample::Unreachable)), now);
+        let fatal = matches!(reachable, Some(Sample::Fatal));
         let draining = topology
             .nodes
             .get(node)
             .is_some_and(|node| !node.schedulable);
-        if failed || draining {
+        if failed || draining || fatal {
             if repair.replace(*node).is_some() {
                 return Err(BlockReason::Authority);
             }
@@ -380,6 +382,11 @@ async fn samples<R: Rpc>(
                             Err(_) => Sample::Unavailable,
                         }
                     }
+                    Ok(Ok(Reply::ReplicaFailed {
+                        group: observed,
+                        node: source,
+                        ..
+                    })) if observed == group && source == node => Sample::Fatal,
                     Ok(Err(Error::Unreachable { .. })) => Sample::Unreachable,
                     _ => Sample::Unavailable,
                 };
@@ -406,4 +413,42 @@ fn reports(samples: &BTreeMap<u64, Sample>) -> Vec<Capacity> {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scaling::remote::ReplicaFailure;
+
+    struct FailureReply;
+    impl Rpc for FailureReply {
+        async fn leader(&self, _group: u64, _deadline: Instant) -> Result<u64> {
+            Err(Error::Authority)
+        }
+        async fn call(&self, node: u64, query: Query, _deadline: Instant) -> Result<Reply> {
+            let Query::Capacity { group, .. } = query else {
+                return Err(Error::Authority);
+            };
+            Ok(Reply::ReplicaFailed {
+                group: if node == 2 { group + 1 } else { group },
+                node: if node == 3 { node + 1 } else { node },
+                failure: ReplicaFailure::RaftStopped,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn local_failure_must_match_the_requested_group_and_authenticated_target() {
+        let result = samples(
+            Arc::new(FailureReply),
+            17,
+            [1, 2, 3].into_iter(),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(result.get(&1), Some(Sample::Fatal)));
+        assert!(matches!(result.get(&2), Some(Sample::Unavailable)));
+        assert!(matches!(result.get(&3), Some(Sample::Unavailable)));
+    }
 }

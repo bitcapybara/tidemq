@@ -14,7 +14,7 @@
 
 ## 自动均衡阻塞
 
-自动 tick 每轮只推进一个组/计划，固定 standby 必须实际托管该组并注册合法 Storage/zone。先检查 `Placement::diagnose` 的 group、operation、blocked、age_ms；再结合 Group 查询的持久 pending 和 `copy_bytes`。MissingObservation 表示缺失有效采样，不表示零负载或节点已宕机。只有真实 RPC 连续不可达且满足时间窗才进入故障修复；原 pending 始终优先恢复。
+自动 tick 每轮只推进一个组/计划，固定 standby 必须实际托管该组并注册合法 Storage/zone。先检查 `Placement::diagnose` 的 group、operation、blocked、age_ms；再结合 Group 查询的持久 pending 和 `copy_bytes`。MissingObservation 表示缺失有效采样，不表示零负载或节点已宕机。真实 RPC 连续不可达且满足时间窗才作为网络故障修复候选。进程仍存活时，`ReplicaFailed` 只能来自被查组实际 Raft 已退出或本地 apply failed gate，必须匹配 group/node；它不使同节点其他组失效。容量缺样、语义拒绝和本地状态读取超时不构成组故障。原 pending 始终优先恢复。
 
 Balanced 表示当前得分改善不足 200，Cooldown 表示普通均衡尚未过 60 秒。CPU、ByteRate、Connections、AckState 和 FreeCapacity 指向具体的受限资源；ACK 字节是实际保留记录的逻辑 metadata 口径，不能当作精确 heap。进程重启后冷却和不可达计数重新观测，迁移记录不会清空。
 

@@ -29,6 +29,8 @@ use tidemq::{
 use tidemq_protocol::{Id, common::TrafficClass};
 use tokio::{sync::RwLock, time::Instant};
 
+const HEALTHY_GROUP: u64 = 3;
+
 struct Sample(u64, Arc<AtomicBool>);
 impl CapacitySource for Sample {
     fn snapshot(&self) -> Option<Capacity> {
@@ -122,7 +124,7 @@ impl Rpc for Client {
                     "storage"
                 }
                 .into(),
-                allowed_groups: vec![77, GROUP],
+                allowed_groups: vec![77, GROUP, HEALTHY_GROUP],
                 allowed_classes: vec![TrafficClass::Control],
             };
             let response =
@@ -169,6 +171,18 @@ async fn exercise(automatic: bool) {
         })
         .await
         .unwrap();
+    let healthy =
+        Cluster::<State>::with_identity(&[1, 2, 3], cluster, HEALTHY_GROUP, GroupRole::Data).await;
+    healthy.initialize().await;
+    healthy
+        .node(1)
+        .raft
+        .client_write(Command::Initialize {
+            cluster,
+            group: HEALTHY_GROUP,
+        })
+        .await
+        .unwrap();
     let meta = scaling_support::metadata(cluster).await;
     // Only the data group loses node 1; metadata still has its real leader on node 1.
     data.isolated.write().await.insert(1);
@@ -187,17 +201,25 @@ async fn exercise(automatic: bool) {
                 .await
                 .insert(id, meta.node(id).raft.clone());
         }
+        let mut local = vec![(
+            data.node(id).raft.clone(),
+            data.node(id).log.clone(),
+            data.node(id).state.clone(),
+        )];
+        if id < 4 {
+            local.push((
+                healthy.node(id).raft.clone(),
+                healthy.node(id).log.clone(),
+                healthy.node(id).state.clone(),
+            ));
+        }
         let replicas = LocalReplicas::new(
             if id < 4 {
                 Some((meta.node(id).raft.clone(), meta.node(id).state.clone()))
             } else {
                 None
             },
-            vec![(
-                data.node(id).raft.clone(),
-                data.node(id).log.clone(),
-                data.node(id).state.clone(),
-            )],
+            local,
         )
         .unwrap();
         let client = Arc::new(Client {
@@ -334,6 +356,53 @@ async fn exercise(automatic: bool) {
             .get(&0),
         Some(&7)
     );
+    data.node(1).raft.shutdown().await.unwrap();
+    assert!(matches!(
+        client
+            .call(
+                1,
+                Query::Capacity {
+                    group: GROUP,
+                    node: 1
+                },
+                Instant::now() + WAIT
+            )
+            .await
+            .unwrap(),
+        Reply::ReplicaFailed {
+            group: GROUP,
+            node: 1,
+            failure: remote::ReplicaFailure::RaftStopped
+        }
+    ));
+    healthy.node(1).raft.ensure_linearizable().await.unwrap();
+    assert!(
+        matches!(
+            client
+                .call(
+                    1,
+                    Query::Capacity {
+                        group: HEALTHY_GROUP,
+                        node: 1,
+                    },
+                    Instant::now() + WAIT,
+                )
+                .await
+                .unwrap(),
+            Reply::Capacity(_)
+        ),
+        "A stopped Raft must not invalidate a different healthy data group on the same node"
+    );
+    assert!(
+        matches!(
+            client
+                .call(1, Query::Group { group: GROUP }, Instant::now() + WAIT)
+                .await
+                .unwrap(),
+            Reply::Group { .. }
+        ),
+        "A stopped data Raft must not invalidate the same node's healthy metadata group"
+    );
     let forbidden = NodeGrant {
         certificate_pin: [1; 32],
         certificate_name: "gateway.local".into(),
@@ -365,4 +434,5 @@ async fn exercise(automatic: bool) {
     router.metadata.write().await.clear();
     meta.shutdown().await;
     data.shutdown().await;
+    healthy.shutdown().await;
 }

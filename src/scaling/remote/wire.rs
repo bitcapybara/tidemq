@@ -88,6 +88,18 @@ pub enum Reply {
         group: DataGroup,
         migration: Option<Box<MigrationRecord>>,
     },
+    // Append variants to preserve the existing postcard reply tags.
+    ReplicaFailed {
+        group: u64,
+        node: u64,
+        failure: ReplicaFailure,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ReplicaFailure {
+    ApplicationFailed,
+    RaftStopped,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
