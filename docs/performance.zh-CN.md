@@ -87,6 +87,7 @@ bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/lanes
 | `client_metrics_before/after` | SDK 自身的请求、重试、Unknown 与逻辑准入快照；包含 SDK 内部已透明恢复、未暴露给负载器的事件 |
 | `client_transport_before/after` | 真实 SDK QUIC 连接/stream、应用帧字节、原生流控阻塞、丢包与 PING 探测；应用帧字节不冒充线速 UDP 字节 |
 | `sdk_configuration` | 实际 Request lanes、SDK pending 上限、原生 transport/Core 保留、stream 上限和流控窗口；用于核对同预算对照 |
+| `server_metrics_before/after` | 复用每阶段原有两次冷读证据抓取，保留完整有界 OpenMetrics 文本和唯一 EOF；可计算该阶段真实 WAL/Read/ACK/排队/源分类增量，避免把预热混入测量 |
 
 `logical_bytes` 是计划正文与 key 总量；另存实际提交/ACK 的逻辑字节和字节吞吐，不把失败阶段的计划量当作成功量。`produce_unknown` 与 `produce_recovered_original_identity` 仅统计暴露给负载器的 Unknown/显式恢复，SDK 内部重试应结合其前后快照判断。`artifact-sizes.txt` 记录报告、最终 metrics/diagnostics、服务/RustFS 日志的实际输出字节及本地数据目录的文件系统占用；后者不是累计写入 I/O，也不能与对象字节或 RSS 相加。固定 WAL quorum/fsync 语义，对照中不关闭持久化。
 

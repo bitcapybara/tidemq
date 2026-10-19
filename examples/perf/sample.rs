@@ -201,12 +201,16 @@ pub async fn diagnostics(address: SocketAddr) -> Result<Value> {
         .context("Decode runtime diagnostics")
 }
 
-pub async fn cold_misses(address: SocketAddr) -> Result<Option<u64>> {
+pub async fn metrics(address: SocketAddr) -> Result<String> {
     let metrics = http(address, "/metrics").await?;
     ensure!(
         metrics.lines().filter(|line| *line == "# EOF").count() == 1,
         "Metrics require exactly one OpenMetrics EOF"
     );
+    Ok(metrics)
+}
+
+pub fn cold_misses(metrics: &str) -> Result<Option<u64>> {
     metrics
         .lines()
         .find_map(|line| line.strip_prefix("tidemq_s3_cache_misses_total "))
@@ -406,5 +410,15 @@ mod tests {
         assert!(cpu_time("1:NaN").is_err());
         assert!(cpu_time("1:99").is_err());
         assert!(cpu_time("unknown").is_err());
+    }
+
+    #[test]
+    fn cold_miss_evidence_is_optional_but_never_fabricated_or_silently_malformed() {
+        assert_eq!(cold_misses("# EOF\n").unwrap(), None);
+        assert_eq!(
+            cold_misses("tidemq_s3_cache_misses_total 7\n# EOF\n").unwrap(),
+            Some(7)
+        );
+        assert!(cold_misses("tidemq_s3_cache_misses_total unknown\n# EOF\n").is_err());
     }
 }
