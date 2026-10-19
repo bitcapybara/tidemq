@@ -1,0 +1,155 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
+
+use bytes::Bytes;
+use openraft::BasicNode;
+use tidemq_protocol::Id;
+use tidemq_protocol::common::TrafficClass;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+
+use crate::broker::{DataApplication, DataGroupConfig, ProducerMetrics};
+use crate::budget::MemoryBudget;
+use crate::config::Config;
+use crate::gateway::AccessTable;
+use crate::metadata::{MetadataState, NodeRole};
+use crate::observability::metrics::{Metrics, Operation};
+use crate::ownership::ControlPolicy;
+use crate::ownership::remote::RemoteMetadataAuthority;
+use crate::producer::ProducerLimits;
+use crate::replication::{Application, DiskLog, DiskStateMachine, DiskStore, Raft, StorageIdentity, StorageOptions};
+use crate::replication::rpc::{NetworkConfig, PeerPool, QuicNetworkFactory};
+use crate::server::{DispatchConfig, DispatchMetrics};
+use crate::transport::{Client, ClientCredentials, ClientTls, NodeGrant, PeerTarget, Server, ServerAuthorization, ServerTls, TlsIdentity, TransportConfig};
+
+use super::service::Service;
+use super::wire::PeerRpc;
+use super::{Error, GroupConfig, Result};
+
+pub(crate) struct Replica<A: Application> {
+    pub raft: Raft<A>,
+    pub state: DiskStateMachine<A>,
+    pub log: DiskLog<A>,
+    pub voters: BTreeSet<u64>,
+}
+
+pub struct RunningNode {
+    pub external_address: Option<SocketAddr>,
+    pub internal_address: SocketAddr,
+    pub management_address: SocketAddr,
+    pub(crate) service: Arc<Service>,
+    shutdown: watch::Sender<bool>,
+    tasks: Vec<JoinHandle<Result<()>>>,
+}
+
+impl RunningNode {
+    pub async fn start(config: Config) -> Result<Self> {
+        config.runtime.validate(&config)?;
+        let cluster = config.cluster_id.parse::<Id>().map_err(|source| Error::operation("validate cluster identity", source))?;
+        tokio::fs::create_dir_all(&config.data_dir).await.map_err(|source| Error::operation("create process data directory", source))?;
+        let budget = MemoryBudget::new(&config.memory).map_err(|source| Error::operation("create process memory budget", source))?;
+        let identity = TlsIdentity::new(super::read_bounded(&config.tls.certificate, 65_536).await?, super::read_bounded(&config.tls.private_key, 16_384).await?).map_err(|source| Error::operation("load process TLS identity", source))?;
+        let roots = super::read_bounded(&config.tls.trust_roots, 65_536).await?;
+        let grants = grants(&config, cluster).await?;
+        let access = AccessTable::load(&config.runtime.access_file).await?;
+        let delivery_key = super::read_bounded(&config.runtime.delivery_key_file, 32).await?;
+        let delivery_key: [u8; 32] = delivery_key.as_ref().try_into().map_err(|_| Error::invalid("Delivery signing root must contain exactly 32 bytes"))?;
+        let transport = transport_config(&config);
+        let client = Arc::new(Client::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0), ClientTls { trust_roots: roots.clone(), identity: Some(identity.clone()), expected_nodes: grants.clone() }, transport.clone(), budget.clone()).map_err(|source| Error::operation("bind internal QUIC client", source))?);
+        let mut metrics = Metrics::default();
+        let dispatch = Arc::new(DispatchMetrics::default());
+        dispatch.register(metrics.registry_mut());
+        let producer = ProducerMetrics::default();
+        producer.register(metrics.registry_mut());
+        let ownership = crate::ownership::OwnershipMetrics::default();
+        ownership.register(metrics.registry_mut());
+        let targets = config.runtime.peers.iter().map(|peer| PeerTarget { address: peer.internal_address, server_name: peer.server_name.clone(), local_role: config.role.name().into(), remote_role: peer.role.name().into(), cluster_id: Some(cluster), node_id: Some(peer.node_id) }).collect();
+        let pool = Arc::new(PeerPool::new(client, ClientCredentials::Internal { session_id: random_id()?, cluster_id: cluster, node_id: config.node_id, role: config.role.name().into() }, targets, NetworkConfig { protocol: config.protocol.clone(), ..NetworkConfig::default() }, budget.clone(), metrics.operation(Operation::Control)).map_err(|source| Error::operation("create shared internal peer pool", source))?);
+        let rpc = PeerRpc { pool: pool.clone(), limits: config.protocol.clone() };
+        let authority = RemoteMetadataAuthority::new(rpc.clone(), cluster, config.runtime.metadata_group, config.runtime.metadata_voters.iter().copied().collect(), ControlPolicy::default())?;
+        let metadata = if config.runtime.metadata_voters.contains(&config.node_id) { Some(open_replica::<MetadataState>(&config, config.runtime.metadata_group, &config.runtime.metadata_voters, cluster, pool.clone()).await?) } else { None };
+        let mut data = BTreeMap::new();
+        for group in &config.runtime.groups {
+            if group.voters.contains(&config.node_id) { data.insert(group.group_id, open_replica::<DataApplication>(&config, group.group_id, &group.voters, cluster, pool.clone()).await?); }
+        }
+        let internal = Server::bind(config.runtime.internal_listen, ServerTls { identity: identity.clone(), client_trust_roots: Some(roots) }, ServerAuthorization::Internal(grants), transport.clone(), budget.clone()).map_err(|source| Error::operation("bind internal QUIC listener", source))?;
+        let external = if config.role.serves_gateway() { Some(Server::bind(config.listen, ServerTls { identity, client_trust_roots: None }, ServerAuthorization::External(access.tokens()), transport, budget.clone()).map_err(|source| Error::operation("bind external QUIC listener", source))?) } else { None };
+        let external_address = external.as_ref().map(Server::local_addr);
+        let internal_address = internal.local_addr();
+        let service = Arc::new(Service::new(config, cluster, metadata, data, rpc, authority, access, delivery_key, budget.clone(), producer, metrics)?);
+        let (shutdown, stopped) = watch::channel(false);
+        let dispatcher = DispatchConfig { protocol: service.config.protocol.clone(), ..DispatchConfig::default() };
+        let mut tasks = Vec::new();
+        for server in [Some(internal), external].into_iter().flatten() {
+            let service = service.clone(); let config = dispatcher.clone(); let budget = budget.clone(); let dispatch = dispatch.clone(); let stopped = stopped.clone();
+            tasks.push(tokio::spawn(async move { crate::server::run(server, service, config, budget, dispatch, stopped).await.map_err(Error::foundation) }));
+        }
+        let (management_address, task) = super::management::start(service.clone(), stopped.clone()).await?;
+        tasks.push(task);
+        let bootstrap = service.clone();
+        tasks.push(tokio::spawn(async move { bootstrap.reconcile(stopped).await }));
+        Ok(Self { external_address, internal_address, management_address, service, shutdown, tasks })
+    }
+
+    pub async fn shutdown(mut self) -> Result<()> {
+        self.service.draining.store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.shutdown.send(true);
+        for task in self.tasks.drain(..) {
+            match tokio::time::timeout(Duration::from_secs(8), task).await {
+                Ok(Ok(result)) => result?,
+                Ok(Err(source)) => return Err(Error::operation("join runtime worker", source)),
+                Err(_) => return Err(Error::invalid("Runtime worker exceeded its drain deadline")),
+            }
+        }
+        self.service.close().await
+    }
+}
+
+impl Drop for RunningNode {
+    fn drop(&mut self) { let _ = self.shutdown.send(true); }
+}
+
+async fn open_replica<A: Application>(config: &Config, group: u64, voters: &[u64], cluster: Id, pool: Arc<PeerPool>) -> Result<Replica<A>> {
+    let store = DiskStore::<A>::open(config.data_dir.join(format!("group-{group}")), StorageIdentity::new::<A>(cluster, group, config.node_id), StorageOptions::default(), None).await.map_err(|source| Error::operation("open durable Raft replica", source))?;
+    let raft_config = openraft::Config { cluster_name: format!("tidemq-{cluster}-{group}"), heartbeat_interval: 100, election_timeout_min: 400, election_timeout_max: 800, snapshot_max_chunk_size: 256 * 1024, max_in_snapshot_log_to_keep: 1024, ..openraft::Config::default() }.validate().map_err(|source| Error::operation("validate Raft runtime configuration", source))?;
+    let network = QuicNetworkFactory::<A>::new(pool, group).map_err(|source| Error::operation("create QUIC Raft network", source))?;
+    let raft = Raft::new(config.node_id, Arc::new(raft_config), network, store.log.clone(), store.state_machine.clone()).await.map_err(|source| Error::operation("start Raft replica", source))?;
+    if config.runtime.bootstrap && voters.iter().min().copied() == Some(config.node_id) && raft.metrics().borrow().membership_config.membership().nodes().next().is_none() {
+        let members: BTreeMap<_, _> = voters.iter().map(|id| config.runtime.peer(*id).map(|peer| (*id, BasicNode::new(peer.internal_address.to_string())))).collect::<Result<_>>()?;
+        raft.initialize(members).await.map_err(|source| Error::operation("bootstrap explicit voter set", source))?;
+    }
+    Ok(Replica { raft, state: store.state_machine, log: store.log, voters: voters.iter().copied().collect() })
+}
+
+async fn grants(config: &Config, cluster: Id) -> Result<Vec<NodeGrant>> {
+    let mut grants = Vec::new();
+    for peer in &config.runtime.peers {
+        let der = super::read_bounded(&peer.certificate_der, 32_768).await?;
+        let classes = if peer.role.stores_data() || peer.role.stores_metadata() { vec![TrafficClass::Control, TrafficClass::Produce, TrafficClass::Delivery, TrafficClass::Bulk, TrafficClass::Replication] } else { vec![TrafficClass::Control, TrafficClass::Produce, TrafficClass::Delivery, TrafficClass::Bulk] };
+        let mut groups = vec![config.runtime.metadata_group]; groups.extend(config.runtime.groups.iter().map(|group| group.group_id));
+        grants.push(NodeGrant { certificate_pin: NodeGrant::certificate_pin(&der), certificate_name: peer.server_name.clone(), cluster_id: cluster, node_id: peer.node_id, role: peer.role.name().into(), allowed_groups: groups, allowed_classes: classes });
+    }
+    Ok(grants)
+}
+
+fn transport_config(config: &Config) -> TransportConfig {
+    TransportConfig { protocol: config.protocol.clone(), max_connections: config.memory.max_connections as usize, max_streams: (config.memory.max_streams_per_connection as usize).min(16), ..TransportConfig::default() }
+}
+
+pub(crate) fn data_config(cluster: Id, group: &GroupConfig) -> DataGroupConfig {
+    DataGroupConfig { cluster_id: cluster, group_id: group.group_id, max_partitions: 128, max_hot_bytes: 32 * 1024 * 1024, max_hot_messages: 65_536, producer: ProducerLimits::default(), subscription: crate::subscription::Limits::default() }
+}
+
+pub(crate) fn random_id() -> Result<Id> { Id::random().map_err(|source| Error::operation("allocate operation identity", source)) }
+
+pub(crate) fn roles(role: crate::config::Role) -> BTreeSet<NodeRole> {
+    match role {
+        crate::config::Role::Combined => BTreeSet::from([NodeRole::Gateway, NodeRole::Broker, NodeRole::Storage, NodeRole::Metadata]),
+        crate::config::Role::Gateway => BTreeSet::from([NodeRole::Gateway]),
+        crate::config::Role::Broker => BTreeSet::from([NodeRole::Broker]),
+        crate::config::Role::Storage => BTreeSet::from([NodeRole::Storage]),
+        crate::config::Role::Metadata => BTreeSet::from([NodeRole::Metadata]),
+    }
+}

@@ -11,7 +11,7 @@ use crate::{Error, Result};
 
 const MAX_CONFIG_BYTES: u64 = 65_536;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     #[default]
@@ -36,6 +36,7 @@ pub struct Config {
     pub protocol: ProtocolLimits,
     pub logging: LoggingConfig,
     pub tls: TlsConfig,
+    pub runtime: crate::runtime::RuntimeConfig,
 }
 
 impl Default for Config {
@@ -52,6 +53,7 @@ impl Default for Config {
             protocol: ProtocolLimits::default(),
             logging: LoggingConfig::default(),
             tls: TlsConfig::default(),
+            runtime: crate::runtime::RuntimeConfig::default(),
         }
     }
 }

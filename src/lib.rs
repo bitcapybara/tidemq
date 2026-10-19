@@ -12,6 +12,8 @@ pub mod observability;
 pub mod ownership;
 pub mod producer;
 pub mod replication;
+pub mod runtime;
+pub mod gateway;
 pub mod server;
 pub mod subscription;
 pub mod transport;
