@@ -711,6 +711,7 @@ async fn slow_bulk_connection_does_not_block_control_progress() {
             delivery_token: Bytes::new(),
         }],
         next_offset: 1,
+        ..Default::default()
     };
     let bulk_frame = frame(
         FrameKind::DeliveryBatch,
@@ -1057,6 +1058,7 @@ async fn data_saturation_allows_control_reauthentication_and_ack_progress() {
             cursor_generation: 1,
             assignment_generation: 1,
             delivery_tokens: vec![Bytes::from_static(b"bounded-delivery-token")],
+            ..Default::default()
         },
     );
     outgoing.sender.send(&ack, deadline()).await.unwrap();
