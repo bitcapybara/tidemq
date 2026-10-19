@@ -46,6 +46,8 @@ struct PeerState {
     producers: BTreeMap<(Bytes, u64, u64), (Bytes, u64)>,
     producer_lanes: BTreeMap<Bytes, BTreeSet<u64>>,
     producer_requests: Vec<Bytes>,
+    producer_attempts: Vec<(Bytes, public::ProduceBatch)>,
+    reject_produces: u32,
     drop_first_produce: bool,
     drop_first_admin: bool,
     pair_produces: bool,
@@ -290,10 +292,26 @@ fn handle(
             assert_eq!(batch.owner_epoch, 0);
             state.producer_requests.push(request.request_id.clone());
             state
+                .producer_attempts
+                .push((request.operation_id.clone(), batch.clone()));
+            state
                 .producer_lanes
                 .entry(batch.producer_id.clone())
                 .or_default()
                 .insert(lane);
+            if state.reject_produces != 0 {
+                state.reject_produces -= 1;
+                return Some(response(
+                    request,
+                    FrameKind::Error,
+                    &tidemq_protocol::common::ErrorReply {
+                        code: tidemq_protocol::common::ErrorCode::Unavailable.into(),
+                        outcome: tidemq_protocol::common::Outcome::Rejected.into(),
+                        retryable: true,
+                        ..Default::default()
+                    },
+                ));
+            }
             let identity = (
                 batch.producer_id.clone(),
                 batch.producer_epoch,
@@ -908,6 +926,61 @@ async fn optional_metrics_register_into_the_hosts_registry() {
     assert!(text.contains("host_queue_client_requests_total 1"));
     assert!(text.contains("host_queue_client_operation_duration_seconds_bucket"));
     assert!(!text.contains(TOKEN));
+}
+
+#[tokio::test]
+async fn transient_rejection_retries_the_original_batch_with_a_bounded_attempt_budget() {
+    let peer = peer(false, false).await;
+    peer.state.lock().unwrap().reject_produces = 2;
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3), deadline())
+        .await
+        .unwrap();
+    let message = public::Message {
+        key: Bytes::from_static(b"key"),
+        body: Bytes::from_static(b"body"),
+    };
+    let receipt = producer
+        .produce(vec![message.clone()], deadline())
+        .await
+        .unwrap();
+    assert_eq!(receipt.first_offset, 0);
+    assert!(!receipt.duplicate);
+    {
+        let state = peer.state.lock().unwrap();
+        assert_eq!(state.producer_requests.len(), 3);
+        assert_eq!(
+            state
+                .producer_requests
+                .iter()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            3
+        );
+        assert!(
+            state
+                .producer_attempts
+                .windows(2)
+                .all(|pair| pair[0] == pair[1])
+        );
+        assert_eq!(state.producers.len(), 1);
+    }
+    peer.state.lock().unwrap().reject_produces = u32::MAX;
+    assert!(matches!(
+        producer.produce(vec![message], deadline()).await,
+        Err(Error::Remote {
+            code: tidemq_protocol::common::ErrorCode::Unavailable,
+            outcome: tidemq_protocol::common::Outcome::Rejected,
+            ..
+        })
+    ));
+    {
+        let state = peer.state.lock().unwrap();
+        assert_eq!(state.producer_requests.len(), 6);
+        assert_eq!(state.producers.len(), 1);
+    }
+    let pending = producer.pending_batches().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending.first().unwrap().first_sequence(), 1);
 }
 
 #[tokio::test]

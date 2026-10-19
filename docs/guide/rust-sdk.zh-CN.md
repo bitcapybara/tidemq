@@ -30,6 +30,8 @@ let subscription = client.admin().create_subscription(
 
 每批保存 producer ID、epoch、first sequence、内容摘要、operation ID 和消息。每次网络尝试新建 request ID，重试保留业务身份与摘要。不同内容不能复用原序号。QUIC send、transport ACK 和取消均不等于 WAL/Raft 已提交。
 
+服务端明确返回 `Rejected + retryable` 的 `Unavailable` 或 `Fenced` 时，在原总期限和固定尝试次数内自动退避重试；控制、读与 ACK 也复用这一规则。每次只更新 request ID。未知生产结果仍保留 PendingBatch 供显式恢复；会话过期、权限失败和永久拒绝不自动换身份。已被明确拒绝但耗尽重试预算的批次仍占原序号，不能静默跳过。
+
 如果 `produce` 返回 `ProduceUnknown`，或其 future 在提交后被丢弃，原批次仍可从 `pending_batches()` 查询。按升序对最早未决批次调用 `retry`；恢复完成前拒绝新序号，不更换 producer 身份。原批次成功返回 `duplicate=true` 也是持久成功。`SequenceGap`、`ContentConflict`、权限/配额等保留类型化错误；被明确拒绝的批次仍阻止自动跨过该序号，必须按原身份处理。`SessionExpired` 或去重窗口过期不会自动重新注册。
 
 注册回包未知返回 `RegistrationUnknown { producer_id, registration_epoch, .. }`；用 `open_at` 传回相同 ID 和 epoch，不能重新取新提示后悄悄创建另一会话。`retire` 只允许在没有未决批次时调用。SDK 没有持久 outbox：进程重启后不承诺自动重建未决消息、序号或原结果。跨进程业务幂等需要宿主保存业务身份与数据。

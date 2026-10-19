@@ -32,6 +32,7 @@ impl MetadataState {
         }
         self.lifecycle.validate().map_err(Rejection::Lifecycle)?;
         self.validate_nodes_groups()?;
+        self.validate_migrations()?;
         self.validate_topics()?;
         self.validate_subscriptions()?;
         for (partition, record) in &self.partitions {
@@ -52,6 +53,7 @@ impl MetadataState {
             || !self.subscription_names.is_empty()
             || !self.nodes.is_empty()
             || !self.groups.is_empty()
+            || !self.migrations.is_empty()
             || self.lifecycle.object_count() != 0
             || self.lifecycle.pin_count() != 0
             || !self.control_operations.is_empty()
@@ -207,13 +209,13 @@ impl MetadataState {
         grant: &Grant,
     ) -> Result<(), Rejection> {
         if let Some(fence) = &record.fence {
-            self.validate_evidence_identity(grant, fence.committed)?;
+            self.validate_recorded_evidence_identity(grant, fence.committed)?;
             if fence.fence.grant != *grant || fence.fence.fence_generation == 0 {
                 return Err(Rejection::InvalidEvidence);
             }
         }
         if let Some(recovery) = &record.recovery {
-            self.validate_evidence_identity(grant, recovery.committed)?;
+            self.validate_recorded_evidence_identity(grant, recovery.committed)?;
             super::state::validate_recovery(record, recovery)?;
         }
         let expected_generation = if let Some(route) = &record.route {

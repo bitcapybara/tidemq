@@ -30,6 +30,8 @@ impl Drop for Directory {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct State {
+    pub cluster: Option<Id>,
+    pub group: u64,
     pub writer_epoch: u64,
     pub next_offset: u64,
     pub values: BTreeMap<u64, u64>,
@@ -38,6 +40,10 @@ pub struct State {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Command {
+    Initialize {
+        cluster: Id,
+        group: u64,
+    },
     Fence(u64),
     Append {
         epoch: u64,
@@ -65,6 +71,11 @@ impl Application for State {
 
     fn apply(&mut self, command: Command) -> Response {
         match command {
+            Command::Initialize { cluster, group } => {
+                self.cluster = Some(cluster);
+                self.group = group;
+                Response::Noop
+            }
             Command::Fence(epoch) if epoch >= self.writer_epoch => {
                 self.writer_epoch = epoch;
                 Response::Fenced

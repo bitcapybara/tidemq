@@ -183,7 +183,10 @@ pub async fn run<S: WireService>(
             }
         }
     }
-    server.shutdown().await;
+    server
+        .shutdown()
+        .await
+        .map_err(|source| crate::Error::Transport { source })?;
     let deadline = Instant::now()
         .checked_add(dispatcher.config.drain_timeout)
         .ok_or(crate::Error::Configuration {

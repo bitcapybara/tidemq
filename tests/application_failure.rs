@@ -82,6 +82,12 @@ async fn local_apply_failure_stops_authority_and_snapshots_then_replays_the_comm
             .await
             .is_err()
     );
+    assert!(
+        disk.state_machine
+            .try_with_membership(|_, position, membership| (position, membership.clone()))
+            .await
+            .is_err()
+    );
     assert!(disk.state_machine.applied_state().await.is_err());
     assert!(disk.state_machine.build_snapshot().await.is_err());
     assert!(disk.state_machine.begin_receiving_snapshot().await.is_err());

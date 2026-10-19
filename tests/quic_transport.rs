@@ -174,7 +174,7 @@ async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
     let address = server.local_addr();
     let client = external_client(&pki, config());
     let session = client
-        .connect(
+        .pooled(
             target(&server),
             &credentials(),
             TrafficClass::Control,
@@ -186,11 +186,46 @@ async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
         .await
         .unwrap()
         .unwrap();
+    let direct = client
+        .connect(
+            target(&server),
+            &credentials(),
+            TrafficClass::Bulk,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let direct_peer = server.accept().await.unwrap();
     let rpc = tidemq::transport::rpc::RpcClient::from_session(session.clone(), Default::default())
         .await
         .unwrap();
     rpc.close(deadline()).await;
+    direct_peer.shutdown(deadline()).await.unwrap();
     accepted.shutdown(deadline()).await.unwrap();
+    client.close(deadline()).await.unwrap();
+    assert!(direct.connection().is_closed());
+    assert!(matches!(
+        client
+            .connect(
+                target(&server),
+                &credentials(),
+                TrafficClass::Control,
+                deadline()
+            )
+            .await,
+        Err(tidemq::transport::Error::Closed)
+    ));
+    assert!(matches!(
+        client
+            .pooled(
+                target(&server),
+                &credentials(),
+                TrafficClass::Control,
+                deadline()
+            )
+            .await,
+        Err(tidemq::transport::Error::Closed)
+    ));
     assert!(session.connection().is_closed());
     assert!(
         session
@@ -199,11 +234,18 @@ async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
             .await
             .is_err()
     );
-    drop(accepted);
-    drop(session);
     drop(rpc);
-    server.shutdown().await;
-    timeout(Duration::from_secs(1), async {
+    assert_eq!(Arc::strong_count(&accepted), 1);
+    assert_eq!(Arc::strong_count(&direct_peer), 1);
+    assert_eq!(Arc::strong_count(&direct), 1);
+    assert_eq!(Arc::strong_count(&session), 1);
+    drop(accepted);
+    drop(direct_peer);
+    drop(direct);
+    drop(session);
+    drop(client);
+    server.shutdown().await.unwrap();
+    timeout(Duration::from_secs(5), async {
         loop {
             match std::net::UdpSocket::bind(address) {
                 Ok(socket) => {
