@@ -39,6 +39,8 @@ Gateway 需通知运行时执行受控连接关闭/重连，保留在途最终�
 | drain 无进展 | 持久分区/组/计划阻塞，本地连接和许可 | 逐项完成所有权移交/成员替换/受控重连，禁止强行清表 |
 | ServiceRecovery 快但 ReplicaRepair 慢 | 分别查看两条时延，不混用口径 | 服务已恢复不表示三区完整冗余已恢复；继续有预算修复 |
 
+`/diagnostics` 的 placement_capacity_available 表示本进程是否具备完整新鲜容量，data_groups.voters/joint_configs 来自原生实际 membership，bootstrap_voters 单列为启动配置，不能混用。传输资源 gauge 分别是 tidemq_internal_client_active_connections、tidemq_internal_server_active_connections 和 tidemq_external_server_active_connections；将同实例现有三项相加，与容量采样的连接口径一致。closed 但仍保留句柄的排空资源也继续计数。字节率看板统计应用帧字节，不包括完整 UDP/IP/TLS 开销。
+
 看板为 `deploy/observability/dashboards/scaling.json`，告警为 `deploy/observability/alerts/scaling.yml`。Unknown 计数说明需要对账，不能据此断言数据未提交。重复 unknown 告警有持续窗口，避免每次可重试错误触发独立告警。
 
 本地验证：`rtk cargo test -p tidemq --locked --test scaling_remote --test scaling_raft --test raft_quic --test application_failure`。`scaling_remote` 在真实原生 QUIC quorum 上验证不同 metadata/data leader 和封闭 RPC 字节往返；语义 RPC 的运行时 QUIC 装配另由 runtime 测试覆盖。测试使用隔离目录与真实 s2n-quic；`TIDEMQ_TEST_TRACE=1` 仅用于有界实验诊断，不作为生产全量日志默认值。物理三区、外部 UDP LB/CID 和正式恢复 SLO 在对应部署环境单独验收。

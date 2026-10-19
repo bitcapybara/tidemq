@@ -229,8 +229,97 @@ impl Drop for Fixture {
 }
 
 fn udp_address() -> SocketAddr {
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.local_addr().unwrap()
+    use std::{
+        collections::BTreeSet,
+        os::fd::AsRawFd,
+        sync::{Mutex, OnceLock},
+    };
+    struct Ports {
+        file: std::fs::File,
+        ephemeral: (u16, u16),
+        next: u32,
+        used: BTreeSet<u16>,
+    }
+    static PORTS: OnceLock<Mutex<Ports>> = OnceLock::new();
+    let ports = PORTS.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        let ephemeral = {
+            let read = |name| {
+                let output = std::process::Command::new("sysctl")
+                    .args(["-n", name])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap()
+            };
+            (
+                read("net.inet.ip.portrange.first"),
+                read("net.inet.ip.portrange.last"),
+            )
+        };
+        #[cfg(target_os = "linux")]
+        let ephemeral = {
+            let text = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+            let mut fields = text
+                .split_ascii_whitespace()
+                .map(|value| value.parse::<u16>().unwrap());
+            (fields.next().unwrap(), fields.next().unwrap())
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        compile_error!("Native runtime tests require a supported ephemeral-port observation");
+        assert!(ephemeral.0 <= ephemeral.1);
+        let seed = Id::random().unwrap();
+        Mutex::new(Ports {
+            file: std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(std::env::temp_dir().join("tidemq-runtime-ports.lock"))
+                .unwrap(),
+            ephemeral,
+            next: u32::from(u16::from_le_bytes([seed.as_bytes()[0], seed.as_bytes()[1]])),
+            used: BTreeSet::new(),
+        })
+    });
+    let mut ports = ports.lock().unwrap();
+    for _ in 0..64_512 {
+        let port = 1024 + (ports.next % 64_512) as u16;
+        ports.next = ports.next.wrapping_add(1);
+        if (ports.ephemeral.0..=ports.ephemeral.1).contains(&port) || ports.used.contains(&port) {
+            continue;
+        }
+        let Ok(socket) = UdpSocket::bind(("127.0.0.1", port)) else {
+            continue;
+        };
+        // One open file retains cross-process port reservations without one descriptor per port.
+        let mut reservation = std::mem::MaybeUninit::<libc::flock>::zeroed();
+        // All fields are integer ABI values and zero is valid for the remaining platform fields.
+        let reservation = unsafe {
+            let value = reservation.assume_init_mut();
+            value.l_type = libc::F_WRLCK as _;
+            value.l_whence = libc::SEEK_SET as _;
+            value.l_start = i64::from(port);
+            value.l_len = 1;
+            value
+        };
+        // The owned descriptor and initialized structure follow the pinned libc fcntl ABI.
+        if unsafe { libc::fcntl(ports.file.as_raw_fd(), libc::F_SETLK, reservation) } != 0 {
+            let error = std::io::Error::last_os_error();
+            assert!(
+                matches!(error.raw_os_error(), Some(libc::EACCES | libc::EAGAIN)),
+                "Port reservation failed: {error}"
+            );
+            continue;
+        }
+        ports.used.insert(port);
+        return socket.local_addr().unwrap();
+    }
+    panic!("No test UDP port is available outside the observed ephemeral range");
 }
 fn tcp_address() -> SocketAddr {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1073,7 +1162,21 @@ async fn exercise_runtime_scaling(automatic: bool) {
             .unwrap()
             .zone = "zone-2".into();
     }
-    fixture.start_all().await;
+    let mut storage_process = if automatic {
+        for (node, config) in &fixture.configs {
+            if *node != 23 {
+                fixture
+                    .running
+                    .insert(*node, RunningNode::start(config.clone()).await.unwrap());
+            }
+        }
+        let child = start_process(&fixture, 23).await;
+        fixture.wait_ready().await;
+        Some(child)
+    } else {
+        fixture.start_all().await;
+        None
+    };
     wait_scaling_diagnostic(&fixture, 24, |value| {
         value["placement_capacity_available"] == true
     })
@@ -1113,8 +1216,9 @@ async fn exercise_runtime_scaling(automatic: bool) {
     );
     let held = consumer.next().await.unwrap().unwrap();
     assert_eq!(held.offset(), 1);
-    if automatic {
-        fixture.stop(23).await;
+    if let Some(child) = storage_process.as_mut() {
+        child.kill().await.unwrap();
+        assert!(!child.wait().await.unwrap().success());
     }
     let migration = async {
         if automatic {
