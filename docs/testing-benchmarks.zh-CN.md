@@ -1,60 +1,65 @@
 # 测试方法与现有证据
 
-当前基础测试覆盖身份/排他边界、非法/放大 protobuf、连接类别、控制内存预留与失败归还、配置、超大日志完整丢弃、独立 sink 错误和有限指标。它们不证明实际 QUIC、持久化或 RF3 行为。
+验收先检查持久正确性，再做性能。每类测试说明实际边界；参考模型、真实 QUIC/磁盘、RustFS 和独立 CLI 进程分别报告。当前待收敛的组合回归见[实施状态](implementation-status.zh-CN.md)，不能由测试文件存在推断已经通过。
 
-## 第一批故障验证
-
-2026-10-19，T12 第一批新增以下可复现实验。抽象模型、真实基础接口和 RustFS 进程证据分别记录；只有后续真实模块联调通过，才可将相应功能记为已实现。
-
-| 证据 | 当前验证 | 不能据此宣称 |
-| --- | --- | --- |
-| `tests/safety_model.rs`、`tests/models` | 穷举有限状态图：登记、迟到授权、条件发布、完成、取消请求、不可逆终止；有/无相关权威 quorum、提交后丢回包；模型快照序列化/恢复与历史 pin 保护 | 已实现元数据/对象生命周期；真实磁盘或 Raft 快照可恢复 |
-| 同一参考模型的订阅部分 | generation/assignment/attempt 均取 0—2；保存旧 token，穷举重投、分配变化、seek、ACK 和丢响应；旧 token 不改变新投递，失 quorum 不出现持久成功 | 已实现订阅调度、token 安全认证或真实持久 ACK |
-| `DataBoundaries` 真实 API | 0—4 的四个边界共 625 组输入；排他回收上界 ≤ 发布上界 ≤ 提交上界，逻辑 retained floor 独立；消费 ACK 不隐式推进发布或回收 | 单次 API 校验等于后台回收安全，或 ACK 本身属于这些正文边界 |
-| `tests/observability_boundaries.rs` | 跨任务持有/取消许可 32 轮后总容量恢复且数据不能消耗控制预留；有效请求中的非法 trace context 不改变身份/正文；固定种子 `0x5eed`、长度 0—256 的非法帧安全失败 | 进程 RSS 有硬上限、QUIC 真实窗口/队列已经联调，或这是完整协议 fuzz |
-| 同一观测测试的真实日志/指标 API | 在隔离测试进程验证临时过滤过期、旧计时器不能覆盖新过滤、SDK 当前配置 API 不接管宿主日志；超大事件整体丢弃、完整 JSON 恢复、有界队列饱和丢弃、关闭 sink 的独立错误计数；非法时延不入样本、重复观测不增加 series | 文件轮转/满盘、collector、远程管理授权、业务阶段埋点或默认观测开销已验证 |
-| `tests/allocator_diagnostics.rs` | 从实际服务端 binary 运行有限探针，核对所选 backend、统计可用性和参数预算；测试宿主独立声明 System allocator 并嵌入 SDK 当前配置 API，不与服务 binary 冲突 | Cargo harness 自动使用服务端 allocator；统计探针就是分配栈采样、RSS 是泄漏量，或已有生产 allocator 性能结论 |
-| `scripts/rustfs-precheck.sh` | 原生 RustFS 1.0.3 的严格持久设置、桶覆盖、S3 基础操作和进程强杀重启，详见[本地 RustFS](operations/local-rustfs.zh-CN.md) | aws-sdk-s3、checksum trailer、multipart、宿主掉电、RF3 或三区验证已完成 |
-
-模型的 `Unknown` 表示调用者没有可用的持久成功证据，丢响应可以发生在状态已经提交之后。`CancelRequested` 只能禁止后续条件发布；取得数据侧不可逆 `Aborted` 证明后才允许结束取消。旧登记证明在终止前可以迟到，在终止后不能复活授权。模型保存的快照 pin 独立于当前任务的终止状态，必须显式释放后才可 GC。
-
-模型只包含单对象操作和单 offset 投递；它不模拟任意并发度、网络时钟、成员变更或持久 IO。穷举使用去重状态集合，不依赖随机调度和墙钟；每个终止状态均参与后续迟到命令尝试。日志过滤的真实计时实验则使用 Tokio 定时器，与模型证据分开。
-
-```sh
-cargo test -p tidemq --locked --test safety_model -- --nocapture
-cargo test -p tidemq --locked --test observability_boundaries
-cargo test -p tidemq --locked --test allocator_diagnostics
-scripts/rustfs-precheck.sh
-```
-
-`--nocapture` 输出模型状态/转换数；当前发布模型 18 状态/540 转换，订阅模型 411 状态/972 次旧 token 尝试。这些数量不是生产规模上限。首次运行 RustFS 脚本下载固定发行包，下载缓存和临时数据均在当前 checkout 的 `target` 下；脚本只控制自己启动的 PID。测试命令不连接用户已有对象服务。
-
-## Rust 与分配器构建验证
+## 可复现验证
 
 ```sh
 cargo fmt --all
-cargo clippy --workspace --tests --no-deps
-cargo test --workspace --locked
+cargo clippy --workspace --tests --examples --no-deps --locked -j2 -- -D warnings
+cargo test --workspace --locked -j2
 cargo test --workspace --doc --locked
-cargo clippy -p tidemq --tests --no-deps --no-default-features --features allocator-mimalloc
-cargo clippy -p tidemq --tests --no-deps --no-default-features --features allocator-jemalloc
+cargo test -p tidemq-sdk --locked --features metrics
 ```
 
-不运行 cargo check；CI 按 Linux/macOS 和互斥 allocator 分开验证，不使用全 feature 同开。schema 生成另开 codegen 并检查已提交文件差异。
-
-allocator-probe 是有限内存持有样本，必须从真实二进制执行；记录 backend/native 版本、编译 feature、块大小及前/中/后快照，不能用其证明碎片、泄漏或吞吐优劣。profile 和 native 工具尚待验证。
-
-对每个替代 allocator，先运行对应互斥 feature 的 clippy，再对同 feature 执行 binary 测试；测试程序的 System allocator 仅用于宿主所有权验证。三个构建分别记录结果，不使用 `--all-features`。
+不运行 cargo check。生产代码的额外 panic 审计与允许 unwrap 的测试分开：
 
 ```sh
+cargo clippy --workspace --lib --bins --no-deps --locked -j2 -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unimplemented -D clippy::todo -D clippy::indexing_slicing
+```
+
+默认测试不依赖用户既有服务。真实 S3 用新建隔离 RustFS：先运行 `scripts/rustfs-precheck.sh` 校验并缓存固定官方发行包，再把绝对路径传给测试。测试只管理自己创建的进程、桶和目录。
+
+```sh
+scripts/rustfs-precheck.sh
+TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test s3_rustfs -- --ignored --nocapture
+TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test lifecycle_persistence -- --ignored --nocapture
+TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test runtime_queue actual_runtime_sdk -- --ignored --nocapture
+```
+
+## 证据索引
+
+| 代号与入口 | 实际验证内容 | 范围限制 |
+| --- | --- | --- |
+| S01 [真实 QUIC](../tests/quic_transport.rs)、[分派](../tests/server_dispatch.rs)、SDK 的网络测试 | TLS/mTLS 与伪造身份拒绝、有限分类连接/流、取消隔离、control/ACK 推进、RPC 结果匹配、端点关闭；新 1-RTT 包 ACK 探测能在进程强杀后淘汰旧连接，慢业务有网络进展时不误杀 | 本机 UDP；真实 LB/NAT/CID 和同预算性能对照另验 |
+| S02 [WAL](../tests/wal_journal.rs)、[存储](../tests/replication_storage.rs)、[Raft QUIC](../tests/raft_quic.rs)、[崩溃](../tests/replication_crash.rs)、[应用失败](../tests/application_failure.rs) | fsync/vote/log/commit/snapshot、官方 storage-v2、RF1/RF3 多数派、换主、B 快照与 R 日志、原结果、SIGKILL、日志 rewrite、状态损坏/应用失败关闭 | 一部分底层测试使用受控内存网络；raft_quic 才是原生网络，不混称三区 |
+| S03 [元数据](../tests/metadata_state.rs)、[权威](../tests/ownership_authority.rs) | CRUD 与永久身份、grant/fence/recover/activate、重试/CAS/旧 epoch、TTL 从请求开始、控制失 quorum、有限安全收尾 | 必须再通过实际角色接管，纯状态不能代表入口故障 |
+| S04 [Broker 测试](../src/broker/tests/mod.rs)、SDK 网络测试 | producer 注册/固定过期/全局高水位、canonical digest、sequence/冲突/原结果、owned 取消后提交、快照恢复、原 PendingBatch 重试 | 有限原结果窗口；SDK 进程重启没有持久 outbox |
+| S05 [订阅状态](../tests/subscription_state.rs)、[持久组合](../tests/lifecycle_persistence.rs)、SDK 网络测试 | 逐条 attempt/token/ACK、洞/连续前沿、旧代次拒绝、seek、KeySerial、冷 H/接收屏障和 B 重试 | 外部副作用需要业务幂等；自动接管仍以运行时回归为准 |
+| S06 [格式](../tests/archive_format.rs)、[S3 边界](../tests/s3_boundaries.rs)、[RustFS](../tests/s3_rustfs.rs) | 不可变 pack、合装、checksum/索引/Range、坏响应、挂起 Range 不占全部控制槽、multipart cancel/abort/reconcile、实际 aws-sdk-s3 与 RustFS | 受控 HTTP 边界测试和真实 RustFS 分开；不代表公网 S3 中断或掉电 |
+| S07 [生命周期持久组合](../tests/lifecycle_persistence.rs)、[实现测试](../src/lifecycle/mod.rs) | 原对象授权/上传/发布/完成对账、不可逆取消、防迟到复活、替换验证/原子换引用、pin/恢复保护、全 voter 快照证明、本地回收/floor/DELETING | RustFS 场景需显式运行 ignored；新 voter 与运行时自动任务组合另验 |
+| S08 [运行时](../tests/runtime_queue.rs) | 实际服务 + SDK 的生产/接收/持久 ACK；分角色 RF3；独立 CLI SIGKILL 后同 Client/Producer/Consumer 恢复；S3 冷回放 | 单测试进程的多 Runtime 与独立 OS 子进程分别识别；接管/自动修复按最新测试结果更新 |
+| S09 [成员迁移](../tests/scaling_raft.rs)、[远程闭合迁移](../tests/scaling_remote.rs) | learner/joint/stable、隔离后保留原计划、joint 中换主、完成证明私有、容量新鲜度与预算、真实 native RF3 自动替换、缺样不创建计划 | 远程接口的部分 fixture 是语义 codec loopback；完整 Runtime mTLS 组合另验 |
+| S10 [观测边界](../tests/observability_boundaries.rs)、[分配器](../tests/allocator_diagnostics.rs)、[堆采样](../tests/heap_profile.rs)、quota/retention 单元测试 | 字节许可、控制保留、有限指标、日志丢弃/失败/脱敏、临时过滤、真实 RSS、cgroup 解析、迟滞、同 allocator profile；持久保留还由 S07 交叉验证 | Linux 实机/cgroup OOM、长期趋势、collector 故障与正式开销待验 |
+| M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
+| P01 [性能工具与报告口径](performance.zh-CN.md) | 外部 SDK、独立服务进程、warmup/measure/cooldown、原 PendingBatch、unique ID/offset 与最终持久 ACK、PID 资源和 allocator/build 身份 | 有限预检不等于生产 P99.9、长稳或公平竞品对标；样本数不足不得报告高分位 |
+
+## 构建、生成与 allocator
+
+```sh
+cargo build -p tidemq-protocol --features codegen --locked
+cargo fmt --all
+git diff --exit-code -- crates/tidemq-protocol/src/generated
+cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features allocator-mimalloc -- -D warnings
 cargo test -p tidemq --locked --no-default-features --features allocator-mimalloc --test allocator_diagnostics
+cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features allocator-jemalloc -- -D warnings
 cargo test -p tidemq --locked --no-default-features --features allocator-jemalloc --test allocator_diagnostics
 ```
 
-当前尚无 collector/堆 profile 接口，不能通过编译 profiling feature 或成功读取汇总统计宣布采样可用。后续需验证同生产 allocator 的已知分配栈、持续持有/释放、跨线程释放、符号、诊断预算及 OOM 子进程后的真实持久恢复。
+CI 配置 Linux/macOS 和互斥 allocator，不能使用互斥 feature 的 all-features。CI 文件存在不表示远端已运行。同 allocator 的 release 栈、持有/释放、跨线程释放和符号化已在本机验证，见[原始采样记录](evidence/2026-10-19-allocator-release.zh-CN.md)；mimalloc 汇总统计不提供同等分配栈证据。
 
-## 后续放行条件
+## 性能与外部前置
 
-后续正确性先于正式性能：模型→真实磁盘→RustFS→RF3/QUIC/SDK→故障与弹性→三区。报告包含版本/配置/故障种子、生产与持久 ACK 口径、默认观测开销、完整延迟分布与超时/拒绝、积压斜率、CPU/RSS/cgroup/IO/网络和总成本。
+当前未创建云资源。真实三可用区要提供节点/区/磁盘/网络/稳定 UDP 入口与预算，再执行阶段 F；本机 zone 名称不制造故障域。报告须包含总 deadline、超时/拒绝/Unknown、生产持久 ACK 与消费持久 ACK 两套分布、积压斜率、CPU/RSS/cgroup/磁盘/网络、故障至 SDK 持久成功的时间线及全部计算/WAL/S3 成本。
 
-当前无 TideMQ 性能或恢复 SLA。未创建云资源，也未复现 Kafka/Pulsar/AutoMQ 对标。
+Kafka/Pulsar/AutoMQ 只有在 RF、持久 ACK、订阅、批量/压缩、分区与顺序一致时才可对照。历史官方参考不算 TideMQ 实测；测试总耗时不当作恢复延迟，均值不替代 P99，阶段 P99 也不能相加。

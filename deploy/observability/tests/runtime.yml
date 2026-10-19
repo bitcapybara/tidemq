@@ -1,0 +1,82 @@
+# JSON is valid YAML; retain exact alert annotations for regression tests.
+{
+  "rule_files": [
+    "../alerts/runtime.yml"
+  ],
+  "evaluation_interval": "1m",
+  "tests": [
+    {
+      "name": "readiness and pressure activate and recover",
+      "interval": "1m",
+      "input_series": [
+        {
+          "series": "up{job=\"tidemq\",instance=\"node-1\"}",
+          "values": "1x12"
+        },
+        {
+          "series": "tidemq_runtime_ready{job=\"tidemq\",instance=\"node-1\"}",
+          "values": "1 0x5 1x6"
+        },
+        {
+          "series": "tidemq_capacity_blocked{job=\"tidemq\",instance=\"node-1\",kind=\"ProcessMemory\"}",
+          "values": "0 1x5 0x6"
+        }
+      ],
+      "alert_rule_test": [
+        {
+          "eval_time": "4m",
+          "alertname": "TideMQRoleNotReady",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "tidemq",
+                "instance": "node-1",
+                "severity": "warning",
+                "component": "runtime"
+              },
+              "exp_annotations": {
+                "summary": "A TideMQ role has lost readiness",
+                "description": "Check authority TTL, metadata/data quorum, current membership and fresh capacity samples. Clear after readiness recovers. Never lower RF or erase WAL.",
+                "runbook_url": "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/runtime.zh-CN.md"
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "7m",
+          "alertname": "TideMQRoleNotReady",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "4m",
+          "alertname": "TideMQCapacityPressure",
+          "exp_alerts": [
+            {
+              "exp_labels": {
+                "job": "tidemq",
+                "instance": "node-1",
+                "severity": "warning",
+                "component": "capacity"
+              },
+              "exp_annotations": {
+                "summary": "New optional work is blocked by capacity",
+                "description": "Check the separate backlog, physical storage, shared reclaim lag, RSS, cgroup and disk observations. Preserve ACK/control/GC capacity. Clear after the actual low watermark is reached.",
+                "runbook_url": "https://github.com/bitcapybara/tidemq/blob/main/docs/design/retention-quota.zh-CN.md"
+              }
+            }
+          ]
+        },
+        {
+          "eval_time": "7m",
+          "alertname": "TideMQCapacityPressure",
+          "exp_alerts": []
+        },
+        {
+          "eval_time": "4m",
+          "alertname": "TideMQScrapeUnavailable",
+          "exp_alerts": []
+        }
+      ]
+    }
+  ]
+}

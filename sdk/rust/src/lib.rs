@@ -18,5 +18,6 @@ pub use context::scope_traceparent;
 pub use error::{Error, Result};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use producer::{PendingBatch, ProduceReceipt, Producer};
+pub use tidemq_protocol::producer::partition_for_key;
 pub use tidemq_protocol::{Id, ProtocolLimits, common, public};
 pub use tidemq_transport::{ClientTls, PeerTarget, TransportConfig};

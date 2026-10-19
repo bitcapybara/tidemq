@@ -30,3 +30,10 @@ Metadata Leader、数据 Leader 和 owner Broker 可以在不同节点。远端�
 容量采样区分逻辑未确认 backlog、本地物理文件和对象注册上界、共享对象回收滞后、OS RSS 以及独立 cgroup headroom。物理文件采样只读配置内有限副本目录，包含真实 WAL、snapshot 和原子替换文件长度；不把已保留的编码日志字节数当成物理大小。RSS 不与 allocator resident 或 cgroup current 相加。未知或陈旧样本暂停可选准入，Read/ACK/Control/GC 保留出口。高低水位避免临界值来回抖动。
 
 管理 HTTP 使用独立 loopback 监听、四个并发槽、8 KiB 请求和 128 KiB 回复上限，拒绝带请求体和 Transfer-Encoding 的请求。统一 Registry 只导出一个 EOF；指标不以 topic、partition、node、operation 或任意外部字符串创建标签。
+
+
+## 节点计划退出
+
+受信 Metadata 运行时的 `drain_node` 先将节点的 `schedulable=false` 提交到元数据多数派，重启不会恢复为可调度。调用提供至多 64 个明确分区移交，逐个执行 prewarm、旧 owner 停新准入和 grant→fence→recover→activate。每次重试沿用已持久化业务身份；在途 ACK 的限时完成规则保持有效。
+
+元数据 leader 的有限检查同时报告尚拥有的分区、数据组、未完成成员计划和 Metadata 角色阻塞。只有 durable blockers 清零才发送 Stop；目标节点自行经已认证语义 RPC 再次取得新鲜检查结果，不信任调用方传入的数字。之后进入统一的五秒关闭期限，停止接入并排空 owned 请求、连接及 WAL。数据成员仍在组内或 Metadata 角色未迁走时返回阻塞而不退出。Storage 的固定 standby 自动替换可推进数据组移出；当前 Metadata 成员退出保持显式阻塞，不能降 quorum 绕过。

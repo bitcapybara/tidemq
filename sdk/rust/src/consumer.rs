@@ -1161,6 +1161,7 @@ fn validate_assignment(
     subscription: Id,
     session: Id,
 ) -> Result<Generation> {
+    // The frozen cold boundary does not cap progress after hot delivery starts.
     if assignment.topic_id.as_ref() != topic.as_bytes()
         || assignment.partition_id != partition
         || assignment.subscription_id.as_ref() != subscription.as_bytes()
@@ -1170,7 +1171,6 @@ fn validate_assignment(
         || assignment.assignment_generation != assignment.delivery_generation
         || assignment.acknowledged_before > assignment.received_before
         || assignment.received_before > assignment.issued_before
-        || assignment.acknowledged_before > assignment.cold_before
     {
         return Err(Error::ResponseMismatch);
     }

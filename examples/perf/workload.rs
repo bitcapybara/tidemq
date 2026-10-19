@@ -32,10 +32,14 @@ pub struct PhaseReport {
     pub acknowledged_messages: u64,
     pub durable_acknowledged_before: u64,
     pub logical_bytes: u64,
+    pub committed_logical_bytes: u64,
+    pub acknowledged_logical_bytes: u64,
     pub produce_elapsed_ns: u64,
     pub consume_ack_elapsed_ns: u64,
     pub produce_messages_per_second: f64,
     pub consume_ack_messages_per_second: f64,
+    pub produce_logical_bytes_per_second: f64,
+    pub consume_ack_logical_bytes_per_second: f64,
     pub produce_batch: Distribution,
     pub receive_call: Distribution,
     pub ack_batch: Distribution,
@@ -50,6 +54,12 @@ pub struct PhaseReport {
     pub physical_cold_io_observed: bool,
     pub resources: Vec<sample::ResourceSample>,
     pub resource_summary: sample::ResourceSummary,
+    pub client_metrics_before: serde_json::Value,
+    pub client_metrics_after: serde_json::Value,
+    pub client_transport_before: serde_json::Value,
+    pub client_transport_after: serde_json::Value,
+    pub server_metrics_before: String,
+    pub server_metrics_after: String,
     pub terminal_error: Option<String>,
 }
 
@@ -111,7 +121,10 @@ pub async fn phase(
     } else {
         None
     };
-    let cold_before = sample::cold_misses(args.management).await?;
+    let server_metrics_before = sample::metrics(args.management).await?;
+    let cold_before = sample::cold_misses(&server_metrics_before)?;
+    let client_metrics_before = client_metrics(client);
+    let client_transport_before = serde_json::to_value(client.transport_metrics().snapshot())?;
     let started = Instant::now();
     let started_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -166,7 +179,8 @@ pub async fn phase(
         }
     }
     let (produce, consume, produce_elapsed_ns) = produced?;
-    let cold_after = sample::cold_misses(args.management).await?;
+    let server_metrics_after = sample::metrics(args.management).await?;
+    let cold_after = sample::cold_misses(&server_metrics_after)?;
     let physical_cold = cold_before
         .zip(cold_after)
         .is_some_and(|(before, after)| after > before);
@@ -207,6 +221,15 @@ pub async fn phase(
         }
     }
     let resource_summary = sample::summarize(&resources);
+    let message_bytes = u64::try_from(args.message_bytes + 8)?;
+    let committed_logical_bytes = produce
+        .messages
+        .checked_mul(message_bytes)
+        .context("Committed byte count overflow")?;
+    let acknowledged_logical_bytes = consume
+        .acknowledged
+        .checked_mul(message_bytes)
+        .context("Acknowledged byte count overflow")?;
     Ok(PhaseReport {
         label: label.into(),
         started_at_unix_ms,
@@ -218,10 +241,14 @@ pub async fn phase(
         logical_bytes: count
             .checked_mul(u64::try_from(args.message_bytes + 8)?)
             .context("Logical byte count overflow")?,
+        committed_logical_bytes,
+        acknowledged_logical_bytes,
         produce_elapsed_ns,
         consume_ack_elapsed_ns: consume.elapsed_ns,
         produce_messages_per_second: rate(produce.messages, produce_elapsed_ns),
         consume_ack_messages_per_second: rate(consume.acknowledged, consume.elapsed_ns),
+        produce_logical_bytes_per_second: rate(committed_logical_bytes, produce_elapsed_ns),
+        consume_ack_logical_bytes_per_second: rate(acknowledged_logical_bytes, consume.elapsed_ns),
         produce_batch: produce.latency.report(),
         receive_call: consume.receive.report(),
         ack_batch: consume.ack.report(),
@@ -236,7 +263,23 @@ pub async fn phase(
         physical_cold_io_observed: physical_cold,
         resources,
         resource_summary,
+        client_metrics_before,
+        client_metrics_after: client_metrics(client),
+        client_transport_before,
+        client_transport_after: serde_json::to_value(client.transport_metrics().snapshot())?,
+        server_metrics_before,
+        server_metrics_after,
         terminal_error,
+    })
+}
+
+fn client_metrics(client: &Client) -> serde_json::Value {
+    let snapshot = client.metrics().snapshot();
+    serde_json::json!({
+        "requests":snapshot.requests,"retries":snapshot.retries,"unknown":snapshot.unknown,
+        "deliveries":snapshot.deliveries,"acknowledged":snapshot.acknowledged,
+        "request_duration_ns":snapshot.request_duration_ns,"admission_wait_ns":snapshot.admission_wait_ns,
+        "admitted_bytes":snapshot.admitted_bytes,"pending_batches":snapshot.pending_batches,"active_deliveries":snapshot.active_deliveries,
     })
 }
 

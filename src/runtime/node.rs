@@ -74,6 +74,37 @@ impl RunningNode {
             .try_into()
             .map_err(|_| Error::invalid("Delivery signing root must contain exactly 32 bytes"))?;
         let transport = transport_config(&config);
+        let bind_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let internal = bind_server(
+            config.runtime.internal_listen,
+            ServerTls {
+                identity: identity.clone(),
+                client_trust_roots: Some(roots.clone()),
+            },
+            ServerAuthorization::Internal(grants.clone()),
+            transport.clone(),
+            budget.clone(),
+            bind_deadline,
+        )
+        .await?;
+        let external = if config.role.serves_gateway() {
+            Some(
+                bind_server(
+                    config.listen,
+                    ServerTls {
+                        identity: identity.clone(),
+                        client_trust_roots: None,
+                    },
+                    ServerAuthorization::External(access.tokens()),
+                    transport.clone(),
+                    budget.clone(),
+                    bind_deadline,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let client = Arc::new(
             Client::bind(
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -156,37 +187,6 @@ impl RunningNode {
             config.runtime.metadata_voters.iter().copied().collect(),
             ControlPolicy::default(),
         )?);
-        let bind_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        let internal = bind_server(
-            config.runtime.internal_listen,
-            ServerTls {
-                identity: identity.clone(),
-                client_trust_roots: Some(roots),
-            },
-            ServerAuthorization::Internal(grants),
-            transport.clone(),
-            budget.clone(),
-            bind_deadline,
-        )
-        .await?;
-        let external = if config.role.serves_gateway() {
-            Some(
-                bind_server(
-                    config.listen,
-                    ServerTls {
-                        identity,
-                        client_trust_roots: None,
-                    },
-                    ServerAuthorization::External(access.tokens()),
-                    transport,
-                    budget.clone(),
-                    bind_deadline,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
         let metadata = if config.runtime.metadata_voters.contains(&config.node_id) {
             Some(
                 open_replica::<MetadataState>(
@@ -358,6 +358,18 @@ impl RunningNode {
         if !*stopped.borrow() {
             let _ = stopped.changed().await;
         }
+    }
+
+    /// Persist unschedulable state, execute a bounded plan, and request exit only after durable blockers clear.
+    pub async fn drain_node(
+        &self,
+        node: u64,
+        handoffs: &[crate::scaling::Handoff],
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::scaling::DrainProgress> {
+        self.service
+            .planned_node_drain(node, handoffs, deadline)
+            .await
     }
 
     /// Trusted metadata-node control entry point; resumes the same persisted replacement plan.

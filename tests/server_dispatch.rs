@@ -25,10 +25,22 @@ const TOKEN: &str = "dispatch-test-token-with-at-least-32-characters";
 struct Service {
     submitted: Mutex<Vec<u64>>,
     replies: Semaphore,
+    flushed: Semaphore,
 }
 
 impl WireService for Service {
     type Error = tidemq_protocol::Error;
+
+    fn response_requires_flush(&self, _peer: &Authorization, request: &Frame) -> bool {
+        request.kind == i32::from(FrameKind::AckBatch)
+    }
+
+    fn response_sent(&self, _peer: &Authorization, request: &Frame, response: &Frame) {
+        assert_eq!(request.kind, i32::from(FrameKind::AckBatch));
+        assert_eq!(response.kind, i32::from(FrameKind::AckResult));
+        self.flushed.add_permits(1);
+    }
+
     async fn handle(
         &self,
         _peer: Authorization,
@@ -138,6 +150,7 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
     let service = Arc::new(Service {
         submitted: Mutex::new(Vec::new()),
         replies: Semaphore::new(0),
+        flushed: Semaphore::new(0),
     });
     let (shutdown, receiver) = watch::channel(false);
     let task = tokio::spawn(tidemq::server::run(
@@ -266,6 +279,11 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
     ack.sender.finish().unwrap();
     let acknowledged = ack.receiver.receive(deadline()).await.unwrap().unwrap();
     assert_eq!(acknowledged.frame().kind, i32::from(FrameKind::AckResult));
+    tokio::time::timeout_at(deadline(), service.flushed.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
     service.replies.add_permits(2);
     let (first, second) = tokio::join!(first.receive(), second.receive());
     for (response, expected) in [(first.unwrap(), 0), (second.unwrap(), 1)] {

@@ -35,6 +35,9 @@ enum Command {
     Drain(Move),
     Takeover(Move),
     Reconnect { node: u64 },
+    Unschedule { node: u64 },
+    Inspect { node: u64 },
+    Stop { node: u64 },
 }
 
 impl Service {
@@ -64,6 +67,169 @@ impl Service {
         Ok(())
     }
 
+    pub(crate) fn shutdown_response(
+        &self,
+        peer: &crate::transport::Authorization,
+        frame: &tidemq_protocol::common::Frame,
+    ) -> bool {
+        let crate::transport::Authorization::Internal(peer) = peer else {
+            return false;
+        };
+        if peer.cluster_id != self.cluster
+            || !matches!(peer.role.as_str(), "metadata" | "combined")
+            || frame.kind != i32::from(FrameKind::InternalCommand)
+            || frame.traffic_class != i32::from(TrafficClass::Control)
+        {
+            return false;
+        }
+        let Ok(envelope) = tidemq_protocol::framing::decode_payload::<
+            tidemq_protocol::internal::InternalCommand,
+        >(frame.payload.clone(), &self.config.protocol) else {
+            return false;
+        };
+        if envelope.group_id != self.config.runtime.metadata_group
+            || envelope.operation_id != frame.operation_id
+        {
+            return false;
+        }
+        let Ok(request) = tidemq_protocol::framing::decode_payload::<Request>(
+            envelope.encoded_command,
+            &self.config.protocol,
+        ) else {
+            return false;
+        };
+        if request.kind != KIND {
+            return false;
+        }
+        matches!(wire::decode_json::<Command>(&request.body), Ok(Command::Stop { node } | Command::Reconnect { node }) if node == self.config.node_id)
+    }
+
+    pub(crate) async fn planned_node_drain(
+        &self,
+        node: u64,
+        handoffs: &[Handoff],
+        deadline: Instant,
+    ) -> Result<crate::scaling::DrainProgress> {
+        if !self.config.role.stores_metadata() || handoffs.len() > 64 {
+            return Err(forbidden());
+        }
+        let leader = self
+            .leader(self.config.runtime.metadata_group, deadline)
+            .await?;
+        self.drain_rpc(
+            leader,
+            self.config.runtime.metadata_group,
+            Command::Unschedule { node },
+            deadline,
+        )
+        .await?;
+        for handoff in handoffs {
+            let route = self.route(handoff.partition, deadline).await?;
+            check_route(&handoff.into(), &route)?;
+            if handoff.target_owner == node
+                || route.owner_node != node && route.owner_node != handoff.target_owner
+            {
+                return Err(forbidden());
+            }
+            crate::scaling::DrainPlan::handoff(self, handoff, &self.scaling.metrics, deadline)
+                .await
+                .map_err(|source| Error::operation("execute bounded node handoff", source))?;
+        }
+        let progress = self.remote_drain_progress(node, deadline).await?;
+        if progress.durable_state_drained() {
+            self.drain_rpc(
+                node,
+                self.config.runtime.metadata_group,
+                Command::Stop { node },
+                deadline,
+            )
+            .await?;
+        }
+        Ok(progress)
+    }
+
+    async fn unschedule(&self, node: u64, deadline: Instant) -> Result<()> {
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        self.require_leader(replica)?;
+        let _mutation = wire::within(deadline, self.metadata_mutation.lock()).await?;
+        wire::within(deadline, replica.raft.ensure_linearizable())
+            .await?
+            .map_err(|_| Error::unavailable())?;
+        let mut record = replica
+            .state
+            .try_with_application(|state| state.node(node).cloned())
+            .await
+            .map_err(|source| Error::operation("read node drain identity", source))?
+            .ok_or_else(Error::unavailable)?;
+        if record.spec.schedulable {
+            record.spec.schedulable = false;
+            self.meta_write(
+                crate::metadata::Command::put_node(
+                    super::node::random_id()?,
+                    self.meta_revision().await?,
+                    record.spec,
+                    record.generation,
+                ),
+                deadline,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    async fn inspect_node_drain(
+        &self,
+        node: u64,
+        deadline: Instant,
+    ) -> Result<crate::scaling::DrainProgress> {
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        self.require_leader(replica)?;
+        wire::within(deadline, replica.raft.ensure_linearizable())
+            .await?
+            .map_err(|_| Error::unavailable())?;
+        replica
+            .state
+            .try_with_application(|state| crate::scaling::DrainPlan::inspect(state, node))
+            .await
+            .map_err(|source| Error::operation("inspect durable drain blockers", source))?
+            .map_err(|source| Error::operation("validate node drain state", source))
+    }
+
+    async fn remote_drain_progress(
+        &self,
+        node: u64,
+        deadline: Instant,
+    ) -> Result<crate::scaling::DrainProgress> {
+        let leader = self
+            .leader(self.config.runtime.metadata_group, deadline)
+            .await?;
+        let bytes = self
+            .drain_rpc(
+                leader,
+                self.config.runtime.metadata_group,
+                Command::Inspect { node },
+                deadline,
+            )
+            .await?;
+        let progress: crate::scaling::DrainProgress = wire::decode_json(&bytes)?;
+        if progress.node_id != node {
+            return Err(forbidden());
+        }
+        Ok(progress)
+    }
+
+    async fn stop_drained_node(&self, deadline: Instant) -> Result<()> {
+        let progress = self
+            .remote_drain_progress(self.config.node_id, deadline)
+            .await?;
+        if !progress.durable_state_drained() {
+            return Err(Error::unavailable());
+        }
+        self.draining
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
     async fn drain_rpc(
         &self,
         node: u64,
@@ -78,11 +244,37 @@ impl Service {
 
     pub(crate) async fn drain_command(
         &self,
+        peer: &crate::transport::NodeGrant,
         group: u64,
         body: &[u8],
         deadline: Instant,
     ) -> Result<Bytes> {
-        match wire::decode_json(body)? {
+        let command: Command = wire::decode_json(body)?;
+        let controller = matches!(peer.role.as_str(), "metadata" | "combined");
+        if !controller && !matches!(command, Command::Inspect { node } if node == peer.node_id) {
+            return Err(forbidden());
+        }
+        match command {
+            Command::Unschedule { node } => {
+                if group != self.config.runtime.metadata_group {
+                    return Err(forbidden());
+                }
+                self.unschedule(node, deadline).await?;
+                wire::json(&self.inspect_node_drain(node, deadline).await?)
+            }
+            Command::Inspect { node } => {
+                if group != self.config.runtime.metadata_group {
+                    return Err(forbidden());
+                }
+                wire::json(&self.inspect_node_drain(node, deadline).await?)
+            }
+            Command::Stop { node } => {
+                if node != self.config.node_id || group != self.config.runtime.metadata_group {
+                    return Err(forbidden());
+                }
+                self.stop_drained_node(deadline).await?;
+                wire::json(&())
+            }
             Command::Prewarm(handoff) => {
                 if !self.config.role.serves_broker() || handoff.target_owner != self.config.node_id
                 {
@@ -159,9 +351,7 @@ impl Service {
                 {
                     return Err(forbidden());
                 }
-                self.draining
-                    .store(true, std::sync::atomic::Ordering::Release);
-                let _ = self.shutdown_requested.send(true);
+                self.stop_drained_node(deadline).await?;
                 wire::json(&())
             }
         }
@@ -245,6 +435,18 @@ impl DrainActions for Service {
         wire::decode_json(&bytes).map_err(scaling_error)
     }
     async fn reconnect_gateway(&self, node: u64, deadline: Instant) -> crate::scaling::Result<()> {
+        let leader = self
+            .leader(self.config.runtime.metadata_group, deadline)
+            .await
+            .map_err(scaling_error)?;
+        self.drain_rpc(
+            leader,
+            self.config.runtime.metadata_group,
+            Command::Unschedule { node },
+            deadline,
+        )
+        .await
+        .map_err(scaling_error)?;
         self.drain_rpc(
             node,
             self.config.runtime.metadata_group,

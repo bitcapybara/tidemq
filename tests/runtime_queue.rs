@@ -377,6 +377,7 @@ async fn spawn_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
         .open(fixture.directory.join(format!("process-{node}.log")))
         .unwrap();
     tokio::process::Command::new(env!("CARGO_BIN_EXE_tidemq"))
+        .env("TOKIO_WORKER_THREADS", "4")
         .arg("serve")
         .arg("--config")
         .arg(&path)
@@ -557,13 +558,19 @@ async fn durable_produce(producer: &Producer, body: &'static [u8]) -> u64 {
 
 async fn durable_consume(consumer: &Consumer, offset: u64) {
     let until = Instant::now() + Duration::from_secs(20);
+    let mut previous = String::new();
     let delivery = loop {
         if let Some(delivery) = consumer.next().await.unwrap() {
             break delivery;
         }
-        let _ = consumer
+        let result = consumer
             .fill(until.min(Instant::now() + Duration::from_secs(2)))
             .await;
+        let detail = format!("{result:?}");
+        if previous != detail {
+            eprintln!("Consumer recovery for offset {offset}: {detail}");
+            previous = detail;
+        }
         assert!(
             Instant::now() < until,
             "Original consumer could not resume after data leader recovery"
@@ -945,6 +952,17 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
             .acknowledged_before,
         9
     );
+    let blockers = control.drain_node(12, &[], deadline()).await.unwrap();
+    assert!(blockers.metadata_role);
+    assert!(!blockers.durable_state_drained());
+    let drained = control.drain_node(31, &[], deadline()).await.unwrap();
+    assert!(drained.durable_state_drained());
+    fixture
+        .running
+        .get(&31)
+        .unwrap()
+        .wait_for_shutdown_request()
+        .await;
     second_client.close(deadline()).await;
     client.close(deadline()).await;
     drop(consumer);
@@ -1007,6 +1025,15 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
         .filter(|config| config.role.stores_data())
     {
         config.runtime.objects = Some(objects.clone());
+    }
+    if nodes.len() == 1 {
+        for config in fixture.configs.values_mut() {
+            config.runtime.groups.push(GroupConfig {
+                group_id: 3,
+                voters: storage.to_vec(),
+                standby: Vec::new(),
+            });
+        }
     }
     let gateway = nodes
         .iter()
@@ -1097,6 +1124,33 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     assert_eq!(metrics.matches("# EOF").count(), 1);
     let mut published = false;
     for node in storage {
+        let metrics = http(
+            fixture.running.get(node).unwrap().management_address,
+            "/metrics",
+        )
+        .await;
+        let names = metrics
+            .lines()
+            .filter_map(|line| line.strip_prefix("# HELP "))
+            .filter_map(|line| line.split_whitespace().next())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            names.len()
+        );
+        assert_eq!(metrics.matches("# EOF").count(), 1);
+        assert_eq!(
+            metrics
+                .lines()
+                .filter(|line| line.starts_with("# HELP tidemq_lifecycle_published "))
+                .count(),
+            1
+        );
+
         published |= http(
             fixture.running.get(node).unwrap().management_address,
             "/metrics",

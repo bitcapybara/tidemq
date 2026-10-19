@@ -39,7 +39,7 @@ pub trait DrainActions: Sync {
     ) -> impl Future<Output = Result<()>> + Send;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, serde::Deserialize)]
 pub struct DrainProgress {
     pub node_id: u64,
     pub owned_partitions: usize,

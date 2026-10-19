@@ -163,39 +163,38 @@ impl Service {
     }
 
     pub async fn close(&self, deadline: Instant) -> Result<()> {
+        let mut failure = None;
         for broker in self.brokers.values() {
-            let _ = broker.drain(deadline.into_std()).await;
+            if let Err(source) = broker.drain(deadline.into_std()).await {
+                failure.get_or_insert_with(|| Error::operation("drain owned broker work", source));
+            }
         }
         for replica in self.data.values() {
-            replica
-                .raft
-                .shutdown()
-                .await
-                .map_err(|source| Error::operation("stop data Raft replica", source))?;
-            replica
-                .log
-                .close()
-                .await
-                .map_err(|source| Error::operation("close data WAL", source))?;
+            if let Err(error) = Self::close_replica(replica, deadline).await {
+                failure.get_or_insert(error);
+            }
         }
-        if let Some(replica) = &self.metadata {
-            replica
-                .raft
-                .shutdown()
-                .await
-                .map_err(|source| Error::operation("stop metadata Raft replica", source))?;
-            replica
-                .log
-                .close()
-                .await
-                .map_err(|source| Error::operation("close metadata WAL", source))?;
+        if let Some(replica) = &self.metadata
+            && let Err(error) = Self::close_replica(replica, deadline).await
+        {
+            failure.get_or_insert(error);
         }
-        self.rpc
-            .pool
-            .close(deadline)
-            .await
-            .map_err(|source| Error::operation("drain internal QUIC endpoint", source))?;
-        Ok(())
+        if let Err(source) = self.rpc.pool.close(deadline).await {
+            failure.get_or_insert_with(|| Error::operation("drain internal QUIC endpoint", source));
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    async fn close_replica<A: crate::replication::Application>(
+        replica: &Replica<A>,
+        deadline: Instant,
+    ) -> Result<()> {
+        wire::within(deadline, replica.raft.shutdown())
+            .await?
+            .map_err(|source| Error::operation("stop Raft replica before WAL closure", source))?;
+        wire::within(deadline, replica.log.close())
+            .await?
+            .map_err(|source| Error::operation("close drained Raft WAL", source))
     }
 
     pub async fn route(&self, partition: PartitionKey, deadline: Instant) -> Result<Route> {
@@ -593,12 +592,11 @@ impl Service {
         let value = match request.kind {
             super::drain::KIND => {
                 drop(order);
-                if !matches!(peer.role.as_str(), "metadata" | "combined")
-                    || frame.traffic_class != i32::from(TrafficClass::Control)
-                {
+                if frame.traffic_class != i32::from(TrafficClass::Control) {
                     return Err(forbidden());
                 }
-                self.drain_command(group, &request.body, deadline).await?
+                self.drain_command(peer, group, &request.body, deadline)
+                    .await?
             }
             super::scaling::KIND => {
                 drop(order);
@@ -817,6 +815,21 @@ impl Service {
 }
 
 impl WireService for Service {
+    fn response_requires_flush(&self, peer: &Authorization, request: &Frame) -> bool {
+        self.shutdown_response(peer, request)
+    }
+
+    fn response_sent(&self, peer: &Authorization, request: &Frame, response: &Frame) {
+        if response.kind == i32::from(FrameKind::InternalResult)
+            && response.request_id == request.request_id
+            && response.operation_id == request.operation_id
+            && self.draining.load(Ordering::Acquire)
+            && self.shutdown_response(peer, request)
+        {
+            let _ = self.shutdown_requested.send(true);
+        }
+    }
+
     type Error = Error;
     #[tracing::instrument(level = "trace", skip_all, fields(node_id = self.config.node_id, role = self.config.role.name(), cluster_id = %self.cluster, request_id = ?wire::id(&frame.request_id), operation_id = ?wire::id(&frame.operation_id), traffic_class = frame.traffic_class, frame_kind = frame.kind, traceparent = frame.traceparent.as_str()))]
     async fn handle(
