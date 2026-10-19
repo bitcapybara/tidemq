@@ -20,6 +20,9 @@ pub struct RuntimeConfig {
     pub delivery_key_file: PathBuf,
     pub bootstrap: bool,
     pub objects: Option<ObjectConfig>,
+    pub capacity: crate::quota::Limits,
+    pub retention: crate::retention::Policy,
+    pub archive_interval_ms: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -31,12 +34,16 @@ impl Default for RuntimeConfig {
             groups: vec![GroupConfig {
                 group_id: 2,
                 voters: vec![1],
+                standby: Vec::new(),
             }],
             peers: Vec::new(),
             access_file: "secrets/access.toml".into(),
             delivery_key_file: "secrets/delivery.key".into(),
             bootstrap: false,
             objects: None,
+            capacity: crate::quota::Limits::default(),
+            retention: crate::retention::Policy::default(),
+            archive_interval_ms: 1_000,
         }
     }
 }
@@ -46,6 +53,14 @@ impl Default for RuntimeConfig {
 pub struct GroupConfig {
     pub group_id: u64,
     pub voters: Vec<u64>,
+    #[serde(default)]
+    pub standby: Vec<u64>,
+}
+
+impl GroupConfig {
+    pub fn hosts(&self, node: u64) -> bool {
+        self.voters.contains(&node) || self.standby.contains(&node)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -108,6 +123,36 @@ impl Role {
 impl RuntimeConfig {
     pub fn validate(&self, config: &Config) -> Result<()> {
         config.validate().map_err(Error::foundation)?;
+        self.capacity
+            .validate()
+            .map_err(|source| Error::operation("validate capacity limits", source))?;
+        self.retention
+            .validate()
+            .map_err(|source| Error::operation("validate retention policy", source))?;
+        if !(100..=60_000).contains(&self.archive_interval_ms) {
+            return Err(Error::invalid(
+                "Archive interval must be between 100 and 60000 milliseconds",
+            ));
+        }
+        if let Some(objects) = &self.objects {
+            if config.memory.total_bytes < 201_326_592
+                || config.memory.control_reserved_bytes < 33_554_432
+                || self.capacity.process_memory.high
+                    < u64::from(config.memory.total_bytes).saturating_add(67_108_864)
+            {
+                return Err(Error::invalid(
+                    "Object storage requires at least 192 MiB application budget, 32 MiB control reserve and 64 MiB RSS headroom",
+                ));
+            }
+            if objects.endpoint.len() > 2_048
+                || objects.endpoint.contains('@')
+                || objects.endpoint.chars().any(char::is_whitespace)
+            {
+                return Err(Error::invalid(
+                    "Object endpoint contains unsupported identity or whitespace",
+                ));
+            }
+        }
         if self.peers.is_empty()
             || self.peers.len() > 32
             || self.groups.is_empty()
@@ -148,6 +193,17 @@ impl RuntimeConfig {
                 return Err(Error::invalid("Group identity is invalid or duplicated"));
             }
             self.validate_voters(&group.voters, config.replication_factor, false)?;
+            let mut hosted: BTreeSet<_> = group.voters.iter().copied().collect();
+            if group.standby.len() > 16 {
+                return Err(Error::invalid("Standby replicas exceed their finite bound"));
+            }
+            for standby in &group.standby {
+                if !hosted.insert(*standby) || !self.peer(*standby)?.role.stores_data() {
+                    return Err(Error::invalid(
+                        "Standby identity is duplicated or has an invalid role",
+                    ));
+                }
+            }
         }
         if !self.peers.iter().any(|peer| peer.role.serves_broker()) {
             return Err(Error::invalid("At least one configured Broker is required"));

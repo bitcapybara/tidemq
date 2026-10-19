@@ -74,6 +74,37 @@ impl RunningNode {
             .try_into()
             .map_err(|_| Error::invalid("Delivery signing root must contain exactly 32 bytes"))?;
         let transport = transport_config(&config);
+        let bind_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let internal = bind_server(
+            config.runtime.internal_listen,
+            ServerTls {
+                identity: identity.clone(),
+                client_trust_roots: Some(roots.clone()),
+            },
+            ServerAuthorization::Internal(grants.clone()),
+            transport.clone(),
+            budget.clone(),
+            bind_deadline,
+        )
+        .await?;
+        let external = if config.role.serves_gateway() {
+            Some(
+                bind_server(
+                    config.listen,
+                    ServerTls {
+                        identity: identity.clone(),
+                        client_trust_roots: None,
+                    },
+                    ServerAuthorization::External(access.tokens()),
+                    transport.clone(),
+                    budget.clone(),
+                    bind_deadline,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let client = Arc::new(
             Client::bind(
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -87,6 +118,9 @@ impl RunningNode {
             )
             .map_err(|source| Error::operation("bind internal QUIC client", source))?,
         );
+        let mut transport_metrics = vec![client.metrics.clone()];
+        let repair = crate::scaling::RepairBudget::new(crate::scaling::RepairLimits::default())
+            .map_err(|source| Error::operation("initialize node repair budget", source))?;
         let mut metrics = Metrics::default();
         let dispatch = Arc::new(DispatchMetrics::default());
         dispatch.register(metrics.registry_mut());
@@ -104,7 +138,11 @@ impl RunningNode {
             .registry_mut()
             .sub_registry_with_prefix("tidemq_producer")
             .register_collector(Box::new(producer.clone()));
-        let _ownership = crate::ownership::OwnershipMetrics::register(metrics.registry_mut());
+        let ownership = crate::ownership::OwnershipMetrics::register(metrics.registry_mut());
+        let quota_metrics = crate::quota::Metrics::default();
+        quota_metrics.register(metrics.registry_mut());
+        let quota = crate::quota::Quota::new(config.runtime.capacity, quota_metrics)
+            .map_err(|source| Error::operation("initialize capacity admission", source))?;
         let targets = config
             .runtime
             .peers
@@ -135,7 +173,8 @@ impl RunningNode {
                 budget.clone(),
                 metrics.operation(Operation::Control),
             )
-            .map_err(|source| Error::operation("create shared internal peer pool", source))?,
+            .map_err(|source| Error::operation("create shared internal peer pool", source))?
+            .with_repair_budget(repair.clone()),
         );
         let rpc = PeerRpc {
             pool: pool.clone(),
@@ -156,6 +195,7 @@ impl RunningNode {
                     &config.runtime.metadata_voters,
                     cluster,
                     pool.clone(),
+                    metrics.operation(Operation::Control),
                 )
                 .await?,
             )
@@ -164,7 +204,7 @@ impl RunningNode {
         };
         let mut data = BTreeMap::new();
         for group in &config.runtime.groups {
-            if group.voters.contains(&config.node_id) {
+            if group.hosts(config.node_id) {
                 data.insert(
                     group.group_id,
                     open_replica::<DataApplication>(
@@ -173,6 +213,7 @@ impl RunningNode {
                         &group.voters,
                         cluster,
                         pool.clone(),
+                        metrics.operation(Operation::Produce),
                     )
                     .await?,
                 );
@@ -188,36 +229,12 @@ impl RunningNode {
             metrics.registry_mut(),
         )
         .await?;
-        let internal = Server::bind(
-            config.runtime.internal_listen,
-            ServerTls {
-                identity: identity.clone(),
-                client_trust_roots: Some(roots),
-            },
-            ServerAuthorization::Internal(grants),
-            transport.clone(),
-            budget.clone(),
-        )
-        .map_err(|source| Error::operation("bind internal QUIC listener", source))?;
-        let external = if config.role.serves_gateway() {
-            Some(
-                Server::bind(
-                    config.listen,
-                    ServerTls {
-                        identity,
-                        client_trust_roots: None,
-                    },
-                    ServerAuthorization::External(access.tokens()),
-                    transport,
-                    budget.clone(),
-                )
-                .map_err(|source| Error::operation("bind external QUIC listener", source))?,
-            )
-        } else {
-            None
-        };
         let external_address = external.as_ref().map(Server::local_addr);
         let internal_address = internal.local_addr();
+        transport_metrics.push(internal.metrics.clone());
+        if let Some(external) = &external {
+            transport_metrics.push(external.metrics.clone());
+        }
         metrics
             .registry_mut()
             .sub_registry_with_prefix("tidemq_internal_server")
@@ -228,6 +245,7 @@ impl RunningNode {
                 .sub_registry_with_prefix("tidemq_external_server")
                 .register_collector(Box::new(external.metrics.clone()));
         }
+        let (shutdown, stopped) = watch::channel(false);
         let service = Arc::new(Service::new(
             config,
             cluster,
@@ -242,8 +260,12 @@ impl RunningNode {
             producer,
             metrics,
             runtime_metrics,
+            ownership,
+            quota,
+            repair,
+            transport_metrics,
+            shutdown.clone(),
         )?);
-        let (shutdown, stopped) = watch::channel(false);
         let dispatcher = DispatchConfig {
             protocol: service.config.protocol.clone(),
             ..DispatchConfig::default()
@@ -264,6 +286,10 @@ impl RunningNode {
         let (management_address, task) =
             super::management::start(service.clone(), stopped.clone()).await?;
         tasks.push(task);
+        tasks.push(tokio::spawn(service.clone().rebalance(stopped.clone())));
+        let maintenance = service.clone();
+        tasks.push(tokio::spawn(maintenance.maintain(stopped.clone())));
+        tasks.push(tokio::spawn(service.clone().expire_pins(stopped.clone())));
         let bootstrap = service.clone();
         tasks.push(tokio::spawn(
             async move { bootstrap.reconcile(stopped).await },
@@ -288,6 +314,22 @@ impl RunningNode {
     }
 
     /// Trusted local control entry point; public clients cannot submit ownership commands.
+    pub async fn route(
+        &self,
+        partition: crate::metadata::PartitionKey,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::metadata::Route> {
+        self.service.route(partition, deadline).await
+    }
+
+    /// Trusted metadata service command that closes a Gateway through its owned shutdown path.
+    pub async fn reconnect_gateway(&self, node: u64, deadline: tokio::time::Instant) -> Result<()> {
+        crate::scaling::DrainActions::reconnect_gateway(self.service.as_ref(), node, deadline)
+            .await
+            .map_err(|source| Error::operation("request gateway reconnect", source))
+    }
+
+    /// Trusted local control entry point; public clients cannot submit ownership commands.
     pub async fn takeover(
         &self,
         partition: crate::metadata::PartitionKey,
@@ -296,15 +338,67 @@ impl RunningNode {
         expected_route_generation: u64,
         deadline: tokio::time::Instant,
     ) -> Result<crate::metadata::Route> {
-        self.service
-            .execute_takeover(
+        crate::scaling::DrainPlan::handoff(
+            self.service.as_ref(),
+            &crate::scaling::Handoff {
                 partition,
                 target_owner,
                 expected_epoch,
                 expected_route_generation,
-                deadline,
-            )
+            },
+            &self.service.scaling.metrics,
+            deadline,
+        )
+        .await
+        .map_err(|source| Error::operation("handoff partition through planned drain", source))
+    }
+
+    pub async fn wait_for_shutdown_request(&self) {
+        let mut stopped = self.shutdown.subscribe();
+        if !*stopped.borrow() {
+            let _ = stopped.changed().await;
+        }
+    }
+
+    /// Persist unschedulable state, execute a bounded plan, and request exit only after durable blockers clear.
+    pub async fn drain_node(
+        &self,
+        node: u64,
+        handoffs: &[crate::scaling::Handoff],
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::scaling::DrainProgress> {
+        self.service
+            .planned_node_drain(node, handoffs, deadline)
             .await
+    }
+
+    /// Trusted metadata-node control entry point; resumes the same persisted replacement plan.
+    pub async fn replace_replica(
+        &self,
+        group: u64,
+        removed: u64,
+        added: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::scaling::MembershipPlan> {
+        if !self.service.config.role.stores_metadata() {
+            return Err(Error::invalid(
+                "Replica replacement requires a metadata service identity",
+            ));
+        }
+        let coordinator = crate::scaling::remote::Coordinator::new(
+            self.service.scaling.rpc.clone(),
+            self.service.config.runtime.metadata_group,
+        )
+        .map_err(|source| Error::operation("create replica replacement coordinator", source))?;
+        let plan = coordinator
+            .plan(self.service.cluster, group, removed, added, deadline)
+            .await
+            .map_err(|source| Error::operation("plan replica replacement", source))?;
+        coordinator
+            .execute(&plan, deadline)
+            .await
+            .map_err(|source| Error::operation("execute replica replacement", source))?;
+        Ok(plan)
     }
 
     /// Archive committed ranges through the authenticated lifecycle service and durable manifest.
@@ -369,14 +463,27 @@ impl RunningNode {
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = self.shutdown.send(true);
-        for task in self.tasks.drain(..) {
-            match tokio::time::timeout(Duration::from_secs(8), task).await {
-                Ok(Ok(result)) => result?,
-                Ok(Err(source)) => return Err(Error::operation("join runtime worker", source)),
-                Err(_) => return Err(Error::invalid("Runtime worker exceeded its drain deadline")),
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let mut failure = None;
+        for mut task in std::mem::take(&mut self.tasks) {
+            match tokio::time::timeout_at(deadline, &mut task).await {
+                Ok(Ok(result)) => {
+                    if let Err(error) = result {
+                        failure = Some(error);
+                    }
+                }
+                Ok(Err(source)) => failure = Some(Error::operation("join runtime worker", source)),
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    failure = Some(Error::invalid("Runtime worker exceeded its drain deadline"));
+                }
             }
         }
-        self.service.close().await
+        tokio::time::timeout_at(deadline, self.service.close(deadline))
+            .await
+            .map_err(|_| Error::invalid("Runtime exceeded its total shutdown deadline"))??;
+        failure.map_or(Ok(()), Err)
     }
 }
 
@@ -386,18 +493,55 @@ impl Drop for RunningNode {
     }
 }
 
+async fn bind_server(
+    address: SocketAddr,
+    tls: ServerTls,
+    authorization: ServerAuthorization,
+    config: TransportConfig,
+    budget: MemoryBudget,
+    deadline: tokio::time::Instant,
+) -> Result<Server> {
+    let mut backoff = Duration::from_millis(2);
+    loop {
+        let tls = ServerTls {
+            identity: tls.identity.clone(),
+            client_trust_roots: tls.client_trust_roots.clone(),
+        };
+        match Server::bind(
+            address,
+            tls,
+            authorization.clone(),
+            config.clone(),
+            budget.clone(),
+        ) {
+            Ok(server) => return Ok(server),
+            Err(source) => {
+                let occupied = tokio::net::UdpSocket::bind(address)
+                    .await
+                    .is_err_and(|error| error.kind() == std::io::ErrorKind::AddrInUse);
+                if !occupied || tokio::time::Instant::now() >= deadline {
+                    return Err(Error::operation("bind authenticated QUIC listener", source));
+                }
+                tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + backoff)).await;
+                backoff = backoff.saturating_mul(2).min(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 async fn open_replica<A: Application>(
     config: &Config,
     group: u64,
     voters: &[u64],
     cluster: Id,
     pool: Arc<PeerPool>,
+    stages: Option<Arc<crate::observability::metrics::OperationMetrics>>,
 ) -> Result<Replica<A>> {
     let store = DiskStore::<A>::open(
         config.data_dir.join(format!("group-{group}")),
         StorageIdentity::new::<A>(cluster, group, config.node_id),
         StorageOptions::default(),
-        None,
+        stages,
     )
     .await
     .map_err(|source| Error::operation("open durable Raft replica", source))?;
@@ -496,7 +640,11 @@ fn transport_config(config: &Config) -> TransportConfig {
     }
 }
 
-pub(crate) fn data_config(cluster: Id, group: &GroupConfig) -> DataGroupConfig {
+pub(crate) fn data_config(
+    cluster: Id,
+    group: &GroupConfig,
+    retention: crate::retention::Policy,
+) -> DataGroupConfig {
     DataGroupConfig {
         cluster_id: cluster,
         group_id: group.group_id,
@@ -505,7 +653,7 @@ pub(crate) fn data_config(cluster: Id, group: &GroupConfig) -> DataGroupConfig {
         max_hot_messages: 65_536,
         producer: ProducerLimits::default(),
         subscription: crate::subscription::Limits::default(),
-        retention: crate::retention::Policy::default(),
+        retention,
     }
 }
 

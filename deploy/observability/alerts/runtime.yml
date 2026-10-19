@@ -1,0 +1,64 @@
+groups:
+  - name: tidemq-runtime
+    interval: 30s
+    rules:
+      - alert: TideMQScrapeUnavailable
+        expr: up{job="tidemq"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: observability
+        annotations:
+          summary: "TideMQ metrics cannot be scraped"
+          description: "Check the bounded local management endpoint, protected proxy and collector. Scrape failure does not establish a queue commit failure. Clear after successful scrapes resume."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/metrics.zh-CN.md"
+      - alert: TideMQRoleNotReady
+        expr: tidemq_runtime_ready == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: runtime
+        annotations:
+          summary: "A TideMQ role has lost readiness"
+          description: "Check authority TTL, metadata/data quorum, current membership and fresh capacity samples. Clear after readiness recovers. Never lower RF or erase WAL."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/runtime.zh-CN.md"
+      - alert: TideMQCapacityPressure
+        expr: max by (job, instance) (tidemq_capacity_blocked) > 0 or tidemq_capacity_container_blocked > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: capacity
+        annotations:
+          summary: "New optional work is blocked by capacity"
+          description: "Check the separate backlog, physical storage, shared reclaim lag, RSS, cgroup and disk observations. Preserve ACK/control/GC capacity. Clear after the actual low watermark is reached."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/design/retention-quota.zh-CN.md"
+      - alert: TideMQCapacitySamplesUnavailable
+        expr: increase(tidemq_capacity_unavailable_observations_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: capacity
+        annotations:
+          summary: "Capacity admission has absent or stale observations"
+          description: "Check sample age and sampler errors; an unavailable sample is not zero usage. Clear after fresh observations and successful admission checks resume."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/runtime.zh-CN.md"
+      - alert: TideMQLogEvidenceLost
+        expr: increase(tidemq_runtime_log_dropped_events_total[5m]) > 0 or increase(tidemq_runtime_log_sink_errors_total[5m]) > 0 or increase(tidemq_runtime_log_oversized_events_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: logging
+        annotations:
+          summary: "Bounded logging is losing diagnostic evidence"
+          description: "Inspect queue pressure, event size and the stdout writer/rotation path. Do not enable unbounded debug output. Clear after the loss counters stop increasing."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/logging.zh-CN.md"
+      - alert: TideMQQuicLivenessFailures
+        expr: increase(tidemq_internal_client_liveness_failures_total[5m]) > 3
+        for: 2m
+        labels:
+          severity: warning
+          component: transport
+        annotations:
+          summary: "Active internal QUIC connections repeatedly lose authenticated progress"
+          description: "Check packet loss, PTO, endpoint identity and process restarts. A QUIC ACK proves network progress only. Clear after liveness failures stop."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/quic-troubleshooting.zh-CN.md"

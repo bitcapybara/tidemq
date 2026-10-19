@@ -39,6 +39,13 @@ enum Command {
     Serve {
         #[arg(long)]
         config: PathBuf,
+        /// Enable bounded request correlation traces temporarily, then restore the configured filter.
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u16).range(0..=300))]
+        trace_seconds: u16,
+        /// Existing private directory for a bounded live-process heap sample.
+        #[cfg(all(feature = "heap-profiling", unix))]
+        #[arg(long)]
+        profile_output: Option<PathBuf>,
     },
     /// Validate configuration without opening listeners or writing data.
     ValidateConfig {
@@ -82,7 +89,12 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Some(Command::Serve { config }) => {
+        Some(Command::Serve {
+            config,
+            trace_seconds,
+            #[cfg(all(feature = "heap-profiling", unix))]
+            profile_output,
+        }) => {
             let config = Config::load(&config).await?;
             let logging = tidemq::observability::logging::initialize(&config.logging)?;
             let node_id = config.node_id;
@@ -92,9 +104,33 @@ async fn run(cli: Cli) -> Result<()> {
                 .map_err(runtime_error)?;
             node.attach_logging(logging.health.clone())
                 .map_err(runtime_error)?;
+            if trace_seconds > 0 {
+                logging.control.temporary_filter(
+                    "warn,tidemq=info,tidemq::runtime=trace",
+                    std::time::Duration::from_secs(u64::from(trace_seconds)),
+                )?;
+            }
+            #[cfg(all(feature = "heap-profiling", unix))]
+            let profile = profile_output.map(|directory| tokio::spawn(async move {
+                let result = allocator::profile::sample(directory, 8_388_608, std::time::Duration::from_secs(5), std::time::Duration::from_secs(15)).await;
+                match result {
+                    Ok(artifact) => tracing::info!(event_code = "runtime_heap_sample_completed", artifact = ?artifact, "Bounded live-process heap sample completed"),
+                    Err(source) => { let error = anyhow::Error::new(source); tracing::warn!(event_code = "runtime_heap_sample_failed", error = %format_args!("{error:#}"), "Bounded live-process heap sample failed"); }
+                }
+            }));
             tracing::info!(event_code = "service_started", node_id, role, internal_address = %node.internal_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ runtime is accepting connections");
-            shutdown_signal().await?;
+            tokio::select! { result = shutdown_signal() => result?, _ = node.wait_for_shutdown_request() => {} }
             node.shutdown().await.map_err(runtime_error)?;
+            #[cfg(all(feature = "heap-profiling", unix))]
+            if let Some(mut profile) = profile {
+                if tokio::time::timeout(std::time::Duration::from_secs(1), &mut profile)
+                    .await
+                    .is_err()
+                {
+                    profile.abort();
+                    let _ = profile.await;
+                }
+            }
             tracing::info!(
                 event_code = "service_stopped",
                 node_id,
@@ -105,7 +141,8 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::ValidateConfig { config }) => {
-            Config::load(&config).await?;
+            let config = Config::load(&config).await?;
+            config.runtime.validate(&config).map_err(runtime_error)?;
             print_json(&serde_json::json!({"valid": true}))
         }
         Some(Command::Diagnose { config }) => {
@@ -115,6 +152,9 @@ async fn run(cli: Cli) -> Result<()> {
                 Config::default()
             };
             config.validate()?;
+            if !config.runtime.peers.is_empty() {
+                config.runtime.validate(&config).map_err(runtime_error)?;
+            }
             print_json(&serde_json::json!({"version": env!("CARGO_PKG_VERSION"),
                 "scope": "current_process", "configuration": config,
                 "allocator": allocator::snapshot().await?, "messaging_runtime_available": true}))
@@ -144,8 +184,8 @@ async fn run(cli: Cli) -> Result<()> {
                 event_code = "service_status",
                 version = env!("CARGO_PKG_VERSION"),
                 allocator = allocator::backend(),
-                messaging_runtime_available = false,
-                "TideMQ foundation is available; the messaging runtime is not implemented yet"
+                messaging_runtime_available = true,
+                "Use the serve subcommand with an explicit authenticated runtime configuration"
             );
             drop(logging);
             Ok(())

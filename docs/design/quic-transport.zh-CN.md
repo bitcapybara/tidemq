@@ -34,7 +34,9 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 `FramedStream::split` 提供独立 `FrameSender` 和 `FrameReceiver`。`send` 在本地 send-ready 后重新缩减剩余期限并入队，保留发送流水线，不为每帧等待 native flush/QUIC ACK。`receive` 在首字节到达后开始扣减该帧预算，读 body/解码后再扣减，空闲等待不消耗下一请求的期限。调用方跨跳传递同一剩余预算和本地 deadline，不重置原操作的总期限；网络单向时间不可由本地单调时钟精确测出，端到端超时及结果恢复仍由 SDK/业务层保证。
 
-单请求取消使用 CANCEL Frame 和原 request_id。取消/超时发生在部分读写时，lane 会 poison，不允许从未知字节边界继续；它只允许整 lane 的未决请求按原身份恢复。`finish` 是流结束，`reset` 是整 lane 失效，两者均不能撤销已提交操作。当前没有业务结果恢复、producer/partition 顺序调度、冷/热屏障或 OpenRaft RPC 语义解析；T02/T04/T05/T06/T10 负责这些调用层契约，不能将传输层通过当作业务完成。
+单请求取消使用 CANCEL Frame 和原 request_id。取消/超时发生在部分读写时，lane 会 poison，不允许从未知字节边界继续；它只允许整 lane 的未决请求按原身份恢复。`finish` 是流结束，`reset` 是整 lane 失效，两者均不能撤销已提交操作。业务结果恢复、producer/partition 顺序调度、冷/热屏障和 OpenRaft RPC 因果由调用层实现，相关行为以 SDK、运行时和持久组合测试为准。
+
+正常帧只入队以维持流水；可信节点的 Stop/Reconnect 控制回复可显式请求 `FrameSender::flush(deadline)`，等待原生 stream 全部在途字节得到对端认证 ACK 后，才执行 `WireService::response_sent` 关闭动作。回调保留原认证上下文、请求与响应，全部受有界回复队列及原总期限约束；普通请求默认不触发 flush。只有响应成功发送和 flush 成功才通知，不能在 handler 刚返回时关闭 endpoint，也不使用固定 sleep。该传输收讫仍不是业务持久成功，Stop 的权限、状态与提交前置由运行时另行检查。
 
 ## TLS 与权限
 
@@ -56,12 +58,18 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 每条连接另以 `connection_window_bytes + max_streams × send_buffer_bytes` 保守预留传输 envelope；服务端预认证 envelope 先占独立 handshake，认证后取得对应类别的 normal/data envelope，再释放握手额度；客户端已知目标类别，C 使用 normal Control。数据额度满时，新 C 仍可认证并传递 ACK，不要求关闭已有 D。handshake 配额满只拒绝/超时新握手，不侵占 Core。默认 connection/stream/send buffer 分别为 64KiB/16KiB/16KiB，最大连接 128、握手 16、流 16、Core 2、ACK 8；默认 1MiB handshake 配额会进一步限制同时进入应用 HELLO 的连接数量。它们是可测的起点，未声明为生产吞吐最优值。native TLS、UDP packet buffer、连接元数据及操作系统 socket 内存不等于该公式，必须同时看 RSS/allocator 与进程上限。
 
-所有连接、握手、stream prelude、读取、发送均有有限数量/期限；无使用的 uni stream 窗口为 0。应用接收队列满时拒绝/reset 新流，不让 dispatcher 队列无限增长。`Connection::close` 会立即关闭所有流，未决结果可能未知。应用先停止新准入并排空有限在途请求，再显式关闭 Session，最后 `Server::shutdown` 停止接受并取消/等待握手任务；它不替业务排空或宣称所有消息已提交。
+所有连接、握手、stream prelude、读取、发送均有有限数量/期限；无使用的 uni stream 窗口为 0。应用接收队列满时拒绝/reset 新流，不让 dispatcher 队列无限增长。`Connection::close` 会立即关闭所有流，未决结果可能未知。通用 dispatcher 先用 `Server::shutdown` 停止接受并取消握手，再有限排空已经接收的 Session 和 owned handler；关闭监听错误也不跳过业务排空。`Client::close(deadline)` 阻止新连接，关闭缓存与直接连接，并等待原生 endpoint 的连接退出；这些关闭操作不代表消息已经提交。
+
+原生 Raft 的 vote/空 Append 心跳在内部 mTLS Core 上使用独立的 2 个执行槽与队列；语义 Core 默认 8、短 ACK 默认 32、数据默认 128。语义线性化控制可能等待 Raft，因此不能占用 Raft 自己的执行槽。满队列立即拒绝新工作，不能排队占满全部控制执行能力。它们仍共享有限的 Core 帧内存和 CPU；执行隔离不承诺抗无限可信节点流量。真实 mTLS 测试将语义 Core 执行槽全部阻塞，验证同一复用连接上的原生 Raft 控制帧仍能返回。
+
+RPC 每个物理连接拥有一项有界存活观察任务，仅在存在未决请求、短 ACK 流或原生未确认字节时探测。默认间隔和单次期限各一秒，可通过 RpcConfig/SDK ClientConfig 的 liveness_timeout 在 100ms–10s 调整。PING 发起前记录最后已发送的 OneRtt packet number，只把其后新包得到的认证 ACK 视为网络前进；迟到旧 ACK 不算。网络期限耗尽才关闭该失活物理连接并让原业务身份重握手，慢 handler 仍能收到原生 ACK 时继续等待。PING 不占业务流窗口，也不构成 WAL/quorum/消费 ACK 证明；单请求取消或期限仍不直接重置健康复用流。真正 CLI 子进程 SIGKILL/原端口重启回归保持原 Producer、PendingBatch 和 Consumer；慢语义 handler 回归验证不会被存活任务误杀。
+
+固定 s2n-quic 1.91 的 idle acceptor Drop 和 idle Client close interest 不会主动唤醒底层 I/O。Server shutdown 在 acceptor 退出后、Client close 在首次 poll wait_idle 提交关闭兴趣后，发送一条本地无效 datagram 唤醒关闭检查，否则完全空闲时可能长期保留 UDP 端口或卡在 wait_idle。无任何连接活动与真实端口释放回归覆盖这些情形，不使用 SO_REUSEPORT 或固定等待；升级依赖时重新检查上游 endpoint/close 行为和该兼容措施。
 
 ## 诊断与已验证范围
 
 `TransportMetrics` 提供固定、无动态标签的快照，并实现 prometheus-client `Collector`；管理入口用固定服务端/客户端前缀注册同一实例，不能每个请求新建实例。包含认证连接、拒绝、流、帧/字节、期限、读/解码失败、send 等待秒、TLS 失败、native 丢包和 DATA_BLOCKED/STREAM_DATA_BLOCKED/STREAMS_BLOCKED 通知。block frame 计数可以含重复通知，不等于阻塞持续时间。`Connection::recovery_snapshot` 只读查询最近的 min/smoothed/latest RTT、PTO count、cwnd、bytes in flight 和 congestion_limited；没有样本时为 None，不能当作零 RTT。
 
-`tests/quic_transport.rs` 使用逐测试独立的内存证书、随机 UDP 端口和真实 TLS/socket。已覆盖大于 stream window 的帧及同流连续请求、证书/权限拒绝、双 pin 轮换与错目标节点、超大 HELLO 和非法 frame、半帧超时 poison、ACK 满时 Core 前进、慢 B 时 C 前进、并发池复用/分类隔离、空闲期限、payload clone 计费，以及 data 满且 D 保持连接时 C 重新认证、ACK 到达 dispatcher 后释放测试持有的积压额度。normal 被普通 Control 和 data 用尽时 Core 帧仍前进；此测试不宣称已实现业务持久 ACK。故障网、3AZ、CID/LB、按租户/分区公平调度、Core 自动修复、业务取消后的重试/去重、T13 吞吐/P99/P99.9 实测仍需各后续阶段验收。
+`tests/quic_transport.rs` 使用逐测试独立的内存证书、随机 UDP 端口和真实 TLS/socket。已覆盖大于 stream window 的帧及同流连续请求、证书/权限拒绝、双 pin 轮换与错目标节点、超大 HELLO 和非法 frame、半帧超时 poison、ACK 满时 Core 前进、慢 B 时 C 前进、并发池复用/分类隔离、空闲期限、payload clone 计费，以及 data 满且 D 保持连接时 C 重新认证、ACK 到达 dispatcher 后释放测试持有的积压额度。normal 被普通 Control 和 data 用尽时 Core 帧仍前进；此测试本身不代表业务持久 ACK，后者由真实 SDK/数据组回归交叉验证。原身份重试、Broker 接管和 RF3 独立进程多数派故障另见[测试索引](../testing-benchmarks.zh-CN.md)。故障网、3AZ、真实 CID/LB、按租户/分区公平调度及完整吞吐/P99/P99.9 矩阵仍待对应环境验收。
 
 版本来源：[s2n-quic 1.91.0](https://docs.rs/s2n-quic/1.91.0/s2n_quic/)、[TLS Server Builder](https://docs.rs/s2n-quic-tls/0.91.0/s2n_quic_tls/server/struct.Builder.html)、[TLS session 源码](https://docs.rs/s2n-quic-tls/0.91.0/src/s2n_quic_tls/session.rs.html)、[event TLS API 源码](https://docs.rs/s2n-quic-core/0.91.0/src/s2n_quic_core/event.rs.html)、[send/flush 语义](https://docs.rs/s2n-quic/1.91.0/s2n_quic/stream/struct.SendStream.html)。

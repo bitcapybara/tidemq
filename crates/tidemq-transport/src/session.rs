@@ -112,6 +112,11 @@ impl Drop for StreamLease {
 impl Drop for ConnectionState {
     fn drop(&mut self) {
         self.handle.close(0_u32.into());
+        let _ = self.metrics.active_connections.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |count| count.checked_sub(1),
+        );
     }
 }
 
@@ -138,6 +143,21 @@ impl Connection {
     }
     pub fn is_closed(&self) -> bool {
         self.state.closed.load(Ordering::Acquire)
+    }
+    pub(super) fn has_ack_streams(&self) -> bool {
+        self.state.ack.available_permits() < self.state.config.max_ack_streams
+    }
+    /// Proves new authenticated transport progress, independently of application response latency.
+    pub async fn probe(&self, deadline: Instant) -> Result<()> {
+        if self.is_closed() {
+            return Err(Error::Closed);
+        }
+        add(&self.state.metrics.liveness_probes, 1);
+        let result = super::endpoint::probe_connection(&self.state.handle, deadline).await;
+        if result.is_err() {
+            add(&self.state.metrics.liveness_failures, 1);
+        }
+        result
     }
     pub fn core_streams_ready(&self) -> bool {
         self.state.core_live.load(Ordering::Acquire) >= self.state.config.core_streams
@@ -270,6 +290,7 @@ impl ConnectionState {
         memory: MemoryPermit,
         endpoint_slot: Option<OwnedSemaphorePermit>,
     ) -> Arc<Self> {
+        add(&metrics.active_connections, 1);
         Arc::new(Self {
             handle,
             class,

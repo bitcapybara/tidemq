@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::time::{Duration, Instant as MonoInstant};
 
 use bytes::Bytes;
@@ -60,7 +59,11 @@ impl Service {
             }
             for (group, replica) in &self.data {
                 if self.require_leader(replica).is_ok() {
-                    let config = data_config(self.cluster, self.config.runtime.group(*group)?);
+                    let config = data_config(
+                        self.cluster,
+                        self.config.runtime.group(*group)?,
+                        self.config.runtime.retention,
+                    );
                     let initialized = replica
                         .state
                         .try_with_application(|state| state.config() == Some(&config))
@@ -162,7 +165,11 @@ impl Service {
             .map_err(|source| Error::operation("read metadata revision", source))
     }
 
-    async fn meta_write(&self, command: Command, deadline: Instant) -> Result<metadata::Outcome> {
+    pub(crate) async fn meta_write(
+        &self,
+        command: Command,
+        deadline: Instant,
+    ) -> Result<metadata::Outcome> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         let response = wire::within(deadline, replica.raft.client_write(command))
@@ -428,8 +435,14 @@ impl Service {
                 diagnostic.route_generation,
             )
             .map_err(metadata_rejection)?;
-            let metadata::Outcome::OwnershipGranted(grant) =
-                self.meta_write(command, deadline).await?
+            let metadata::Outcome::OwnershipGranted(grant) = self
+                .ownership_meta_write(
+                    crate::ownership::Transition::Grant,
+                    diagnostic.epoch.saturating_add(1),
+                    command,
+                    deadline,
+                )
+                .await?
             else {
                 return Err(Error::invalid(
                     "Metadata returned the wrong ownership outcome",
@@ -454,14 +467,10 @@ impl Service {
         deadline: Instant,
     ) -> Result<metadata::Route> {
         let partition = grant.partition;
-        let voters: BTreeSet<_> = self
-            .config
-            .runtime
-            .group(grant.group_id)?
-            .voters
-            .iter()
-            .copied()
-            .collect();
+        let voters = self
+            .authoritative_group(grant.group_id, deadline)
+            .await?
+            .voters;
         let target = self.leader(grant.group_id, deadline).await?;
         if phase < crate::ownership::OwnershipPhase::Fenced {
             let started = MonoInstant::now();
@@ -535,7 +544,14 @@ impl Service {
             .verified_recovery(proof, &grant, &voters, started)?
             .into_activate_command(self.meta_revision().await?)
             .map_err(|source| Error::operation("validate route activation evidence", source))?;
-        let metadata::Outcome::RouteActivated(route) = self.meta_write(activate, deadline).await?
+        let metadata::Outcome::RouteActivated(route) = self
+            .ownership_meta_write(
+                crate::ownership::Transition::Activate,
+                grant.epoch,
+                activate,
+                deadline,
+            )
+            .await?
         else {
             return Err(Error::invalid(
                 "Metadata returned the wrong activation outcome",
@@ -613,7 +629,14 @@ impl Service {
             expected_route_generation,
         )
         .map_err(metadata_rejection)?;
-        let metadata::Outcome::OwnershipGranted(grant) = self.meta_write(command, deadline).await?
+        let metadata::Outcome::OwnershipGranted(grant) = self
+            .ownership_meta_write(
+                crate::ownership::Transition::Grant,
+                desired_epoch,
+                command,
+                deadline,
+            )
+            .await?
         else {
             return Err(Error::invalid("Unexpected takeover grant outcome"));
         };
@@ -628,6 +651,28 @@ impl Service {
         deadline: Instant,
     ) -> Result<Bytes> {
         let request: OwnershipRequest = wire::decode_json(bytes)?;
+        let stage = if request.recover {
+            crate::ownership::Transition::Recover
+        } else {
+            crate::ownership::Transition::Fence
+        };
+        let mut timer = super::telemetry::OwnershipTimer::new(
+            &self.ownership_metrics,
+            stage,
+            request.grant.operation_id,
+            request.grant.epoch,
+        );
+        let result = self.ownership_stage(group, request, deadline).await;
+        timer.finish(&result);
+        result
+    }
+
+    async fn ownership_stage(
+        &self,
+        group: u64,
+        request: OwnershipRequest,
+        deadline: Instant,
+    ) -> Result<Bytes> {
         if request.grant.group_id != group || request.grant.cluster_id != self.cluster {
             return Err(forbidden());
         }
@@ -672,20 +717,39 @@ impl Service {
             self.data_write(group, DataCommand::InstallFence(command), deadline)
                 .await?;
         }
+        let voters = self.authoritative_group(group, deadline).await?.voters;
         let authority = DataAuthority::new(
             replica.raft.clone(),
             replica.state.clone(),
             self.cluster,
             group,
-            replica.voters.clone(),
+            voters.clone(),
             ControlPolicy::default(),
         )
         .map_err(|source| Error::operation("create data authority", source))?;
         let proof = authority
-            .remote_proof(&request.grant, request.recover, replica.voters.clone())
+            .remote_proof(&request.grant, request.recover, voters)
             .await
             .map_err(|source| Error::operation("read data quorum proof", source))?;
         wire::json(&proof)
+    }
+
+    async fn ownership_meta_write(
+        &self,
+        stage: crate::ownership::Transition,
+        epoch: u64,
+        command: Command,
+        deadline: Instant,
+    ) -> Result<metadata::Outcome> {
+        let mut timer = super::telemetry::OwnershipTimer::new(
+            &self.ownership_metrics,
+            stage,
+            command.operation_id(),
+            epoch,
+        );
+        let result = self.meta_write(command, deadline).await;
+        timer.finish(&result);
+        result
     }
 
     pub async fn create_data_subscription(

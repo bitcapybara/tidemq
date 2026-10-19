@@ -1,30 +1,38 @@
-# 基础快速开始
+# 快速开始
 
-当前阶段提供协议、配置校验、有限观测和 allocator 统计探针，消息服务启动和 SDK 收发尚在后续任务中。以下命令不会创建 Topic、监听业务端口或提供 HA。
-
-工具链固定为 Rust 1.96.0，rust-toolchain.toml 包含 fmt/clippy。首次使用由 rustup 安装；已经运行相同 rustc 版本也可能尚未安装对应命名工具链和组件。
+从仓库根目录构建服务，生成一套新的本地身份与配置，再启动 RF1：
 
 ```sh
-cargo run --locked -- validate-config --config config/local.toml
-cargo run --locked -- diagnose --config config/local.toml
-cargo run --locked -- metrics
-cargo run --locked -- allocator-probe --block-bytes 1048576 --blocks 8
+cargo build -p tidemq --locked -j2
+bash deploy/local/generate.sh rf1 /tmp/tidemq-demo
+target/debug/tidemq validate-config --config /tmp/tidemq-demo/node-1.toml
+bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 ```
 
-diagnose 描述当前短生命周期进程，而非远端或其他正在运行的节点；metrics 输出基础 schema 的新进程计数。诊断不自动 purge，不复制用户正文或 WAL。allocator-probe 在自身进程最多分配 64 块/32MiB，给出分配前、持有和释放后的快照；这不是性能基准或泄漏证明。
+工具链固定为 Rust 1.96.0，生成器需要 Bash 和 OpenSSL。输出目录必须不存在；生成的开发证书有效七天。RF1 是单节点持久队列，不提供高可用。完整配置、RF3 分角色运行、后台归档和正常关闭见[运行指南](running.zh-CN.md)。
 
-替代分配器构建：
+在另一个终端检查实际服务：
 
 ```sh
-cargo run --locked --no-default-features --features allocator-mimalloc -- allocator-probe
-cargo run --locked --no-default-features --features allocator-jemalloc -- allocator-probe
+curl --fail http://127.0.0.1:8410/healthz
+curl --fail http://127.0.0.1:8410/readyz
+curl --fail http://127.0.0.1:8410/diagnostics
+curl --fail http://127.0.0.1:8410/metrics
 ```
 
-SDK 独立验证：
+`/healthz` 表示进程能响应，`/readyz` 还检查权威与新鲜容量；启动初期可能尚未 ready。SDK 连接 `127.0.0.1:7410`，TLS 服务名 `node-1.local`，信任生成目录的 `ca.pem`，访问令牌读取 `access.token`。不要输出或提交令牌和私钥。
+
+同仓库的 [Rust SDK 指南](rust-sdk.zh-CN.md)提供 `Client → Admin → Producer → Consumer` 的实际网络用法。先创建 Topic 和订阅，再提交消息；Producer 成功表示 WAL quorum 持久提交，业务处理完成后 `ack()` 成功才表示持久 ACK。冷读的接收屏障不代替业务 ACK。未知生产结果保留 `PendingBatch` 原身份重试，详情见[生产指南](production.zh-CN.md)。
+
+不配置对象存储时仍可运行热数据路径；达到有界热数据或物理容量上限会拒绝新写。需要冷数据和本地正文回收时，按[本地 RustFS](../operations/local-rustfs.zh-CN.md)创建隔离后端，再添加运行指南中的 S3 配置。
+
+诊断当前短生命周期命令进程与运行中服务是两种入口：
 
 ```sh
+target/debug/tidemq diagnose --config /tmp/tidemq-demo/node-1.toml
+target/debug/tidemq metrics
+target/debug/tidemq allocator-probe --block-bytes 1048576 --blocks 8
 cargo test -p tidemq-sdk --locked
-cargo test -p tidemq-protocol --locked
 ```
 
-本地 S3 后续统一使用 RustFS；本机 macOS arm64 可使用 1.0.3 官方二进制，不必为基础阶段安装容器。证书、RustFS、完整消息链路的实际部署命令将随对应实现和验证发布。
+上述 `diagnose`、`metrics` 不查询已经运行的节点；线上状态使用管理 HTTP。`allocator-probe` 是最多 64 块、32 MiB 的自身进程探针，不证明吞吐、碎片或泄漏。候选 allocator 的构建、诊断与限制见[内存排障](../operations/memory-troubleshooting.zh-CN.md)。

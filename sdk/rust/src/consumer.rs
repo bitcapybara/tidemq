@@ -1,6 +1,6 @@
 //! Durable deliveries and assignment-aware receive barriers.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -99,12 +99,14 @@ struct State {
     generation: Generation,
     queue: BTreeMap<u64, Delivery>,
     failed: BTreeMap<u64, Delivery>,
+    failed_offsets: BTreeSet<u64>,
     busy_keys: HashMap<Bytes, Bytes>,
     received_before: u64,
     coverage: BTreeMap<u64, u64>,
     barrier_confirmed: bool,
     poll_bulk_next: bool,
     valid: bool,
+    recoverable: bool,
 }
 
 /// One handle owns a partition assignment and bounded delivery scheduling state.
@@ -116,6 +118,7 @@ pub struct Consumer {
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
     _claim: Arc<ClaimTicket>,
+    _failure_budget: Arc<ReadCredit>,
 }
 
 impl Consumer {
@@ -137,6 +140,9 @@ impl Consumer {
             });
         }
         let ticket = ClaimTicket::reserve(client.clone(), (topic, partition, subscription))?;
+        let slots = Arc::new(Semaphore::new(config.max_buffered_messages as usize));
+        let byte_budget = Arc::new(Semaphore::new(config.max_buffered_bytes as usize));
+        let failure_budget = reserve_failures(&client, &config, &byte_budget)?;
         let status = client
             .admin()
             .subscription_status(topic, partition, subscription, deadline)
@@ -193,8 +199,9 @@ impl Consumer {
         let received_before = assignment.acknowledged_before;
         Ok(Self {
             _claim: Arc::new(ticket),
-            slots: Arc::new(Semaphore::new(config.max_buffered_messages as usize)),
-            bytes: Arc::new(Semaphore::new(config.max_buffered_bytes as usize)),
+            slots,
+            bytes: byte_budget,
+            _failure_budget: Arc::new(failure_budget),
             client,
             config,
             state: Arc::new(Mutex::new(State {
@@ -203,10 +210,12 @@ impl Consumer {
                 generation,
                 queue: BTreeMap::new(),
                 failed: BTreeMap::new(),
+                failed_offsets: BTreeSet::new(),
                 busy_keys: HashMap::new(),
                 received_before,
                 coverage: BTreeMap::new(),
                 valid: true,
+                recoverable: false,
                 poll_bulk_next: false,
             })),
         })
@@ -214,6 +223,49 @@ impl Consumer {
 
     /// Fetches into the bounded queue; it never acknowledges business completion.
     pub async fn fill(&self, deadline: Instant) -> Result<usize> {
+        let mut last = Error::StaleDelivery;
+        for attempt in 0..self.client.inner.config.max_reconnect_attempts {
+            match self.fill_once(deadline).await {
+                Ok(count) => return Ok(count),
+                Err(error) => last = error,
+            }
+            let mut state = timeout_at(deadline, self.state.lock())
+                .await
+                .map_err(|_| Error::Deadline)?;
+            if !state.recoverable {
+                if state.valid && assignment_error(&last) {
+                    continue;
+                }
+                return Err(last);
+            }
+            match self.reclaim_locked(&mut state, deadline, false).await {
+                Ok(()) => {}
+                Err(error) if retry_assignment(&error) => last = error,
+                Err(error) => return Err(error),
+            }
+            drop(state);
+            if attempt + 1 < self.client.inner.config.max_reconnect_attempts {
+                timeout_at(
+                    deadline,
+                    tokio::time::sleep(self.client.inner.config.retry_backoff),
+                )
+                .await
+                .map_err(|_| Error::Deadline)?;
+            }
+        }
+        // A successful final refresh still permits one read within the same total deadline.
+        let valid = timeout_at(deadline, self.state.lock())
+            .await
+            .map_err(|_| Error::Deadline)?
+            .valid;
+        if valid {
+            self.fill_once(deadline).await
+        } else {
+            Err(last)
+        }
+    }
+
+    async fn fill_once(&self, deadline: Instant) -> Result<usize> {
         let admission = self.client.inner.metrics.admission_timer();
         let mut state = timeout_at(deadline, self.state.lock())
             .await
@@ -441,6 +493,11 @@ impl Consumer {
     ) -> Result<usize> {
         let count = incoming.len();
         for delivery in incoming {
+            if state.failed_offsets.contains(&delivery.offset()) {
+                state
+                    .busy_keys
+                    .insert(delivery.inner.key.clone(), delivery.inner.token.clone());
+            }
             cover(
                 state,
                 delivery.offset(),
@@ -453,6 +510,7 @@ impl Consumer {
             state.queue.insert(delivery.offset(), delivery);
         }
         for range in batch.acknowledged_ranges {
+            clear_acknowledged_failures(state, range.start, range.end);
             cover(
                 state,
                 range.start,
@@ -542,8 +600,10 @@ impl Consumer {
     }
 
     pub async fn recv(&self, deadline: Instant) -> Result<Option<Delivery>> {
-        if let Some(delivery) = self.next().await? {
-            return Ok(Some(delivery));
+        match self.next().await {
+            Ok(Some(delivery)) => return Ok(Some(delivery)),
+            Ok(None) | Err(Error::StaleDelivery) => {}
+            Err(error) => return Err(error),
         }
         self.fill(deadline).await?;
         self.next().await
@@ -651,13 +711,7 @@ impl Consumer {
         }
         for delivery in deliveries {
             release_key(state, delivery);
-            if state
-                .failed
-                .get(&delivery.offset())
-                .is_some_and(|failed| failed.inner.token == delivery.inner.token)
-            {
-                state.failed.remove(&delivery.offset());
-            }
+            clear_failure(state, delivery.offset());
         }
         aggregate.accepted = aggregate
             .accepted
@@ -702,20 +756,37 @@ impl Consumer {
         {
             return Err(Error::StaleDelivery);
         }
+        if self.config.ordering == DeliveryOrdering::KeySerial {
+            if state.failed_offsets.len() >= self.config.max_buffered_messages as usize
+                && !state.failed_offsets.contains(&delivery.offset())
+            {
+                return Err(Error::Admission);
+            }
+            state.failed_offsets.insert(delivery.offset());
+        }
         state.failed.insert(delivery.offset(), delivery);
         Ok(())
     }
 
     pub async fn retry_failed(&self, offset: u64) -> Result<()> {
         let mut state = self.state.lock().await;
-        let delivery = state.failed.remove(&offset).ok_or(Error::KeyBlocked)?;
-        if state.busy_keys.get(&delivery.inner.key) == Some(&delivery.inner.token) {
-            state.busy_keys.remove(&delivery.inner.key);
+        let delivery = state.failed.remove(&offset);
+        let marked = state.failed_offsets.remove(&offset);
+        if !marked && delivery.is_none() {
+            return Err(Error::KeyBlocked);
         }
-        if state.queue.contains_key(&offset) {
-            return Err(Error::StaleDelivery);
+        if marked && let Some(queued) = state.queue.get(&offset).cloned() {
+            release_key(&mut state, &queued);
         }
-        state.queue.insert(offset, delivery);
+        if let Some(delivery) = delivery {
+            release_key(&mut state, &delivery);
+            if state.valid
+                && delivery.inner.generation == state.generation
+                && !state.queue.contains_key(&offset)
+            {
+                state.queue.insert(offset, delivery);
+            }
+        }
         Ok(())
     }
 
@@ -725,7 +796,9 @@ impl Consumer {
             .await
             .map_err(|_| Error::Deadline)?;
         let generation = state.generation;
+        let was_valid = state.valid;
         state.valid = false;
+        state.recoverable = false;
         let response: Result<public::SeekResult> = self
             .client
             .request(
@@ -748,14 +821,19 @@ impl Consumer {
         let response = match response {
             Ok(response) => response,
             Err(error) => {
-                if !error.outcome_unknown() && !matches!(error, Error::Deadline) {
-                    state.valid = true;
+                invalidate_on_error(&mut state, &error);
+                if !state.recoverable
+                    && !error.outcome_unknown()
+                    && !matches!(error, Error::Deadline)
+                {
+                    state.valid = was_valid;
                 }
                 return Err(error);
             }
         };
         state.queue.clear();
         state.failed.clear();
+        state.failed_offsets.clear();
         state.busy_keys.clear();
         state.coverage.clear();
         if response.cursor_generation <= generation.cursor
@@ -795,6 +873,7 @@ impl Consumer {
         state.barrier_confirmed = state.received_before >= assignment.cold_before;
         state.assignment = assignment;
         state.valid = true;
+        state.recoverable = false;
         state.poll_bulk_next = false;
         Ok(())
     }
@@ -804,6 +883,16 @@ impl Consumer {
         let mut state = timeout_at(deadline, self.state.lock())
             .await
             .map_err(|_| Error::Deadline)?;
+        self.reclaim_locked(&mut state, deadline, true).await
+    }
+
+    // Keep the fresh status and CAS under one consumer lock so clones share one recovery.
+    async fn reclaim_locked(
+        &self,
+        state: &mut State,
+        deadline: Instant,
+        allow_takeover: bool,
+    ) -> Result<()> {
         let generation = state.generation;
         let status = self
             .client
@@ -817,15 +906,11 @@ impl Consumer {
             .await?;
         let previous = status.assignment.ok_or(Error::ResponseMismatch)?;
         let replacing =
-            if status.assigned && previous.session_id.as_ref() != generation.session.as_bytes() {
-                let replacement = self.config.replace_session_id.ok_or(Error::StaleDelivery)?;
-                if previous.session_id.as_ref() != replacement.as_bytes() {
-                    return Err(Error::StaleDelivery);
-                }
-                bytes(replacement)
-            } else {
-                Bytes::new()
-            };
+            self.replacement_session(state, &previous, status.assigned, allow_takeover)?;
+        let was_valid = state.valid;
+        // A cancelled Claim may already have committed a new generation on the server.
+        state.valid = false;
+        state.recoverable = true;
         let assignment: public::AssignmentResult = self
             .client
             .request(
@@ -847,36 +932,87 @@ impl Consumer {
                 deadline,
             )
             .await?;
-        let new_generation = validate_assignment(
-            &assignment,
-            generation.topic,
-            generation.partition,
-            generation.subscription,
-            generation.session,
-        )?;
-        if new_generation == generation {
-            if assignment.cold_before != state.assignment.cold_before
-                || assignment.received_before > state.received_before
-            {
-                return Err(Error::ResponseMismatch);
-            }
-        } else {
-            if assignment.received_before != assignment.acknowledged_before {
-                return Err(Error::ResponseMismatch);
-            }
-            state.queue.clear();
-            state.failed.clear();
-            state.busy_keys.clear();
-            state.coverage.clear();
-            state.received_before = assignment.acknowledged_before;
-        }
-        state.generation = new_generation;
-        state.barrier_confirmed = assignment.received_before >= assignment.cold_before;
-        state.assignment = assignment;
-        state.valid = true;
-        state.poll_bulk_next = false;
-        Ok(())
+        install_assignment(state, assignment, was_valid)
     }
+
+    fn replacement_session(
+        &self,
+        state: &mut State,
+        previous: &public::AssignmentResult,
+        assigned: bool,
+        allow_takeover: bool,
+    ) -> Result<Bytes> {
+        if !assigned || previous.session_id.as_ref() == state.generation.session.as_bytes() {
+            return Ok(Bytes::new());
+        }
+        invalidate_assignment(state);
+        if !allow_takeover {
+            return Err(Error::Remote {
+                code: ErrorCode::AssignmentBusy,
+                outcome: tidemq_protocol::common::Outcome::Rejected,
+                retryable: false,
+                expected_sequence: None,
+                expected_registration_epoch: None,
+                retry_after_ms: None,
+            });
+        }
+        let replacement = self.config.replace_session_id.ok_or(Error::StaleDelivery)?;
+        if previous.session_id.as_ref() != replacement.as_bytes() {
+            return Err(Error::StaleDelivery);
+        }
+        Ok(bytes(replacement))
+    }
+}
+
+fn install_assignment(
+    state: &mut State,
+    assignment: public::AssignmentResult,
+    was_valid: bool,
+) -> Result<()> {
+    let generation = state.generation;
+    let new_generation = validate_assignment(
+        &assignment,
+        generation.topic,
+        generation.partition,
+        generation.subscription,
+        generation.session,
+    )?;
+    if new_generation.cursor < generation.cursor
+        || (new_generation.cursor == generation.cursor
+            && new_generation.assignment < generation.assignment)
+    {
+        return Err(Error::ResponseMismatch);
+    }
+    if new_generation == generation {
+        if assignment.cold_before != state.assignment.cold_before
+            || assignment.received_before > state.received_before
+        {
+            return Err(Error::ResponseMismatch);
+        }
+    } else if assignment.received_before != assignment.acknowledged_before {
+        return Err(Error::ResponseMismatch);
+    }
+    if new_generation != generation || !was_valid {
+        state.queue.clear();
+        state.failed.clear();
+        state.busy_keys.clear();
+        state.coverage.clear();
+        state.received_before = assignment.acknowledged_before;
+        if new_generation.cursor != generation.cursor {
+            state.failed_offsets.clear();
+        } else {
+            state
+                .failed_offsets
+                .retain(|offset| *offset >= assignment.acknowledged_before);
+        }
+    }
+    state.generation = new_generation;
+    state.barrier_confirmed = state.received_before >= assignment.cold_before;
+    state.assignment = assignment;
+    state.valid = true;
+    state.recoverable = false;
+    state.poll_bulk_next = false;
+    Ok(())
 }
 
 fn invalidate_on_error(state: &mut State, error: &Error) {
@@ -887,17 +1023,100 @@ fn invalidate_on_error(state: &mut State, error: &Error) {
             ..
         }
     ) {
-        state.valid = false;
-        state.queue.clear();
-        state.failed.clear();
-        state.busy_keys.clear();
-        state.coverage.clear();
+        invalidate_assignment(state);
     }
+}
+
+fn invalidate_assignment(state: &mut State) {
+    state.valid = false;
+    state.recoverable = true;
+    state.queue.clear();
+    state.failed.clear();
+    state.busy_keys.clear();
+    state.coverage.clear();
+}
+
+fn retry_assignment(error: &Error) -> bool {
+    error.retry_rejected()
+        || error.retry_transport()
+        || error.outcome_unknown()
+        || matches!(
+            error,
+            Error::Remote {
+                code: ErrorCode::StaleGeneration,
+                retryable: true,
+                ..
+            }
+        )
+}
+
+fn assignment_error(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::StaleDelivery
+            | Error::Remote {
+                code: ErrorCode::Fenced | ErrorCode::StaleGeneration,
+                ..
+            }
+    )
+}
+
+fn reserve_failures(
+    client: &Client,
+    config: &ConsumerConfig,
+    bytes: &Arc<Semaphore>,
+) -> Result<ReadCredit> {
+    // Fixed offset markers survive fencing without retaining obsolete delivery bodies or tokens.
+    let reserve = if config.ordering == DeliveryOrdering::KeySerial {
+        config
+            .max_buffered_messages
+            .checked_mul(40)
+            .ok_or(Error::Admission)?
+    } else {
+        0
+    };
+    if reserve >= config.max_buffered_bytes {
+        return Err(Error::Configuration {
+            reason: "consumer byte bound must leave room beyond failed-offset metadata",
+        });
+    }
+    Ok(ReadCredit {
+        bytes: bytes
+            .clone()
+            .try_acquire_many_owned(reserve)
+            .map_err(|_| Error::Admission)?,
+        client: client
+            .inner
+            .bytes
+            .clone()
+            .try_acquire_many_owned(reserve)
+            .map_err(|_| Error::Admission)?,
+    })
 }
 
 fn release_key(state: &mut State, delivery: &Delivery) {
     if state.busy_keys.get(&delivery.inner.key) == Some(&delivery.inner.token) {
         state.busy_keys.remove(&delivery.inner.key);
+    }
+}
+
+fn clear_failure(state: &mut State, offset: u64) {
+    if state.failed_offsets.remove(&offset)
+        && let Some(queued) = state.queue.get(&offset).cloned()
+    {
+        release_key(state, &queued);
+    }
+    if let Some(delivery) = state.failed.remove(&offset) {
+        release_key(state, &delivery);
+    }
+}
+
+fn clear_acknowledged_failures(state: &mut State, start: u64, end: u64) {
+    if start >= end {
+        return;
+    }
+    while let Some(offset) = state.failed_offsets.range(start..end).next().copied() {
+        clear_failure(state, offset);
     }
 }
 
@@ -942,6 +1161,7 @@ fn validate_assignment(
     subscription: Id,
     session: Id,
 ) -> Result<Generation> {
+    // The frozen cold boundary does not cap progress after hot delivery starts.
     if assignment.topic_id.as_ref() != topic.as_bytes()
         || assignment.partition_id != partition
         || assignment.subscription_id.as_ref() != subscription.as_bytes()
@@ -951,7 +1171,6 @@ fn validate_assignment(
         || assignment.assignment_generation != assignment.delivery_generation
         || assignment.acknowledged_before > assignment.received_before
         || assignment.received_before > assignment.issued_before
-        || assignment.acknowledged_before > assignment.cold_before
     {
         return Err(Error::ResponseMismatch);
     }

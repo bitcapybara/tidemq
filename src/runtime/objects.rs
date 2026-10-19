@@ -94,7 +94,15 @@ pub(crate) async fn coordinators(
         .map_err(|_| Error::invalid("Object credentials file is not UTF-8"))?;
     let credentials: ObjectCredentials =
         toml::from_str(text).map_err(|_| Error::invalid("Object credentials file is malformed"))?;
-    if credentials.access_key.is_empty()
+    if !credentials
+        .access_key
+        .bytes()
+        .all(|byte| byte.is_ascii_graphic())
+        || !credentials
+            .secret_key
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic())
+        || credentials.access_key.is_empty()
         || credentials.access_key.len() > 256
         || credentials.secret_key.is_empty()
         || credentials.secret_key.len() > 256
@@ -144,13 +152,15 @@ pub(crate) async fn coordinators(
     let mut coordinators = BTreeMap::new();
     for (group, replica) in data {
         let local = DataReplica::local(replica.raft.clone(), replica.state.clone());
-        let checkpoints = replica
+        let configured = config.runtime.group(*group)?;
+        let checkpoints = configured
             .voters
             .iter()
+            .chain(&configured.standby)
             .map(|node| ReplicaCheckpoint::remote(cluster, *group, *node, rpc.clone()))
             .collect::<crate::lifecycle::Result<_>>()
             .map_err(|source| {
-                Error::operation("create trusted replica checkpoint peers", source)
+                Error::operation("create trusted replica checkpoint candidates", source)
             })?;
         let coordinator = Coordinator::new(
             metadata.clone(),
@@ -160,7 +170,7 @@ pub(crate) async fn coordinators(
             budget.clone(),
         )
         .map_err(|source| Error::operation("create object lifecycle worker", source))?
-        .with_checkpoints(checkpoints)
+        .with_checkpoint_candidates(checkpoints)
         .map_err(|source| Error::operation("bind lifecycle checkpoint voters", source))?
         .with_metrics(metrics.clone())
         .map_err(|source| Error::operation("bind shared lifecycle metrics", source))?;

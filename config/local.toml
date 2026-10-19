@@ -7,8 +7,8 @@ data_dir = "data/node-1"
 replication_factor = 1
 
 [memory]
-total_bytes = 67108864
-control_reserved_bytes = 4194304
+total_bytes = 201326592
+control_reserved_bytes = 33554432
 max_connections = 128
 max_streams_per_connection = 64
 max_pending_requests = 256
@@ -31,3 +31,25 @@ max_event_bytes = 16384
 certificate = "certs/server.pem"
 private_key = "certs/server-key.pem"
 trust_roots = "certs/ca.pem"
+
+[runtime]
+internal_listen = "127.0.0.1:7444"
+metadata_group = 1
+metadata_voters = [1]
+access_file = "secrets/access.toml"
+delivery_key_file = "secrets/delivery.key"
+bootstrap = true
+archive_interval_ms = 1000
+
+[[runtime.groups]]
+group_id = 2
+voters = [1]
+standby = []
+
+[[runtime.peers]]
+node_id = 1
+role = "combined"
+zone = "local"
+internal_address = "127.0.0.1:7444"
+server_name = "node-1.local"
+certificate_der = "certs/node-1.der"

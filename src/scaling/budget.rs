@@ -84,6 +84,28 @@ impl RepairBudget {
             .await
             .map_err(|_| Error::Deadline)?
             .map_err(|_| Error::Overloaded)?;
+        self.register_permit(target, group, permit)
+    }
+
+    pub fn try_register(&self, target: u64, group: u64) -> Result<RepairLease> {
+        if target == 0 || group == 0 {
+            return Err(Error::Configuration);
+        }
+        let permit = self
+            .0
+            .repairs
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::Overloaded)?;
+        self.register_permit(target, group, permit)
+    }
+
+    fn register_permit(
+        &self,
+        target: u64,
+        group: u64,
+        permit: OwnedSemaphorePermit,
+    ) -> Result<RepairLease> {
         let mut active = self.0.active.lock().map_err(|_| Error::Poisoned)?;
         if active.len() >= 32 {
             return Err(Error::Overloaded);

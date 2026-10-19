@@ -359,10 +359,12 @@ impl Fixture {
         Coordinator::new(
             MetadataReplica::local(self.metadata.raft.clone(), self.metadata.state.clone()),
             data.clone(),
-            vec![data],
+            vec![data.clone()],
             store,
             s3::budget(),
         )
+        .unwrap()
+        .with_checkpoint_candidates(vec![tidemq::lifecycle::ReplicaCheckpoint::local(data)])
         .unwrap()
     }
     pub async fn produce(&self, count: u64) -> AppendBatch {

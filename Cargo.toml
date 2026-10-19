@@ -70,6 +70,7 @@ tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 uuid.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["process"] }
 tidemq-sdk = { path = "sdk/rust" }
 rcgen = { version = "=0.14.10", default-features = false, features = ["pem", "aws_lc_rs"] }
 

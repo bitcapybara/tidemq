@@ -111,17 +111,24 @@ impl Fixture {
                         groups: vec![GroupConfig {
                             group_id: 2,
                             voters: storage.to_vec(),
+                            standby: Vec::new(),
                         }],
                         peers: peers.clone(),
                         access_file: directory.join("access.toml"),
                         delivery_key_file: directory.join("delivery.key"),
                         bootstrap: true,
                         objects: None,
+                        ..RuntimeConfig::default()
                     },
                     ..Config::default()
                 };
-                config.memory.total_bytes = 128 * 1024 * 1024;
+                config.memory.total_bytes = 192 * 1024 * 1024;
                 config.memory.control_reserved_bytes = 32 * 1024 * 1024;
+                // Several independently budgeted native runtimes share this test process's RSS.
+                config.runtime.capacity.process_memory = tidemq::quota::Watermark {
+                    low: 1_610_612_736,
+                    high: 2_147_483_648,
+                };
                 (*node, config)
             })
             .collect();
@@ -144,18 +151,18 @@ impl Fixture {
     async fn wait_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let gateway = self
-                .running
-                .values()
-                .find(|node| node.external_address.is_some())
-                .unwrap();
-            let reply = http(gateway.management_address, "/readyz").await;
-            if reply.starts_with("HTTP/1.1 200") {
+            let mut ready = true;
+            for node in self.running.values() {
+                ready &= http(node.management_address, "/readyz")
+                    .await
+                    .starts_with("HTTP/1.1 200");
+            }
+            if ready {
                 return;
             }
             assert!(
                 Instant::now() < deadline,
-                "Runtime became ready before the test deadline: {reply}"
+                "Not all runtime roles obtained fresh readiness before the deadline"
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -163,12 +170,7 @@ impl Fixture {
 
     async fn client(&self, gateway: u64) -> Client {
         let config = self.configs.get(&gateway).unwrap();
-        let address = self
-            .running
-            .get(&gateway)
-            .unwrap()
-            .external_address
-            .unwrap();
+        let address = config.listen;
         let mut sdk = ClientConfig::new(format!("node-{gateway}.local:{}", address.port()));
         sdk.request_timeout_ms = 10_000;
         Client::with_target(
@@ -195,20 +197,7 @@ impl Fixture {
 
     async fn stop(&mut self, node: u64) {
         let running = self.running.remove(&node).unwrap();
-        let address = running.internal_address;
         running.shutdown().await.unwrap();
-        let started = Instant::now();
-        loop {
-            if UdpSocket::bind(address).is_ok() {
-                eprintln!("Native UDP endpoint released after {:?}", started.elapsed());
-                break;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(6),
-                "Native UDP endpoint retained its bound socket after shutdown"
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
     }
     async fn restart(&mut self, node: u64) {
         self.running.insert(
@@ -228,13 +217,109 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!(
+                "Preserved runtime evidence directory {}",
+                self.directory.display()
+            );
+            return;
+        }
         let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
 
 fn udp_address() -> SocketAddr {
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.local_addr().unwrap()
+    use std::{
+        collections::BTreeSet,
+        os::fd::AsRawFd,
+        sync::{Mutex, OnceLock},
+    };
+    struct Ports {
+        file: std::fs::File,
+        ephemeral: (u16, u16),
+        next: u32,
+        used: BTreeSet<u16>,
+    }
+    static PORTS: OnceLock<Mutex<Ports>> = OnceLock::new();
+    let ports = PORTS.get_or_init(|| {
+        #[cfg(target_os = "macos")]
+        let ephemeral = {
+            let read = |name| {
+                let output = std::process::Command::new("sysctl")
+                    .args(["-n", name])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap()
+            };
+            (
+                read("net.inet.ip.portrange.first"),
+                read("net.inet.ip.portrange.last"),
+            )
+        };
+        #[cfg(target_os = "linux")]
+        let ephemeral = {
+            let text = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+            let mut fields = text
+                .split_ascii_whitespace()
+                .map(|value| value.parse::<u16>().unwrap());
+            (fields.next().unwrap(), fields.next().unwrap())
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        compile_error!("Native runtime tests require a supported ephemeral-port observation");
+        assert!(ephemeral.0 <= ephemeral.1);
+        let seed = Id::random().unwrap();
+        Mutex::new(Ports {
+            file: std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(std::env::temp_dir().join("tidemq-runtime-ports.lock"))
+                .unwrap(),
+            ephemeral,
+            next: u32::from(u16::from_le_bytes([seed.as_bytes()[0], seed.as_bytes()[1]])),
+            used: BTreeSet::new(),
+        })
+    });
+    let mut ports = ports.lock().unwrap();
+    for _ in 0..64_512 {
+        let port = 1024 + (ports.next % 64_512) as u16;
+        ports.next = ports.next.wrapping_add(1);
+        if (ports.ephemeral.0..=ports.ephemeral.1).contains(&port) || ports.used.contains(&port) {
+            continue;
+        }
+        let Ok(socket) = UdpSocket::bind(("127.0.0.1", port)) else {
+            continue;
+        };
+        // One open file retains cross-process port reservations without one descriptor per port.
+        let mut reservation = std::mem::MaybeUninit::<libc::flock>::zeroed();
+        // All fields are integer ABI values and zero is valid for the remaining platform fields.
+        let reservation = unsafe {
+            let value = reservation.assume_init_mut();
+            value.l_type = libc::F_WRLCK as _;
+            value.l_whence = libc::SEEK_SET as _;
+            value.l_start = i64::from(port);
+            value.l_len = 1;
+            value
+        };
+        // The owned descriptor and initialized structure follow the pinned libc fcntl ABI.
+        if unsafe { libc::fcntl(ports.file.as_raw_fd(), libc::F_SETLK, reservation) } != 0 {
+            let error = std::io::Error::last_os_error();
+            assert!(
+                matches!(error.raw_os_error(), Some(libc::EACCES | libc::EAGAIN)),
+                "Port reservation failed: {error}"
+            );
+            continue;
+        }
+        ports.used.insert(port);
+        return socket.local_addr().unwrap();
+    }
+    panic!("No test UDP port is available outside the observed ephemeral range");
 }
 fn tcp_address() -> SocketAddr {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -278,6 +363,364 @@ async fn create(client: &Client) -> (Id, Id) {
         topic,
         Id::from_slice(&subscription.subscription_id).unwrap(),
     )
+}
+
+async fn spawn_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
+    let config = fixture.configs.get(&node).unwrap();
+    let path = fixture.directory.join(format!("process-{node}.toml"));
+    tokio::fs::write(&path, toml::to_string(config).unwrap())
+        .await
+        .unwrap();
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(fixture.directory.join(format!("process-{node}.log")))
+        .unwrap();
+    tokio::process::Command::new(env!("CARGO_BIN_EXE_tidemq"))
+        .env("TOKIO_WORKER_THREADS", "4")
+        .arg("serve")
+        .arg("--config")
+        .arg(&path)
+        .stdout(output)
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap()
+}
+
+async fn start_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
+    let mut child = spawn_process(fixture, node).await;
+    wait_process(fixture, node, &mut child).await;
+    child
+}
+
+async fn wait_process(fixture: &Fixture, node: u64, child: &mut tokio::process::Child) {
+    let config = fixture.configs.get(&node).unwrap();
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "Runtime process exited during startup"
+        );
+        let attempt = tokio::time::timeout(Duration::from_millis(200), async {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut stream = tokio::net::TcpStream::connect(config.management_listen).await?;
+            stream
+                .write_all(b"GET /readyz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await?;
+            let mut output = String::new();
+            stream.take(8192).read_to_string(&mut output).await?;
+            Ok::<_, std::io::Error>(output)
+        })
+        .await;
+        if matches!(attempt, Ok(Ok(ref response)) if response.starts_with("HTTP/1.1 200")) {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "Runtime process did not become ready within its bound"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() {
+    let fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let mut process = start_process(&fixture, 1).await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    let message = || public::Message {
+        key: Bytes::from_static(b"process-key"),
+        body: Bytes::from_static(b"process-body"),
+    };
+    producer.produce(vec![message()], deadline()).await.unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let first = consumer.next().await.unwrap().unwrap();
+    assert_eq!(
+        consumer
+            .ack(&first, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        1
+    );
+    process.kill().await.unwrap();
+    assert!(!process.wait().await.unwrap().success());
+    let failure = producer
+        .produce(vec![message()], Instant::now() + Duration::from_millis(200))
+        .await
+        .unwrap_err();
+    assert!(failure.outcome_unknown());
+    let batches = producer.pending_batches().await.unwrap();
+    assert_eq!(batches.len(), 1);
+    let batch = batches.first().unwrap();
+    let identity = (
+        batch.operation_id(),
+        batch.producer_epoch(),
+        batch.first_sequence(),
+        batch.digest().to_vec(),
+    );
+    let started = Instant::now();
+    let mut process = start_process(&fixture, 1).await;
+    let receipt = producer.retry(batch, deadline()).await.unwrap();
+    assert_eq!(receipt.first_offset, 1);
+    assert_eq!(
+        identity,
+        (
+            batch.operation_id(),
+            batch.producer_epoch(),
+            batch.first_sequence(),
+            batch.digest().to_vec()
+        )
+    );
+    assert!(producer.pending_batches().await.unwrap().is_empty());
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let second = consumer.next().await.unwrap().unwrap();
+    assert_eq!(second.offset(), 1);
+    assert_eq!(
+        consumer
+            .ack(&second, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        2
+    );
+    eprintln!(
+        "Original SDK producer and consumer recovered after process restart in {:?}",
+        started.elapsed()
+    );
+    client.close(deadline()).await;
+    process.kill().await.unwrap();
+    let _ = process.wait().await.unwrap();
+    fixture.close().await;
+}
+
+async fn durable_produce(producer: &Producer, body: &'static [u8]) -> u64 {
+    let until = Instant::now() + Duration::from_secs(20);
+    if let Ok(receipt) = producer
+        .produce(
+            vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(body),
+            }],
+            Instant::now() + Duration::from_secs(2),
+        )
+        .await
+    {
+        return receipt.first_offset;
+    }
+    let pending = producer.pending_batches().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let batch = pending.first().unwrap();
+    let identity = (
+        batch.operation_id(),
+        batch.producer_epoch(),
+        batch.first_sequence(),
+        batch.digest().to_vec(),
+    );
+    loop {
+        let result = producer
+            .retry(batch, until.min(Instant::now() + Duration::from_secs(2)))
+            .await;
+        if let Ok(receipt) = result {
+            assert_eq!(
+                identity,
+                (
+                    batch.operation_id(),
+                    batch.producer_epoch(),
+                    batch.first_sequence(),
+                    batch.digest().to_vec()
+                )
+            );
+            return receipt.first_offset;
+        }
+        assert!(
+            Instant::now() < until,
+            "Original producer identity could not recover: {result:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn durable_consume(consumer: &Consumer, offset: u64) {
+    let until = Instant::now() + Duration::from_secs(20);
+    let mut previous = String::new();
+    let delivery = loop {
+        if let Some(delivery) = consumer.next().await.unwrap() {
+            break delivery;
+        }
+        let result = consumer
+            .fill(until.min(Instant::now() + Duration::from_secs(2)))
+            .await;
+        let detail = format!("{result:?}");
+        if previous != detail {
+            eprintln!("Consumer recovery for offset {offset}: {detail}");
+            previous = detail;
+        }
+        assert!(
+            Instant::now() < until,
+            "Original consumer could not resume after data leader recovery"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(delivery.offset(), offset);
+    assert_eq!(
+        consumer
+            .ack(&delivery, until)
+            .await
+            .unwrap()
+            .acknowledged_before,
+        offset + 1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quorum() {
+    let nodes = [
+        (11, Role::Metadata),
+        (12, Role::Metadata),
+        (13, Role::Metadata),
+        (21, Role::Storage),
+        (22, Role::Storage),
+        (23, Role::Storage),
+        (31, Role::Broker),
+        (41, Role::Gateway),
+    ];
+    let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.capacity.process_memory = tidemq::quota::Limits::default().process_memory;
+    }
+    let mut processes = BTreeMap::new();
+    for (node, _) in nodes {
+        processes.insert(node, spawn_process(&fixture, node).await);
+    }
+    for (node, process) in &mut processes {
+        wait_process(&fixture, *node, process).await;
+    }
+    let client = fixture.client(41).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    for offset in 0..4 {
+        assert_eq!(
+            durable_produce(&producer, b"quorum-persisted").await,
+            offset
+        );
+    }
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    for offset in 0..4 {
+        durable_consume(&consumer, offset).await;
+    }
+    let diagnostics = http(
+        fixture.configs.get(&21).unwrap().management_listen,
+        "/diagnostics",
+    )
+    .await;
+    let diagnostics: serde_json::Value =
+        serde_json::from_str(diagnostics.split_once("\r\n\r\n").unwrap().1).unwrap();
+    let leader = diagnostics
+        .get("data_groups")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .first()
+        .unwrap()
+        .get("leader")
+        .unwrap()
+        .as_u64()
+        .unwrap();
+    processes.get_mut(&leader).unwrap().kill().await.unwrap();
+    let single_failure = Instant::now();
+    assert_eq!(
+        durable_produce(&producer, b"after-one-storage-crash").await,
+        4
+    );
+    durable_consume(&consumer, 4).await;
+    eprintln!(
+        "Independent RF3 single-storage recovery completed in {:?}",
+        single_failure.elapsed()
+    );
+    let second = [21, 22, 23]
+        .into_iter()
+        .find(|node| *node != leader)
+        .unwrap();
+    processes.get_mut(&second).unwrap().kill().await.unwrap();
+    let result = producer
+        .produce(
+            vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"minority-unknown"),
+            }],
+            Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "A data minority must never issue a successful producer receipt"
+    );
+    let pending = producer.pending_batches().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let original = pending.first().unwrap();
+    let identity = (
+        original.operation_id(),
+        original.producer_epoch(),
+        original.first_sequence(),
+        original.digest().to_vec(),
+    );
+    for node in [leader, second] {
+        processes.insert(node, spawn_process(&fixture, node).await);
+    }
+    for node in [leader, second] {
+        wait_process(&fixture, node, processes.get_mut(&node).unwrap()).await;
+    }
+    let status = client
+        .admin()
+        .subscription_status(topic, 0, subscription, deadline())
+        .await
+        .unwrap();
+    assert_eq!(status.assignment.unwrap().acknowledged_before, 5);
+    let receipt = producer.retry(original, deadline()).await.unwrap();
+    assert_eq!(receipt.first_offset, 5);
+    assert_eq!(
+        identity,
+        (
+            original.operation_id(),
+            original.producer_epoch(),
+            original.first_sequence(),
+            original.digest().to_vec()
+        )
+    );
+    durable_consume(&consumer, 5).await;
+    client.close(deadline()).await;
+    for process in processes.values_mut() {
+        process.kill().await.unwrap();
+        let _ = process.wait().await.unwrap();
+    }
+    fixture.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -327,6 +770,53 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     )
     .await;
     assert!(metrics.contains("tidemq_producer_new_messages_total 1"));
+    for operation in ["Read", "Ack", "Control"] {
+        let prefix =
+            format!("tidemq_operations_total{{operation=\"{operation}\",outcome=\"Committed\"}} ");
+        assert!(
+            metrics
+                .lines()
+                .find_map(|line| line.strip_prefix(&prefix))
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
+        assert!(
+            metrics.contains(&format!("stage=\"Total\",operation=\"{operation}\""))
+                || metrics.contains(&format!("operation=\"{operation}\",stage=\"Total\""))
+        );
+    }
+    for stage in ["Grant", "Fence", "Recover", "Activate"] {
+        let prefix = format!(
+            "tidemq_ownership_transitions_total{{stage=\"{stage}\",outcome=\"Committed\"}} "
+        );
+        assert!(
+            metrics
+                .lines()
+                .find_map(|line| line.strip_prefix(&prefix))
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0
+        );
+    }
+    assert!(
+        metrics
+            .lines()
+            .filter(
+                |line| line.starts_with("tidemq_stage_duration_seconds_count")
+                    && line.contains("stage=\"Sync\"")
+            )
+            .any(|line| line
+                .split_whitespace()
+                .last()
+                .unwrap()
+                .parse::<u64>()
+                .unwrap()
+                > 0)
+    );
+
     assert_eq!(metrics.matches("# EOF").count(), 1);
     let diagnostics = http(
         fixture.running.get(&1).unwrap().management_address,
@@ -363,6 +853,7 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         (22, Role::Storage),
         (23, Role::Storage),
         (31, Role::Broker),
+        (32, Role::Broker),
         (41, Role::Gateway),
         (42, Role::Gateway),
     ];
@@ -418,6 +909,60 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         .await
         .unwrap();
     assert_eq!(status.assignment.unwrap().acknowledged_before, 8);
+    let control = fixture.running.get(&11).unwrap();
+    let partition = tidemq::metadata::PartitionKey {
+        topic_id: topic,
+        partition: 0,
+    };
+    let previous = control.route(partition, deadline()).await.unwrap();
+    let moved = control
+        .takeover(
+            partition,
+            32,
+            previous.epoch,
+            previous.generation,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved.owner_node, 32);
+    assert_eq!(moved.epoch, previous.epoch + 1);
+    assert_eq!(
+        producer
+            .produce(
+                vec![public::Message {
+                    key: Bytes::new(),
+                    body: Bytes::from_static(b"after-handoff")
+                }],
+                deadline()
+            )
+            .await
+            .unwrap()
+            .first_offset,
+        8
+    );
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let delivery = consumer.next().await.unwrap().unwrap();
+    assert_eq!(delivery.offset(), 8);
+    assert_eq!(
+        consumer
+            .ack(&delivery, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        9
+    );
+    let blockers = control.drain_node(12, &[], deadline()).await.unwrap();
+    assert!(blockers.metadata_role);
+    assert!(!blockers.durable_state_drained());
+    let drained = control.drain_node(31, &[], deadline()).await.unwrap();
+    assert!(drained.durable_state_drained());
+    fixture
+        .running
+        .get(&31)
+        .unwrap()
+        .wait_for_shutdown_request()
+        .await;
     second_client.close(deadline()).await;
     client.close(deadline()).await;
     drop(consumer);
@@ -430,9 +975,33 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
 async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
+    run_runtime_s3(&[(1, Role::Combined)], &[1], &[1]).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
+async fn actual_runtime_sdk_rf3_separate_leaders_archive_and_replay_s3() {
+    run_runtime_s3(
+        &[
+            (11, Role::Metadata),
+            (12, Role::Metadata),
+            (13, Role::Metadata),
+            (21, Role::Storage),
+            (22, Role::Storage),
+            (23, Role::Storage),
+            (31, Role::Broker),
+            (41, Role::Gateway),
+        ],
+        &[11, 12, 13],
+        &[21, 22, 23],
+    )
+    .await;
+}
+
+async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) {
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
-    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(nodes, metadata, storage).await;
     let credentials_file = fixture.directory.join("object-credentials.toml");
     let (access, secret) = rustfs.credentials();
     tokio::fs::write(
@@ -442,16 +1011,37 @@ async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
     .await
     .unwrap();
     private_file(credentials_file.clone()).await;
-    fixture.configs.get_mut(&1).unwrap().runtime.objects = Some(tidemq::runtime::ObjectConfig {
+    let objects = tidemq::runtime::ObjectConfig {
         endpoint: rustfs.endpoint().into(),
         region: "us-east-1".into(),
         bucket: "tidemq-sdk-test".into(),
         prefix: "runtime-test".into(),
         credentials_file,
         allow_http_loopback: true,
-    });
+    };
+    for config in fixture
+        .configs
+        .values_mut()
+        .filter(|config| config.role.stores_data())
+    {
+        config.runtime.objects = Some(objects.clone());
+    }
+    if nodes.len() == 1 {
+        for config in fixture.configs.values_mut() {
+            config.runtime.groups.push(GroupConfig {
+                group_id: 3,
+                voters: storage.to_vec(),
+                standby: Vec::new(),
+            });
+        }
+    }
+    let gateway = nodes
+        .iter()
+        .find(|(_, role)| role.serves_gateway())
+        .unwrap()
+        .0;
     fixture.start_all().await;
-    let client = fixture.client(1).await;
+    let client = fixture.client(gateway).await;
     let (topic, subscription) = create(&client).await;
     let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
         .await
@@ -466,31 +1056,45 @@ async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
         )
         .await
         .unwrap();
-    let partition = tidemq::metadata::PartitionKey {
-        topic_id: topic,
-        partition: 0,
-    };
-    fixture
-        .running
-        .get(&1)
-        .unwrap()
-        .archive(
-            2,
-            vec![tidemq::lifecycle::RangeRequest {
-                partition,
-                offsets: tidemq_protocol::state::OffsetRange::new(0, 1).unwrap(),
-            }],
-            deadline(),
+    let until = deadline();
+    loop {
+        let metrics = http(
+            fixture.running.get(&gateway).unwrap().management_address,
+            "/metrics",
         )
-        .await
-        .unwrap();
-    fixture
-        .running
-        .get(&1)
-        .unwrap()
-        .reclaim_local(partition, 1, deadline())
-        .await
-        .unwrap();
+        .await;
+        let reclaimed = metrics
+            .lines()
+            .find(|line| line.starts_with("tidemq_lifecycle_reclaimed_bytes_total "))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        // Gateways export process-local counters; inspect the actual data Leader's coordinator.
+        let mut reclaimed = reclaimed;
+        for node in storage {
+            let metrics = http(
+                fixture.running.get(node).unwrap().management_address,
+                "/metrics",
+            )
+            .await;
+            reclaimed = reclaimed.max(
+                metrics
+                    .lines()
+                    .find(|line| line.starts_with("tidemq_lifecycle_reclaimed_bytes_total "))
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(0),
+            );
+        }
+        if reclaimed > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "Default background archive did not publish, checkpoint and reclaim in time"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     let consumer = Consumer::claim(
         client.clone(),
         topic,
@@ -513,12 +1117,48 @@ async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
         1
     );
     let metrics = http(
-        fixture.running.get(&1).unwrap().management_address,
+        fixture.running.get(&gateway).unwrap().management_address,
         "/metrics",
     )
     .await;
     assert_eq!(metrics.matches("# EOF").count(), 1);
-    assert!(metrics.contains("tidemq_lifecycle_published_total 1"));
+    let mut published = false;
+    for node in storage {
+        let metrics = http(
+            fixture.running.get(node).unwrap().management_address,
+            "/metrics",
+        )
+        .await;
+        let names = metrics
+            .lines()
+            .filter_map(|line| line.strip_prefix("# HELP "))
+            .filter_map(|line| line.split_whitespace().next())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            names.len()
+        );
+        assert_eq!(metrics.matches("# EOF").count(), 1);
+        assert_eq!(
+            metrics
+                .lines()
+                .filter(|line| line.starts_with("# HELP tidemq_lifecycle_published "))
+                .count(),
+            1
+        );
+
+        published |= http(
+            fixture.running.get(node).unwrap().management_address,
+            "/metrics",
+        )
+        .await
+        .contains("tidemq_lifecycle_published_total 1");
+    }
+    assert!(published);
     client.close(deadline()).await;
     drop(consumer);
     drop(producer);
@@ -536,4 +1176,234 @@ async fn private_file(path: PathBuf) {
     }
     #[cfg(not(unix))]
     let _ = path;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn native_runtime_scaling_explicit_replacement_preserves_original_sdk_traffic_and_ack() {
+    exercise_runtime_scaling(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn native_runtime_scaling_automatically_repairs_failed_storage_with_original_sdk_handles() {
+    exercise_runtime_scaling(true).await;
+}
+
+async fn exercise_runtime_scaling(automatic: bool) {
+    let mut fixture = Fixture::new(
+        &[
+            (11, Role::Metadata),
+            (12, Role::Metadata),
+            (13, Role::Metadata),
+            (21, Role::Storage),
+            (22, Role::Storage),
+            (23, Role::Storage),
+            (24, Role::Storage),
+            (31, Role::Broker),
+            (41, Role::Gateway),
+        ],
+        &[11, 12, 13],
+        &[21, 22, 23],
+    )
+    .await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.groups.first_mut().unwrap().standby = vec![24];
+        // The replacement keeps the removed replica's availability zone.
+        config
+            .runtime
+            .peers
+            .iter_mut()
+            .find(|peer| peer.node_id == 24)
+            .unwrap()
+            .zone = "zone-2".into();
+    }
+    let mut storage_process = if automatic {
+        for (node, config) in &fixture.configs {
+            if *node != 23 {
+                fixture
+                    .running
+                    .insert(*node, RunningNode::start(config.clone()).await.unwrap());
+            }
+        }
+        let child = start_process(&fixture, 23).await;
+        fixture.wait_ready().await;
+        Some(child)
+    } else {
+        fixture.start_all().await;
+        None
+    };
+    wait_scaling_diagnostic(&fixture, 24, |value| {
+        value["placement_capacity_available"] == true
+    })
+    .await;
+    let client = fixture.client(41).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    let message = || public::Message {
+        key: Bytes::from_static(b"scaling-key"),
+        body: Bytes::from_static(b"scaling-body"),
+    };
+    producer
+        .produce(vec![message(), message()], deadline())
+        .await
+        .unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 2);
+    let first = consumer.next().await.unwrap().unwrap();
+    assert_eq!(
+        consumer
+            .ack(&first, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        1
+    );
+    let held = consumer.next().await.unwrap().unwrap();
+    assert_eq!(held.offset(), 1);
+    if let Some(child) = storage_process.as_mut() {
+        child.kill().await.unwrap();
+        assert!(!child.wait().await.unwrap().success());
+    }
+    let migration = async {
+        if automatic {
+            wait_scaling_diagnostic(&fixture, 21, scaling_group_is_replaced).await;
+            None
+        } else {
+            Some(
+                fixture
+                    .running
+                    .get(&11)
+                    .unwrap()
+                    .replace_replica(2, 23, 24, Instant::now() + Duration::from_secs(30))
+                    .await
+                    .unwrap(),
+            )
+        }
+    };
+    let traffic = async {
+        let ack = consumer.ack(&held, deadline()).await;
+        let produced = producer.produce(vec![message()], deadline()).await;
+        let read = consumer.fill(deadline()).await;
+        (ack, produced, read)
+    };
+    let (plan, (ack, produced, read)) = tokio::join!(migration, traffic);
+    if let Some(plan) = plan {
+        assert_eq!(plan.previous(), &[21, 22, 23].into());
+        assert_eq!(plan.target(), &[21, 22, 24].into());
+        let repeated = fixture
+            .running
+            .get(&11)
+            .unwrap()
+            .replace_replica(2, 23, 24, deadline())
+            .await
+            .unwrap();
+        assert_eq!(
+            repeated, plan,
+            "A completion retry must retain its original plan identity"
+        );
+    }
+    wait_scaling_diagnostic(&fixture, 21, scaling_group_is_replaced).await;
+    let ack = match ack {
+        Ok(ack) => ack,
+        Err(_) => consumer.ack(&held, deadline()).await.unwrap(),
+    };
+    assert_eq!(ack.acknowledged_before, 2);
+    let receipt = match produced {
+        Ok(receipt) => receipt,
+        Err(error) if error.outcome_unknown() => {
+            let pending = producer.pending_batches().await.unwrap();
+            assert_eq!(pending.len(), 1);
+            let batch = pending.first().unwrap();
+            let identity = (
+                batch.operation_id(),
+                batch.producer_epoch(),
+                batch.first_sequence(),
+                batch.digest().to_vec(),
+            );
+            let receipt = producer.retry(batch, deadline()).await.unwrap();
+            assert_eq!(
+                identity,
+                (
+                    batch.operation_id(),
+                    batch.producer_epoch(),
+                    batch.first_sequence(),
+                    batch.digest().to_vec()
+                )
+            );
+            receipt
+        }
+        Err(_) => producer.produce(vec![message()], deadline()).await.unwrap(),
+    };
+    assert_eq!(receipt.first_offset, 2);
+    assert!(producer.pending_batches().await.unwrap().is_empty());
+    let during = read.unwrap_or(0);
+    assert_eq!(during + consumer.fill(deadline()).await.unwrap(), 1);
+    let delivered = consumer.next().await.unwrap().unwrap();
+    assert_eq!(delivered.offset(), 2);
+    assert_eq!(delivered.body(), b"scaling-body");
+    assert_eq!(
+        consumer
+            .ack(&delivered, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        3
+    );
+    assert!(consumer.next().await.unwrap().is_none());
+    client.close(deadline()).await;
+    drop(consumer);
+    drop(producer);
+    drop(client);
+    fixture.close().await;
+}
+
+fn scaling_group_is_replaced(value: &serde_json::Value) -> bool {
+    value["data_groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|group| {
+            group["group_id"] == 2
+                && group["joint_configs"]
+                    .as_array()
+                    .is_some_and(|configs| configs.len() == 1)
+                && group["voters"].as_array().map(|voters| {
+                    voters
+                        .iter()
+                        .filter_map(serde_json::Value::as_u64)
+                        .collect::<std::collections::BTreeSet<_>>()
+                }) == Some([21, 22, 24].into())
+        })
+}
+
+async fn wait_scaling_diagnostic(
+    fixture: &Fixture,
+    node: u64,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) {
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let address = fixture.running.get(&node).unwrap().management_address;
+        let response = http(address, "/diagnostics").await;
+        let (_, body) = response.split_once("\r\n\r\n").unwrap();
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        if predicate(&value) {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "Scaling diagnostic did not satisfy its predicate: {value}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }

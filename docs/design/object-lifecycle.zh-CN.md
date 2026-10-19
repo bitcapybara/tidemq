@@ -71,4 +71,6 @@ Compaction 读取并校验原始历史，先生成完整替代对象，然后在
 
 `DataState::checkpointed_floor(partition)` 只在目录 floor checkpoint 成功后提交，可用于跳过已完成的 floor 屏障，避免周期性重建相同快照。Unknown 时未提交的最后一步会被重试。恢复摘要包含完整生命周期状态；快照校验同时要求 checkpointed floor 不越过唯一逻辑 floor，并核对 published/local reclaim 与生产者热索引。
 
+运行时可用 `with_checkpoint_candidates` 预配最多 128 个受信当前 voter/standby 的检查点提供者。每次发布或 floor 屏障只选新鲜元数据给出的当前稳定 voters，缺一个便拒绝；仍需每个 voter 的真实持久快照覆盖目标位置，完成前再次复查集合未变。候选列表不是权威，不能把非 voter 的快照计入证明。原 `with_checkpoints` 保持精确集合模式。
+
 构建 pack 前预留 72 MiB 原始记录/索引预算，最终 pack 仍独立持有其内存 permit；取消不能提前释放阻塞 worker 的内存所有权。临时文件和全量正文不进入日志。阶段事件默认 debug，重试失败 warn 每进程共享指标实例最多每秒一次，抑制计数通过 `tidemq_lifecycle_suppressed_logs_total` 可见。

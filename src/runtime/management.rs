@@ -19,6 +19,16 @@ struct Health {
     snapshot: RwLock<Value>,
 }
 
+#[derive(serde::Serialize)]
+struct CapacitySnapshot {
+    usage: crate::quota::Usage,
+    data_filesystem: crate::quota::disk::Snapshot,
+    reserved_storage_bytes: u64,
+    ack_state_logical_bytes: u64,
+    sample_started_at_age_ms: u64,
+    physical_scope: &'static str,
+}
+
 pub(crate) async fn start(
     service: Arc<Service>,
     mut shutdown: watch::Receiver<bool>,
@@ -64,22 +74,88 @@ pub(crate) async fn start(
 
 async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch::Receiver<bool>) {
     let sampler = crate::quota::memory::MemorySampler::default();
+    let physical = super::physical::PhysicalSampler::new(service.config.data_dir.clone());
+    let disk = crate::quota::disk::DiskSampler::new(service.config.data_dir.clone()).ok();
+    let pressure =
+        crate::scaling::PressureSampler::with_metrics(service.transport_metrics.clone()).ok();
     let mut ticker = tokio::time::interval(Duration::from_secs(1));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! { _ = shutdown.changed() => return, _ = ticker.tick() => {} }
-        let deadline = Instant::now() + Duration::from_millis(750);
-        let ready = !service.draining.load(Ordering::Acquire)
+        service.sample_ownership_validity();
+        let admitted = u64::from(service.config.memory.total_bytes)
+            .saturating_sub(u64::try_from(service.budget.available_bytes()).unwrap_or(u64::MAX));
+        service
+            .metrics
+            .admitted_bytes
+            .set(i64::try_from(admitted).unwrap_or(i64::MAX));
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(900);
+        let mut ready = !service.draining.load(Ordering::Acquire)
             && service
                 .authority
                 .query(Query::TopicName("__readiness".into()), deadline)
                 .await
                 .is_ok();
+        let memory = sampler.sample(deadline).await.ok();
+        let capacity = sample_capacity(
+            &service,
+            &physical,
+            disk.as_ref(),
+            memory,
+            started,
+            deadline,
+        )
+        .await
+        .ok();
+        if capacity.is_none() {
+            let _ = service.scaling.capacity.replace(None);
+        }
+        let pressure = if let Some(sampler) = &pressure {
+            sampler.sample(deadline).await.ok().flatten()
+        } else {
+            None
+        };
+        let placement = capacity
+            .as_ref()
+            .zip(pressure)
+            .and_then(|(capacity, pressure)| {
+                let allowed = service
+                    .quota
+                    .lock()
+                    .ok()?
+                    .admit(
+                        crate::quota::Work::BackgroundSnapshot,
+                        std::time::Instant::now(),
+                    )
+                    .is_ok();
+                if !allowed {
+                    return None;
+                }
+                Some(crate::scaling::Capacity {
+                    node_id: service.config.node_id,
+                    observed_at: started.into_std(),
+                    free_bytes: capacity.data_filesystem.available_bytes,
+                    reserved_bytes: capacity.reserved_storage_bytes,
+                    cpu_per_mille: pressure.cpu_per_mille,
+                    bytes_per_second: pressure.bytes_per_second,
+                    connections: pressure.active_connections,
+                    ack_bytes: capacity.ack_state_logical_bytes,
+                })
+            });
+        let placement_available = placement.is_some();
+        let _ = service.scaling.capacity.replace(placement);
+        if !service.data.is_empty() {
+            ready &= capacity.is_some();
+        }
+        for replica in service.data.values() {
+            if ready && service.require_leader(replica).is_ok() {
+                ready = tokio::time::timeout_at(deadline, replica.raft.ensure_linearizable())
+                    .await
+                    .is_ok_and(|result| result.is_ok());
+            }
+        }
         health.ready.store(ready, Ordering::Release);
-        let memory = sampler
-            .sample(Instant::now() + Duration::from_millis(250))
-            .await
-            .ok();
         let logging = service
             .log_health
             .lock()
@@ -112,12 +188,156 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         };
         let mut groups = Vec::new();
         for (group, replica) in &service.data {
-            let metrics = replica.raft.metrics();
-            let metrics = metrics.borrow();
-            groups.push(serde_json::json!({"group_id":group,"leader":metrics.current_leader,"term":metrics.current_term,"last_applied":metrics.last_applied,"voters":replica.voters}));
+            let mut native = {
+                let metrics = replica.raft.metrics();
+                let metrics = metrics.borrow();
+                serde_json::json!({"group_id":group,"leader":metrics.current_leader,"term":metrics.current_term,"last_applied":metrics.last_applied,"voters":metrics.membership_config.membership().voter_ids().take(4).collect::<Vec<_>>(),"joint_configs":metrics.membership_config.membership().get_joint_config(),"bootstrap_voters":replica.voters})
+            };
+            let storage = timeout_at(deadline, replica.log.diagnostics()).await.ok();
+            if let Some(fields) = native.as_object_mut() {
+                fields.insert("storage".into(), serde_json::json!(storage));
+            }
+            groups.push(native);
         }
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len()});
+        let metadata_storage = if let Some(replica) = &service.metadata {
+            timeout_at(deadline, replica.log.diagnostics()).await.ok()
+        } else {
+            None
+        };
+        let quota = service
+            .quota
+            .lock()
+            .ok()
+            .map(|quota| quota.diagnose(std::time::Instant::now()));
+        let placement_diagnostic = service
+            .scaling_diagnostic
+            .lock()
+            .ok()
+            .map(|value| value.clone());
+        let transport = service
+            .transport_metrics
+            .iter()
+            .map(|metrics| metrics.snapshot())
+            .collect::<Vec<_>>();
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic});
     }
+}
+
+async fn sample_capacity(
+    service: &Service,
+    physical: &super::physical::PhysicalSampler,
+    disk: Option<&crate::quota::disk::DiskSampler>,
+    memory: Option<crate::quota::memory::Snapshot>,
+    started: Instant,
+    deadline: Instant,
+) -> Result<CapacitySnapshot> {
+    let memory = memory.ok_or_else(Error::unavailable)?;
+    service
+        .quota
+        .lock()
+        .map_err(|_| Error::unavailable())?
+        .observe_container(memory, started.into_std());
+    let mut groups = Vec::new();
+    let mut reserved_storage_bytes = 0_u64;
+    let mut ack_state_logical_bytes = 0_u64;
+    let mut usage = crate::quota::Usage {
+        process_memory_bytes: memory.process_rss_bytes,
+        ..Default::default()
+    };
+    for (group, replica) in &service.data {
+        let data = replica
+            .state
+            .try_with_application(|state| {
+                if state.config().is_none()
+                    && state.ownership().is_none()
+                    && state.hot_messages() == 0
+                    && state.lifecycle().object_count() == 0
+                {
+                    Ok(crate::broker::CapacityUsage::default())
+                } else {
+                    state.capacity_usage()
+                }
+            })
+            .await
+            .map_err(|source| Error::operation("sample committed local capacity", source))?
+            .map_err(super::data::data_rejection)?;
+        usage.logical_backlog_bytes = usage
+            .logical_backlog_bytes
+            .checked_add(data.logical_backlog_upper_bytes)
+            .ok_or_else(Error::unavailable)?;
+        ack_state_logical_bytes = ack_state_logical_bytes
+            .checked_add(data.ack_state_logical_bytes)
+            .ok_or_else(Error::unavailable)?;
+        let diagnostics = replica.log.diagnostics().await;
+        reserved_storage_bytes = reserve_growth(reserved_storage_bytes, &diagnostics)?;
+        groups.push((*group, diagnostics.snapshot_log.is_some()));
+        if let Some(coordinator) = service.objects.get(group) {
+            let objects = coordinator
+                .capacity_usage(deadline.into_std())
+                .await
+                .map_err(|source| {
+                    Error::operation("sample authoritative object capacity", source)
+                })?;
+            usage.physical_storage_bytes = usage
+                .physical_storage_bytes
+                .checked_add(objects.registered_physical_upper_bytes)
+                .ok_or_else(Error::unavailable)?;
+            usage.shared_reclaim_lag_bytes = usage
+                .shared_reclaim_lag_bytes
+                .checked_add(objects.reclaim_lag_upper_bytes)
+                .ok_or_else(Error::unavailable)?;
+        }
+    }
+    if let Some(metadata) = &service.metadata {
+        let diagnostics = metadata.log.diagnostics().await;
+        reserved_storage_bytes = reserve_growth(reserved_storage_bytes, &diagnostics)?;
+        groups.push((
+            service.config.runtime.metadata_group,
+            diagnostics.snapshot_log.is_some(),
+        ));
+    }
+    let (local_bytes, disk) = tokio::join!(physical.sample(groups, deadline), async {
+        disk.ok_or_else(Error::unavailable)?
+            .sample(deadline)
+            .await
+            .map_err(|source| Error::operation("sample configured data filesystem", source))
+    });
+    let disk = disk?;
+    let local_bytes = local_bytes?;
+    usage.physical_storage_bytes = usage
+        .physical_storage_bytes
+        .checked_add(local_bytes)
+        .ok_or_else(Error::unavailable)?;
+    service
+        .quota
+        .lock()
+        .map_err(|_| Error::unavailable())?
+        .observe(usage, started.into_std());
+    *service
+        .disk_capacity
+        .lock()
+        .map_err(|_| Error::unavailable())? = Some((disk, started));
+    Ok(CapacitySnapshot {
+        usage,
+        data_filesystem: disk,
+        reserved_storage_bytes: reserved_storage_bytes.saturating_sub(local_bytes),
+        ack_state_logical_bytes,
+        sample_started_at_age_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        physical_scope: "local_replica_file_lengths_plus_registered_object_upper_bound",
+    })
+}
+
+fn reserve_growth(
+    previous: u64,
+    diagnostics: &crate::replication::StorageDiagnostics,
+) -> Result<u64> {
+    // One live and one atomic-replacement journal/snapshot can coexist within fixed replica bounds.
+    diagnostics
+        .journal_file_limit_bytes
+        .checked_add(diagnostics.snapshot_payload_limit_bytes as u64)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| previous.checked_add(bytes))
+        .ok_or_else(Error::unavailable)
 }
 
 async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>) -> Result<()> {

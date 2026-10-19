@@ -198,6 +198,36 @@ impl FrameSender {
         }
     }
 
+    /// Wait for native receipt before a deliberate endpoint shutdown; this is not a durable ACK.
+    pub async fn flush(&mut self, deadline: Instant) -> Result<()> {
+        if !self.usable {
+            return Err(Error::Poisoned);
+        }
+        self.usable = false;
+        let mut operation = LaneOperation {
+            lease: self.lease.clone(),
+            completed: false,
+        };
+        let result = timeout_at(deadline, self.stream.flush()).await;
+        match result {
+            Ok(Ok(())) => {
+                self.usable = true;
+                operation.completed = true;
+                Ok(())
+            }
+            Ok(Err(source)) => Err(Error::Stream {
+                operation: "flush lane",
+                source,
+            }),
+            Err(_) => {
+                add(&self.lease.state.metrics.deadlines, 1);
+                Err(Error::Deadline {
+                    operation: "flush lane",
+                })
+            }
+        }
+    }
+
     async fn enqueue(&mut self, frame: &Frame, deadline: Instant) -> Result<u32> {
         std::future::poll_fn(|context| self.stream.poll_send_ready(context))
             .await

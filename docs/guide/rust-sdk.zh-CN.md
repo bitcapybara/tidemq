@@ -30,7 +30,9 @@ let subscription = client.admin().create_subscription(
 
 每批保存 producer ID、epoch、first sequence、内容摘要、operation ID 和消息。每次网络尝试新建 request ID，重试保留业务身份与摘要。不同内容不能复用原序号。QUIC send、transport ACK 和取消均不等于 WAL/Raft 已提交。
 
-服务端明确返回 `Rejected + retryable` 的 `Unavailable` 或 `Fenced` 时，在原总期限和固定尝试次数内自动退避重试；控制、读与 ACK 也复用这一规则。每次只更新 request ID。未知生产结果仍保留 PendingBatch 供显式恢复；会话过期、权限失败和永久拒绝不自动换身份。已被明确拒绝但耗尽重试预算的批次仍占原序号，不能静默跳过。
+服务端明确返回 `Rejected + retryable` 的 `Unavailable` 或 `Fenced` 时，在原总期限和固定尝试次数内自动退避重试；控制、读与 ACK 也复用这一规则。每次只更新 request ID。生产在网络结果未知时也会在原期限与次数预算内重试原业务身份；最终仍未知则保留 PendingBatch 供显式恢复。会话过期、权限失败和永久拒绝不自动换身份。已被明确拒绝但耗尽重试预算的批次仍占原序号，不能静默跳过。
+
+有未决 RPC 时，物理连接按 `ClientConfig::liveness_timeout` 运行有界原生 PING 探测，只有新的 1-RTT packet number 被对端确认才证明连接仍活跃。探测失败才替换该失活连接；慢业务 handler 不会单凭应用响应时间而误杀健康共享 lane。`client.transport_metrics()` 可查询探测与失败计数；该检测不把网络 ACK 当业务提交。
 
 如果 `produce` 返回 `ProduceUnknown`，或其 future 在提交后被丢弃，原批次仍可从 `pending_batches()` 查询。按升序对最早未决批次调用 `retry`；恢复完成前拒绝新序号，不更换 producer 身份。原批次成功返回 `duplicate=true` 也是持久成功。`SequenceGap`、`ContentConflict`、权限/配额等保留类型化错误；被明确拒绝的批次仍阻止自动跨过该序号，必须按原身份处理。`SessionExpired` 或去重窗口过期不会自动重新注册。
 
@@ -42,16 +44,20 @@ let subscription = client.admin().create_subscription(
 
 `fill` 将消息放入有界队列；`next` 取出已排好顺序的可执行工作，`recv` 在队列为空时 fetch。`Delivery` 的 key、body 和 token 不出现在 Debug；payload/token 在最后一个 clone 释放前一直计入逻辑预算。队列满、宿主长期持有 Delivery 或未决批次时，会得到背压，不无限缓存。保留消息超过服务端 attempt 期限后，ACK 可能报告旧 token；它不会确认新的 attempt。
 
-1. 分配冻结排他边界 H。B 只接收 H 之前的数据，D 只接收 H 及之后的数据。
+1. 分配冻结排他边界 H。B 只接收 H 之前的数据，D 只接收 H 及之后的数据。持续消费 D 后，持久 ACK 前沿可超过 H；H 不随 ACK 推进，后续接收屏障与 owner 恢复仍接受这种合法状态。
 2. SDK 只合并实际成功入队的 offset 和服务端给出的持久 ACK 区间。缺少 offset 时不取最大值推进；最早块缺失时保留有限预取和头部容量。
 3. 连续接收前沿通过 C 上的 `ReceiveBarrier` 确认；回包未知可用相同 tuple/前沿重试。服务端确认后才启用 D。
 4. 接收屏障不修改持久业务 ACK。H 之前仍未 ACK 的消息可能需要 B 重投，因此启用 D 后，在冷 ACK 前沿未达到 H 时有限轮换 B/D；慢业务 ACK 不阻止 D 开始。
 
 `ack`/`ack_many` 必须在业务成功之后调用；同时绑定 topic、partition、subscription、session、cursor/assignment/delivery generation。ACK 使用 C connection 的短 Ack streams，并按条数与真实编码帧大小切批，保留 Core 控制流。重复旧 token 不会确认新 attempt。一次 `ack_many` 的早期切片可能已提交而后续切片失败；重试原 Delivery 切片是幂等操作。
 
-默认 `DeliveryOrdering::Parallel` 允许业务完成乱序。显式 `KeySerial` 对同 key 同时只给一个 handler，其他 key 可并行；`fail(delivery)` 保留失败工作并阻塞该 key，`retry_failed(offset)` 明确重试。不会把失败转换成自动 ACK、跳过或 DLQ。业务副作用仍须幂等或有业务 fence，SDK 不提供外部 exactly-once。
+默认 `DeliveryOrdering::Parallel` 允许业务完成乱序。显式 `KeySerial` 对同 key 同时只给一个 handler，其他 key 可并行；`fail(delivery)` 保留失败决定并阻塞该 key，`retry_failed(offset)` 明确重试。发生 owner fence 后只保留有上限的失败 offset 标记，释放 SDK 队列中的旧正文/token，等待新分配重新交付，仍不会偷偷解锁失败 key。新交付的连续接收证据建立后，其他 key 可以继续；显式 retry、持久 ACK 证据或显式 seek 才解除对应失败决定。不会把失败转换成自动 ACK、跳过或 DLQ。业务副作用仍须幂等或有业务 fence，SDK 不提供外部 exactly-once。
 
-`seek(offset, operation_id, deadline)` 使旧 token、排队数据与接收屏障失效，并重新 Claim。seek 结果未知或 future 取消后，本地停止派发；以相同 operation ID 重试 seek。收到 `Fenced`/`StaleGeneration` 后丢弃旧队列，调用 `reclaim` 重新核对分配；新代次迟到批次和旧 token 都不能推进新状态。普通 QUIC 断连自动重握手并保留原逻辑 session，无须重新 Claim。
+KeySerial 按配置的最多缓冲条数，为失败 offset 元数据在 consumer/client 字节准入中额外固定预留每条 40 B；此保守逻辑额度不等于 allocator 或 RSS。收到新一代对应消息后复用已有 key 调度表，不在每次 `next` 上扫描所有失败 key。宿主持有的旧 Delivery clone 仍按原字节额度计费，SDK 无法替宿主释放它。
+
+`seek(offset, operation_id, deadline)` 使旧 token、排队数据、失败决定与接收屏障失效，并重新 Claim。seek 结果未知或 future 取消后，本地停止派发；以相同 operation ID 重试 seek。`fill`/`recv` 收到 owner 的 `Fenced`/`StaleGeneration` 后，在传入的原总 deadline 和固定次数内查询最新 status 并 CAS 重新 Claim，Consumer clone 共享恢复后的状态。仅原逻辑 session 或未分配状态允许自动恢复；其他 session 已占用时返回 AssignmentBusy，自动路径不会复用配置中既有的 takeover consent 去抢占它。确需接管仍由业务明确调用 `reclaim`，并匹配 `replace_session_id`。
+
+新代次从持久 ACK frontier 重新建立连续 enqueue/冷热屏障，旧 Delivery 的代次和 token 保持原样；旧 ACK 不会被改写到新分配或自动成功。`ack`/`ack_many` 本身返回原操作错误，让下一次 `fill`/`recv` 恢复，业务须按幂等契约处理重交付。`next` 只访问本地队列，没有网络 deadline，不主动恢复。普通 QUIC 断连自动重握手并保留原逻辑 session；无法确定的 seek 不会被 owner 自动恢复分支擅自重解释。
 
 ## connection、stream 与公平准入
 

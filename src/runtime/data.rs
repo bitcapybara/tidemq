@@ -122,6 +122,7 @@ impl Service {
     ) -> Result<Arc<ControlLease>> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
+        self.authoritative_group(group, deadline).await?;
         let fence = replica
             .state
             .try_with_application(|state| {
@@ -186,6 +187,7 @@ impl Service {
         order: Option<SubmissionOrder>,
     ) -> Result<Frame> {
         let partition = route.partition;
+        self.admit_partition(partition, route.epoch, frame_kind(frame)?)?;
         let lease = self.data_lease(route.group_id, partition, deadline).await?;
         if lease.grant().epoch != route.epoch || lease.grant().owner_node != route.owner_node {
             return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
@@ -286,6 +288,7 @@ impl Service {
                 )
             }
             FrameKind::ProduceBatch => {
+                self.admit_produce()?;
                 let request: public::ProduceBatch = payload(frame, &self.config.protocol)?;
                 let digest = request
                     .content_digest
@@ -505,8 +508,19 @@ impl Service {
                         .state
                         .try_with_application(|state| {
                             state
-                                .producer(partition)
-                                .map(|producer| producer.committed_end())
+                                .subscriptions(partition)
+                                .and_then(|subscriptions| {
+                                    subscriptions.assignment(subscription).ok()
+                                })
+                                .filter(|assignment| {
+                                    assignment.session_id.as_bytes() == request.session_id.as_ref()
+                                })
+                                .map(|assignment| assignment.cold_before)
+                                .or_else(|| {
+                                    state
+                                        .producer(partition)
+                                        .map(|producer| producer.committed_end())
+                                })
                         })
                         .await
                         .map_err(|source| {
@@ -794,6 +808,7 @@ impl Service {
                 return Err(forbidden());
             }
         }
+        let started = Instant::now();
         let Value::Subscription(Some(record)) = self
             .authority
             .query(Query::Subscription(subscription), deadline)
@@ -820,10 +835,7 @@ impl Service {
         }
         cache.insert(
             subscription,
-            (
-                record.topic_id,
-                Instant::now() + std::time::Duration::from_secs(1),
-            ),
+            (record.topic_id, started + std::time::Duration::from_secs(1)),
         );
         Ok(())
     }
@@ -1180,7 +1192,7 @@ fn delivery_operation(operation: Id, offset: u64) -> Result<Id> {
     }
     wire::id(&bytes)
 }
-fn unix_millis() -> Result<u64> {
+pub(crate) fn unix_millis() -> Result<u64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|source| Error::operation("read wall clock", source))?;
@@ -1191,6 +1203,7 @@ pub(crate) fn data_rejection(reason: DataRejection) -> Error {
     match reason {
         DataRejection::Producer(reason) => producer_error(reason),
         DataRejection::Subscription(reason) => subscription_error(reason),
+        DataRejection::Retention(_) | DataRejection::Lifecycle(_) => Error::unavailable(),
         DataRejection::Fence(_) => Error::reject(ErrorCode::Fenced, Outcome::Rejected, true),
         DataRejection::PartitionMissing | DataRejection::Uninitialized => Error::unavailable(),
         DataRejection::PartitionCapacity => {
