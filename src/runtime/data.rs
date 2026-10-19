@@ -187,6 +187,7 @@ impl Service {
         order: Option<SubmissionOrder>,
     ) -> Result<Frame> {
         let partition = route.partition;
+        self.admit_partition(partition, route.epoch, frame_kind(frame)?)?;
         let lease = self.data_lease(route.group_id, partition, deadline).await?;
         if lease.grant().epoch != route.epoch || lease.grant().owner_node != route.owner_node {
             return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));

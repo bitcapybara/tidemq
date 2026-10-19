@@ -2,6 +2,7 @@
 
 mod config;
 mod data;
+mod drain;
 mod error;
 mod maintenance;
 mod management;

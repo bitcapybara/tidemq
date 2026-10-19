@@ -89,6 +89,9 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         )
         .await
         .ok();
+        if capacity.is_none() {
+            let _ = service.scaling.capacity.replace(None);
+        }
         if !service.data.is_empty() {
             ready &= capacity.is_some();
         }
@@ -141,7 +144,12 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             .lock()
             .ok()
             .map(|quota| quota.diagnose(std::time::Instant::now()));
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota});
+        let transport = service
+            .transport_metrics
+            .iter()
+            .map(|metrics| metrics.snapshot())
+            .collect::<Vec<_>>();
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"transport":transport});
     }
 }
 

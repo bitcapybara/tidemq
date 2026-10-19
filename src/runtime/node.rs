@@ -87,6 +87,9 @@ impl RunningNode {
             )
             .map_err(|source| Error::operation("bind internal QUIC client", source))?,
         );
+        let mut transport_metrics = vec![client.metrics.clone()];
+        let repair = crate::scaling::RepairBudget::new(crate::scaling::RepairLimits::default())
+            .map_err(|source| Error::operation("initialize node repair budget", source))?;
         let mut metrics = Metrics::default();
         let dispatch = Arc::new(DispatchMetrics::default());
         dispatch.register(metrics.registry_mut());
@@ -139,7 +142,8 @@ impl RunningNode {
                 budget.clone(),
                 metrics.operation(Operation::Control),
             )
-            .map_err(|source| Error::operation("create shared internal peer pool", source))?,
+            .map_err(|source| Error::operation("create shared internal peer pool", source))?
+            .with_repair_budget(repair.clone()),
         );
         let rpc = PeerRpc {
             pool: pool.clone(),
@@ -225,6 +229,10 @@ impl RunningNode {
         .await?;
         let external_address = external.as_ref().map(Server::local_addr);
         let internal_address = internal.local_addr();
+        transport_metrics.push(internal.metrics.clone());
+        if let Some(external) = &external {
+            transport_metrics.push(external.metrics.clone());
+        }
         metrics
             .registry_mut()
             .sub_registry_with_prefix("tidemq_internal_server")
@@ -235,6 +243,7 @@ impl RunningNode {
                 .sub_registry_with_prefix("tidemq_external_server")
                 .register_collector(Box::new(external.metrics.clone()));
         }
+        let (shutdown, stopped) = watch::channel(false);
         let service = Arc::new(Service::new(
             config,
             cluster,
@@ -250,8 +259,10 @@ impl RunningNode {
             metrics,
             runtime_metrics,
             quota,
+            repair,
+            transport_metrics,
+            shutdown.clone(),
         )?);
-        let (shutdown, stopped) = watch::channel(false);
         let dispatcher = DispatchConfig {
             protocol: service.config.protocol.clone(),
             ..DispatchConfig::default()
@@ -299,6 +310,22 @@ impl RunningNode {
     }
 
     /// Trusted local control entry point; public clients cannot submit ownership commands.
+    pub async fn route(
+        &self,
+        partition: crate::metadata::PartitionKey,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::metadata::Route> {
+        self.service.route(partition, deadline).await
+    }
+
+    /// Trusted metadata service command that closes a Gateway through its owned shutdown path.
+    pub async fn reconnect_gateway(&self, node: u64, deadline: tokio::time::Instant) -> Result<()> {
+        crate::scaling::DrainActions::reconnect_gateway(self.service.as_ref(), node, deadline)
+            .await
+            .map_err(|source| Error::operation("request gateway reconnect", source))
+    }
+
+    /// Trusted local control entry point; public clients cannot submit ownership commands.
     pub async fn takeover(
         &self,
         partition: crate::metadata::PartitionKey,
@@ -307,15 +334,55 @@ impl RunningNode {
         expected_route_generation: u64,
         deadline: tokio::time::Instant,
     ) -> Result<crate::metadata::Route> {
-        self.service
-            .execute_takeover(
+        crate::scaling::DrainPlan::handoff(
+            self.service.as_ref(),
+            &crate::scaling::Handoff {
                 partition,
                 target_owner,
                 expected_epoch,
                 expected_route_generation,
-                deadline,
-            )
+            },
+            &self.service.scaling.metrics,
+            deadline,
+        )
+        .await
+        .map_err(|source| Error::operation("handoff partition through planned drain", source))
+    }
+
+    pub async fn wait_for_shutdown_request(&self) {
+        let mut stopped = self.shutdown.subscribe();
+        if !*stopped.borrow() {
+            let _ = stopped.changed().await;
+        }
+    }
+
+    /// Trusted metadata-node control entry point; resumes the same persisted replacement plan.
+    pub async fn replace_replica(
+        &self,
+        group: u64,
+        removed: u64,
+        added: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::scaling::MembershipPlan> {
+        if !self.service.config.role.stores_metadata() {
+            return Err(Error::invalid(
+                "Replica replacement requires a metadata service identity",
+            ));
+        }
+        let coordinator = crate::scaling::remote::Coordinator::new(
+            self.service.scaling.rpc.clone(),
+            self.service.config.runtime.metadata_group,
+        )
+        .map_err(|source| Error::operation("create replica replacement coordinator", source))?;
+        let plan = coordinator
+            .plan(self.service.cluster, group, removed, added, deadline)
             .await
+            .map_err(|source| Error::operation("plan replica replacement", source))?;
+        coordinator
+            .execute(&plan, deadline)
+            .await
+            .map_err(|source| Error::operation("execute replica replacement", source))?;
+        Ok(plan)
     }
 
     /// Archive committed ranges through the authenticated lifecycle service and durable manifest.

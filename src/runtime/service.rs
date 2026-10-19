@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,10 +48,14 @@ pub(crate) struct Service {
     pub budget: MemoryBudget,
     pub metrics: Metrics,
     pub runtime_metrics: super::telemetry::RuntimeMetrics,
+    pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
+    pub scaling: super::scaling::RuntimeScaling,
     pub quota: std::sync::Mutex<crate::quota::Quota>,
     pub disk_capacity: std::sync::Mutex<Option<(crate::quota::disk::Snapshot, Instant)>>,
     pub log_health: std::sync::Mutex<Option<crate::observability::logging::LogHealth>>,
     pub draining: AtomicBool,
+    pub partition_drains: std::sync::Mutex<BTreeMap<PartitionKey, u64>>,
+    pub shutdown_requested: watch::Sender<bool>,
     pub routes: RwLock<BTreeMap<PartitionKey, CachedRoute>>,
     pub leaders: RwLock<BTreeMap<u64, (u64, Instant)>>,
     pub groups: RwLock<BTreeMap<u64, (DataGroup, Instant)>>,
@@ -75,10 +80,22 @@ impl Service {
         delivery_key: [u8; 32],
         budget: MemoryBudget,
         producer: ProducerMetrics,
-        metrics: Metrics,
+        mut metrics: Metrics,
         runtime_metrics: super::telemetry::RuntimeMetrics,
         quota: crate::quota::Quota,
+        repair: crate::scaling::RepairBudget,
+        transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
+        shutdown_requested: watch::Sender<bool>,
     ) -> Result<Self> {
+        let scaling = super::scaling::RuntimeScaling::new(
+            &config,
+            cluster,
+            metadata.as_ref(),
+            &data,
+            rpc.clone(),
+            repair,
+            metrics.registry_mut(),
+        )?;
         let mut brokers = BTreeMap::new();
         for (group, replica) in &data {
             let group = config.runtime.group(*group)?;
@@ -120,10 +137,14 @@ impl Service {
             budget,
             metrics,
             runtime_metrics,
+            transport_metrics,
+            scaling,
             quota: std::sync::Mutex::new(quota),
             disk_capacity: std::sync::Mutex::new(None),
             log_health: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
+            partition_drains: std::sync::Mutex::new(BTreeMap::new()),
+            shutdown_requested,
             routes: RwLock::new(BTreeMap::new()),
             leaders: RwLock::new(BTreeMap::new()),
             groups: RwLock::new(BTreeMap::new()),
@@ -379,6 +400,7 @@ impl Service {
         let route = self
             .authorize_partition(&access, partition, deadline)
             .await?;
+        self.admit_partition(partition, route.epoch, kind)?;
         let mut forwarded = frame.clone();
         super::data::set_owner_epoch(
             &mut forwarded,
@@ -492,6 +514,38 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::drain::KIND => {
+                drop(order);
+                if !matches!(peer.role.as_str(), "metadata" | "combined")
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.drain_command(group, &request.body, deadline).await?
+            }
+            super::scaling::KIND => {
+                drop(order);
+                let query = crate::scaling::remote::decode_query(&request.body)
+                    .map_err(|source| Error::operation("decode closed scaling request", source))?;
+                if query.group_id(self.config.runtime.metadata_group) != group
+                    || frame.traffic_class != i32::from(query.traffic_class())
+                {
+                    return Err(forbidden());
+                }
+                let reply = self
+                    .scaling
+                    .service
+                    .handle(peer, query, deadline)
+                    .await
+                    .map_err(|source| {
+                        Error::operation("execute authenticated scaling request", source)
+                    })?;
+                Bytes::from(
+                    crate::scaling::remote::encode_reply(&reply).map_err(|source| {
+                        Error::operation("encode closed scaling response", source)
+                    })?,
+                )
+            }
             wire::LEADER => {
                 drop(order);
                 if frame.traffic_class != i32::from(TrafficClass::Control) {
