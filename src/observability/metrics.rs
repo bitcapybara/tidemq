@@ -93,7 +93,7 @@ pub struct OperationMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let mut registry = Registry::with_prefix("tidemq");
+        let mut registry = Registry::default();
         let results = Family::<ResultLabels, Counter>::default();
         let durations = Family::<DurationLabels, Histogram>::new_with_constructor(|| {
             Histogram::new([
@@ -134,17 +134,17 @@ impl Default for Metrics {
             );
         }
         registry.register(
-            "operations",
+            "tidemq_operations",
             "Completed logical operations by outcome.",
             results,
         );
         registry.register(
-            "stage_duration_seconds",
+            "tidemq_stage_duration_seconds",
             "Local monotonic stage duration in seconds.",
             durations,
         );
         registry.register(
-            "admitted_bytes",
+            "tidemq_admitted_bytes",
             "Application bytes held by admission permits.",
             admitted_bytes.clone(),
         );
@@ -157,6 +157,11 @@ impl Default for Metrics {
 }
 
 impl Metrics {
+    /// Register process collectors once before sharing the metrics with workers.
+    pub fn registry_mut(&mut self) -> &mut Registry {
+        &mut self.registry
+    }
+
     pub fn operation(&self, operation: Operation) -> Option<Arc<OperationMetrics>> {
         self.handles.get(&operation).cloned()
     }
@@ -191,7 +196,8 @@ mod tests {
 
     #[test]
     fn registry_has_finite_series_and_aggregatable_stage_histograms() {
-        let metrics = Metrics::default();
+        let mut metrics = Metrics::default();
+        crate::server::DispatchMetrics::default().register(metrics.registry_mut());
         let handles = metrics.operation(Operation::Produce).unwrap();
         handles.result(Outcome::Committed);
         handles.observe(Stage::Commit, 0.002);
@@ -200,6 +206,9 @@ mod tests {
         assert!(text.contains("tidemq_stage_duration_seconds_bucket"));
         assert!(text.contains("outcome=\"Committed\""));
         assert!(!text.contains("request_id"));
+        assert!(text.contains("tidemq_dispatch_handler_errors_total 0"));
+        assert!(!text.contains("tidemq_tidemq"));
+        assert_eq!(text.matches("# EOF").count(), 1);
         assert!(text.lines().count() < 2_000);
     }
 }

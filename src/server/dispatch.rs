@@ -16,6 +16,8 @@ use crate::transport::{
     Authorization, FramedStream, ReceivedFrame, Server, Session, StreamPurpose,
 };
 
+use super::telemetry::{DispatchMetrics, HandlerGauge};
+
 pub trait WireService: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
     fn handle(
@@ -79,6 +81,7 @@ struct Dispatcher {
     data: ClassQueue,
     budget: MemoryBudget,
     config: DispatchConfig,
+    health: Arc<DispatchMetrics>,
 }
 
 impl ClassQueue {
@@ -133,6 +136,7 @@ impl Dispatcher {
             memory,
             order,
         };
+        self.health.admitted.inc();
         queue
             .sender
             .try_send(job)
@@ -146,6 +150,7 @@ pub async fn run<S: WireService>(
     service: Arc<S>,
     config: DispatchConfig,
     budget: MemoryBudget,
+    health: Arc<DispatchMetrics>,
     mut shutdown: watch::Receiver<bool>,
 ) -> crate::Result<()> {
     validate(&config)?;
@@ -158,6 +163,7 @@ pub async fn run<S: WireService>(
         data,
         budget,
         config,
+        health,
     });
     let mut sessions = JoinSet::new();
     let mut handlers = JoinSet::new();
@@ -168,9 +174,9 @@ pub async fn run<S: WireService>(
             changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break } },
             _ = sessions.join_next(), if !sessions.is_empty() => {},
             _ = handlers.join_next(), if !handlers.is_empty() => {},
-            Some(job) = core_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone())); },
-            Some(job) = ack_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone())); },
-            Some(job) = data_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone())); },
+            Some(job) = core_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
+            Some(job) = ack_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
+            Some(job) = data_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
             session = server.accept() => match session {
                 Some(session) => { sessions.spawn(serve_session(session, dispatcher.clone(), shutdown.clone())); },
                 None => break,
@@ -190,6 +196,7 @@ pub async fn run<S: WireService>(
                 service.clone(),
                 job,
                 dispatcher.config.protocol.clone(),
+                dispatcher.health.clone(),
             ));
         }
     }
@@ -235,7 +242,14 @@ fn validate(config: &DispatchConfig) -> crate::Result<()> {
     Ok(())
 }
 
-async fn execute<S: WireService>(service: Arc<S>, job: Job, limits: ProtocolLimits) {
+async fn execute<S: WireService>(
+    service: Arc<S>,
+    job: Job,
+    limits: ProtocolLimits,
+    health: Arc<DispatchMetrics>,
+) {
+    health.active_handlers.inc();
+    let _active = HandlerGauge(health.active_handlers.clone());
     let Job {
         peer,
         frame,
@@ -251,8 +265,11 @@ async fn execute<S: WireService>(service: Arc<S>, job: Job, limits: ProtocolLimi
         match service.handle(peer, frame.frame(), deadline, order).await {
             Ok(response) => response,
             Err(error) => {
-                let error = anyhow::Error::new(error);
-                tracing::warn!(event_code = "wire_handler_failed", error = %format_args!("{error:#}"));
+                health.handler_errors.inc();
+                if health.may_log(std::time::Instant::now()) {
+                    let error = anyhow::Error::new(error);
+                    tracing::warn!(event_code = "wire_handler_failed", error = %format_args!("{error:#}"));
+                }
                 failure(frame.frame(), &limits)
             }
         }
@@ -364,6 +381,7 @@ async fn serve_stream(
                     ErrorCode::QuotaExceeded,
                 )
             {
+                dispatcher.health.rejected.inc();
                 let _ = replies.try_send(Reply {
                     frame: response,
                     deadline: frame.deadline(),

@@ -1,13 +1,59 @@
 use std::fmt;
 
 use openraft::raft::AppendEntriesRequest;
-use openraft::{Entry, LogId, Vote};
+use openraft::{BasicNode, Entry, LogId, SnapshotMeta, Vote};
 use serde::de::{DeserializeOwned, Error as _, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::replication::{Application, TypeConfig};
 
-use super::{Error, MAX_APPEND_ENTRIES, Result};
+use super::{Error, MAX_APPEND_ENTRIES, MAX_SNAPSHOT_CHUNK_BYTES, Result};
+
+#[derive(Deserialize)]
+pub(super) struct Snapshot {
+    pub vote: Vote<u64>,
+    pub meta: SnapshotMeta<u64, BasicNode>,
+    pub offset: u64,
+    #[serde(deserialize_with = "bounded_chunk")]
+    pub data: Vec<u8>,
+    pub done: bool,
+}
+
+impl Snapshot {
+    pub fn into_request<A: Application>(
+        self,
+    ) -> openraft::raft::InstallSnapshotRequest<TypeConfig<A>> {
+        openraft::raft::InstallSnapshotRequest {
+            vote: self.vote,
+            meta: self.meta,
+            offset: self.offset,
+            data: self.data,
+            done: self.done,
+        }
+    }
+}
+
+fn bounded_chunk<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<u8>, D::Error> {
+    struct Chunk;
+    impl<'de> Visitor<'de> for Chunk {
+        type Value = Vec<u8>;
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a bounded snapshot chunk")
+        }
+        fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> std::result::Result<Vec<u8>, E> {
+            if bytes.len() > MAX_SNAPSHOT_CHUNK_BYTES {
+                return Err(E::custom("snapshot chunk exceeds the wire limit"));
+            }
+            let mut result = Vec::new();
+            result.try_reserve_exact(bytes.len()).map_err(E::custom)?;
+            result.extend_from_slice(bytes);
+            Ok(result)
+        }
+    }
+    deserializer.deserialize_bytes(Chunk)
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
@@ -126,6 +172,31 @@ mod tests {
     struct Limited {
         #[serde(deserialize_with = "bounded_entries")]
         values: Vec<u64>,
+    }
+
+    #[derive(Deserialize)]
+    struct Chunk {
+        #[serde(deserialize_with = "bounded_chunk")]
+        bytes: Vec<u8>,
+    }
+
+    #[test]
+    fn snapshot_chunk_is_bounded_before_copying() {
+        let valid = encode(
+            &vec![7_u8; MAX_SNAPSHOT_CHUNK_BYTES],
+            MAX_SNAPSHOT_CHUNK_BYTES + 16,
+        )
+        .unwrap();
+        assert_eq!(
+            decode::<Chunk>(&valid).unwrap().bytes.len(),
+            MAX_SNAPSHOT_CHUNK_BYTES
+        );
+        let excessive = encode(
+            &vec![7_u8; MAX_SNAPSHOT_CHUNK_BYTES + 1],
+            MAX_SNAPSHOT_CHUNK_BYTES + 16,
+        )
+        .unwrap();
+        assert!(decode::<Chunk>(&excessive).is_err());
     }
 
     #[test]

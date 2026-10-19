@@ -131,7 +131,7 @@ impl<A: Application> QuicNetwork<A> {
             })?;
         let result: std::result::Result<_, RaftError<u64>> = self
             .pool
-            .call(self.target, frame, deadline)
+            .call(self.target, frame, deadline, self.group_id)
             .await
             .map_err(unreachable)?;
         result.map_err(|source| RemoteError::new(self.target, source).into())
@@ -159,7 +159,7 @@ impl<A: Application> RaftNetwork<TypeConfig<A>> for QuicNetwork<A> {
             .map_err(unreachable)?;
         let result: std::result::Result<_, RaftError<u64>> = self
             .pool
-            .call(self.target, frame, deadline)
+            .call(self.target, frame, deadline, self.group_id)
             .await
             .map_err(unreachable)?;
         result.map_err(|source| RemoteError::new(self.target, source).into())
@@ -206,7 +206,7 @@ impl<A: Application> RaftNetwork<TypeConfig<A>> for QuicNetwork<A> {
             .map_err(unreachable)?;
         let result: std::result::Result<_, RaftError<u64, InstallSnapshotError>> = self
             .pool
-            .call(self.target, frame, deadline)
+            .call(self.target, frame, deadline, self.group_id)
             .await
             .map_err(unreachable)?;
         result.map_err(|source| RemoteError::new(self.target, source).into())

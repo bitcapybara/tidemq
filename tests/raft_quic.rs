@@ -279,6 +279,7 @@ impl Cluster {
                 service,
                 DispatchConfig::default(),
                 budget,
+                Arc::new(tidemq::server::DispatchMetrics::default()),
                 this.shutdown.subscribe(),
             )));
             this.start(id).await;

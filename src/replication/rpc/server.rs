@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use openraft::raft::{InstallSnapshotRequest, VoteRequest};
+use openraft::raft::VoteRequest;
 use prost::Message;
 use serde::Serialize;
 use tidemq_protocol::common::{Frame, FrameKind, TrafficClass};
@@ -10,7 +10,7 @@ use tidemq_protocol::framing::{
 use tidemq_protocol::internal::{RaftRequest, RaftResult, SnapshotChunk};
 use tidemq_protocol::{Id, ProtocolLimits};
 
-use crate::replication::{Application, Raft, TypeConfig};
+use crate::replication::{Application, Raft};
 use crate::transport::{Authorization, NodeGrant};
 
 use super::{Error, MAX_SNAPSHOT_CHUNK_BYTES, Result, codec};
@@ -193,7 +193,7 @@ impl<A: Application> RaftService<A> {
                 reason: "snapshot RPC identity does not match its envelope",
             });
         }
-        let rpc: InstallSnapshotRequest<TypeConfig<A>> = codec::decode(&chunk.data)?;
+        let rpc: codec::Snapshot = codec::decode(&chunk.data)?;
         validate_sender(peer, rpc.vote.leader_id.node_id)?;
         if rpc.data.len() > MAX_SNAPSHOT_CHUNK_BYTES
             || rpc.offset != chunk.offset
@@ -204,7 +204,7 @@ impl<A: Application> RaftService<A> {
                 reason: "snapshot chunk exceeds its bounds or disagrees with its envelope",
             });
         }
-        let response = self.raft.install_snapshot(rpc).await;
+        let response = self.raft.install_snapshot(rpc.into_request::<A>()).await;
         self.response(frame, &response)
     }
 

@@ -18,10 +18,23 @@ use crate::transport::{Client, ClientCredentials, PeerTarget};
 
 use super::{Error, Result, codec};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct NetworkConfig {
     pub protocol: ProtocolLimits,
     pub rpc: RpcConfig,
+    pub replication_lanes: usize,
+    pub bulk_lanes: usize,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            protocol: ProtocolLimits::default(),
+            rpc: RpcConfig::default(),
+            replication_lanes: 4,
+            bulk_lanes: 2,
+        }
+    }
 }
 
 type Slot = Arc<AsyncMutex<Option<RpcClient>>>;
@@ -61,7 +74,12 @@ impl PeerPool {
                 reason: "Raft peers require internal credentials",
             });
         };
-        if *node_id == 0 || peers.len() > 128 {
+        if *node_id == 0
+            || peers.len() > 128
+            || [config.replication_lanes, config.bulk_lanes]
+                .into_iter()
+                .any(|count| count == 0 || count > 64)
+        {
             return Err(Error::Configuration {
                 reason: "Raft local node or peer count is invalid",
             });
@@ -125,9 +143,15 @@ impl PeerPool {
             .connect(peer.clone(), &self.credentials, class, deadline)
             .await
             .map_err(|source| Error::Transport { source })?;
-        let rpc = RpcClient::from_session(session, self.config.rpc.clone())
-            .await
-            .map_err(|source| Error::Rpc { source })?;
+        let lanes = if class == TrafficClass::Replication {
+            self.config.replication_lanes
+        } else {
+            self.config.bulk_lanes
+        };
+        let rpc =
+            RpcClient::from_session_with_lanes(session, self.config.rpc.clone(), lanes, deadline)
+                .await
+                .map_err(|source| Error::Rpc { source })?;
         *slot = Some(rpc.clone());
         Ok(rpc)
     }
@@ -173,27 +197,35 @@ impl PeerPool {
         target: u64,
         frame: Frame,
         deadline: Instant,
+        affinity: u64,
     ) -> Result<T> {
         let class = TrafficClass::try_from(frame.traffic_class).map_err(|_| Error::Invalid {
             reason: "invalid outgoing Raft class",
         })?;
         let id = frame.request_id.clone();
         let started = Instant::now();
-        let rpc = self.connection(target, class, deadline).await?;
-        let received = rpc
-            .call(frame, deadline)
-            .await
-            .map_err(|source| Error::Rpc { source });
+        let received = async {
+            let rpc = self.connection(target, class, deadline).await?;
+            let received = if class == TrafficClass::Control {
+                rpc.call(frame, deadline).await
+            } else {
+                rpc.call_affinity(frame, deadline, affinity).await
+            }
+            .map_err(|source| Error::Rpc { source })?;
+            Ok::<_, Error>((rpc, received))
+        }
+        .await;
         if let Some(metrics) = &self.metrics {
             metrics.observe(Stage::Replicate, started.elapsed().as_secs_f64());
         }
-        let received = received?;
+        let (rpc, received) = received?;
         let frame = received.frame();
         if frame.kind != i32::from(FrameKind::RaftResult)
             || frame.traffic_class != i32::from(class)
             || frame.request_id != id
             || frame.operation_id != id
         {
+            rpc.close(Instant::now()).await;
             return Err(Error::Invalid {
                 reason: "Raft response does not match its request",
             });
@@ -201,6 +233,7 @@ impl PeerPool {
         let result: RaftResult = decode_payload(frame.payload.clone(), &self.config.protocol)
             .map_err(|source| Error::Protocol { source })?;
         if result.rpc_id != id {
+            rpc.close(Instant::now()).await;
             return Err(Error::Invalid {
                 reason: "Raft inner response identity does not match",
             });

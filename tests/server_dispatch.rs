@@ -148,6 +148,7 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
             ..Default::default()
         },
         budget,
+        Arc::new(tidemq::server::DispatchMetrics::default()),
         receiver,
     ));
     let client = Client::bind(
