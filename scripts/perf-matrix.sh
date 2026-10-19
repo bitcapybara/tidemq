@@ -21,4 +21,6 @@ done
 for scenario in small replay; do
   bash "$root/scripts/perf-run.sh" "$builds/system" "$output/system-$scenario-recommended-lanes2" "$scenario" recommended 2 || status=1
 done
+# Optional exporter cost is isolated from the original three log/metric modes.
+bash "$root/scripts/perf-run.sh" "$builds/system" "$output/system-small-recommended-otlp-lanes4" small recommended-otlp 4 || status=1
 exit "$status"
