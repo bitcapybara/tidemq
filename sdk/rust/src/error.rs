@@ -57,6 +57,18 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn retry_rejected(&self) -> bool {
+        matches!(
+            self,
+            Self::Remote {
+                code: ErrorCode::Unavailable | ErrorCode::Fenced,
+                outcome: Outcome::Rejected,
+                retryable: true,
+                ..
+            }
+        )
+    }
+
     pub fn outcome_unknown(&self) -> bool {
         match self {
             Self::ProduceUnknown { .. } | Self::RegistrationUnknown { .. } => true,

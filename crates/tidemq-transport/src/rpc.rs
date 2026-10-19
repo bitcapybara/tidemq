@@ -665,7 +665,7 @@ mod tests {
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
             session.close();
-            server.shutdown().await;
+            server.shutdown().await.unwrap();
         });
         let session = client
             .connect(

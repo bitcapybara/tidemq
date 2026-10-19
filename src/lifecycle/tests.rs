@@ -107,6 +107,7 @@ fn canceled_unseen_intent_cannot_be_authorized_after_snapshot_roundtrip() {
     assert_eq!(
         catalog.apply(CatalogCommand::Pin(PinRecord {
             id: Id::random().unwrap(),
+            group_id: 9,
             objects: vec![id],
             ttl_millis: 50
         })),
@@ -114,6 +115,63 @@ fn canceled_unseen_intent_cannot_be_authorized_after_snapshot_roundtrip() {
     );
     catalog.validate().unwrap();
     restored.validate().unwrap();
+}
+
+#[test]
+fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
+    let object = plan(Id::random().unwrap(), vec![], 0);
+    let object_id = object.descriptor.identity.object_id;
+    let mut catalog = Catalog::default();
+    catalog.apply(CatalogCommand::Register(object)).unwrap();
+    catalog
+        .apply(CatalogCommand::Uploaded { object_id })
+        .unwrap();
+    catalog
+        .apply(CatalogCommand::Publish { object_id })
+        .unwrap();
+    let mut pins = Vec::new();
+    for _ in 0..3 {
+        let pin = PinRecord {
+            id: Id::random().unwrap(),
+            group_id: 9,
+            objects: vec![object_id],
+            ttl_millis: 10,
+        };
+        catalog.apply(CatalogCommand::Pin(pin.clone())).unwrap();
+        pins.push(pin);
+    }
+    pins.sort_by_key(|pin| pin.id);
+    let first = catalog.pins_page(9, None, 2).unwrap();
+    assert_eq!(
+        first.pins,
+        pins.iter().take(2).map(|pin| pin.id).collect::<Vec<_>>()
+    );
+    let second = catalog.pins_page(9, first.next_after, 2).unwrap();
+    assert_eq!(
+        second.pins,
+        pins.iter().skip(2).map(|pin| pin.id).collect::<Vec<_>>()
+    );
+    assert_eq!(second.next_after, None);
+    assert!(catalog.pins_page(10, None, 2).unwrap().pins.is_empty());
+    assert_eq!(catalog.capacity_usage_for(10).read_pins, 0);
+    assert_eq!(catalog.capacity_usage_for(9).read_pins, 3);
+    assert_eq!(catalog.pins_page(9, None, 65), Err(Rejection::Capacity));
+    let mut wrong = pins.first().unwrap().clone();
+    wrong.id = Id::random().unwrap();
+    wrong.group_id = 10;
+    assert_eq!(
+        catalog.apply(CatalogCommand::Pin(wrong)),
+        Err(Rejection::References)
+    );
+    let mut restored: Catalog =
+        postcard::from_bytes(&postcard::to_stdvec(&catalog).unwrap()).unwrap();
+    restored.validate().unwrap();
+    for pin in pins {
+        restored.apply(CatalogCommand::ReleasePin { pin }).unwrap();
+    }
+    restored.validate().unwrap();
+    assert!(restored.pins_page(9, None, 64).unwrap().pins.is_empty());
+    assert_eq!(restored.capacity_usage_for(9).read_pins, 0);
 }
 
 #[test]
@@ -141,6 +199,7 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
     .unwrap();
     let pin = PinRecord {
         id: Id::random().unwrap(),
+        group_id: 9,
         objects: vec![old_id],
         ttl_millis: 1_000,
     };
@@ -188,6 +247,7 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
     assert_eq!(
         catalog.apply(CatalogCommand::Pin(PinRecord {
             id: Id::random().unwrap(),
+            group_id: 9,
             objects: vec![old_id],
             ttl_millis: 50
         })),

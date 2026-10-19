@@ -31,6 +31,12 @@ pub struct ObjectPage {
     pub next_after: Option<Id>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PinPage {
+    pub pins: Vec<Id>,
+    pub next_after: Option<Id>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Rejection {
     Identity,
@@ -126,6 +132,7 @@ pub struct Manifest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PinRecord {
     pub id: Id,
+    pub group_id: u64,
     pub objects: Vec<Id>,
     pub ttl_millis: u64,
 }

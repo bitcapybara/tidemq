@@ -229,13 +229,13 @@ async fn raft_restart_at_publication_boundaries_and_compaction_preserve_every_re
     let pin = coordinator
         .acquire_pin(
             vec![replacement_id],
-            Duration::from_millis(20),
+            Duration::from_millis(250),
             support::deadline(),
         )
         .await
         .unwrap();
     let id = pin.id();
-    tokio::time::sleep(Duration::from_millis(25)).await;
+    tokio::time::sleep(Duration::from_millis(275)).await;
     assert!(pin.check().is_err());
     coordinator
         .expire_pin(id, support::deadline())
@@ -338,6 +338,230 @@ async fn aborted_unseen_intent_survives_both_raft_restarts_and_rejects_delayed_u
             .phase,
         ObjectPhase::Deleted
     );
+    drop(coordinator);
+    fixture.close().await;
+}
+
+async fn advance_retention(fixture: &support::Fixture, before: u64) {
+    let revision = fixture
+        .data
+        .state
+        .with_application(|state| state.retention(fixture.partition).unwrap().revision())
+        .await;
+    let response = fixture
+        .data
+        .raft
+        .client_write(tidemq::broker::DataCommand::Retention {
+            partition: fixture.partition,
+            writer: tidemq::broker::WriterFence {
+                node_id: 1,
+                owner_epoch: 1,
+            },
+            command: tidemq::retention::Command {
+                expected_revision: revision,
+                before,
+                now_ms: 3_601_000,
+            },
+        })
+        .await
+        .unwrap()
+        .data;
+    assert!(
+        matches!(response, tidemq::broker::DataResponse::Retention(status) if status.floor == before)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires the verified RustFS 1.0.3 binary through TIDEMQ_TEST_RUSTFS_BIN"]
+async fn committed_retention_retires_whole_segments_and_recovers_abandoned_pins() {
+    let rustfs = support::rustfs::RustFs::start().await;
+    rustfs.create_bucket().await;
+    let mut fixture = support::Fixture::new().await;
+    fixture.produce(3).await;
+    let store = rustfs.store(fixture.cluster, Limits::default(), support::s3::budget());
+    let coordinator = fixture.coordinator(store.clone());
+    let prepared = coordinator
+        .prepare(ranges(&fixture, 3), vec![], support::deadline())
+        .await
+        .unwrap();
+    let object_id = prepared.object_id();
+    coordinator
+        .register(&prepared, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .authorize(object_id, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .upload(&prepared, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .publish(object_id, support::deadline())
+        .await
+        .unwrap();
+    let pin = coordinator
+        .acquire_pin(vec![object_id], Duration::from_secs(1), support::deadline())
+        .await
+        .unwrap();
+    let pin_id = pin.id();
+
+    advance_retention(&fixture, 2).await;
+    coordinator
+        .retire_before(fixture.partition, support::deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .diagnose(object_id, support::deadline())
+            .await
+            .unwrap()
+            .manifest_references,
+        1
+    );
+    assert!(matches!(
+        coordinator.collect(object_id, support::deadline()).await,
+        Err(Error::Rejected {
+            reason: Rejection::References
+        })
+    ));
+
+    advance_retention(&fixture, 3).await;
+    coordinator
+        .retire_before(fixture.partition, support::deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .data
+            .state
+            .with_application(|state| state.lifecycle().checkpointed_floor(fixture.partition))
+            .await,
+        3
+    );
+    assert!(matches!(
+        coordinator.collect(object_id, support::deadline()).await,
+        Err(Error::Rejected {
+            reason: Rejection::Pinned
+        })
+    ));
+    drop(pin);
+    drop(coordinator);
+
+    fixture = fixture.restart().await;
+    let coordinator = fixture.coordinator(store.clone());
+    let pins = coordinator
+        .pending_pins(None, 64, support::deadline())
+        .await
+        .unwrap();
+    assert_eq!(pins.pins, vec![pin_id]);
+    assert_eq!(pins.next_after, None);
+    coordinator
+        .expire_pin(pin_id, support::deadline())
+        .await
+        .unwrap();
+    assert!(
+        coordinator
+            .pending_pins(None, 64, support::deadline())
+            .await
+            .unwrap()
+            .pins
+            .is_empty()
+    );
+    coordinator
+        .collect(object_id, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .reclaim(fixture.partition, 3, support::deadline())
+        .await
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .capacity_usage(support::deadline())
+            .await
+            .unwrap()
+            .registered_physical_upper_bytes,
+        0
+    );
+    assert!(
+        coordinator
+            .read(fixture.partition, 0, 1, 1024, support::deadline())
+            .await
+            .is_err()
+    );
+    fixture
+        .data
+        .state
+        .with_application(|state| {
+            assert_eq!(
+                state.producer(fixture.partition).unwrap().retained_floor(),
+                3
+            );
+            assert_eq!(
+                state
+                    .producer(fixture.partition)
+                    .unwrap()
+                    .local_reclaim_end(),
+                3
+            );
+            assert_eq!(state.hot_bytes(), 0);
+        })
+        .await;
+
+    fixture.produce(1).await;
+    let next = coordinator
+        .prepare(
+            vec![RangeRequest {
+                partition: fixture.partition,
+                offsets: OffsetRange::new(3, 4).unwrap(),
+            }],
+            vec![],
+            support::deadline(),
+        )
+        .await
+        .unwrap();
+    let next_id = next.object_id();
+    coordinator
+        .register(&next, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .authorize(next_id, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .upload(&next, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .publish(next_id, support::deadline())
+        .await
+        .unwrap();
+    fixture
+        .data
+        .state
+        .with_application(|state| {
+            let manifest = state.lifecycle().manifest(fixture.partition).unwrap();
+            assert_eq!(manifest.publication_generation, 2);
+            assert_eq!(manifest.published_end, 4);
+        })
+        .await;
+    coordinator
+        .checkpoint(next_id, support::deadline())
+        .await
+        .unwrap();
+    coordinator
+        .reclaim(fixture.partition, 4, support::deadline())
+        .await
+        .unwrap();
+    let page = coordinator
+        .read(fixture.partition, 3, 1, 1024, support::deadline())
+        .await
+        .unwrap();
+    assert_eq!(page.records().unwrap().first().unwrap().offset, 3);
+    page.release(support::deadline()).await.unwrap();
     drop(coordinator);
     fixture.close().await;
 }
