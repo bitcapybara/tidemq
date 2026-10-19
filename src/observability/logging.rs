@@ -41,6 +41,7 @@ pub struct LogControl {
 
 struct FilterState {
     generation: u64,
+    expiry: Option<tokio::task::AbortHandle>,
 }
 
 impl LogControl {
@@ -66,9 +67,11 @@ impl LogControl {
             })?;
         self.handle.reload(filter).context(LogReloadSnafu)?;
         state.generation = generation;
-        drop(state);
+        if let Some(expiry) = state.expiry.take() {
+            expiry.abort();
+        }
         let control = self.clone();
-        runtime.spawn(async move {
+        let expiry = runtime.spawn(async move {
             tokio::time::sleep(ttl).await;
             if let Ok(state) = control.state.lock()
                 && state.generation == generation
@@ -78,6 +81,8 @@ impl LogControl {
                 tracing::warn!(event_code = "log_filter_restore_failed", error = %format_args!("{error:#}"));
             }
         });
+        state.expiry = Some(expiry.abort_handle());
+        drop(state);
         tracing::info!(
             event_code = "log_filter_changed",
             ttl_ms = ttl.as_millis() as u64
@@ -134,7 +139,10 @@ pub fn initialize(config: &LoggingConfig) -> Result<Logging> {
         health,
         control: LogControl {
             handle,
-            state: Arc::new(Mutex::new(FilterState { generation: 0 })),
+            state: Arc::new(Mutex::new(FilterState {
+                generation: 0,
+                expiry: None,
+            })),
             baseline: config.filter.clone(),
         },
     })
@@ -279,5 +287,45 @@ mod tests {
         assert!(writer.write_all(b"event").is_err());
         assert!(writer.flush().is_err());
         assert_eq!(count.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn temporary_filter_expires_and_older_timer_cannot_restore_newer_filter() {
+        let (layer, handle) = reload::Layer::new(parse_filter("warn").unwrap());
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _subscriber = subscriber;
+        let control = LogControl {
+            handle,
+            state: Arc::new(Mutex::new(FilterState {
+                generation: 0,
+                expiry: None,
+            })),
+            baseline: "warn".to_owned(),
+        };
+        control
+            .temporary_filter("info", Duration::from_millis(50))
+            .unwrap();
+        control
+            .temporary_filter("debug", Duration::from_millis(200))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let current = control.handle.with_current(ToString::to_string).unwrap();
+        assert_eq!(current, "debug");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if control.handle.with_current(ToString::to_string).unwrap() == "warn" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(control.temporary_filter("trace", Duration::ZERO).is_err());
+        assert!(
+            control
+                .temporary_filter("trace", Duration::from_secs(301))
+                .is_err()
+        );
     }
 }

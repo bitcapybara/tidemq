@@ -54,6 +54,13 @@ enum Command {
         #[arg(long, default_value_t = 8)]
         blocks: u32,
     },
+    /// Capture known live and released allocation stacks using startup-enabled jemalloc profiling.
+    #[cfg(all(feature = "heap-profiling", unix))]
+    AllocatorProfileProbe {
+        /// Existing private directory with mode 0700; artifacts contain addresses, never message bodies.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -100,6 +107,10 @@ async fn run(cli: Cli) -> Result<()> {
             block_bytes,
             blocks,
         }) => print_json(&allocator::probe(block_bytes, blocks).await?),
+        #[cfg(all(feature = "heap-profiling", unix))]
+        Some(Command::AllocatorProfileProbe { output }) => {
+            print_json(&allocator::profile::probe(output).await?)
+        }
         None => {
             let logging = tidemq::observability::logging::initialize(&Config::default().logging)?;
             tracing::info!(

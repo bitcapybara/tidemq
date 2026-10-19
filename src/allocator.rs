@@ -4,6 +4,9 @@ use snafu::ResultExt;
 use crate::error::{ReserveSnafu, TaskSnafu};
 use crate::{Error, Result};
 
+#[cfg(all(feature = "heap-profiling", unix))]
+pub mod profile;
+
 #[derive(Debug, Serialize)]
 pub struct AllocatorSnapshot {
     pub backend: &'static str,
@@ -62,7 +65,12 @@ fn read_snapshot() -> Result<AllocatorSnapshot> {
     Ok(AllocatorSnapshot {
         backend: "jemalloc",
         selection_scope: "service_binary",
-        native_version: Some(version::read().map_err(failure)?.to_owned()),
+        native_version: Some(
+            version::read()
+                .map_err(failure)?
+                .trim_end_matches('\0')
+                .to_owned(),
+        ),
         stats: Some(
             serde_json::json!({"allocated_bytes": allocated, "active_bytes": active,
             "resident_bytes": resident, "retained_virtual_bytes": retained}),

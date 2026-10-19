@@ -40,3 +40,21 @@ jobs:
           key: ${{ matrix.backend }}
       - run: cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features ${{ matrix.backend }} -- -D warnings
       - run: cargo test -p tidemq --locked --no-default-features --features ${{ matrix.backend }}
+
+  heap-profile:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libunwind-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: heap-profile
+      - run: cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features heap-profiling -- -D warnings
+      - run: cargo test -p tidemq --locked --no-default-features --features heap-profiling --test heap_profile
