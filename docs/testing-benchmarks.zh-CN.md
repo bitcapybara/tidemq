@@ -2,7 +2,7 @@
 
 验收先检查持久正确性，再做性能。每类测试说明实际边界；参考模型、真实 QUIC/磁盘、RustFS 和独立 CLI 进程分别报告。当前待收敛的组合回归见[实施状态](implementation-status.zh-CN.md)，不能由测试文件存在推断已经通过。
 
-2026-10-20 合流后的实际命令、236 项普通测试、九项真实后端 ignored、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。
+2026-10-20 合流后的实际命令、241 项普通测试、九项真实后端 ignored、默认 credit 下 512 条 Read 的红绿回归、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。
 
 ## 可复现验证
 
