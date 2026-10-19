@@ -51,6 +51,7 @@ pub(crate) struct Service {
     pub metrics: Metrics,
     pub runtime_metrics: super::telemetry::RuntimeMetrics,
     pub ownership_metrics: crate::ownership::OwnershipMetrics,
+    pub(super) failover_metrics: super::failover::Metrics,
     pub scaling_diagnostic: std::sync::Mutex<serde_json::Value>,
     pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
     pub scaling: super::scaling::RuntimeScaling,
@@ -93,6 +94,7 @@ impl Service {
         transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
         shutdown_requested: watch::Sender<bool>,
     ) -> Result<Self> {
+        let failover_metrics = super::failover::Metrics::register(metrics.registry_mut());
         let scaling = super::scaling::RuntimeScaling::new(
             &config,
             cluster,
@@ -144,6 +146,7 @@ impl Service {
             metrics,
             runtime_metrics,
             ownership_metrics,
+            failover_metrics,
             scaling_diagnostic: std::sync::Mutex::new(serde_json::json!({"status":"starting"})),
             transport_metrics,
             scaling,

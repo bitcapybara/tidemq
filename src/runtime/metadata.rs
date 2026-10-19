@@ -40,6 +40,7 @@ pub(crate) struct CreateSubscriptionRequest {
 
 impl Service {
     pub async fn reconcile(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
+        let mut failover = super::failover::State::new(&self.config);
         let mut ticker = tokio::time::interval(Duration::from_millis(250));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -47,16 +48,22 @@ impl Service {
             let deadline = Instant::now() + Duration::from_secs(2);
             tokio::select! {
                 _ = shutdown.changed() => return Ok(()),
-                result = self.reconcile_once(deadline) => result?,
+                result = self.reconcile_once(&mut failover, deadline) => result?,
             }
         }
     }
 
-    async fn reconcile_once(&self, deadline: Instant) -> Result<()> {
+    async fn reconcile_once(
+        &self,
+        failover: &mut super::failover::State,
+        deadline: Instant,
+    ) -> Result<()> {
         if let Some(replica) = &self.metadata
             && self.require_leader(replica).is_ok()
         {
-            let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
+            let Ok(_guard) = wire::within(deadline, self.metadata_mutation.lock()).await else {
+                return Ok(());
+            };
             if let Err(error) = self.reconcile_metadata(deadline).await {
                 tracing::debug!(
                     event_code = "runtime_metadata_reconcile_wait",
@@ -64,6 +71,13 @@ impl Service {
                     "Metadata startup reconciliation will retry"
                 );
             }
+        }
+        if let Err(error) = self.reconcile_owners(failover, deadline).await {
+            tracing::debug!(
+                event_code = "runtime_owner_failover_wait",
+                error_code = error.failure().code,
+                "Owner failover requires fresh authority and durable fencing"
+            );
         }
         for (group, replica) in &self.data {
             if self.require_leader(replica).is_ok() {

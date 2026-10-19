@@ -19,6 +19,8 @@ Metadata Leader、数据 Leader 和 owner Broker 可以在不同节点。远端�
 
 元数据控制中断时停止新写、新投递和控制变更；已取得的有限 finalize 能力按原期限完成。Cancellation 只影响指定 request 的等待，取消结果是 Unknown，不声称撤销已经进入 Raft 的业务。重试保留原业务键，新的 request ID 只标识尝试。
 
+Metadata Leader 的 owned reconcile 任务使用受信只读 Probe 自动识别 owner Broker 失联，并复用已有 grant→fence→recover→activate 状态机执行 CAS 接管。探测证据、分页和每轮移交数量有固定上限，Leader/quorum 变化会清空失败证据；未知中间阶段继续原 grant。具体阈值、固定指标、排查步骤和双故障边界见 [Broker 自动故障接管](broker-failover.zh-CN.md)。
+
 消费者的 B/D 分界 H 由 assignment 冻结。连续 enqueue 的 `received_before>=H` 只授权开始 D；ACK frontier 尚小于 H 时仍允许 B 的旧消息重投。D 严格从 H 开始。ACK hole ranges 仅帮助判断连续收到前缀，不能作为业务 ACK。
 
 ## 后台对象与容量

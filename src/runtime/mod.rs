@@ -4,6 +4,7 @@ mod config;
 mod data;
 mod drain;
 mod error;
+mod failover;
 mod maintenance;
 mod management;
 mod metadata;
