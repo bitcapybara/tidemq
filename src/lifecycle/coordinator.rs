@@ -192,6 +192,10 @@ impl Coordinator {
         Ok(self)
     }
 
+    pub fn metrics(&self) -> Arc<LifecycleMetrics> {
+        self.0.metrics.clone()
+    }
+
     pub fn with_metrics(mut self, metrics: Arc<LifecycleMetrics>) -> Result<Self> {
         Arc::get_mut(&mut self.0)
             .ok_or(Error::Configuration)?
@@ -199,8 +203,26 @@ impl Coordinator {
         Ok(self)
     }
 
-    pub fn metrics(&self) -> Arc<LifecycleMetrics> {
-        self.0.metrics.clone()
+    pub async fn capacity_usage(&self, deadline: Instant) -> Result<super::CapacityUsage> {
+        match self.meta_query(Query::Capacity, deadline).await? {
+            View::Capacity(usage) => Ok(usage),
+            _ => Err(Error::Configuration),
+        }
+    }
+
+    pub async fn pending_objects(
+        &self,
+        after: Option<Id>,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<super::ObjectPage> {
+        match self
+            .meta_query(Query::Objects { after, limit }, deadline)
+            .await?
+        {
+            View::Objects(page) => Ok(page),
+            _ => Err(Error::Configuration),
+        }
     }
 
     pub async fn diagnose(&self, object_id: Id, deadline: Instant) -> Result<super::Diagnostic> {
@@ -254,6 +276,7 @@ impl Coordinator {
             .meta_write(CatalogCommand::Register(prepared.plan.clone()), deadline)
             .await?;
         self.0.metrics.registered.inc();
+        tracing::debug!(event = "object_lifecycle_transition", object_id = %prepared.object_id(), phase = "registered", "Object lifecycle durable stage completed");
         object_result(outcome)
     }
 
@@ -319,6 +342,7 @@ impl Coordinator {
         self.meta_write(CatalogCommand::Uploaded { object_id }, deadline)
             .await?;
         self.0.metrics.uploaded.inc();
+        tracing::debug!(event = "object_lifecycle_transition", object_id = %object_id, phase = "uploaded", "Object lifecycle durable stage completed");
         Ok(())
     }
 
@@ -340,6 +364,7 @@ impl Coordinator {
         self.meta_write(CatalogCommand::Publish { object_id }, deadline)
             .await?;
         self.0.metrics.published.inc();
+        tracing::debug!(event = "object_lifecycle_transition", object_id = %object_id, phase = "published", "Object lifecycle durable stage completed");
         Ok(())
     }
 
@@ -401,12 +426,24 @@ impl Coordinator {
         )
         .await?;
         self.0.metrics.canceled.inc();
+        tracing::debug!(event = "object_lifecycle_transition", object_id = %object_id, phase = "aborted", "Object lifecycle durable stage completed");
         Ok(())
     }
 
     /// Reconcile every intermediate state using the original immutable object identity.
     pub async fn reconcile(&self, object_id: Id, deadline: Instant) -> Result<()> {
         self.0.metrics.retries.inc();
+        let result = self.reconcile_inner(object_id, deadline).await;
+        if result.is_err() {
+            self.0.metrics.failed.inc();
+            if self.0.metrics.may_warn() {
+                tracing::warn!(event = "object_reconcile_blocked", %object_id, "Object lifecycle reconciliation did not finish; query its authoritative blocker");
+            }
+        }
+        result
+    }
+
+    async fn reconcile_inner(&self, object_id: Id, deadline: Instant) -> Result<()> {
         let object = self.object(object_id, deadline).await?;
         match object.phase {
             ObjectPhase::Registered => {
@@ -479,6 +516,7 @@ impl Coordinator {
         self.meta_write(CatalogCommand::Deleted { object_id }, deadline)
             .await?;
         self.0.metrics.deleted.inc();
+        tracing::debug!(event = "object_lifecycle_transition", object_id = %object_id, phase = "deleted", "Object lifecycle durable stage completed");
         Ok(())
     }
 
@@ -538,6 +576,80 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Retention is read from the actual data quorum; callers cannot supply a deletion floor.
+    pub async fn retire_before(&self, partition: PartitionKey, deadline: Instant) -> Result<()> {
+        let voters = self.expected_data_voters(deadline).await?;
+        let proof = self
+            .data_read(deadline, |state, position| {
+                let producer = state.producer(partition).ok_or(Error::Rejected {
+                    reason: Rejection::NotFound,
+                })?;
+                Ok(super::types::FloorEvidence {
+                    cluster_id: self.0.cluster_id,
+                    group_id: self.0.data_group,
+                    partition,
+                    before: producer.retained_floor(),
+                    manifest_generation: state
+                        .lifecycle()
+                        .manifest(partition)
+                        .map_or(0, |manifest| manifest.generation),
+                    published_end: state.lifecycle().published_end(partition),
+                    position: position.ok_or(Error::Configuration)?,
+                    voters: voters.clone(),
+                })
+            })
+            .await?;
+        if proof.before == 0 {
+            return Ok(());
+        }
+        self.meta_write(CatalogCommand::RetireBefore(proof.clone()), deadline)
+            .await?;
+        let configured = self
+            .0
+            .checkpoints
+            .iter()
+            .map(super::ReplicaCheckpoint::node_id)
+            .collect::<BTreeSet<_>>();
+        if configured != proof.voters {
+            return Err(Error::Rejected {
+                reason: Rejection::Membership,
+            });
+        }
+        let mut snapshots = Vec::new();
+        for replica in &self.0.checkpoints {
+            let snapshot = replica.build_floor(&proof, deadline).await?;
+            snapshots.push((
+                snapshot.node_id,
+                snapshot.snapshot_id,
+                snapshot.position.index,
+            ));
+        }
+        self.data_read(deadline, |_, _| Ok(())).await?;
+        if self.expected_data_voters(deadline).await? != voters {
+            return Err(Error::Rejected {
+                reason: Rejection::Membership,
+            });
+        }
+        self.meta_write(
+            CatalogCommand::FloorCheckpoint {
+                proof: proof.clone(),
+                snapshots,
+            },
+            deadline,
+        )
+        .await?;
+        self.data_write(
+            DataCommand::FloorCheckpoint {
+                partition,
+                before: proof.before,
+            },
+            Work::GarbageCollect,
+            deadline,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn reclaim(
         &self,
         partition: PartitionKey,
@@ -586,6 +698,18 @@ impl Coordinator {
         if max_messages == 0 || max_messages > 1_024 || max_bytes == 0 || max_bytes > 1024 * 1024 {
             return Err(Error::Configuration);
         }
+        self.data_read(deadline, |state, _| {
+            let producer = state.producer(partition).ok_or(Error::Rejected {
+                reason: Rejection::NotFound,
+            })?;
+            if first < producer.retained_floor() {
+                return Err(Error::Rejected {
+                    reason: Rejection::InvalidRange,
+                });
+            }
+            Ok(())
+        })
+        .await?;
         let (object, generation) = match self
             .meta_query(Query::Read { partition, first }, deadline)
             .await?
@@ -715,6 +839,14 @@ impl Coordinator {
         ranges: &[RangeRequest],
         deadline: Instant,
     ) -> Result<Pack> {
+        let raw_permit = self
+            .0
+            .budget
+            .try_reserve(
+                tidemq_protocol::common::TrafficClass::Bulk,
+                72 * 1024 * 1024,
+            )
+            .map_err(|_| Error::Overloaded)?;
         let mut owned = Vec::new();
         let mut total_records = 0_usize;
         let mut total_bytes = 0_u64;
@@ -734,7 +866,23 @@ impl Coordinator {
                     Ok((producer.committed_end(), producer.local_reclaim_end()))
                 })
                 .await?;
+            let count = usize::try_from(
+                range
+                    .offsets
+                    .end
+                    .checked_sub(range.offsets.start)
+                    .ok_or(Error::Configuration)?,
+            )
+            .map_err(|_| Error::Configuration)?;
+            if count > 100_000 {
+                return Err(Error::Rejected {
+                    reason: Rejection::Capacity,
+                });
+            }
             let mut records = Vec::new();
+            records
+                .try_reserve_exact(count)
+                .map_err(|source| Error::Allocation { source })?;
             let mut next = range.offsets.start;
             while next < range.offsets.end {
                 check_deadline(deadline)?;
@@ -749,8 +897,8 @@ impl Coordinator {
                     {
                         records.push(Record {
                             offset: record.offset,
-                            key: bytes::Bytes::copy_from_slice(record.key()),
-                            body: bytes::Bytes::copy_from_slice(record.body()),
+                            key: copied(record.key())?,
+                            body: copied(record.body())?,
                         });
                         next = record.offset.checked_add(1).ok_or(Error::Configuration)?;
                     }
@@ -761,7 +909,7 @@ impl Coordinator {
                             state
                                 .producer(range.partition)
                                 .ok_or(Error::Configuration)?
-                                .hot_read(next, 1_024, 1024 * 1024)
+                                .archive_read(next, 1_024, 1024 * 1024)
                                 .map_err(|_| Error::Rejected {
                                     reason: Rejection::InvalidRange,
                                 })
@@ -813,6 +961,7 @@ impl Coordinator {
         };
         let budget = self.0.budget.clone();
         tokio::task::spawn_blocking(move || {
+            let _raw_permit = raw_permit;
             let parts = owned
                 .iter()
                 .map(|(range, committed_end, records)| CommittedPartition {
@@ -852,15 +1001,29 @@ impl Coordinator {
         work: Work,
         deadline: Instant,
     ) -> Result<Vec<ControlLease>> {
+        let partitions = plan
+            .descriptor
+            .partitions
+            .iter()
+            .map(key)
+            .collect::<Vec<_>>();
+        self.partition_leases(&partitions, work, deadline).await
+    }
+
+    async fn partition_leases(
+        &self,
+        partitions: &[PartitionKey],
+        work: Work,
+        deadline: Instant,
+    ) -> Result<Vec<ControlLease>> {
         let fences = self
             .data_read(deadline, |state, _| {
-                plan.descriptor
-                    .partitions
+                partitions
                     .iter()
-                    .map(|index| {
+                    .map(|partition| {
                         state
                             .ownership()
-                            .and_then(|ownership| ownership.fence(key(index)))
+                            .and_then(|ownership| ownership.fence(*partition))
                             .cloned()
                             .ok_or(Error::Rejected {
                                 reason: Rejection::Identity,
@@ -956,28 +1119,28 @@ impl Coordinator {
         work: Work,
         deadline: Instant,
     ) -> Result<(DataOutcome, LogId<u64>)> {
-        let plan = match &command {
+        let partitions = match &command {
             DataCommand::Authorize(plan)
             | DataCommand::Abort(plan)
-            | DataCommand::Published { plan, .. } => plan.clone(),
-            DataCommand::Checkpoint { object_id } => self.object(*object_id, deadline).await?.plan,
-            DataCommand::Reclaim { partition, end, .. } => {
-                match self
-                    .meta_query(
-                        Query::Reclaim {
-                            partition: *partition,
-                            end: *end,
-                        },
-                        deadline,
-                    )
-                    .await?
-                {
-                    View::Reclaim { plan, .. } => *plan,
-                    _ => return Err(Error::Configuration),
-                }
-            }
+            | DataCommand::Published { plan, .. } => plan
+                .descriptor
+                .partitions
+                .iter()
+                .map(key)
+                .collect::<Vec<_>>(),
+            DataCommand::Checkpoint { object_id } => self
+                .object(*object_id, deadline)
+                .await?
+                .plan
+                .descriptor
+                .partitions
+                .iter()
+                .map(key)
+                .collect(),
+            DataCommand::Reclaim { partition, .. }
+            | DataCommand::FloorCheckpoint { partition, .. } => vec![*partition],
         };
-        let leases = self.leases(&plan, work, deadline).await?;
+        let leases = self.partition_leases(&partitions, work, deadline).await?;
         let until = deadline.min(earliest_expiry(&leases)?);
         let grants: Vec<Grant> = leases.iter().map(|lease| lease.grant().clone()).collect();
         let result = tokio::time::timeout_at(
@@ -1041,4 +1204,13 @@ pub(crate) fn stable_voters<A: Application>(raft: &Raft<A>) -> Result<BTreeSet<u
         });
     }
     Ok(voters)
+}
+
+fn copied(bytes: &[u8]) -> Result<bytes::Bytes> {
+    let mut owned = Vec::new();
+    owned
+        .try_reserve_exact(bytes.len())
+        .map_err(|source| Error::Allocation { source })?;
+    owned.extend_from_slice(bytes);
+    Ok(bytes::Bytes::from(owned))
 }

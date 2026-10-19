@@ -30,6 +30,8 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Query {
     Health,
+    Capacity,
+    Objects { after: Option<Id>, limit: usize },
     DataVoters,
     Object(Id),
     Diagnose(Id),
@@ -42,6 +44,8 @@ pub(crate) enum Query {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum View {
     Health,
+    Capacity(super::CapacityUsage),
+    Objects(super::ObjectPage),
     DataVoters(DataGroup),
     Object(Box<ObjectRecord>),
     Diagnostic(super::Diagnostic),
@@ -51,7 +55,6 @@ pub(crate) enum View {
     },
     Reclaim {
         generation: u64,
-        plan: Box<super::types::Plan>,
     },
     Read {
         object: Box<ObjectRecord>,
@@ -176,6 +179,16 @@ impl MetadataBackend for LocalMetadata {
                 let started = Instant::now();
                 let revision = self.read(0, Query::Health, deadline).await?.revision;
                 let operation_id = Id::random().map_err(|_| Error::Configuration)?;
+                self.state
+                    .try_with_application(|state| {
+                        MetadataOperation {
+                            command: command.clone(),
+                        }
+                        .validate_context(state)
+                    })
+                    .await
+                    .map_err(|source| Error::Storage { source })?
+                    .map_err(|reason| Error::Rejected { reason })?;
                 let request = Command::new(
                     operation_id,
                     revision,
@@ -237,6 +250,11 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
     let catalog = state.lifecycle();
     match query {
         Query::Health => Ok(View::Health),
+        Query::Capacity => Ok(View::Capacity(catalog.capacity_usage_for(data_group))),
+        Query::Objects { after, limit } => catalog
+            .objects_page(data_group, after, limit)
+            .map(View::Objects)
+            .map_err(|reason| Error::Rejected { reason }),
         Query::DataVoters => state
             .group(data_group)
             .cloned()
@@ -294,6 +312,9 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             })
         }
         Query::Reclaim { partition, end } => {
+            if end <= catalog.checkpointed_floor(partition) {
+                return Ok(View::Reclaim { generation: 0 });
+            }
             let manifest = catalog.manifest(partition).ok_or(Error::Rejected {
                 reason: Rejection::NotPublished,
             })?;
@@ -312,19 +333,9 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
                         reason: Rejection::CheckpointRequired,
                     })?);
             }
-            let object = manifest
-                .segments
-                .iter()
-                .find(|s| s.offsets.start < end && s.offsets.end >= end)
-                .and_then(|s| catalog.object(s.object_id))
-                .ok_or(Error::Rejected {
-                    reason: Rejection::InvalidRange,
-                })?;
-            Ok(View::Reclaim {
-                generation,
-                plan: Box::new(object.plan.clone()),
-            })
+            Ok(View::Reclaim { generation })
         }
+
         Query::Read { partition, first } => {
             let manifest = catalog.manifest(partition).ok_or(Error::Rejected {
                 reason: Rejection::NotPublished,
@@ -344,7 +355,7 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             }
             Ok(View::Read {
                 object: Box::new(object.clone()),
-                generation: manifest.generation,
+                generation: manifest.publication_generation,
             })
         }
         Query::Pin(id) => Ok(View::Pin(catalog.pin(id).cloned())),

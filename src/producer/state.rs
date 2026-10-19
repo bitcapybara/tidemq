@@ -397,17 +397,26 @@ impl ProducerState {
 
     /// Reads only a requested bounded subset of committed data; this method is not a Raft barrier.
     pub fn hot_read(&self, first: u64, max_messages: usize, max_bytes: u64) -> Result<ReadPage> {
+        if first < self.retained_floor {
+            return Err(Rejection::OffsetExpired {
+                floor: self.retained_floor,
+            });
+        }
+        self.archive_read(first, max_messages, max_bytes)
+    }
+
+    pub(crate) fn archive_read(
+        &self,
+        first: u64,
+        max_messages: usize,
+        max_bytes: u64,
+    ) -> Result<ReadPage> {
         if max_messages == 0
             || max_messages > self.limits.max_batch_messages
             || max_bytes == 0
             || max_bytes > self.limits.max_batch_bytes
         {
             return Err(Rejection::ReadLimit);
-        }
-        if first < self.retained_floor {
-            return Err(Rejection::OffsetExpired {
-                floor: self.retained_floor,
-            });
         }
         if first > self.committed_end {
             return Err(Rejection::OffsetNotCommitted {

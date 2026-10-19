@@ -15,8 +15,11 @@ use super::types::{
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
     objects: BTreeMap<Id, ObjectRecord>,
+    by_group: BTreeMap<u64, BTreeSet<Id>>,
     manifests: BTreeMap<PartitionKey, Manifest>,
     pins: BTreeMap<Id, PinRecord>,
+    retired_floors: BTreeMap<PartitionKey, u64>,
+    checkpointed_floors: BTreeMap<PartitionKey, u64>,
 }
 
 impl Catalog {
@@ -31,6 +34,113 @@ impl Catalog {
     }
     pub fn pin_count(&self) -> usize {
         self.pins.len()
+    }
+    pub fn checkpointed_floor(&self, partition: PartitionKey) -> u64 {
+        self.checkpointed_floors
+            .get(&partition)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn capacity_usage(&self) -> super::CapacityUsage {
+        self.usage(self.objects.values())
+    }
+
+    pub fn capacity_usage_for(&self, group: u64) -> super::CapacityUsage {
+        self.usage(
+            self.by_group
+                .get(&group)
+                .into_iter()
+                .flat_map(|ids| ids.iter())
+                .filter_map(|id| self.objects.get(id)),
+        )
+    }
+
+    fn usage<'a>(&self, objects: impl Iterator<Item = &'a ObjectRecord>) -> super::CapacityUsage {
+        let mut usage = super::CapacityUsage {
+            read_pins: self.pins.len(),
+            ..super::CapacityUsage::default()
+        };
+        for object in objects {
+            usage.objects += 1;
+            if object.phase == ObjectPhase::Deleted {
+                usage.deleted_objects += 1;
+                continue;
+            }
+            let bytes = object.descriptor().total_bytes;
+            usage.registered_physical_upper_bytes =
+                usage.registered_physical_upper_bytes.saturating_add(bytes);
+            if matches!(
+                object.phase,
+                ObjectPhase::Registered | ObjectPhase::Uploaded | ObjectPhase::CancelRequested
+            ) {
+                usage.pending_upload_upper_bytes =
+                    usage.pending_upload_upper_bytes.saturating_add(bytes);
+            }
+            let eligible_range_bytes = object
+                .descriptor()
+                .partitions
+                .iter()
+                .filter(|index| {
+                    self.retired_floors
+                        .get(&key(index))
+                        .is_some_and(|floor| *floor > index.offsets.start)
+                })
+                .fold(0_u64, |sum, index| {
+                    sum.saturating_add(index.byte_end.saturating_sub(index.byte_start))
+                });
+            let unreferenced = if object.manifest_references == 0
+                && matches!(
+                    object.phase,
+                    ObjectPhase::Published | ObjectPhase::Aborted | ObjectPhase::Deleting
+                ) {
+                bytes
+            } else {
+                0
+            };
+            usage.reclaim_lag_upper_bytes = usage
+                .reclaim_lag_upper_bytes
+                .saturating_add(unreferenced.max(eligible_range_bytes).min(bytes));
+        }
+        usage
+    }
+
+    pub fn objects_page(
+        &self,
+        group: u64,
+        after: Option<Id>,
+        limit: usize,
+    ) -> Result<super::ObjectPage, Rejection> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        if limit == 0 || limit > 64 {
+            return Err(Rejection::Capacity);
+        }
+        let Some(ids) = self.by_group.get(&group) else {
+            return Ok(super::ObjectPage {
+                objects: vec![],
+                next_after: None,
+            });
+        };
+        let mut iterator = ids.range((after.map_or(Unbounded, Excluded), Unbounded));
+        let objects = iterator
+            .by_ref()
+            .take(limit)
+            .map(|id| {
+                self.objects
+                    .get(id)
+                    .map(|o| (*id, o.phase))
+                    .ok_or(Rejection::InvalidSnapshot)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let next_after = if iterator.next().is_some() {
+            objects.last().map(|(id, _)| *id)
+        } else {
+            None
+        };
+        Ok(super::ObjectPage {
+            objects,
+            next_after,
+        })
     }
     pub(crate) fn pin(&self, id: Id) -> Option<&PinRecord> {
         self.pins.get(&id)
@@ -50,7 +160,9 @@ impl Catalog {
             ObjectPhase::Deleting => Blocker::DeletionRetry,
             _ if references > 0 => Blocker::LiveManifest,
             _ if pins > 0 => Blocker::ReadPin,
-            _ if object.recovery_replacement.is_some() => Blocker::RecoverySnapshot,
+            _ if object.recovery_replacement.is_some() || !object.floor_holds.is_empty() => {
+                Blocker::RecoverySnapshot
+            }
             _ => Blocker::None,
         };
         Some(Diagnostic {
@@ -84,6 +196,10 @@ impl Catalog {
             } => self.checkpoint(object_id, generation, &voters, &snapshots),
             CatalogCommand::BeginDelete { object_id } => self.begin_delete(object_id),
             CatalogCommand::Deleted { object_id } => self.deleted(object_id),
+            CatalogCommand::RetireBefore(proof) => self.retire_before(proof),
+            CatalogCommand::FloorCheckpoint { proof, snapshots } => {
+                self.floor_checkpoint(proof, &snapshots)
+            }
         }
     }
 
@@ -106,10 +222,16 @@ impl Catalog {
             plan,
             phase: ObjectPhase::Registered,
             generation: 1,
+            manifest_references: 0,
             checkpoint_generation: None,
             published_generations: BTreeMap::new(),
             recovery_replacement: None,
+            floor_holds: BTreeMap::new(),
         };
+        self.by_group
+            .entry(object.descriptor().identity.group_id)
+            .or_default()
+            .insert(id);
         self.objects.insert(id, object.clone());
         Ok(CatalogOutcome::Object(Box::new(object)))
     }
@@ -141,7 +263,7 @@ impl Catalog {
         let replacements = self.replacement_manifests(&plan)?;
         let published_generations = replacements
             .iter()
-            .map(|(partition, manifest)| (*partition, manifest.generation))
+            .map(|(partition, manifest)| (*partition, manifest.publication_generation))
             .collect();
         for (partition, manifest) in replacements {
             self.manifests.insert(partition, manifest);
@@ -152,6 +274,7 @@ impl Catalog {
                 .get_mut(old_id)
                 .ok_or(Rejection::InvalidSnapshot)?;
             old.recovery_replacement = Some(id);
+            old.manifest_references = 0;
             old.checkpoint_generation = None;
         }
         let object = self
@@ -159,6 +282,7 @@ impl Catalog {
             .get_mut(&id)
             .ok_or(Rejection::InvalidSnapshot)?;
         object.published_generations = published_generations;
+        object.manifest_references = plan.descriptor.partitions.len();
         object.phase = ObjectPhase::Published;
         object.generation += 1;
         Ok(CatalogOutcome::Object(Box::new(object.clone())))
@@ -242,6 +366,10 @@ impl Catalog {
             manifest.segments.sort_by_key(|s| s.offsets.start);
             manifest.generation = manifest
                 .generation
+                .checked_add(1)
+                .ok_or(Rejection::Capacity)?;
+            manifest.publication_generation = manifest
+                .publication_generation
                 .checked_add(1)
                 .ok_or(Rejection::Capacity)?;
             result.insert(partition, manifest);
@@ -372,6 +500,13 @@ impl Catalog {
         if diagnostic.recovery_replacement.is_some() {
             return Err(Rejection::RecoveryDependency);
         }
+        if self
+            .objects
+            .get(&id)
+            .is_some_and(|object| !object.floor_holds.is_empty())
+        {
+            return Err(Rejection::RecoveryDependency);
+        }
         let object = self.objects.get_mut(&id).ok_or(Rejection::NotFound)?;
         match object.phase {
             ObjectPhase::Aborted | ObjectPhase::Published => {
@@ -397,36 +532,170 @@ impl Catalog {
         Ok(CatalogOutcome::Object(Box::new(object.clone())))
     }
 
+    fn retire_before(
+        &mut self,
+        proof: super::types::FloorEvidence,
+    ) -> Result<CatalogOutcome, Rejection> {
+        if proof.before
+            < self
+                .retired_floors
+                .get(&proof.partition)
+                .copied()
+                .unwrap_or(0)
+        {
+            return Err(Rejection::StaleGeneration);
+        }
+        let Some(manifest) = self.manifests.get(&proof.partition) else {
+            self.retired_floors.insert(proof.partition, proof.before);
+            return Ok(CatalogOutcome::Retired);
+        };
+        if proof.manifest_generation != manifest.publication_generation {
+            return Err(Rejection::StaleGeneration);
+        }
+        let generation = manifest
+            .generation
+            .checked_add(1)
+            .ok_or(Rejection::Capacity)?;
+        let removed = manifest
+            .segments
+            .iter()
+            .filter(|segment| {
+                segment.offsets.end <= proof.before
+                    && segment.offsets.end <= proof.published_end
+                    && self
+                        .objects
+                        .get(&segment.object_id)
+                        .and_then(|object| object.published_generations.get(&proof.partition))
+                        .is_some_and(|generation| *generation <= proof.manifest_generation)
+            })
+            .map(|segment| segment.object_id)
+            .collect::<BTreeSet<_>>();
+        let manifest = self
+            .manifests
+            .get_mut(&proof.partition)
+            .ok_or(Rejection::InvalidSnapshot)?;
+        if !removed.is_empty() {
+            manifest.generation = generation;
+            manifest
+                .segments
+                .retain(|segment| !removed.contains(&segment.object_id));
+        }
+        for id in removed {
+            let object = self
+                .objects
+                .get_mut(&id)
+                .ok_or(Rejection::InvalidSnapshot)?;
+            object.manifest_references = object
+                .manifest_references
+                .checked_sub(1)
+                .ok_or(Rejection::InvalidSnapshot)?;
+            object
+                .floor_holds
+                .entry(proof.partition)
+                .and_modify(|generation| *generation = (*generation).max(proof.manifest_generation))
+                .or_insert(proof.manifest_generation);
+        }
+        self.retired_floors.insert(proof.partition, proof.before);
+        Ok(CatalogOutcome::Retired)
+    }
+
+    fn floor_checkpoint(
+        &mut self,
+        proof: super::types::FloorEvidence,
+        snapshots: &[(u64, String, u64)],
+    ) -> Result<CatalogOutcome, Rejection> {
+        let nodes = snapshots
+            .iter()
+            .map(|(node, _, _)| *node)
+            .collect::<BTreeSet<_>>();
+        if nodes != proof.voters
+            || snapshots.len() != proof.voters.len()
+            || snapshots.iter().any(|(_, id, index)| {
+                id.is_empty() || id.len() > 128 || *index < proof.position.index
+            })
+        {
+            return Err(Rejection::CheckpointRequired);
+        }
+        for object in self.objects.values_mut() {
+            if object
+                .floor_holds
+                .get(&proof.partition)
+                .is_some_and(|generation| *generation <= proof.manifest_generation)
+                && object
+                    .plan
+                    .descriptor
+                    .partitions
+                    .iter()
+                    .any(|index| key(index) == proof.partition && index.offsets.end <= proof.before)
+            {
+                object.floor_holds.remove(&proof.partition);
+            }
+        }
+        self.checkpointed_floors
+            .entry(proof.partition)
+            .and_modify(|before| *before = (*before).max(proof.before))
+            .or_insert(proof.before);
+        Ok(CatalogOutcome::Retired)
+    }
+
     fn references(&self, id: Id) -> usize {
-        self.manifests
-            .values()
-            .map(|m| m.segments.iter().filter(|s| s.object_id == id).count())
-            .sum()
+        self.objects
+            .get(&id)
+            .map_or(0, |object| object.manifest_references)
     }
 
     pub(crate) fn validate(&self) -> Result<(), Rejection> {
-        if self.objects.len() > MAX_OBJECTS || self.pins.len() > MAX_PINS {
+        if self.objects.len() > MAX_OBJECTS
+            || self.pins.len() > MAX_PINS
+            || self.retired_floors.len() > 8_192
+        {
             return Err(Rejection::InvalidSnapshot);
         }
         for (id, object) in &self.objects {
             validate_plan(&object.plan)?;
-            if *id != object.object_id() || object.generation == 0 {
+            if *id != object.object_id()
+                || object.generation == 0
+                || object.floor_holds.len() > MAX_PARTITIONS
+                || object.floor_holds.iter().any(|(partition, generation)| {
+                    *generation == 0
+                        || !object
+                            .descriptor()
+                            .partitions
+                            .iter()
+                            .any(|index| key(index) == *partition)
+                })
+            {
                 return Err(Rejection::InvalidSnapshot);
             }
             if matches!(object.phase, ObjectPhase::Deleting | ObjectPhase::Deleted)
                 && (self.references(*id) != 0
                     || object.recovery_replacement.is_some()
+                    || !object.floor_holds.is_empty()
                     || self.pins.values().any(|pin| pin.objects.contains(id)))
             {
                 return Err(Rejection::InvalidSnapshot);
             }
         }
+        if self.by_group.values().map(BTreeSet::len).sum::<usize>() != self.objects.len()
+            || self.objects.iter().any(|(id, object)| {
+                self.by_group
+                    .get(&object.descriptor().identity.group_id)
+                    .is_none_or(|ids| !ids.contains(id))
+            })
+        {
+            return Err(Rejection::InvalidSnapshot);
+        }
+        let mut references = BTreeMap::<Id, usize>::new();
         for (partition, manifest) in &self.manifests {
             let mut next = manifest
                 .segments
                 .first()
                 .map_or(manifest.published_end, |s| s.offsets.start);
-            if manifest.generation == 0 || manifest.segments.len() > MAX_SEGMENTS {
+            if manifest.generation == 0
+                || manifest.publication_generation == 0
+                || manifest.publication_generation > manifest.generation
+                || manifest.segments.len() > MAX_SEGMENTS
+            {
                 return Err(Rejection::InvalidSnapshot);
             }
             for segment in &manifest.segments {
@@ -445,11 +714,17 @@ impl Catalog {
                 {
                     return Err(Rejection::InvalidSnapshot);
                 }
+                *references.entry(segment.object_id).or_default() += 1;
                 next = segment.offsets.end;
             }
             if next != manifest.published_end {
                 return Err(Rejection::InvalidSnapshot);
             }
+        }
+        if self.objects.iter().any(|(id, object)| {
+            references.get(id).copied().unwrap_or(0) != object.manifest_references
+        }) {
+            return Err(Rejection::InvalidSnapshot);
         }
         for (id, pin) in &self.pins {
             if *id != pin.id

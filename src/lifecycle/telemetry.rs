@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use prometheus_client::{
     metrics::{counter::Counter, gauge::Gauge, histogram::Histogram},
@@ -15,6 +18,8 @@ pub struct LifecycleMetrics {
     pub(crate) reclaimed: Counter,
     pub(crate) retries: Counter,
     pub(crate) failed: Counter,
+    pub(crate) suppressed_logs: Counter,
+    last_warning: Mutex<Option<Instant>>,
     pub(crate) active: Gauge,
     duration: Histogram,
 }
@@ -30,6 +35,8 @@ impl Default for LifecycleMetrics {
             reclaimed: Counter::default(),
             retries: Counter::default(),
             failed: Counter::default(),
+            suppressed_logs: Counter::default(),
+            last_warning: Mutex::new(None),
             active: Gauge::default(),
             duration: Histogram::new([0.001, 0.01, 0.1, 1.0, 5.0, 30.0, 60.0]),
         }
@@ -79,6 +86,11 @@ impl LifecycleMetrics {
                 "Failed lifecycle operations.",
                 &self.failed,
             ),
+            (
+                "tidemq_lifecycle_suppressed_logs",
+                "Rate-limited reconciliation warnings.",
+                &self.suppressed_logs,
+            ),
         ] {
             registry.register(name, help, metric.clone());
         }
@@ -100,6 +112,22 @@ impl LifecycleMetrics {
             metrics: self.clone(),
             started: Instant::now(),
         }
+    }
+
+    pub(crate) fn may_warn(&self) -> bool {
+        let Ok(mut last) = self.last_warning.lock() else {
+            self.suppressed_logs.inc();
+            return false;
+        };
+        let now = Instant::now();
+        if last.is_some_and(|previous| {
+            now.saturating_duration_since(previous) < Duration::from_secs(1)
+        }) {
+            self.suppressed_logs.inc();
+            return false;
+        }
+        *last = Some(now);
+        true
     }
 }
 
