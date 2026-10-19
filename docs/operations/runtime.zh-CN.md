@@ -34,3 +34,12 @@ TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --
 ```
 
 运行时回归使用真实 UDP/TLS、真实 Raft 和磁盘 WAL；对象回放测试使用真实 RustFS 和 AWS SDK。`cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer` 用独立 CLI 子进程崩溃和原 Producer/Consumer 对象验证恢复。需从测试实际通过结果判断当前版本是否满足恢复要求，不以测试文件存在作为通过证据。
+
+
+## 阶段定位与自动放置
+
+`tidemq_operations_total` 与 `tidemq_stage_duration_seconds` 按固定 Read、Ack、Control 操作和结果记录本进程请求完成，Total 使用单调时钟，取消时保留 Unknown。Produce 继续使用 Broker 的提交指标。WAL 真实 Admission、Queue、Append、Sync 和 Apply 阶段接入同一注册表；`/diagnostics` 的 `metadata_storage` 与各 `data_groups.storage` 提供 committed/applied、apply failure、journal runtime 与恢复状态，帮助区分传输等待、共识等待和磁盘同步。
+
+ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记录。`tidemq_control_validity_remaining_seconds` 是有限本地已验证 lease 集合的最小剩余时间；无证据、过期或暂时无法读取时为零。`tidemq_admitted_bytes` 是共用 MemoryBudget 当前已许可占用，不能替代 RSS 或分配器统计。
+
+每个 Metadata 进程有一个 owned 的一秒放置循环，只有当前 leader 执行。它从固定 standby 候选和新鲜真实容量样本生成至多一个迁移计划，恢复未完成计划，限制并行探测、复制预算及再均衡冷却时间。缺少容量样本不会被当作节点死亡；真实不可达必须连续多次并持续达到阈值才触发替换。诊断 `placement` 展示固定阻塞原因、计划和年龄，`placement_capacity_available` 表示当前本地样本是否可用于放置。自动成员修复依赖既有可达多数派，无法绕过 quorum。

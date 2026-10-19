@@ -82,6 +82,13 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! { _ = shutdown.changed() => return, _ = ticker.tick() => {} }
+        service.sample_ownership_validity();
+        let admitted = u64::from(service.config.memory.total_bytes)
+            .saturating_sub(u64::try_from(service.budget.available_bytes()).unwrap_or(u64::MAX));
+        service
+            .metrics
+            .admitted_bytes
+            .set(i64::try_from(admitted).unwrap_or(i64::MAX));
         let started = Instant::now();
         let deadline = started + Duration::from_millis(900);
         let mut ready = !service.draining.load(Ordering::Acquire)
@@ -181,21 +188,38 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         };
         let mut groups = Vec::new();
         for (group, replica) in &service.data {
-            let metrics = replica.raft.metrics();
-            let metrics = metrics.borrow();
-            groups.push(serde_json::json!({"group_id":group,"leader":metrics.current_leader,"term":metrics.current_term,"last_applied":metrics.last_applied,"voters":metrics.membership_config.membership().voter_ids().take(4).collect::<Vec<_>>(),"joint_configs":metrics.membership_config.membership().get_joint_config(),"bootstrap_voters":replica.voters}));
+            let mut native = {
+                let metrics = replica.raft.metrics();
+                let metrics = metrics.borrow();
+                serde_json::json!({"group_id":group,"leader":metrics.current_leader,"term":metrics.current_term,"last_applied":metrics.last_applied,"voters":metrics.membership_config.membership().voter_ids().take(4).collect::<Vec<_>>(),"joint_configs":metrics.membership_config.membership().get_joint_config(),"bootstrap_voters":replica.voters})
+            };
+            let storage = timeout_at(deadline, replica.log.diagnostics()).await.ok();
+            if let Some(fields) = native.as_object_mut() {
+                fields.insert("storage".into(), serde_json::json!(storage));
+            }
+            groups.push(native);
         }
+        let metadata_storage = if let Some(replica) = &service.metadata {
+            timeout_at(deadline, replica.log.diagnostics()).await.ok()
+        } else {
+            None
+        };
         let quota = service
             .quota
             .lock()
             .ok()
             .map(|quota| quota.diagnose(std::time::Instant::now()));
+        let placement_diagnostic = service
+            .scaling_diagnostic
+            .lock()
+            .ok()
+            .map(|value| value.clone());
         let transport = service
             .transport_metrics
             .iter()
             .map(|metrics| metrics.snapshot())
             .collect::<Vec<_>>();
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"transport":transport,"placement_capacity_available":placement_available});
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic});
     }
 }
 
