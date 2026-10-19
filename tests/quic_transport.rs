@@ -893,6 +893,119 @@ async fn partial_frame_deadline_poisons_only_its_lane() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reusable_receive_prefix_and_body_timeouts_and_cancellation_still_poison() {
+    let pki = pki();
+    let mut server = external_server(&pki, config());
+    for cancel in [false, true] {
+        for partial in [
+            Bytes::from_static(&[0]),
+            Bytes::from_static(&[0, 0, 0, 100, 0x0a]),
+        ] {
+            let (_endpoint, _connection, mut stream) = raw_client(&pki, &server).await;
+            raw_hello(&mut stream, TrafficClass::Produce).await;
+            let accepted = server.accept().await.unwrap();
+            let mut lane = accepted.take_initial_streams().await.pop().unwrap();
+            stream.send(partial).await.unwrap();
+            stream.flush().await.unwrap();
+            if cancel {
+                assert!(
+                    timeout(
+                        Duration::from_millis(30),
+                        lane.receiver.receive_next(Duration::from_millis(500))
+                    )
+                    .await
+                    .is_err()
+                );
+            } else {
+                assert!(matches!(
+                    lane.receiver.receive_next(Duration::from_millis(30)).await,
+                    Err(Error::Deadline { .. })
+                ));
+            }
+            assert!(matches!(
+                lane.receiver.receive_next(Duration::from_millis(100)).await,
+                Err(Error::Poisoned)
+            ));
+            assert!(matches!(
+                lane.receiver.receive(deadline()).await,
+                Err(Error::Poisoned)
+            ));
+        }
+    }
+    assert_eq!(server.metrics.snapshot().deadlines_total, 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reusable_receive_idle_cancel_is_safe_and_assembly_spends_the_peer_budget() {
+    let pki = pki();
+    let mut server = external_server(&pki, config());
+    for peer_budget in [200, 30] {
+        let (_endpoint, _connection, mut stream) = raw_client(&pki, &server).await;
+        raw_hello(&mut stream, TrafficClass::Produce).await;
+        let accepted = server.accept().await.unwrap();
+        let mut lane = accepted.take_initial_streams().await.pop().unwrap();
+        let baseline = server.metrics.snapshot();
+        for invalid in [Duration::ZERO, Duration::MAX] {
+            assert!(matches!(
+                timeout(
+                    Duration::from_millis(50),
+                    lane.receiver.receive_next(invalid)
+                )
+                .await
+                .unwrap(),
+                Err(Error::Configuration { .. })
+            ));
+        }
+        assert!(
+            timeout(
+                Duration::from_millis(60),
+                lane.receiver.receive_next(Duration::from_millis(10))
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            server.metrics.snapshot().deadlines_total,
+            baseline.deadlines_total
+        );
+        assert_eq!(
+            server.metrics.snapshot().malformed_total,
+            baseline.malformed_total
+        );
+        let mut request = produce();
+        request.remaining_timeout_ms = peer_budget;
+        let encoded = encode_frame(&request, &ProtocolLimits::default()).unwrap();
+        stream.send(encoded.slice(..1)).await.unwrap();
+        stream.flush().await.unwrap();
+        let mut receiving = Box::pin(lane.receiver.receive_next(Duration::from_millis(500)));
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(receiving.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        stream.send(encoded.slice(1..)).await.unwrap();
+        let received = receiving.await;
+        if peer_budget == 200 {
+            let received = received.unwrap().unwrap();
+            assert!(received.frame().remaining_timeout_ms <= 145);
+            assert!(
+                received
+                    .deadline()
+                    .saturating_duration_since(Instant::now())
+                    <= Duration::from_millis(150)
+            );
+        } else {
+            assert!(matches!(received, Err(Error::Deadline { .. })));
+            assert!(matches!(
+                lane.receiver.receive_next(Duration::from_millis(100)).await,
+                Err(Error::Poisoned)
+            ));
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ack_admission_exhaustion_preserves_preestablished_control_streams() {
     let pki = pki();
     let config = TransportConfig {

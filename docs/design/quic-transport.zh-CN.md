@@ -34,6 +34,8 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 `FramedStream::split` 提供独立 `FrameSender` 和 `FrameReceiver`。`send` 在本地 send-ready 后重新缩减剩余期限并入队，保留发送流水线，不为每帧等待 native flush/QUIC ACK。`receive` 在首字节到达后开始扣减该帧预算，读 body/解码后再扣减，空闲等待不消耗下一请求的期限。调用方跨跳传递同一剩余预算和本地 deadline，不重置原操作的总期限；网络单向时间不可由本地单调时钟精确测出，端到端超时及结果恢复仍由 SDK/业务层保证。
 
+`FrameReceiver::receive(absolute_deadline)` 保留握手、短 ACK 和单次读取的绝对收帧期限。RPC/dispatcher 的长寿命 reader 使用 `receive_next(assembly_timeout)`：可持续等待首字节，从首字节到达时才锚定有限组帧期限，prefix/body/解码时间仍扣除 peer 的剩余请求预算。兼容保留的 `RpcConfig.read_idle_timeout` 与 `DispatchConfig.idle_timeout` 字段现在限制已开始帧的组装时间，不以未使用 sibling lane 的空闲判定连接失活。真正连接空闲、失活与退出仍由原生 connection idle、认证探活和 owned shutdown 控制；没有扩大这些期限或关闭探活。空等首字节不增加 malformed/deadlines；空等期间取消不会消费字节或 poison，首字节之后取消或组帧超时仍使整 lane 失效。
+
 单请求取消使用 CANCEL Frame 和原 request_id。取消/超时发生在部分读写时，lane 会 poison，不允许从未知字节边界继续；它只允许整 lane 的未决请求按原身份恢复。`finish` 是流结束，`reset` 是整 lane 失效，两者均不能撤销已提交操作。业务结果恢复、producer/partition 顺序调度、冷/热屏障和 OpenRaft RPC 因果由调用层实现，相关行为以 SDK、运行时和持久组合测试为准。
 
 正常帧只入队以维持流水；可信节点的 Stop/Reconnect 控制回复可显式请求 `FrameSender::flush(deadline)`，等待原生 stream 全部在途字节得到对端认证 ACK 后，才执行 `WireService::response_sent` 关闭动作。回调保留原认证上下文、请求与响应，全部受有界回复队列及原总期限约束；普通请求默认不触发 flush。只有响应成功发送和 flush 成功才通知，不能在 handler 刚返回时关闭 endpoint，也不使用固定 sleep。该传输收讫仍不是业务持久成功，Stop 的权限、状态与提交前置由运行时另行检查。
@@ -58,7 +60,7 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 每条连接另以 `connection_window_bytes + max_streams × send_buffer_bytes` 保守预留传输 envelope；服务端预认证 envelope 先占独立 handshake，认证后取得对应类别的 normal/data envelope，再释放握手额度；客户端已知目标类别，C 使用 normal Control。数据额度满时，新 C 仍可认证并传递 ACK，不要求关闭已有 D。handshake 配额满只拒绝/超时新握手，不侵占 Core。默认 connection/stream/send buffer 分别为 64KiB/16KiB/16KiB，最大连接 128、握手 16、流 16、Core 2、ACK 8；默认 1MiB handshake 配额会进一步限制同时进入应用 HELLO 的连接数量。它们是可测的起点，未声明为生产吞吐最优值。native TLS、UDP packet buffer、连接元数据及操作系统 socket 内存不等于该公式，必须同时看 RSS/allocator 与进程上限。
 
-所有连接、握手、stream prelude、读取、发送均有有限数量/期限；无使用的 uni stream 窗口为 0。应用接收队列满时拒绝/reset 新流，不让 dispatcher 队列无限增长。`Connection::close` 会立即关闭所有流，未决结果可能未知。通用 dispatcher 先用 `Server::stop_accepting(deadline)` 停止接受并取消握手，保留原生 I/O 排空已经接收的 Session 和 owned handler，最后 `shutdown_by(deadline)` 释放 endpoint；关闭监听错误也不跳过业务排空。全部阶段共用原来的总期限。
+连接、握手、stream prelude、已开始帧的读取和发送均有有限数量/期限；长寿命 reader 等首字节保留在同一有限 lane 和 owned task 内，无使用的 uni stream 窗口为 0。应用接收队列满时拒绝/reset 新流，不让 dispatcher 队列无限增长。`Connection::close` 会立即关闭所有流，未决结果可能未知。通用 dispatcher 先用 `Server::stop_accepting(deadline)` 停止接受并取消握手，保留原生 I/O 排空已经接收的 Session 和 owned handler，最后 `shutdown_by(deadline)` 释放 endpoint；关闭监听错误也不跳过业务排空。全部阶段共用原来的总期限。
 
 `Client::close(deadline)` 阻止新连接、关闭缓存和直接连接，并停止及 join 本进程持有的原生 Tokio I/O 主任务。固定版本 s2n-quic 的默认 Provider 丢弃这个 JoinHandle，连接关闭状态又可能保留三倍当前 PTO，故障后的退避不能作为五秒进程关闭的前置等待。传输层仅薄封装公开 Provider，正常业务停止后才取消该主任务；上游 RX/TX 环形队列随之关闭，退出前以有界 socket 重新绑定验证端口确实释放，超时继续返回真实错误。未决 RPC 收到 Closed/Unknown，不能当作未提交。没有延长关闭预算，也不启用 SO_REUSEPORT。这些资源关闭操作均不证明消息已持久提交。
 
@@ -74,4 +76,6 @@ RPC 每个物理连接拥有一项有界存活观察任务，仅在存在未决�
 
 `tests/quic_transport.rs` 使用逐测试独立的内存证书、随机 UDP 端口和真实 TLS/socket。已覆盖大于 stream window 的帧及同流连续请求、证书/权限拒绝、双 pin 轮换与错目标节点、超大 HELLO 和非法 frame、半帧超时 poison、ACK 满时 Core 前进、慢 B 时 C 前进、并发池复用/分类隔离、空闲期限、payload clone 计费，以及 data 满且 D 保持连接时 C 重新认证、ACK 到达 dispatcher 后释放测试持有的积压额度。normal 被普通 Control 和 data 用尽时 Core 帧仍前进；此测试本身不代表业务持久 ACK，后者由真实 SDK/数据组回归交叉验证。原身份重试、Broker 接管和 RF3 独立进程多数派故障另见[测试索引](../testing-benchmarks.zh-CN.md)。故障网、3AZ、真实 CID/LB、按租户/分区公平调度及完整吞吐/P99/P99.9 矩阵仍待对应环境验收。
 
-版本来源：[s2n-quic 1.91.0](https://docs.rs/s2n-quic/1.91.0/s2n_quic/)、[TLS Server Builder](https://docs.rs/s2n-quic-tls/0.91.0/s2n_quic_tls/server/struct.Builder.html)、[TLS session 源码](https://docs.rs/s2n-quic-tls/0.91.0/src/s2n_quic_tls/session.rs.html)、[event TLS API 源码](https://docs.rs/s2n-quic-core/0.91.0/src/s2n_quic_core/event.rs.html)、[send/flush 语义](https://docs.rs/s2n-quic/1.91.0/s2n_quic/stream/struct.SendStream.html)。
+`tests/server_dispatch.rs` 以四条真实 Request lane、仅一个 affinity lane 持续工作，分别隔离客户端与服务端的 120ms 应用组帧阈值，持续业务超过阈值而保持同一物理连接，且 deadline/malformed 不增长。通用接收回归另覆盖空等取消后继续使用、无效 timeout 立即拒绝、prefix/body 各自超时与取消后 poison，以及首字节之后的延迟消耗 peer 预算；一次性 absolute API 的半帧失败与既有关闭/端口回收测试继续保留。
+
+版本来源：[s2n-quic 1.91.0](https://docs.rs/s2n-quic/1.91.0/s2n_quic/)、[TLS Server Builder](https://docs.rs/s2n-quic-tls/0.91.0/s2n_quic_tls/server/struct.Builder.html)、[TLS session 源码](https://docs.rs/s2n-quic-tls/0.91.0/src/s2n_quic_tls/session.rs.html)、[event TLS API 源码](https://docs.rs/s2n-quic-core/0.91.0/src/s2n_quic_core/event.rs.html)、[send/flush 语义](https://docs.rs/s2n-quic/1.91.0/s2n_quic/stream/struct.SendStream.html)。首字节取消边界依据 [Tokio 1.53.3 read](https://docs.rs/tokio/1.53.3/tokio/io/trait.AsyncReadExt.html#method.read) 与 [s2n ReceiveStream 源码](https://docs.rs/s2n-quic/1.91.0/src/s2n_quic/stream/receive.rs.html)：单字节 read 在 Pending 时不消费数据，Ready 后即在同一次 poll 内启用 lane guard，再等待剩余 prefix/body。版本化 docs.rs 抓取不可用时，核对 Cargo 对应精确版本 registry 发布源码；`read_exact` 不作为空等的取消安全边界。

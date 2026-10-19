@@ -25,6 +25,7 @@
 | data 满时 C 重认证或 Core 失败 | data/normal/core/handshake 各自余量、旧连接引用、握手并发 | data 满不能解释为 Core 配额耗尽；C 长期 envelope/ACK 仍需 normal，握手有独立小额度。先结束失效连接引用/handler，避免旧 envelope 一直保留；不要让普通工作改用 try_reserve_core 绕过门禁 |
 | RSS 不回落但业务 Bytes 已释放 | allocator live/retained、RSS、native TLS/socket 量 | 结合内存排障手册区分真实存活、缓存/碎片与 native 缓冲；transport envelope 不是精确 RSS 计量 |
 | Deadline 后下一帧报 Poisoned | 是否发生部分 prefix/body 或 send | 关闭并恢复该 lane 的全部未决请求，沿用原业务身份；不能继续猜测帧边界，超时不等于未提交 |
+| 活跃流正常但连接在固定应用读阈值后重连 | sibling Request/Core lane 是否一直无帧、deadline/malformed 与连接累计计数 | 长寿命 reader 应使用 `receive_next`，空闲 lane 不得触发整连接关闭；`read_idle_timeout`/dispatcher `idle_timeout` 只限已开始帧组装，不通过扩大配置或关闭原生探活掩盖 |
 | 退出时还有未决操作 | 准入/在途数量、业务持久结果 | 先停止准入并有限排空，按身份查询/重试未知结果，再关闭 Session 和 listener；QUIC finish 不作提交证明 |
 | 退出时 native I/O 或端口释放超时 | 原关闭期限、原生任务错误链、UDP 端口持有者 | 检查业务是否先停止、handler/session 是否排空；当前实现持有并回收原生 I/O 主任务，验证 RX/TX socket 释放。不能忽略错误、等待故障连接退避或用 SO_REUSEPORT 绕过 |
 
@@ -33,6 +34,8 @@
 默认不记录每消息正文或每次拒绝日志。认证成功只有固定格式 debug 事件；token、私钥、HELLO payload 和用户正文不进入事件。临时开启 debug 使用基础日志管理的期限/轮转/限量能力，先观察聚合计数，不将整个 native 事件流永久提升为生产 info。
 
 `connections_total`/`streams_total` 是累计准入量，不是当前活跃数。`frames_sent_total` 是已入队应用帧，不能作为持久成功。`bytes_sent_total` 含 4 字节前缀，接收统计不含前缀。`malformed_total` 包括 IO/读帧/解码失败；授权拒绝另进 rejected。`send_wait_seconds_total` 含 send-ready 与 enqueue 等待，不能标注为精确拥塞或 credit 时间。丢包通知包含 MTU probe；PTO 是最近一次 recovery 样本，不可跨连接相加当作业务重试次数。
+
+空等首字节不增加 `deadlines_total` 或 `malformed_total`。收到首字节后的慢 prefix/body 仍有有限组帧期限；超时或取消导致 poison，不执行外层 Deadline 重试来重用未知字节边界。新入口只在首字节之前允许安全取消。握手/短 ACK/单次读取仍用 `receive(absolute_deadline)`；客户端原请求取消仅移除其 waiter，不能因此关闭其他共享请求。
 
 ## 本地回归
 
