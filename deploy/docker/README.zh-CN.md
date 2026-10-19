@@ -155,11 +155,11 @@ bash "$REPO/scripts/docker-validate.sh" "$STATE" oom
 | `broker-kill` | 至少 2/3 Metadata 返回相同 `active` owner/epoch/route generation；只杀该 Broker；离线期间新增 8 条提交且持久 ACK，再确认另一 owner 和更高 epoch |
 | `metadata-quorum` | pause 11/12 并等待 4 秒租约失效；验证原 PendingBatch 没有成功回执，恢复 quorum 后完成 |
 | `gateway-kill` | 杀连接入口 41，验证未完成的原 PendingBatch，启动原容器恢复；只证明 Gateway 冷重启 |
-| `oom` | RF1 完成 warmup 后，将 node-1 的 memory/swap 从 384 MiB 降到 16 MiB；必须观察 `OOMKilled=true`、退出 137，再恢复原限额与原容器，完成原 PendingBatch |
+| `oom` | RF1 完成 warmup 后，将专用 node-1 的 memory/swap 从 384 MiB 强制降到 Docker 允许的最小 6 MiB；必须观察 `OOMKilled=true`、退出 137，再恢复原限额与原容器，完成原 PendingBatch；daemon 拒绝调整或未发生 OOM 都判失败 |
 
 故障场景按固定小文件 `waiting-fault.json` → `fault-injected` → `fault-observed.json` → `recovered` → `report.json` 协调，最终完整持久 ACK 范围为 80 条。driver output 子目录必须由 driver 自己创建；host 不预建它。每个阶段标记和退出等待最多 120 秒，Docker 命令在独立进程组内有硬超时，并夹在该阶段期限内，避免 Compose plugin 子进程越过 CLI 期限。Metadata/Broker 的诊断响应是 `local_applied`，2/3 诊断一致仍不是线性一致读证明；脚本保存原始响应及所选 tuple。Storage 诊断同样是进程内有界采样，故障前后都需一致证据，不能把单次旧采样当成准确 leader。
 
-每次在 `$STATE/evidence/<case>.<random>/` 保存 driver report、终态/exit、各角色状态与挂载、受限日志、metrics、diagnostics、故障标记和选择依据。OOM 还保存角色容器自身的 `memory.max/current/events`、实际降低后的 HostConfig/State、原限额和恢复后的 cgroup 文件，不修改宿主全局 cgroup。每次 telemetry 快照最多 30 秒；单份日志/HTTP 输出最多 256 KiB、JSON report 最多 64 KiB、阶段标记最多 4 KiB。故障中不可访问的节点会留下错误证据；故障前后正常节点的必需采集失败会让该 case 失败。
+每次在 `$STATE/evidence/<case>.<random>/` 保存 driver report、终态/exit、各角色状态与挂载、受限日志、metrics、diagnostics、故障标记和选择依据。OOM 还保存角色容器自身的 `memory.max/current/events`、实际降低后的 HostConfig/State、原限额和恢复后的 cgroup 文件，不修改宿主全局 cgroup；这是受控调低限额后的 OOM 恢复验证，不能代表默认限额下的自然负载压力结果。每次 telemetry 快照最多 30 秒；单份日志/HTTP 输出最多 256 KiB、JSON report 最多 64 KiB、阶段标记最多 4 KiB。故障中不可访问的节点会留下错误证据；故障前后正常节点的必需采集失败会让该 case 失败。
 
 失败 trap 只恢复本次记录且再次核验身份的原容器，恢复原内存/swap 并 unpause，不创建替代节点；它在共享 5 秒预算内 TERM/必要时 KILL 本次 validator，记录真实终态。所有容器和卷都保留，脚本不执行清理。只有 driver 退出 0、report 为 passed、64/80 条唯一收发与持久 ACK 全部相符时才报告通过。无 Docker self-test 覆盖解析、拒绝错误身份、未知启动找回、标记限额、Storage/Broker 一致性、离线持久进度、恢复及错误退出/report，并用 fake Docker/plugin/sleeper 验证整个进程组超时退出；Linux 必须通过 GNU timeout 检查，缺少 GNU coreutils 的 macOS 会明确跳过这一项。它不替代真实 Docker/OOM/故障验证。
 
