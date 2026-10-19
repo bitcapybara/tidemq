@@ -3044,6 +3044,7 @@ dependencies = [
  "snafu",
  "tidemq-protocol",
  "tidemq-sdk",
+ "tidemq-transport",
  "tikv-jemalloc-ctl",
  "tikv-jemallocator",
  "tokio",
@@ -3075,6 +3076,23 @@ version = "0.1.0"
 dependencies = [
  "snafu",
  "tidemq-protocol",
+ "tracing",
+]
+
+[[package]]
+name = "tidemq-transport"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "bytes",
+ "prometheus-client",
+ "prost",
+ "rcgen",
+ "s2n-quic",
+ "serde",
+ "snafu",
+ "tidemq-protocol",
+ "tokio",
  "tracing",
 ]
 

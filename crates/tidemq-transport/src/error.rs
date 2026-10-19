@@ -39,7 +39,7 @@ pub enum Error {
     #[snafu(display("Transport protocol validation failed"))]
     Protocol { source: tidemq_protocol::Error },
     #[snafu(display("Transport memory admission failed"))]
-    Memory { source: crate::Error },
+    Memory { source: crate::budget::Error },
     #[snafu(display("Transport buffer allocation failed"))]
     Allocation {
         source: std::collections::TryReserveError,

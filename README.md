@@ -6,7 +6,7 @@ A cloud-native message queue built on object storage, designed for high throughp
 
 TideMQ targets data ingestion and stream processing. Its architecture separates message serving, replicated write-ahead logs (WALs), object storage, and control metadata so that compute and storage can scale independently.
 
-> **Status:** Foundation implementation: a three-package workspace, generated bounded protocol, configuration validation, bounded structured logging, finite metric schema, and allocator diagnostics. Messaging, replication, subscriptions, and object storage are under development. Performance and recovery targets remain unvalidated. See the [implementation status](docs/implementation-status.zh-CN.md).
+> **Status:** Foundation implementation: a four-package workspace, authenticated bounded QUIC transport, durable WAL/OpenRaft storage, generated bounded protocol, configuration validation, structured logging, finite metrics, and allocator diagnostics. The messaging runtime, subscriptions, and object integration are under development. Performance and recovery targets remain unvalidated. See the [implementation status](docs/implementation-status.zh-CN.md).
 
 ## Design goals
 
