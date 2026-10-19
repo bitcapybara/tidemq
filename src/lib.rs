@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 pub mod observability;
 pub mod replication;
+pub mod subscription;
 pub mod transport;
 pub mod wal;
 
