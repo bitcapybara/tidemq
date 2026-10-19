@@ -112,6 +112,11 @@ impl Drop for StreamLease {
 impl Drop for ConnectionState {
     fn drop(&mut self) {
         self.handle.close(0_u32.into());
+        let _ = self.metrics.active_connections.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |count| count.checked_sub(1),
+        );
     }
 }
 
@@ -270,6 +275,7 @@ impl ConnectionState {
         memory: MemoryPermit,
         endpoint_slot: Option<OwnedSemaphorePermit>,
     ) -> Arc<Self> {
+        add(&metrics.active_connections, 1);
         Arc::new(Self {
             handle,
             class,
