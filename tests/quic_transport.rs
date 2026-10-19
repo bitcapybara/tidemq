@@ -499,6 +499,122 @@ fn internal_target(server: &Server, cluster: Id) -> PeerTarget {
     }
 }
 
+struct BlockedSemanticControl {
+    started: tokio::sync::Semaphore,
+    release: tokio::sync::Semaphore,
+}
+
+impl tidemq::server::WireService for BlockedSemanticControl {
+    type Error = tidemq_protocol::Error;
+
+    async fn handle(
+        &self,
+        _peer: tidemq::transport::Authorization,
+        request: &Frame,
+        _deadline: Instant,
+        order: Option<tidemq::server::SubmissionOrder>,
+    ) -> Result<Option<Frame>, Self::Error> {
+        drop(order);
+        if request.kind == i32::from(FrameKind::InternalCommand) {
+            self.started.add_permits(1);
+            self.release.acquire().await.unwrap().forget();
+        }
+        let mut response = request.clone();
+        response.kind = FrameKind::RaftResult.into();
+        response.payload = prost::Message::encode_to_vec(&tidemq_protocol::internal::RaftResult {
+            rpc_id: request.request_id.clone(),
+            encoded_result: Bytes::from_static(b"completed"),
+        })
+        .into();
+        Ok(Some(response))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
+    let pki = pki();
+    let cluster = Id::random().unwrap();
+    let server = internal_server(&pki, cluster);
+    let target = internal_target(&server, cluster);
+    let service = Arc::new(BlockedSemanticControl {
+        started: tokio::sync::Semaphore::new(0),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let (stop, receiver) = tokio::sync::watch::channel(false);
+    let task = tokio::spawn(tidemq::server::run(
+        server,
+        service.clone(),
+        tidemq::server::DispatchConfig {
+            core_handlers: 2,
+            raft_handlers: 1,
+            ..Default::default()
+        },
+        budget(),
+        Arc::new(tidemq::server::DispatchMetrics::default()),
+        receiver,
+    ));
+    let client = internal_client(&pki, node_grant(&pki.server, cluster, 1, "storage"));
+    let session = client
+        .connect(
+            target,
+            &internal_credentials(cluster, 2),
+            TrafficClass::Control,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let rpc = tidemq::transport::rpc::RpcClient::from_session(session, Default::default())
+        .await
+        .unwrap();
+    let semantic = || {
+        let operation = Id::random().unwrap();
+        frame(
+            FrameKind::InternalCommand,
+            TrafficClass::Control,
+            operation,
+            &tidemq_protocol::internal::InternalCommand {
+                group_id: 7,
+                operation_id: Bytes::copy_from_slice(operation.as_bytes()),
+                encoded_command: Bytes::from_static(b"blocked semantic read"),
+            },
+        )
+    };
+    let first = rpc.submit(semantic(), deadline()).await.unwrap();
+    let second = rpc.submit(semantic(), deadline()).await.unwrap();
+    timeout(Duration::from_secs(1), service.started.acquire_many(2))
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    let wire_id = Id::random().unwrap();
+    let heartbeat = new_frame(
+        FrameKind::RaftVote,
+        TrafficClass::Control,
+        wire_id,
+        Id::random().unwrap(),
+        &RaftRequest {
+            group_id: 7,
+            rpc_id: Bytes::copy_from_slice(wire_id.as_bytes()),
+            encoded_rpc: Bytes::from_static(b"control"),
+        },
+        2_000,
+        &ProtocolLimits::default(),
+    )
+    .unwrap();
+    let response = timeout(Duration::from_secs(1), rpc.call(heartbeat, deadline()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.frame().kind, i32::from(FrameKind::RaftResult));
+    service.release.add_permits(2);
+    first.receive().await.unwrap();
+    second.receive().await.unwrap();
+    stop.send(true).unwrap();
+    task.await.unwrap().unwrap();
+    rpc.close(deadline()).await;
+    client.close(deadline()).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mtls_requires_certificate_pin_node_identity_and_group_authority() {
     let pki = pki();

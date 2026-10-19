@@ -1,7 +1,5 @@
 //! Closed internal RPCs. Only the authenticated runtime may construct remote authority adapters.
 
-#![allow(dead_code)] // The separately developed runtime assembly consumes these private adapters.
-
 use std::{
     collections::BTreeSet,
     io::Write,
@@ -790,7 +788,8 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                 && usage.read_pins <= super::types::MAX_PINS
         }
         (Query::Objects { after, limit }, View::Objects(page)) => {
-            page.objects.len() <= *limit
+            *limit > 0
+                && page.objects.len() <= *limit
                 && *limit <= 64
                 && page
                     .objects
@@ -805,10 +804,31 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                     .next_after
                     .is_none_or(|cursor| page.objects.last().is_some_and(|(id, _)| *id == cursor))
         }
+        (Query::Pins { after, limit }, View::Pins(page)) => {
+            *limit > 0
+                && *limit <= 64
+                && page.pins.len() <= *limit
+                && page
+                    .pins
+                    .iter()
+                    .all(|id| after.is_none_or(|after| *id > after))
+                && page
+                    .pins
+                    .windows(2)
+                    .all(|pair| pair.first().zip(pair.get(1)).is_some_and(|(a, b)| a < b))
+                && page
+                    .next_after
+                    .is_none_or(|cursor| page.pins.last() == Some(&cursor))
+        }
         (Query::Health, View::Health) => true,
-        (Query::Pin(id), View::Pin(pin)) => pin
-            .as_ref()
-            .is_none_or(|pin| pin.id == *id && pin.objects.len() <= 64 && pin.ttl_millis <= 10_000),
+        (Query::Pin(id), View::Pin(pin)) => pin.as_ref().is_none_or(|pin| {
+            pin.id == *id
+                && pin.group_id == data_group
+                && !pin.objects.is_empty()
+                && pin.objects.len() <= 64
+                && pin.ttl_millis > 0
+                && pin.ttl_millis <= 10_000
+        }),
         (Query::Diagnose(id), View::Diagnostic(diagnostic)) => diagnostic.object_id == *id,
         (Query::DataVoters, View::DataVoters(group)) => {
             group.group_id == data_group && matches!(group.voters.len(), 1 | 3)

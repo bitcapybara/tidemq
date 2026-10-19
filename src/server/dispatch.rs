@@ -36,6 +36,7 @@ pub struct SubmissionOrder {
 
 #[derive(Clone, Debug)]
 pub struct DispatchConfig {
+    pub raft_handlers: usize,
     pub core_handlers: usize,
     pub ack_handlers: usize,
     pub data_handlers: usize,
@@ -48,6 +49,7 @@ pub struct DispatchConfig {
 impl Default for DispatchConfig {
     fn default() -> Self {
         Self {
+            raft_handlers: 2,
             core_handlers: 8,
             ack_handlers: 32,
             data_handlers: 128,
@@ -76,6 +78,7 @@ struct ClassQueue {
     sender: mpsc::Sender<Job>,
 }
 struct Dispatcher {
+    raft: ClassQueue,
     core: ClassQueue,
     ack: ClassQueue,
     data: ClassQueue,
@@ -106,7 +109,14 @@ impl Dispatcher {
         reply: mpsc::Sender<Reply>,
         order: Option<SubmissionOrder>,
     ) -> std::result::Result<(), Box<ReceivedFrame>> {
+        let raft_control = purpose == StreamPurpose::Core
+            && matches!(&peer, Authorization::Internal(_))
+            && matches!(
+                FrameKind::try_from(frame.frame().kind),
+                Ok(FrameKind::RaftVote | FrameKind::RaftAppend)
+            );
         let queue = match purpose {
+            StreamPurpose::Core if raft_control => &self.raft,
             StreamPurpose::Core => &self.core,
             StreamPurpose::Ack => &self.ack,
             StreamPurpose::Request => &self.data,
@@ -154,10 +164,13 @@ pub async fn run<S: WireService>(
     mut shutdown: watch::Receiver<bool>,
 ) -> crate::Result<()> {
     validate(&config)?;
+    // Semantic handlers can await Raft; they must never occupy its own control execution slots.
+    let (raft, mut raft_rx) = ClassQueue::new(config.raft_handlers);
     let (core, mut core_rx) = ClassQueue::new(config.core_handlers);
     let (ack, mut ack_rx) = ClassQueue::new(config.ack_handlers);
     let (data, mut data_rx) = ClassQueue::new(config.data_handlers);
     let dispatcher = Arc::new(Dispatcher {
+        raft,
         core,
         ack,
         data,
@@ -174,6 +187,7 @@ pub async fn run<S: WireService>(
             changed = shutdown.changed() => { if changed.is_err() || *shutdown.borrow() { break } },
             _ = sessions.join_next(), if !sessions.is_empty() => {},
             _ = handlers.join_next(), if !handlers.is_empty() => {},
+            Some(job) = raft_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
             Some(job) = core_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
             Some(job) = ack_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
             Some(job) = data_rx.recv() => { handlers.spawn(execute(service.clone(), job, dispatcher.config.protocol.clone(), dispatcher.health.clone())); },
@@ -183,16 +197,13 @@ pub async fn run<S: WireService>(
             }
         }
     }
-    server
-        .shutdown()
-        .await
-        .map_err(|source| crate::Error::Transport { source })?;
+    let listener_result = server.shutdown().await;
     let deadline = Instant::now()
         .checked_add(dispatcher.config.drain_timeout)
         .ok_or(crate::Error::Configuration {
             reason: "server drain deadline overflow",
         })?;
-    for receiver in [&mut core_rx, &mut ack_rx, &mut data_rx] {
+    for receiver in [&mut raft_rx, &mut core_rx, &mut ack_rx, &mut data_rx] {
         receiver.close();
         while let Ok(job) = receiver.try_recv() {
             handlers.spawn(execute(
@@ -217,7 +228,7 @@ pub async fn run<S: WireService>(
         }
     }
     while sessions.join_next().await.is_some() {}
-    Ok(())
+    listener_result.map_err(|source| crate::Error::Transport { source })
 }
 
 fn validate(config: &DispatchConfig) -> crate::Result<()> {
@@ -226,6 +237,7 @@ fn validate(config: &DispatchConfig) -> crate::Result<()> {
         .validate()
         .map_err(|source| crate::Error::Protocol { source })?;
     if [
+        config.raft_handlers,
         config.core_handlers,
         config.ack_handlers,
         config.data_handlers,
