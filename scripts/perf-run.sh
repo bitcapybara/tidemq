@@ -42,7 +42,7 @@ case "$observability" in
 esac
 case "$scenario" in
   small) load+=(--message-bytes 128 --batch-messages 32 --messages 4096 --warmup-messages 256) ;;
-  large) load+=(--message-bytes 262144 --batch-messages 1 --messages 64 --warmup-messages 8) ;;
+  large) load+=(--message-bytes 262136 --batch-messages 1 --messages 64 --warmup-messages 8) ;;
   slow) load+=(--message-bytes 128 --batch-messages 32 --messages 2048 --warmup-messages 128 --consumer-delay-ms 20) ;;
   replay) load+=(--mode replay --require-cold --replay-settle-ms 5000 --message-bytes 65536 --batch-messages 4 --messages 256 --warmup-messages 16) ;;
   *) printf 'Unknown load scenario\n' >&2; exit 2 ;;
