@@ -37,6 +37,8 @@ Read 的消息数和字节数都是上限。首条正文和冷页准备完成、
 
 管理 HTTP 使用独立 loopback 监听、四个并发槽、8 KiB 请求和 256 KiB 回复上限，拒绝带请求体和 Transfer-Encoding 的请求。统一 Registry 只导出一个 EOF；指标不以 topic、partition、node、operation 或任意外部字符串创建标签。
 
+`/ownership/<topic UUID>/<partition u32>` 复用 Metadata 的按键诊断，返回单个分区的 `local_applied` owner、phase、epoch、route generation 和提交位置，不遍历快照，也不导出密钥、正文或投递 token。它与写响应共用两秒总期限；本地视图不提供线性一致性或写入授权证明。Docker 故障脚本用多数 Metadata 一致的诊断选择实际 Broker，再以原 SDK 的持久账本确认接管结果。
+
 
 ## 节点计划退出
 

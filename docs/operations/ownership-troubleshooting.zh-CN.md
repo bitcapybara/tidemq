@@ -1,10 +1,12 @@
 # 所有权与授权排障
 
-本页对应 `metadata::MetadataState`、`ownership::MetadataAuthority`、`DataAuthority`、`ControlLease`。当前是可供运行时接入的库 API；还没有独立的远端 `ownership diagnose` CLI，不能把基础 CLI 的本进程配置输出当作集群状态。
+本页对应 `metadata::MetadataState`、`ownership::MetadataAuthority`、`DataAuthority`、`ControlLease`。运行中的 Metadata/Combined 提供 loopback 只读管理入口 `/ownership/<topic UUID>/<partition u32>`；没有独立的远端 `ownership diagnose` CLI，不能把基础 CLI 的本进程配置输出当作集群状态。
 
 ## 先定位一笔操作
 
 记录受影响 Topic ID/分区、operation ID 和 SDK 首次失败时间。用只读 `diagnose_ownership(partition)` 查看当前阶段、epoch、owner、route generation 和 fence/recovery commit index；同时记录该输出的 revision、采集时间及来源。`local_applied` 可能陈旧，不能单独用来恢复写入。运行时必须先取得线性化屏障，才能把当前 grant、原操作结果或数据恢复状态作为授权证据。
+
+在线查询示例为 `curl --fail --max-time 2 http://127.0.0.1:8510/ownership/<topic UUID>/0`，在对应节点或受限容器 namespace 内执行。`partition` 返回 `"<UUID>/0"` 字符串，`phase` 为 `active` 等 snake_case 枚举。非法 canonical 键为 400，不托管 Metadata 或分区不存在为 404；本地读取失败可能为 503 或在总期限耗尽后断开。多数副本视图一致可辅助选择故障目标，实际恢复仍以真实 quorum/权限校验和原业务持久结果为准。
 
 状态查询、日志和 trace 都不产生新的提交事实；没有日志不表示未提交。RPC 超时后查询原 `operation_result`，并以原操作与原内容重试。一次尚未查到结果，也不能排除原请求随后提交。
 
