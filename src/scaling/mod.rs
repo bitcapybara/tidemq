@@ -4,6 +4,7 @@ mod budget;
 mod drain;
 mod membership;
 mod placement;
+mod pressure;
 pub mod remote;
 mod telemetry;
 mod types;
@@ -12,6 +13,7 @@ pub use budget::{RepairBudget, RepairDiagnostic, RepairLease, RepairLimits};
 pub use drain::{DrainActions, DrainPlan, DrainProgress, Handoff};
 pub use membership::{MembershipApplication, MembershipCoordinator, StableMembership};
 pub use placement::{Capacity, Placement, PlacementPolicy, Replacement};
+pub use pressure::{PressureSample, PressureSampler};
 pub use telemetry::{ScalingMetrics, Stage};
 pub(crate) use types::MembershipEvidence;
 pub use types::{MembershipPlan, MigrationRecord};
@@ -64,6 +66,8 @@ pub enum Error {
     },
     #[snafu(display("Scaling snapshot file observation failed"))]
     SnapshotIo { source: std::io::Error },
+    #[snafu(display("Scaling pressure observation is unavailable"))]
+    Observation { source: std::io::Error },
     #[snafu(display("Scaling observation worker failed"))]
     Worker { source: tokio::task::JoinError },
     #[snafu(display("Scaling state lock is poisoned"))]

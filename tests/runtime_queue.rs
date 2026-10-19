@@ -111,6 +111,7 @@ impl Fixture {
                         groups: vec![GroupConfig {
                             group_id: 2,
                             voters: storage.to_vec(),
+                            standby: Vec::new(),
                         }],
                         peers: peers.clone(),
                         access_file: directory.join("access.toml"),
@@ -484,6 +485,7 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         (22, Role::Storage),
         (23, Role::Storage),
         (31, Role::Broker),
+        (32, Role::Broker),
         (41, Role::Gateway),
         (42, Role::Gateway),
     ];
@@ -539,6 +541,50 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         .await
         .unwrap();
     assert_eq!(status.assignment.unwrap().acknowledged_before, 8);
+    let control = fixture.running.get(&11).unwrap();
+    let partition = tidemq::metadata::PartitionKey {
+        topic_id: topic,
+        partition: 0,
+    };
+    let previous = control.route(partition, deadline()).await.unwrap();
+    let moved = control
+        .takeover(
+            partition,
+            32,
+            previous.epoch,
+            previous.generation,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(moved.owner_node, 32);
+    assert_eq!(moved.epoch, previous.epoch + 1);
+    assert_eq!(
+        producer
+            .produce(
+                vec![public::Message {
+                    key: Bytes::new(),
+                    body: Bytes::from_static(b"after-handoff")
+                }],
+                deadline()
+            )
+            .await
+            .unwrap()
+            .first_offset,
+        8
+    );
+    consumer.reclaim(deadline()).await.unwrap();
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let delivery = consumer.next().await.unwrap().unwrap();
+    assert_eq!(delivery.offset(), 8);
+    assert_eq!(
+        consumer
+            .ack(&delivery, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        9
+    );
     second_client.close(deadline()).await;
     client.close(deadline()).await;
     drop(consumer);

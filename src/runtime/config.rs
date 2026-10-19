@@ -34,6 +34,7 @@ impl Default for RuntimeConfig {
             groups: vec![GroupConfig {
                 group_id: 2,
                 voters: vec![1],
+                standby: Vec::new(),
             }],
             peers: Vec::new(),
             access_file: "secrets/access.toml".into(),
@@ -52,6 +53,14 @@ impl Default for RuntimeConfig {
 pub struct GroupConfig {
     pub group_id: u64,
     pub voters: Vec<u64>,
+    #[serde(default)]
+    pub standby: Vec<u64>,
+}
+
+impl GroupConfig {
+    pub fn hosts(&self, node: u64) -> bool {
+        self.voters.contains(&node) || self.standby.contains(&node)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -165,6 +174,17 @@ impl RuntimeConfig {
                 return Err(Error::invalid("Group identity is invalid or duplicated"));
             }
             self.validate_voters(&group.voters, config.replication_factor, false)?;
+            let mut hosted: BTreeSet<_> = group.voters.iter().copied().collect();
+            if group.standby.len() > 16 {
+                return Err(Error::invalid("Standby replicas exceed their finite bound"));
+            }
+            for standby in &group.standby {
+                if !hosted.insert(*standby) || !self.peer(*standby)?.role.stores_data() {
+                    return Err(Error::invalid(
+                        "Standby identity is duplicated or has an invalid role",
+                    ));
+                }
+            }
         }
         if !self.peers.iter().any(|peer| peer.role.serves_broker()) {
             return Err(Error::invalid("At least one configured Broker is required"));
