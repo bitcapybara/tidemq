@@ -440,6 +440,12 @@ impl DataApplication {
         }
         let mut digest = blake3::Hasher::new();
         digest.update(b"tidemq-data-recovery-v1\0");
+        digest.update(
+            &self
+                .lifecycle
+                .recovery_digest()
+                .map_err(DataRejection::Lifecycle)?,
+        );
         state
             .retention
             .validate()
@@ -709,6 +715,7 @@ impl DataApplication {
             if self.lifecycle.published_end(*partition) > state.producer.committed_end()
                 || self.lifecycle.local_reclaim_end(*partition)
                     != state.producer.local_reclaim_end()
+                || self.lifecycle.checkpointed_floor(*partition) > state.producer.retained_floor()
             {
                 return Err(DataRejection::Lifecycle(
                     crate::lifecycle::Rejection::InvalidSnapshot,

@@ -759,6 +759,9 @@ impl MetadataState {
         operation: crate::lifecycle::MetadataOperation,
     ) -> Result<Outcome, Rejection> {
         use crate::lifecycle::CatalogCommand;
+        operation
+            .validate_context(self)
+            .map_err(Rejection::Lifecycle)?;
         if let CatalogCommand::Register(plan) = &operation.command {
             if self.cluster_id != Some(plan.descriptor.identity.cluster_id) {
                 return Err(Rejection::InvalidEvidence);

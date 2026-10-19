@@ -225,6 +225,21 @@ impl Coordinator {
         }
     }
 
+    pub async fn pending_pins(
+        &self,
+        after: Option<Id>,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<super::PinPage> {
+        match self
+            .meta_query(Query::Pins { after, limit }, deadline)
+            .await?
+        {
+            View::Pins(page) => Ok(page),
+            _ => Err(Error::Configuration),
+        }
+    }
+
     pub async fn diagnose(&self, object_id: Id, deadline: Instant) -> Result<super::Diagnostic> {
         match self
             .meta_query(Query::Diagnose(object_id), deadline)
@@ -786,6 +801,7 @@ impl Coordinator {
         let started = Instant::now();
         let record = PinRecord {
             id: Id::random().map_err(|_| Error::Configuration)?,
+            group_id: self.0.data_group,
             objects,
             ttl_millis: u64::try_from(ttl.as_millis()).map_err(|_| Error::Configuration)?,
         };

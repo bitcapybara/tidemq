@@ -32,6 +32,7 @@ pub(crate) enum Query {
     Health,
     Capacity,
     Objects { after: Option<Id>, limit: usize },
+    Pins { after: Option<Id>, limit: usize },
     DataVoters,
     Object(Id),
     Diagnose(Id),
@@ -46,6 +47,7 @@ pub(crate) enum View {
     Health,
     Capacity(super::CapacityUsage),
     Objects(super::ObjectPage),
+    Pins(super::PinPage),
     DataVoters(DataGroup),
     Object(Box<ObjectRecord>),
     Diagnostic(super::Diagnostic),
@@ -254,6 +256,10 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
         Query::Objects { after, limit } => catalog
             .objects_page(data_group, after, limit)
             .map(View::Objects)
+            .map_err(|reason| Error::Rejected { reason }),
+        Query::Pins { after, limit } => catalog
+            .pins_page(data_group, after, limit)
+            .map(View::Pins)
             .map_err(|reason| Error::Rejected { reason }),
         Query::DataVoters => state
             .group(data_group)
