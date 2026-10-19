@@ -3,10 +3,12 @@
 mod config;
 mod data;
 mod error;
+mod maintenance;
 mod management;
 mod metadata;
 mod node;
 mod objects;
+pub(crate) mod physical;
 mod service;
 mod telemetry;
 pub(crate) mod wire;

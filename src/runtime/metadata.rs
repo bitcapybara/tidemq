@@ -60,7 +60,11 @@ impl Service {
             }
             for (group, replica) in &self.data {
                 if self.require_leader(replica).is_ok() {
-                    let config = data_config(self.cluster, self.config.runtime.group(*group)?);
+                    let config = data_config(
+                        self.cluster,
+                        self.config.runtime.group(*group)?,
+                        self.config.runtime.retention,
+                    );
                     let initialized = replica
                         .state
                         .try_with_application(|state| state.config() == Some(&config))

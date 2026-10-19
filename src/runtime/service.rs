@@ -47,6 +47,8 @@ pub(crate) struct Service {
     pub budget: MemoryBudget,
     pub metrics: Metrics,
     pub runtime_metrics: super::telemetry::RuntimeMetrics,
+    pub quota: std::sync::Mutex<crate::quota::Quota>,
+    pub disk_capacity: std::sync::Mutex<Option<(crate::quota::disk::Snapshot, Instant)>>,
     pub log_health: std::sync::Mutex<Option<crate::observability::logging::LogHealth>>,
     pub draining: AtomicBool,
     pub routes: RwLock<BTreeMap<PartitionKey, CachedRoute>>,
@@ -74,6 +76,7 @@ impl Service {
         producer: ProducerMetrics,
         metrics: Metrics,
         runtime_metrics: super::telemetry::RuntimeMetrics,
+        quota: crate::quota::Quota,
     ) -> Result<Self> {
         let mut brokers = BTreeMap::new();
         for (group, replica) in &data {
@@ -88,7 +91,7 @@ impl Service {
                     owner.node_id,
                     replica.raft.clone(),
                     replica.state.clone(),
-                    data_config(cluster, group),
+                    data_config(cluster, group, config.runtime.retention),
                     budget.clone(),
                     BrokerLimits::default(),
                     producer.clone(),
@@ -116,6 +119,8 @@ impl Service {
             budget,
             metrics,
             runtime_metrics,
+            quota: std::sync::Mutex::new(quota),
+            disk_capacity: std::sync::Mutex::new(None),
             log_health: std::sync::Mutex::new(None),
             draining: AtomicBool::new(false),
             routes: RwLock::new(BTreeMap::new()),
@@ -271,7 +276,15 @@ impl Service {
         order: Option<SubmissionOrder>,
         hops: u32,
     ) -> Result<Frame> {
-        if self.draining.load(Ordering::Acquire) {
+        if self.draining.load(Ordering::Acquire)
+            && !matches!(
+                frame_kind(frame)?,
+                FrameKind::AckBatch
+                    | FrameKind::ProducerStatus
+                    | FrameKind::SubscriptionStatus
+                    | FrameKind::ReceiveBarrier
+            )
+        {
             return Err(Error::unavailable());
         }
         let kind = frame_kind(frame)?;

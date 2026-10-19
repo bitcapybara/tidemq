@@ -117,6 +117,7 @@ impl Fixture {
                         delivery_key_file: directory.join("delivery.key"),
                         bootstrap: true,
                         objects: None,
+                        ..RuntimeConfig::default()
                     },
                     ..Config::default()
                 };

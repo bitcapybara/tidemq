@@ -105,6 +105,10 @@ impl RunningNode {
             .sub_registry_with_prefix("tidemq_producer")
             .register_collector(Box::new(producer.clone()));
         let _ownership = crate::ownership::OwnershipMetrics::register(metrics.registry_mut());
+        let quota_metrics = crate::quota::Metrics::default();
+        quota_metrics.register(metrics.registry_mut());
+        let quota = crate::quota::Quota::new(config.runtime.capacity, quota_metrics)
+            .map_err(|source| Error::operation("initialize capacity admission", source))?;
         let targets = config
             .runtime
             .peers
@@ -148,6 +152,37 @@ impl RunningNode {
             config.runtime.metadata_voters.iter().copied().collect(),
             ControlPolicy::default(),
         )?);
+        let bind_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let internal = bind_server(
+            config.runtime.internal_listen,
+            ServerTls {
+                identity: identity.clone(),
+                client_trust_roots: Some(roots),
+            },
+            ServerAuthorization::Internal(grants),
+            transport.clone(),
+            budget.clone(),
+            bind_deadline,
+        )
+        .await?;
+        let external = if config.role.serves_gateway() {
+            Some(
+                bind_server(
+                    config.listen,
+                    ServerTls {
+                        identity,
+                        client_trust_roots: None,
+                    },
+                    ServerAuthorization::External(access.tokens()),
+                    transport,
+                    budget.clone(),
+                    bind_deadline,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
         let metadata = if config.runtime.metadata_voters.contains(&config.node_id) {
             Some(
                 open_replica::<MetadataState>(
@@ -188,34 +223,6 @@ impl RunningNode {
             metrics.registry_mut(),
         )
         .await?;
-        let internal = Server::bind(
-            config.runtime.internal_listen,
-            ServerTls {
-                identity: identity.clone(),
-                client_trust_roots: Some(roots),
-            },
-            ServerAuthorization::Internal(grants),
-            transport.clone(),
-            budget.clone(),
-        )
-        .map_err(|source| Error::operation("bind internal QUIC listener", source))?;
-        let external = if config.role.serves_gateway() {
-            Some(
-                Server::bind(
-                    config.listen,
-                    ServerTls {
-                        identity,
-                        client_trust_roots: None,
-                    },
-                    ServerAuthorization::External(access.tokens()),
-                    transport,
-                    budget.clone(),
-                )
-                .map_err(|source| Error::operation("bind external QUIC listener", source))?,
-            )
-        } else {
-            None
-        };
         let external_address = external.as_ref().map(Server::local_addr);
         let internal_address = internal.local_addr();
         metrics
@@ -242,6 +249,7 @@ impl RunningNode {
             producer,
             metrics,
             runtime_metrics,
+            quota,
         )?);
         let (shutdown, stopped) = watch::channel(false);
         let dispatcher = DispatchConfig {
@@ -264,6 +272,8 @@ impl RunningNode {
         let (management_address, task) =
             super::management::start(service.clone(), stopped.clone()).await?;
         tasks.push(task);
+        let maintenance = service.clone();
+        tasks.push(tokio::spawn(maintenance.maintain(stopped.clone())));
         let bootstrap = service.clone();
         tasks.push(tokio::spawn(
             async move { bootstrap.reconcile(stopped).await },
@@ -369,20 +379,79 @@ impl RunningNode {
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = self.shutdown.send(true);
-        for task in self.tasks.drain(..) {
-            match tokio::time::timeout(Duration::from_secs(8), task).await {
-                Ok(Ok(result)) => result?,
-                Ok(Err(source)) => return Err(Error::operation("join runtime worker", source)),
-                Err(_) => return Err(Error::invalid("Runtime worker exceeded its drain deadline")),
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let mut failure = None;
+        for mut task in self.tasks.drain(..) {
+            match tokio::time::timeout_at(deadline, &mut task).await {
+                Ok(Ok(result)) => {
+                    if let Err(error) = result {
+                        failure = Some(error);
+                    }
+                }
+                Ok(Err(source)) => failure = Some(Error::operation("join runtime worker", source)),
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    failure = Some(Error::invalid("Runtime worker exceeded its drain deadline"));
+                }
             }
         }
-        self.service.close().await
+        self.service.close().await?;
+        failure.map_or(Ok(()), Err)
     }
 }
 
 impl Drop for RunningNode {
     fn drop(&mut self) {
         let _ = self.shutdown.send(true);
+    }
+}
+
+async fn bind_server(
+    address: SocketAddr,
+    tls: ServerTls,
+    authorization: ServerAuthorization,
+    config: TransportConfig,
+    budget: MemoryBudget,
+    deadline: tokio::time::Instant,
+) -> Result<Server> {
+    let mut backoff = Duration::from_millis(2);
+    loop {
+        let tls = ServerTls {
+            identity: tls.identity.clone(),
+            client_trust_roots: tls.client_trust_roots.clone(),
+        };
+        match Server::bind(
+            address,
+            tls,
+            authorization.clone(),
+            config.clone(),
+            budget.clone(),
+        ) {
+            Ok(server) => return Ok(server),
+            Err(source) if address_in_use(&source) && tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + backoff)).await;
+                backoff = backoff.saturating_mul(2).min(Duration::from_millis(50));
+            }
+            Err(source) => {
+                return Err(Error::operation("bind authenticated QUIC listener", source));
+            }
+        }
+    }
+}
+
+fn address_in_use(mut source: &(dyn std::error::Error + 'static)) -> bool {
+    loop {
+        if source
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|source| source.kind() == std::io::ErrorKind::AddrInUse)
+        {
+            return true;
+        }
+        let Some(inner) = source.source() else {
+            return false;
+        };
+        source = inner;
     }
 }
 
@@ -496,7 +565,11 @@ fn transport_config(config: &Config) -> TransportConfig {
     }
 }
 
-pub(crate) fn data_config(cluster: Id, group: &GroupConfig) -> DataGroupConfig {
+pub(crate) fn data_config(
+    cluster: Id,
+    group: &GroupConfig,
+    retention: crate::retention::Policy,
+) -> DataGroupConfig {
     DataGroupConfig {
         cluster_id: cluster,
         group_id: group.group_id,
@@ -505,7 +578,7 @@ pub(crate) fn data_config(cluster: Id, group: &GroupConfig) -> DataGroupConfig {
         max_hot_messages: 65_536,
         producer: ProducerLimits::default(),
         subscription: crate::subscription::Limits::default(),
-        retention: crate::retention::Policy::default(),
+        retention,
     }
 }
 
