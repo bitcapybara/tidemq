@@ -13,6 +13,7 @@ pub struct LifecycleMetrics {
     pub(crate) registered: Counter,
     pub(crate) uploaded: Counter,
     pub(crate) published: Counter,
+    pub(crate) compacted: Counter,
     pub(crate) canceled: Counter,
     pub(crate) deleted: Counter,
     pub(crate) reclaimed: Counter,
@@ -30,6 +31,7 @@ impl Default for LifecycleMetrics {
             registered: Counter::default(),
             uploaded: Counter::default(),
             published: Counter::default(),
+            compacted: Counter::default(),
             canceled: Counter::default(),
             deleted: Counter::default(),
             reclaimed: Counter::default(),
@@ -65,6 +67,11 @@ impl LifecycleMetrics {
                 "tidemq_lifecycle_canceled",
                 "Durably terminated object tasks.",
                 &self.canceled,
+            ),
+            (
+                "tidemq_lifecycle_compacted",
+                "Automatic object replacements covered by every current voter checkpoint.",
+                &self.compacted,
             ),
             (
                 "tidemq_lifecycle_deleted",

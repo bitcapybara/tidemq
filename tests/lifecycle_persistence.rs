@@ -343,16 +343,24 @@ async fn aborted_unseen_intent_survives_both_raft_restarts_and_rejects_delayed_u
 }
 
 async fn advance_retention(fixture: &support::Fixture, before: u64) {
+    advance_partition_retention(fixture, fixture.partition, before).await;
+}
+
+async fn advance_partition_retention(
+    fixture: &support::Fixture,
+    partition: tidemq::metadata::PartitionKey,
+    before: u64,
+) {
     let revision = fixture
         .data
         .state
-        .with_application(|state| state.retention(fixture.partition).unwrap().revision())
+        .with_application(|state| state.retention(partition).unwrap().revision())
         .await;
     let response = fixture
         .data
         .raft
         .client_write(tidemq::broker::DataCommand::Retention {
-            partition: fixture.partition,
+            partition,
             writer: tidemq::broker::WriterFence {
                 node_id: 1,
                 owner_epoch: 1,

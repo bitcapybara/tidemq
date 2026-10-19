@@ -30,6 +30,10 @@ use super::{
     },
 };
 
+#[path = "compaction.rs"]
+mod compaction;
+pub use compaction::CompactionStep;
+
 #[derive(Clone)]
 pub struct DataReplica {
     pub(crate) raft: Raft<DataApplication>,
@@ -315,7 +319,9 @@ impl Coordinator {
             } => (grants, generations),
             _ => return Err(Error::Configuration),
         };
-        let pack = self.build_pack(object_id, &ranges, deadline).await?;
+        let pack = self
+            .build_pack(object_id, &ranges, &replaces, deadline)
+            .await?;
         let plan = Plan {
             descriptor: pack.descriptor().clone(),
             grants,
@@ -493,7 +499,18 @@ impl Coordinator {
     /// Reconcile every intermediate state using the original immutable object identity.
     pub async fn reconcile(&self, object_id: Id, deadline: Instant) -> Result<()> {
         self.0.metrics.retries.inc();
-        let result = self.reconcile_inner(object_id, deadline).await;
+        let result = match self.reconcile_inner(object_id, deadline).await {
+            Err(
+                error @ Error::Rejected {
+                    reason:
+                        Rejection::StaleGeneration | Rejection::InvalidRange | Rejection::References,
+                },
+            ) => {
+                self.cancel_stale_replacement(object_id, error, deadline)
+                    .await
+            }
+            result => result,
+        };
         if result.is_err() {
             self.0.metrics.failed.inc();
             if self.0.metrics.may_warn() {
@@ -523,7 +540,9 @@ impl Coordinator {
                                 offsets: i.offsets,
                             })
                             .collect::<Vec<_>>();
-                        let pack = self.build_pack(object_id, &ranges, deadline).await?;
+                        let pack = self
+                            .build_pack(object_id, &ranges, &object.plan.replaces, deadline)
+                            .await?;
                         if pack.descriptor() != object.descriptor() {
                             return Err(Error::Rejected {
                                 reason: Rejection::Conflict,
@@ -540,9 +559,9 @@ impl Coordinator {
                     }
                     Err(error) => return Err(error),
                 }
-                self.publish(object_id, deadline).await
+                self.publish_or_cancel_stale(object_id, deadline).await
             }
-            ObjectPhase::Uploaded => self.publish(object_id, deadline).await,
+            ObjectPhase::Uploaded => self.publish_or_cancel_stale(object_id, deadline).await,
             ObjectPhase::Published => self.complete(object_id, deadline).await,
             ObjectPhase::CancelRequested => self.cancel(object_id, deadline).await,
             ObjectPhase::Aborted | ObjectPhase::Deleting | ObjectPhase::Deleted => {
@@ -876,6 +895,7 @@ impl Coordinator {
         &self,
         object_id: Id,
         ranges: &[RangeRequest],
+        replaces: &[Id],
         deadline: Instant,
     ) -> Result<Pack> {
         let raw_permit = self
@@ -889,6 +909,22 @@ impl Coordinator {
         let mut owned = Vec::new();
         let mut total_records = 0_usize;
         let mut total_bytes = 0_u64;
+        let mut sources = Vec::new();
+        for id in replaces {
+            sources.push(self.object(*id, deadline).await?);
+        }
+        let source_bytes = sources.iter().try_fold(0_u64, |sum, source| {
+            sum.checked_add(source.descriptor().total_bytes)
+                .ok_or(Error::Configuration)
+        })?;
+        if source_bytes > PackLimits::default().max_bytes as u64 {
+            return Err(Error::Rejected {
+                reason: Rejection::Capacity,
+            });
+        }
+        if !sources.is_empty() {
+            self.0.reader.clear().await;
+        }
         for range in ranges {
             let (committed_end, local) = self
                 .data_read(deadline, |state, _| {
@@ -913,7 +949,10 @@ impl Coordinator {
                     .ok_or(Error::Configuration)?,
             )
             .map_err(|_| Error::Configuration)?;
-            if count > 100_000 {
+            if total_records
+                .checked_add(count)
+                .is_none_or(|count| count > 100_000)
+            {
                 return Err(Error::Rejected {
                     reason: Rejection::Capacity,
                 });
@@ -923,6 +962,12 @@ impl Coordinator {
                 .try_reserve_exact(count)
                 .map_err(|source| Error::Allocation { source })?;
             let mut next = range.offsets.start;
+            if !sources.is_empty() {
+                records = self
+                    .copy_replacement_range(&sources, range, deadline)
+                    .await?;
+                next = range.offsets.end;
+            }
             while next < range.offsets.end {
                 check_deadline(deadline)?;
                 if next < local {
@@ -998,6 +1043,10 @@ impl Coordinator {
             group_id: self.0.data_group,
             object_id,
         };
+        if !sources.is_empty() {
+            // Release validated cold cache buffers before admitting the final replacement pack.
+            self.0.reader.clear().await;
+        }
         let budget = self.0.budget.clone();
         tokio::task::spawn_blocking(move || {
             let _raw_permit = raw_permit;
