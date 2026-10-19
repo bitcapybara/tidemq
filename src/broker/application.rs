@@ -78,6 +78,13 @@ pub enum DataCommand {
         now_ms: u64,
         command: ProducerCommand,
     },
+    Lifecycle(crate::lifecycle::DataOperation),
+    ColdSubscription {
+        partition: PartitionKey,
+        writer: WriterFence,
+        proof: crate::lifecycle::VerifiedColdDelivery,
+        command: subscription::Command,
+    },
     Subscription {
         partition: PartitionKey,
         writer: WriterFence,
@@ -95,6 +102,7 @@ pub enum DataRejection {
     Fence(FenceRejection),
     Producer(producer::Rejection),
     Subscription(subscription::Rejection),
+    Lifecycle(crate::lifecycle::Rejection),
 }
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -109,6 +117,7 @@ pub enum DataResponse {
     Retired,
     TimeAdvanced,
     Subscription(subscription::Outcome),
+    Lifecycle(crate::lifecycle::DataResult),
     Rejected(DataRejection),
 }
 
@@ -134,6 +143,7 @@ impl fmt::Debug for DataResponse {
             Self::Retired => formatter.write_str("Retired"),
             Self::TimeAdvanced => formatter.write_str("TimeAdvanced"),
             Self::Subscription(_) => formatter.write_str("Subscription(<bounded outcome>)"),
+            Self::Lifecycle(result) => formatter.debug_tuple("Lifecycle").field(result).finish(),
             Self::Rejected(reason) => formatter.debug_tuple("Rejected").field(reason).finish(),
         }
     }
@@ -153,6 +163,7 @@ pub struct DataApplication {
     partitions: BTreeMap<PartitionKey, PartitionState>,
     hot_bytes: u64,
     hot_messages: usize,
+    lifecycle: crate::lifecycle::DataState,
 }
 
 impl fmt::Debug for DataApplication {
@@ -168,6 +179,16 @@ impl fmt::Debug for DataApplication {
 }
 
 impl DataApplication {
+    pub fn lifecycle(&self) -> &crate::lifecycle::DataState {
+        &self.lifecycle
+    }
+    pub fn hot_bytes(&self) -> u64 {
+        self.hot_bytes
+    }
+    pub fn hot_messages(&self) -> usize {
+        self.hot_messages
+    }
+
     pub fn config(&self) -> Option<&DataGroupConfig> {
         self.config.as_ref()
     }
@@ -374,7 +395,27 @@ impl DataApplication {
         writer: WriterFence,
         command: subscription::Command,
     ) -> Result<DataResponse, DataRejection> {
+        self.subscription_checked(partition, writer, command, None)
+    }
+
+    fn subscription_checked(
+        &mut self,
+        partition: PartitionKey,
+        writer: WriterFence,
+        command: subscription::Command,
+        cold: Option<crate::lifecycle::VerifiedColdDelivery>,
+    ) -> Result<DataResponse, DataRejection> {
         self.check_writer(partition, writer)?;
+        if let Some(proof) = &cold {
+            if proof.partition() != partition {
+                return Err(DataRejection::Lifecycle(
+                    crate::lifecycle::Rejection::Identity,
+                ));
+            }
+            self.lifecycle
+                .verify_delivery(proof)
+                .map_err(DataRejection::Lifecycle)?;
+        }
         let fences = self
             .ownership
             .as_ref()
@@ -397,10 +438,19 @@ impl DataApplication {
             offset, body_bytes, ..
         } = &command
         {
-            let actual = state
-                .producer
-                .message_bytes_at(*offset)
-                .map_err(DataRejection::Producer)?;
+            let actual = if let Some(proof) = &cold {
+                if proof.offset() != *offset {
+                    return Err(DataRejection::Lifecycle(
+                        crate::lifecycle::Rejection::InvalidRange,
+                    ));
+                }
+                u64::from(proof.body_bytes())
+            } else {
+                state
+                    .producer
+                    .message_bytes_at(*offset)
+                    .map_err(DataRejection::Producer)?
+            };
             if actual != u64::from(*body_bytes) {
                 return Err(DataRejection::Subscription(
                     subscription::Rejection::InvalidContext,
@@ -442,6 +492,9 @@ impl DataApplication {
             };
         };
         config.validate()?;
+        self.lifecycle
+            .validate()
+            .map_err(DataRejection::Lifecycle)?;
         let fences = self
             .ownership
             .as_ref()
@@ -503,6 +556,13 @@ impl Application for DataApplication {
     fn apply(&mut self, command: DataCommand) -> DataResponse {
         let result = match command {
             DataCommand::Initialize(config) => self.initialize(config),
+            DataCommand::Lifecycle(operation) => self.lifecycle_command(operation),
+            DataCommand::ColdSubscription {
+                partition,
+                writer,
+                proof,
+                command,
+            } => self.cold_subscription(partition, writer, proof, command),
             DataCommand::InstallFence(command) => self.install_fence(command),
             DataCommand::Recover { partition, writer } => self.recover(partition, writer),
             DataCommand::Producer {
@@ -538,6 +598,12 @@ impl Application for DataApplication {
                 std::io::ErrorKind::InvalidData,
                 "Committed data application invariants failed",
             )),
+            DataResponse::Rejected(DataRejection::Lifecycle(
+                crate::lifecycle::Rejection::InvalidSnapshot,
+            )) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Committed lifecycle application invariants failed",
+            )),
             _ => Ok(response),
         }
     }
@@ -552,5 +618,102 @@ impl Application for DataApplication {
 impl OwnershipApplication for DataApplication {
     fn ownership_state(&self) -> Option<&FenceState> {
         self.ownership.as_ref()
+    }
+}
+
+impl DataApplication {
+    fn lifecycle_command(
+        &mut self,
+        operation: crate::lifecycle::DataOperation,
+    ) -> Result<DataResponse, DataRejection> {
+        use crate::lifecycle::{DataCommand as LifecycleCommand, Rejection};
+        let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
+        if operation.grants.is_empty() || operation.grants.len() > 64 {
+            return Err(DataRejection::Lifecycle(Rejection::Identity));
+        }
+        for grant in &operation.grants {
+            if grant.cluster_id != config.cluster_id || grant.group_id != config.group_id {
+                return Err(DataRejection::Lifecycle(Rejection::Identity));
+            }
+            self.check_writer(
+                grant.partition,
+                WriterFence {
+                    node_id: grant.owner_node,
+                    owner_epoch: grant.epoch,
+                },
+            )?;
+        }
+        if let LifecycleCommand::Authorize(plan) = &operation.command
+            && self
+                .lifecycle
+                .intent(plan.descriptor.identity.object_id)
+                .is_none()
+        {
+            for index in &plan.descriptor.partitions {
+                let partition = PartitionKey {
+                    topic_id: index.topic_id,
+                    partition: index.partition_id,
+                };
+                let producer = self
+                    .producer(partition)
+                    .ok_or(DataRejection::PartitionMissing)?;
+                if index.offsets.end > producer.committed_end()
+                    || !plan
+                        .grants
+                        .iter()
+                        .any(|grant| operation.grants.contains(grant))
+                {
+                    return Err(DataRejection::Lifecycle(Rejection::InvalidRange));
+                }
+            }
+        }
+        let reclaim = match &operation.command {
+            LifecycleCommand::Reclaim { partition, end, .. } => Some((*partition, *end)),
+            _ => None,
+        };
+        let outcome = self
+            .lifecycle
+            .apply(operation.command)
+            .map_err(DataRejection::Lifecycle)?;
+        if let Some((partition, end)) = reclaim {
+            let state = self
+                .partitions
+                .get_mut(&partition)
+                .ok_or(DataRejection::PartitionMissing)?;
+            let before_bytes = state.producer.hot_bytes();
+            let before_messages = state.producer.hot_message_count();
+            state
+                .producer
+                .reclaim_hot(end)
+                .map_err(DataRejection::Producer)?;
+            self.hot_bytes = self
+                .hot_bytes
+                .checked_sub(before_bytes.saturating_sub(state.producer.hot_bytes()))
+                .ok_or(DataRejection::Lifecycle(Rejection::InvalidSnapshot))?;
+            self.hot_messages = self
+                .hot_messages
+                .checked_sub(before_messages.saturating_sub(state.producer.hot_message_count()))
+                .ok_or(DataRejection::Lifecycle(Rejection::InvalidSnapshot))?;
+        }
+        Ok(DataResponse::Lifecycle(crate::lifecycle::DataResult {
+            outcome,
+        }))
+    }
+}
+
+impl DataApplication {
+    fn cold_subscription(
+        &mut self,
+        partition: PartitionKey,
+        writer: WriterFence,
+        proof: crate::lifecycle::VerifiedColdDelivery,
+        command: subscription::Command,
+    ) -> Result<DataResponse, DataRejection> {
+        if !matches!(command, subscription::Command::RecordDelivery { .. }) {
+            return Err(DataRejection::Lifecycle(
+                crate::lifecycle::Rejection::Conflict,
+            ));
+        }
+        self.subscription_checked(partition, writer, command, Some(proof))
     }
 }

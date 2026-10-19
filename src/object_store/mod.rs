@@ -92,6 +92,7 @@ struct Inner {
     limits: Limits,
     budget: MemoryBudget,
     operations: Arc<Semaphore>,
+    data_operations: Arc<Semaphore>,
     decode_slots: Arc<Semaphore>,
     rate_next: Mutex<Instant>,
     metrics: Arc<S3Metrics>,
@@ -99,6 +100,7 @@ struct Inner {
 
 pub(super) struct Admission {
     _operation: OwnedSemaphorePermit,
+    _data_operation: Option<OwnedSemaphorePermit>,
     memory: Option<MemoryPermit>,
     _timer: metrics::OperationTimer,
 }
@@ -140,7 +142,12 @@ impl S3Store {
             limits,
             budget,
             operations: Arc::new(Semaphore::new(limits.max_in_flight as usize)),
-            decode_slots: Arc::new(Semaphore::new(limits.max_in_flight as usize)),
+            data_operations: Arc::new(Semaphore::new(
+                limits.max_in_flight.saturating_sub(1) as usize
+            )),
+            decode_slots: Arc::new(Semaphore::new(
+                limits.max_in_flight.saturating_sub(1) as usize
+            )),
             rate_next: Mutex::new(Instant::now()),
             metrics: Arc::new(S3Metrics::default()),
         })))
@@ -221,6 +228,17 @@ impl S3Store {
         deadline: Instant,
     ) -> Result<Admission> {
         let timer = metrics::OperationTimer::new(self.metrics());
+        let data_operation = if bytes > 0 {
+            Some(
+                self.0
+                    .data_operations
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| Error::Overloaded)?,
+            )
+        } else {
+            None
+        };
         let operation = self
             .0
             .operations
@@ -247,6 +265,7 @@ impl S3Store {
         self.pace(rate_bytes, deadline).await?;
         Ok(Admission {
             _operation: operation,
+            _data_operation: data_operation,
             memory: Some(memory),
             _timer: timer,
         })
@@ -336,7 +355,7 @@ fn validate_config(config: &S3Config, limits: Limits) -> Result<()> {
             reason: "prefix or region is invalid",
         });
     }
-    if !(1..=128).contains(&limits.max_in_flight)
+    if !(2..=128).contains(&limits.max_in_flight)
         || limits.max_object_bytes == 0
         || limits.max_object_bytes > 512 * 1024 * 1024
         || limits.max_range_bytes == 0

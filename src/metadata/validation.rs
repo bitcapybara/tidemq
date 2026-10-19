@@ -30,6 +30,7 @@ impl MetadataState {
         {
             return Err(Rejection::InvalidGroup);
         }
+        self.lifecycle.validate().map_err(Rejection::Lifecycle)?;
         self.validate_nodes_groups()?;
         self.validate_topics()?;
         self.validate_subscriptions()?;
@@ -51,6 +52,8 @@ impl MetadataState {
             || !self.subscription_names.is_empty()
             || !self.nodes.is_empty()
             || !self.groups.is_empty()
+            || self.lifecycle.object_count() != 0
+            || self.lifecycle.pin_count() != 0
             || !self.control_operations.is_empty()
             || self.decisions.values().any(|decision| {
                 !matches!(decision.response, Response::Rejected { revision: 0, .. })
