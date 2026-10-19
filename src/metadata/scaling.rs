@@ -7,11 +7,19 @@ impl Command {
         expected_revision: u64,
         plan: MembershipPlan,
     ) -> Result<Self, Rejection> {
+        Self::prepare_membership_with_capacity(expected_revision, plan, 0)
+    }
+
+    pub fn prepare_membership_with_capacity(
+        expected_revision: u64,
+        plan: MembershipPlan,
+        copy_bytes: u64,
+    ) -> Result<Self, Rejection> {
         plan.validate()?;
         Ok(Self::new(
             plan.operation_id(),
             expected_revision,
-            Action::PrepareMembership(plan),
+            Action::PrepareMembership { plan, copy_bytes },
         ))
     }
 }
@@ -23,7 +31,7 @@ impl MetadataState {
 
     pub(super) fn apply_membership(&mut self, command: &Command) -> Response {
         let (plan, complete) = match &command.action {
-            Action::PrepareMembership(plan) => (plan, false),
+            Action::PrepareMembership { plan, .. } => (plan, false),
             Action::CompleteMembership(proof) => (&proof.plan, true),
             _ => return self.reject(Rejection::InvalidCommand),
         };
@@ -38,6 +46,11 @@ impl MetadataState {
         if let Some(record) = self.migrations.get(&plan.group_id) {
             if record.plan == *plan {
                 if !complete {
+                    if let Action::PrepareMembership { copy_bytes, .. } = command.action
+                        && copy_bytes != record.copy_bytes
+                    {
+                        return self.reject(Rejection::OperationConflict);
+                    }
                     return Response::Applied {
                         revision: record.prepared_revision,
                         outcome: Outcome::MembershipPrepared(plan.clone()),
@@ -74,6 +87,7 @@ impl MetadataState {
     pub(super) fn prepare_membership(
         &mut self,
         plan: &MembershipPlan,
+        copy_bytes: u64,
         revision: u64,
     ) -> Result<Outcome, Rejection> {
         let current = self.groups.get(&plan.group_id).ok_or(Rejection::NotFound)?;
@@ -94,6 +108,7 @@ impl MetadataState {
             MigrationRecord {
                 plan: plan.clone(),
                 prepared_revision: revision,
+                copy_bytes,
                 completed: None,
             },
         );

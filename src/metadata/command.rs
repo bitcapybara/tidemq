@@ -63,7 +63,10 @@ pub(crate) enum Action {
     ObserveFence(FenceEvidence),
     ObserveRecovery(RecoveryEvidence),
     ActivateRoute(RecoveryEvidence),
-    PrepareMembership(crate::scaling::MembershipPlan),
+    PrepareMembership {
+        plan: crate::scaling::MembershipPlan,
+        copy_bytes: u64,
+    },
     CompleteMembership(crate::scaling::MembershipEvidence),
     Lifecycle(crate::lifecycle::MetadataOperation),
 }

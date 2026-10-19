@@ -39,6 +39,20 @@ pub struct StableMembership {
 }
 
 impl StableMembership {
+    pub(super) fn from_remote(
+        evidence: MembershipEvidence,
+        started: Instant,
+        deadline: Instant,
+    ) -> Result<Self> {
+        let expires = started
+            .checked_add(VALIDITY)
+            .ok_or(Error::Configuration)?
+            .min(deadline);
+        if Instant::now() >= expires {
+            return Err(Error::Authority);
+        }
+        Ok(Self { evidence, expires })
+    }
     pub fn into_command(self, expected_revision: u64) -> Result<metadata::Command> {
         if Instant::now() >= self.expires {
             return Err(Error::Authority);
@@ -152,8 +166,9 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
                 started: Instant::now(),
             });
         }
-        let command = metadata::Command::prepare_membership(revision, plan.clone())
-            .map_err(|reason| Error::Rejected { reason })?;
+        let command =
+            metadata::Command::prepare_membership_with_capacity(revision, plan.clone(), copy_bytes)
+                .map_err(|reason| Error::Rejected { reason })?;
         self.meta_write(command, deadline).await?;
         let lease = &mut flight.as_mut().ok_or(Error::Configuration)?._repair;
         self.reconfigure(plan, &nodes, capacity, copy_bytes, deadline, lease)

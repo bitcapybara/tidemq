@@ -168,6 +168,36 @@ fn frame(
 }
 
 #[tokio::test]
+async fn idle_endpoints_close_without_waiting_for_future_connection_activity() {
+    let pki = pki();
+    let client = external_client(&pki, config());
+    let server = external_server(&pki, config());
+    let address = server.local_addr();
+    tokio::task::yield_now().await;
+    client
+        .close(Instant::now() + Duration::from_secs(1))
+        .await
+        .unwrap();
+    server.shutdown().await.unwrap();
+    timeout(Duration::from_secs(1), async {
+        loop {
+            match std::net::UdpSocket::bind(address) {
+                Ok(socket) => {
+                    drop(socket);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::time::sleep(Duration::from_millis(1)).await
+                }
+                Err(error) => panic!("Unexpected listener release failure: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
     let pki = pki();
     let mut server = external_server(&pki, config());
@@ -358,6 +388,53 @@ async fn trusted_tls_pipelines_large_frames_across_small_windows() {
     assert!(text.contains("tidemq_quic_test_connections_total 1"));
     assert!(text.contains("tidemq_quic_test_send_wait_seconds_total"));
     assert!(text.lines().count() < 100);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_connections_follow_retained_resources_without_counting_clones() {
+    let pki = pki();
+    let mut server = external_server(&pki, config());
+    let client = external_client(&pki, config());
+    let session = client
+        .connect(
+            target(&server),
+            &credentials(),
+            TrafficClass::Produce,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let accepted = server.accept().await.unwrap();
+    let session_clone = session.clone();
+    let connection = session.connection();
+    let connection_clone = connection.clone();
+    assert_eq!(client.metrics.snapshot().active_connections, 1);
+    assert_eq!(server.metrics.snapshot().active_connections, 1);
+    session.shutdown(deadline()).await.unwrap();
+    accepted.shutdown(deadline()).await.unwrap();
+    assert_eq!(client.metrics.snapshot().active_connections, 1);
+    drop(session_clone);
+    drop(session);
+    drop(connection);
+    assert_eq!(client.metrics.snapshot().active_connections, 1);
+    drop(connection_clone);
+    drop(accepted);
+    tokio::time::timeout_at(deadline(), async {
+        while client.metrics.snapshot().active_connections != 0
+            || server.metrics.snapshot().active_connections != 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("closed connection resources must release their admission envelope");
+    assert_eq!(client.metrics.snapshot().connections_total, 1);
+    let mut registry = prometheus_client::registry::Registry::with_prefix("tidemq_quic_test");
+    registry.register_collector(Box::new(client.metrics.clone()));
+    let mut text = String::new();
+    prometheus_client::encoding::text::encode(&mut text, &registry).unwrap();
+    assert!(text.contains("# TYPE tidemq_quic_test_active_connections gauge"));
+    assert!(text.contains("tidemq_quic_test_active_connections 0"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -563,9 +640,15 @@ async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
         )
         .await
         .unwrap();
-    let rpc = tidemq::transport::rpc::RpcClient::from_session(session, Default::default())
-        .await
-        .unwrap();
+    let rpc = tidemq::transport::rpc::RpcClient::from_session(
+        session,
+        tidemq::transport::rpc::RpcConfig {
+            liveness_timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let semantic = || {
         let operation = Id::random().unwrap();
         frame(
@@ -606,6 +689,13 @@ async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
         .unwrap()
         .unwrap();
     assert_eq!(response.frame().kind, i32::from(FrameKind::RaftResult));
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert!(
+        !rpc.is_closed(),
+        "Native progress must preserve slow application handlers"
+    );
+    assert!(client.metrics.snapshot().liveness_probes_total >= 1);
+    assert_eq!(client.metrics.snapshot().liveness_failures_total, 0);
     service.release.add_permits(2);
     first.receive().await.unwrap();
     second.receive().await.unwrap();

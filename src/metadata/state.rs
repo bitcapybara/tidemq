@@ -166,7 +166,7 @@ impl MetadataState {
     pub fn apply(&mut self, command: Command) -> Response {
         if matches!(
             command.action,
-            Action::PrepareMembership(_) | Action::CompleteMembership(_)
+            Action::PrepareMembership { .. } | Action::CompleteMembership(_)
         ) {
             return self.apply_membership(&command);
         }
@@ -316,7 +316,9 @@ impl MetadataState {
                 command.operation_id,
                 revision,
             ),
-            Action::PrepareMembership(plan) => self.prepare_membership(plan, revision),
+            Action::PrepareMembership { plan, copy_bytes } => {
+                self.prepare_membership(plan, *copy_bytes, revision)
+            }
             Action::CompleteMembership(proof) => self.complete_membership(proof, revision),
             Action::ObserveFence(evidence) => self.observe_fence(evidence),
             Action::ObserveRecovery(evidence) => self.observe_recovery(evidence),
