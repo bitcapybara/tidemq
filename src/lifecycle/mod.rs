@@ -11,7 +11,7 @@ mod types;
 
 pub use backend::MetadataReplica;
 pub use catalog::Catalog;
-pub use coordinator::{Coordinator, DataReplica, GuardedPage, PreparedObject};
+pub use coordinator::{CompactionStep, Coordinator, DataReplica, GuardedPage, PreparedObject};
 pub use data::DataState;
 pub use telemetry::LifecycleMetrics;
 pub use types::VerifiedColdDelivery;

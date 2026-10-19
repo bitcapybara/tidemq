@@ -25,9 +25,13 @@
 
 ## Compaction、读取与恢复
 
-Compaction 读取并校验原始历史，先生成完整替代对象，然后在同一次清单变更中移除全部原对象引用并增加替代引用。替代范围必须与原对象在每分区覆盖的连续范围完全一致，不按 key 丢弃消息、不部分丢弃共享对象的其他分区。
+Compaction 从 S3 的原不可变对象读取并校验历史，先生成替代对象，再在同一次清单 CAS 中移除原对象引用并增加替代引用。只允许裁剪已经通过实际数据保留水位、当前全部稳定 voters 持久快照确认的过期前缀；每个仍存活的分区范围都必须完整复制，不能按 key 丢弃消息或遗漏共享对象的其他分区。某分区整体过期且完成 floor checkpoint 后，可以不写入新对象。
 
-切换时旧对象自动获得持久 recovery hold。它不随节点离线或时间流逝释放。新对象数据完成且当前稳定全部 voters 的实际快照均覆盖该完成位置后，才能释放 hold。成员变更期间暂停该屏障，移除 voter 前须由弹性控制器完成安全成员变更并重新取得当前稳定视图。
+注册替换任务时，旧对象即获得指向原 replacement ID 的持久 recovery hold；同一源对象不能同时登记另一替换任务。它不随节点离线或时间流逝释放。新对象数据完成且当前稳定全部 voters 的实际快照均覆盖该完成位置后，才能释放 hold。若保留水位或清单 CAS 已改变，原任务通过元数据 CancelRequested → 数据组不可逆 Aborted → 元数据 Aborted 后释放源 hold；Unknown 继续对账原 ID。成员变更期间暂停检查点屏障。
+
+`Coordinator::compact_next(after, deadline)` 每次分页检查至多 8 个登记对象，并最多处理一个确有过期数据的源对象。候选由权威清单、已 checkpoint 的 floor 和真实数据 quorum 再检查确定，调用者不能提供任意 floor。执行使用现有 prepare/register/authorize/upload/publish/checkpoint、S3 ColdReader 和读取 pin，即使本地热正文已全部回收，也不会回退成热数据专用路径。恢复 Registered 任务时仍从原源对象重建相同字节和摘要。无存活数据的对象由 GC 删除，不创建空 replacement。
+
+运行时维护者先恢复原对象任务、推进 retention/reclaim/floor checkpoint，再通过 BackgroundSnapshot 配额门执行可选压缩。每组保留分页游标，沿用该轮总 deadline；有未完成登记或未知任务时先恢复原身份。旧 Published 对象引用归零后由现有 GC 重试删除，读取 pin 与 recovery hold 是正常等待状态，不重新对已 Retired 的旧数据意图构建发布检查点。
 
 读取 pin 在元数据中与清单、DELETING 串行；只有当前已发布且仍有清单引用的对象能获得新 pin。`GuardedPage` 持有 pin 与控制期限，使用记录和生成 `VerifiedColdDelivery` 前检查期限。投递证明绑定分区、offset、长度、对象和清单代次，数据状态机再检查当前对象映射；Compaction 后旧证明不能对新视图新增投递。
 
@@ -45,7 +49,7 @@ Compaction 读取并校验原始历史，先生成完整替代对象，然后在
 
 ## 观测与验证
 
-`LifecycleMetrics::register` 注册到无前缀根 registry，全部指标名以 `tidemq_lifecycle_` 开头，使用 9 个无标签 Counter、1 个 Gauge、1 个具有固定 bucket 的 Histogram，约 20 个 series。运行时共享进程级实例并只注册一次，对象、分区、操作 ID 不做标签。`Coordinator::diagnose` 通过新鲜读取返回单对象阶段、引用/pin 数、checkpoint 代次和阻塞原因，不返回消息正文、key 或凭证。
+`LifecycleMetrics::register` 注册到无前缀根 registry，全部指标名以 `tidemq_lifecycle_` 开头，使用 10 个无标签 Counter、1 个 Gauge、1 个具有固定 bucket 的 Histogram。运行时共享进程级实例并只注册一次，对象、分区、操作 ID 不做标签。`tidemq_lifecycle_compacted_total` 只在自动替换通过全部当前 voter 检查点后递增；它不表示旧对象已经删除。`Coordinator::diagnose` 通过新鲜读取返回单对象阶段、引用/pin 数、checkpoint 代次和阻塞原因，不返回消息正文、key 或凭证。
 
 初步回归覆盖永久终止的快照 round trip、compaction 双屏障、热回收与逻辑下界分离、去重原结果、拒写回调原子性，以及正文请求挂住时 HEAD/DELETE 独立推进。实际 Raft + RustFS 的阶段重启与回收验证见对应集成测试；验证记录必须区分本机进程故障、RF3 协议与真实三可用区。
 
@@ -63,7 +67,7 @@ Compaction 读取并校验原始历史，先生成完整替代对象，然后在
 
 `Coordinator::retire_before(partition, deadline)` 从真实数据 quorum 的同一应用读锁获得逻辑 floor、已完成发布序列和提交位置，调用者不能给任意 floor。元数据只移除整段 `end<=floor` 的引用；发布尚未在数据组补完时保守等待。每次引用变化推进清单 CAS generation，publication_generation 只随发布推进，数据完成流水不会因为保留回收而跳序。
 
-移除引用会增加永久 floor recovery hold。只有当前全部稳定 voters 的实际快照覆盖该逻辑 floor/已完成发布位置，才能在元数据释放 hold，并在数据组记录 floor checkpoint。随后已逻辑过期的热正文可以安全释放。部分共享对象继续保留，由共享滞留上界反映其容量成本。
+移除引用会增加永久 floor recovery hold。只有当前全部稳定 voters 的实际快照覆盖该逻辑 floor/已完成发布位置，才能在元数据释放 hold，并在数据组记录 floor checkpoint。随后已逻辑过期的热正文可以安全释放。部分共享对象通过上述自动压缩裁剪过期前缀，完成前仍由共享滞留上界反映容量成本。
 
 `Catalog::capacity_usage()` 和按数据组的 `Coordinator::capacity_usage()` 返回有限聚合：登记对象的物理字节上界、待上传上界及回收滞留上界；Unknown/上传中按完整 descriptor 计，Deleted 计零。共享对象某分区部分过期时，整个分区块字节作为保守滞留上界。此口径是登记对象视图，不能替代 S3 提供方的实际容量监控或包含未登记外来对象；迟到孤儿需按永久终止记录重删。
 
@@ -73,4 +77,4 @@ Compaction 读取并校验原始历史，先生成完整替代对象，然后在
 
 运行时可用 `with_checkpoint_candidates` 预配最多 128 个受信当前 voter/standby 的检查点提供者。每次发布或 floor 屏障只选新鲜元数据给出的当前稳定 voters，缺一个便拒绝；仍需每个 voter 的真实持久快照覆盖目标位置，完成前再次复查集合未变。候选列表不是权威，不能把非 voter 的快照计入证明。原 `with_checkpoints` 保持精确集合模式。
 
-构建 pack 前预留 72 MiB 原始记录/索引预算，最终 pack 仍独立持有其内存 permit；取消不能提前释放阻塞 worker 的内存所有权。临时文件和全量正文不进入日志。阶段事件默认 debug，重试失败 warn 每进程共享指标实例最多每秒一次，抑制计数通过 `tidemq_lifecycle_suppressed_logs_total` 可见。
+构建 pack 前预留 72 MiB 原始记录/索引预算，最终 pack 仍独立持有其内存 permit；取消不能提前释放阻塞 worker 的内存所有权。替换构建限制所有源 descriptor 总字节不超过单 pack 的 64 MiB，自动流程每次只选一个源对象。实际测试共享同一个 192 MiB application/32 MiB Core budget，不另设隐藏大预算。临时文件和全量正文不进入日志。阶段事件默认 debug，重试失败 warn 每进程共享指标实例最多每秒一次，抑制计数通过 `tidemq_lifecycle_suppressed_logs_total` 可见。

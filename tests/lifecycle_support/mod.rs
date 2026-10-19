@@ -149,6 +149,9 @@ pub struct Fixture {
 }
 impl Fixture {
     pub async fn new() -> Self {
+        Self::with_partitions(1).await
+    }
+    pub async fn with_partitions(partitions: usize) -> Self {
         let directory =
             std::env::temp_dir().join(format!("tidemq-lifecycle-{}", Id::random().unwrap()));
         tokio::fs::create_dir(&directory).await.unwrap();
@@ -166,7 +169,7 @@ impl Fixture {
             metadata,
             data,
         };
-        fixture.bootstrap().await;
+        fixture.bootstrap(partitions).await;
         fixture
     }
     async fn meta_write(&self, command: Command) -> metadata::Response {
@@ -178,7 +181,7 @@ impl Fixture {
             .with_application(MetadataState::revision)
             .await
     }
-    async fn bootstrap(&self) {
+    async fn bootstrap(&self, partitions: usize) {
         assert!(
             self.meta_write(Command::bootstrap(
                 Id::random().unwrap(),
@@ -226,31 +229,11 @@ impl Fixture {
                 self.revision().await,
                 self.partition.topic_id,
                 "events".into(),
-                vec![9]
+                vec![9; partitions]
             ))
             .await
             .is_applied()
         );
-        let grant = match self
-            .meta_write(
-                Command::grant_ownership(
-                    self.revision().await,
-                    self.cluster,
-                    self.partition,
-                    1,
-                    0,
-                    0,
-                )
-                .unwrap(),
-            )
-            .await
-        {
-            metadata::Response::Applied {
-                outcome: metadata::Outcome::OwnershipGranted(grant),
-                ..
-            } => grant,
-            value => panic!("Unexpected grant response: {value:?}"),
-        };
         let config = DataGroupConfig {
             cluster_id: self.cluster,
             group_id: 9,
@@ -270,6 +253,28 @@ impl Fixture {
                 .data,
             DataResponse::Initialized
         ));
+        for partition in 0..partitions {
+            self.activate(PartitionKey {
+                topic_id: self.partition.topic_id,
+                partition: u32::try_from(partition).unwrap(),
+            })
+            .await;
+        }
+    }
+    async fn activate(&self, partition: PartitionKey) {
+        let grant = match self
+            .meta_write(
+                Command::grant_ownership(self.revision().await, self.cluster, partition, 1, 0, 0)
+                    .unwrap(),
+            )
+            .await
+        {
+            metadata::Response::Applied {
+                outcome: metadata::Outcome::OwnershipGranted(grant),
+                ..
+            } => grant,
+            value => panic!("Unexpected grant response: {value:?}"),
+        };
         let meta = MetadataAuthority::new(
             self.metadata.raft.clone(),
             self.metadata.state.clone(),
@@ -318,7 +323,7 @@ impl Fixture {
             self.data
                 .raft
                 .client_write(DataCommand::Recover {
-                    partition: self.partition,
+                    partition,
                     writer: WriterFence {
                         node_id: 1,
                         owner_epoch: 1
@@ -355,36 +360,41 @@ impl Fixture {
         );
     }
     pub fn coordinator(&self, store: S3Store) -> Coordinator {
+        self.coordinator_with_budget(store, s3::budget())
+    }
+    pub fn coordinator_with_budget(
+        &self,
+        store: S3Store,
+        budget: tidemq::budget::MemoryBudget,
+    ) -> Coordinator {
         let data = DataReplica::local(self.data.raft.clone(), self.data.state.clone());
         Coordinator::new(
             MetadataReplica::local(self.metadata.raft.clone(), self.metadata.state.clone()),
             data.clone(),
             vec![data.clone()],
             store,
-            s3::budget(),
+            budget,
         )
         .unwrap()
         .with_checkpoint_candidates(vec![tidemq::lifecycle::ReplicaCheckpoint::local(data)])
         .unwrap()
     }
     pub async fn produce(&self, count: u64) -> AppendBatch {
+        self.produce_partition(self.partition, count).await
+    }
+    pub async fn produce_partition(&self, partition: PartitionKey, count: u64) -> AppendBatch {
         let producer_id = Id::random().unwrap();
         let epoch = self
             .data
             .state
-            .with_application(|state| {
-                state
-                    .producer(self.partition)
-                    .unwrap()
-                    .next_registration_epoch()
-            })
+            .with_application(|state| state.producer(partition).unwrap().next_registration_epoch())
             .await;
         let writer = WriterFence {
             node_id: 1,
             owner_epoch: 1,
         };
         let registration = DataCommand::Producer {
-            partition: self.partition,
+            partition,
             writer,
             now_ms: 1,
             command: ProducerCommand::Register(RegisterProducer {
@@ -408,8 +418,8 @@ impl Fixture {
             })
             .collect::<Vec<_>>();
         let digest = tidemq_protocol::producer::canonical_produce_digest_parts(
-            self.partition.topic_id,
-            0,
+            partition.topic_id,
+            partition.partition,
             producer_id,
             epoch,
             0,
@@ -417,8 +427,8 @@ impl Fixture {
         )
         .unwrap();
         let batch = AppendBatch {
-            topic_id: self.partition.topic_id,
-            partition_id: 0,
+            topic_id: partition.topic_id,
+            partition_id: partition.partition,
             producer_id,
             producer_epoch: epoch,
             first_sequence: 0,
@@ -429,7 +439,7 @@ impl Fixture {
             self.data
                 .raft
                 .client_write(DataCommand::Producer {
-                    partition: self.partition,
+                    partition,
                     writer,
                     now_ms: 1,
                     command: ProducerCommand::Append(batch.clone())

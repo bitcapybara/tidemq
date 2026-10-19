@@ -43,6 +43,53 @@ impl Catalog {
             .unwrap_or(0)
     }
 
+    pub(crate) fn compaction_ranges(
+        &self,
+        id: Id,
+    ) -> Result<Option<Vec<super::RangeRequest>>, Rejection> {
+        let object = self.objects.get(&id).ok_or(Rejection::NotFound)?;
+        if object.phase != ObjectPhase::Published
+            || object.recovery_replacement.is_some()
+            || object.manifest_references == 0
+        {
+            return Ok(None);
+        }
+        let mut changed = false;
+        let mut ranges = Vec::new();
+        for index in &object.descriptor().partitions {
+            let partition = key(index);
+            let segment = self.manifests.get(&partition).and_then(|manifest| {
+                manifest
+                    .segments
+                    .iter()
+                    .find(|segment| segment.object_id == id)
+            });
+            let Some(segment) = segment else {
+                if self.checkpointed_floor(partition) < index.offsets.end {
+                    return Ok(None);
+                }
+                changed = true;
+                continue;
+            };
+            let start = segment
+                .offsets
+                .start
+                .max(self.checkpointed_floor(partition));
+            if start >= segment.offsets.end {
+                return Ok(None);
+            }
+            changed |= start != index.offsets.start;
+            ranges.push(super::RangeRequest {
+                partition,
+                offsets: OffsetRange {
+                    start,
+                    end: segment.offsets.end,
+                },
+            });
+        }
+        Ok((changed && !ranges.is_empty()).then_some(ranges))
+    }
+
     pub fn capacity_usage(&self) -> super::CapacityUsage {
         self.usage(self.objects.values(), self.pins.len())
     }
@@ -267,6 +314,12 @@ impl Catalog {
             .entry(object.descriptor().identity.group_id)
             .or_default()
             .insert(id);
+        for old_id in &object.plan.replaces {
+            self.objects
+                .get_mut(old_id)
+                .ok_or(Rejection::InvalidSnapshot)?
+                .recovery_replacement = Some(id);
+        }
         self.objects.insert(id, object.clone());
         Ok(CatalogOutcome::Object(Box::new(object)))
     }
@@ -342,14 +395,21 @@ impl Catalog {
         }
         for id in &replaced {
             let object = self.objects.get(id).ok_or(Rejection::NotFound)?;
-            if object.phase != ObjectPhase::Published || object.recovery_replacement.is_some() {
+            if object.phase != ObjectPhase::Published
+                || object
+                    .recovery_replacement
+                    .is_some_and(|id| id != plan.descriptor.identity.object_id)
+            {
                 return Err(Rejection::References);
             }
             if object.plan.descriptor.identity.group_id != plan.descriptor.identity.group_id {
                 return Err(Rejection::Identity);
             }
             for index in &object.plan.descriptor.partitions {
-                if !plan.expected_generations.contains_key(&key(index)) {
+                let partition = key(index);
+                if !plan.expected_generations.contains_key(&partition)
+                    && self.checkpointed_floor(partition) < index.offsets.end
+                {
                     return Err(Rejection::InvalidRange);
                 }
             }
@@ -381,7 +441,7 @@ impl Catalog {
                 }
                 if index.offsets
                     != (OffsetRange {
-                        start: first.offsets.start,
+                        start: first.offsets.start.max(self.checkpointed_floor(partition)),
                         end: last.offsets.end,
                     })
                 {
@@ -438,7 +498,15 @@ impl Catalog {
             ObjectPhase::Aborted | ObjectPhase::Deleting | ObjectPhase::Deleted => {}
             _ => return Err(Rejection::Conflict),
         }
-        Ok(CatalogOutcome::Object(Box::new(object.clone())))
+        let result = object.clone();
+        for source in &result.plan.replaces {
+            if let Some(old) = self.objects.get_mut(source)
+                && old.recovery_replacement == Some(id)
+            {
+                old.recovery_replacement = None;
+            }
+        }
+        Ok(CatalogOutcome::Object(Box::new(result)))
     }
 
     fn acquire_pin(&mut self, pin: PinRecord) -> Result<CatalogOutcome, Rejection> {
@@ -713,6 +781,21 @@ impl Catalog {
                             .any(|index| key(index) == *partition)
                 })
             {
+                return Err(Rejection::InvalidSnapshot);
+            }
+            if object.recovery_replacement.is_some_and(|replacement| {
+                object.phase != ObjectPhase::Published
+                    || self.objects.get(&replacement).is_none_or(|target| {
+                        !target.plan.replaces.contains(id)
+                            || !matches!(
+                                target.phase,
+                                ObjectPhase::Registered
+                                    | ObjectPhase::Uploaded
+                                    | ObjectPhase::Published
+                                    | ObjectPhase::CancelRequested
+                            )
+                    })
+            }) {
                 return Err(Rejection::InvalidSnapshot);
             }
             if matches!(object.phase, ObjectPhase::Deleting | ObjectPhase::Deleted)

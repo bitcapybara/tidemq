@@ -40,6 +40,7 @@ pub(crate) enum Query {
     Reclaim { partition: PartitionKey, end: u64 },
     Read { partition: PartitionKey, first: u64 },
     Pin(Id),
+    Compaction(Id),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -63,6 +64,7 @@ pub(crate) enum View {
         generation: u64,
     },
     Pin(Option<PinRecord>),
+    Compaction(Option<Vec<RangeRequest>>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -365,6 +367,10 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             })
         }
         Query::Pin(id) => Ok(View::Pin(catalog.pin(id).cloned())),
+        Query::Compaction(id) => catalog
+            .compaction_ranges(id)
+            .map(View::Compaction)
+            .map_err(|reason| Error::Rejected { reason }),
     }
 }
 

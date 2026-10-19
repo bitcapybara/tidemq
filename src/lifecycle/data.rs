@@ -100,6 +100,11 @@ impl DataState {
                     .entry(partition)
                     .and_modify(|floor| *floor = (*floor).max(before))
                     .or_insert(before);
+                if let Some(manifest) = self.manifests.get_mut(&partition) {
+                    manifest
+                        .segments
+                        .retain(|segment| segment.offsets.end > before);
+                }
                 Ok(DataOutcome::FloorCheckpoint)
             }
             DataCommand::Authorize(plan) => self.authorize(plan),
@@ -131,12 +136,24 @@ impl DataState {
             return Err(Rejection::Capacity);
         }
         for old_id in &plan.replaces {
-            if self
+            let old = self
                 .intents
                 .get(old_id)
-                .is_none_or(|old| old.phase != IntentPhase::Published)
-            {
-                return Err(Rejection::NotPublished);
+                .filter(|old| old.phase == IntentPhase::Published)
+                .ok_or(Rejection::NotPublished)?;
+            for index in &old.plan.descriptor.partitions {
+                let partition = key(index);
+                let replacement = plan
+                    .descriptor
+                    .partitions
+                    .iter()
+                    .find(|new| key(new) == partition);
+                if replacement.map_or(index.offsets.end, |new| {
+                    new.offsets.start.min(index.offsets.end)
+                }) > self.checkpointed_floor(partition).max(index.offsets.start)
+                {
+                    return Err(Rejection::InvalidRange);
+                }
             }
         }
         self.intents.insert(
@@ -235,6 +252,33 @@ impl DataState {
                 .is_none_or(|old| old.phase != IntentPhase::Published)
             {
                 return Err(Rejection::NotPublished);
+            }
+        }
+        for (partition, manifest) in self.manifests.iter().filter(|_| !plan.replaces.is_empty()) {
+            if plan
+                .descriptor
+                .partitions
+                .iter()
+                .any(|index| key(index) == *partition)
+            {
+                continue;
+            }
+            let removed = manifest
+                .segments
+                .iter()
+                .filter(|segment| plan.replaces.contains(&segment.object_id));
+            if removed
+                .clone()
+                .any(|segment| segment.offsets.end > self.checkpointed_floor(*partition))
+            {
+                return Err(Rejection::InvalidRange);
+            }
+            if removed.count() > 0 {
+                let mut retired = manifest.clone();
+                retired
+                    .segments
+                    .retain(|segment| !plan.replaces.contains(&segment.object_id));
+                updates.push((*partition, retired));
             }
         }
         for (partition, manifest) in updates {
@@ -349,7 +393,13 @@ impl DataState {
             if manifest.generation == 0 || manifest.publication_generation != manifest.generation {
                 return Err(Rejection::InvalidSnapshot);
             }
-            let mut next = 0;
+            let mut next = manifest
+                .segments
+                .first()
+                .map_or(manifest.published_end, |segment| segment.offsets.start);
+            if next > self.checkpointed_floor(*partition) {
+                return Err(Rejection::InvalidSnapshot);
+            }
             for segment in &manifest.segments {
                 let intent = self
                     .intents
