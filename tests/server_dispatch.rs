@@ -123,6 +123,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start(dispatch: DispatchConfig) -> Self {
+        Self::start_with_transport(dispatch, TransportConfig::default()).await
+    }
+
+    async fn start_with_transport(dispatch: DispatchConfig, config: TransportConfig) -> Self {
         let key = KeyPair::generate().unwrap();
         let certificate = CertificateParams::new(vec!["localhost".into()])
             .unwrap()
@@ -152,7 +156,7 @@ impl Fixture {
                 )
                 .unwrap(),
             ]),
-            TransportConfig::default(),
+            config.clone(),
             budget.clone(),
         )
         .unwrap();
@@ -179,7 +183,7 @@ impl Fixture {
                 identity: None,
                 expected_nodes: vec![],
             },
-            TransportConfig::default(),
+            config,
             MemoryBudget::new(&MemoryConfig::default()).unwrap(),
         )
         .unwrap();
@@ -444,4 +448,185 @@ async fn idle_request_lanes_preserve_active_client_responses() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn idle_request_lanes_preserve_active_server_requests() {
     idle_request_lanes(Duration::from_secs(5), Duration::from_millis(120)).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_idle_produce_connection_records_lane_read_errors_while_control_progresses() {
+    let native_idle = Duration::from_secs(1);
+    let Fixture {
+        client,
+        service,
+        target,
+        credentials,
+        shutdown,
+        task,
+        transport,
+    } = Fixture::start_with_transport(
+        DispatchConfig {
+            idle_timeout: Duration::from_millis(120),
+            drain_timeout: Duration::from_millis(100),
+            ..Default::default()
+        },
+        TransportConfig {
+            idle_timeout: native_idle,
+            handshake_timeout: Duration::from_millis(500),
+            stream_prelude_timeout: Duration::from_millis(200),
+            ..Default::default()
+        },
+    )
+    .await;
+    let config = RpcConfig {
+        read_idle_timeout: Duration::from_millis(120),
+        ..Default::default()
+    };
+    let producer = client
+        .connect(
+            target.clone(),
+            &credentials,
+            TrafficClass::Produce,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let producer_connection = producer.connection();
+    let producer = RpcClient::from_session_with_lanes(producer, config.clone(), 4, deadline())
+        .await
+        .unwrap();
+    assert_eq!(producer.lane_count(), 4);
+    service.replies.add_permits(1);
+    let response = producer
+        .call_affinity(
+            request(
+                FrameKind::ProduceBatch,
+                TrafficClass::Produce,
+                &ProduceBatch::default(),
+            ),
+            deadline(),
+            0,
+        )
+        .await
+        .unwrap();
+    let result: ProduceResult =
+        decode_payload(response.frame().payload.clone(), &ProtocolLimits::default()).unwrap();
+    assert_eq!(result.first_offset, 0);
+    drop(response);
+    let control = client
+        .connect(target, &credentials, TrafficClass::Control, deadline())
+        .await
+        .unwrap();
+    let control_connection = control.connection();
+    let control = RpcClient::from_session(control, config).await.unwrap();
+    let initial_client = client.metrics.snapshot();
+    let initial_server = transport.snapshot();
+    let started = Instant::now();
+    let mut checked_application_idle = false;
+    let mut control_responses = 0;
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "The native-idle producer connection did not close"
+        );
+        let response = control
+            .call_affinity(
+                request(
+                    FrameKind::Diagnose,
+                    TrafficClass::Control,
+                    &CreateTopic {
+                        name: "idle-connection-diagnostic".into(),
+                        partitions: 1,
+                    },
+                ),
+                Instant::now() + Duration::from_millis(200),
+                0,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.frame().kind,
+            i32::from(FrameKind::DiagnosticResult)
+        );
+        control_responses += 1;
+        if !checked_application_idle && started.elapsed() >= Duration::from_millis(250) {
+            assert!(started.elapsed() < native_idle);
+            assert!(!producer.is_closed());
+            assert!(!producer_connection.is_closed());
+            assert_eq!(
+                client.metrics.snapshot().malformed_total,
+                initial_client.malformed_total
+            );
+            checked_application_idle = true;
+        }
+        let observed = client.metrics.snapshot();
+        if started.elapsed() >= native_idle + Duration::from_millis(200)
+            && producer.is_closed()
+            && producer_connection.is_closed()
+            && observed
+                .malformed_total
+                .saturating_sub(initial_client.malformed_total)
+                == 4
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(checked_application_idle);
+    assert!(control_responses >= 10);
+    assert!(!control.is_closed());
+    assert!(!control_connection.is_closed());
+    let response = control
+        .call_affinity(
+            request(
+                FrameKind::Diagnose,
+                TrafficClass::Control,
+                &CreateTopic {
+                    name: "after-native-idle-close".into(),
+                    partitions: 1,
+                },
+            ),
+            Instant::now() + Duration::from_millis(200),
+            0,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.frame().kind,
+        i32::from(FrameKind::DiagnosticResult)
+    );
+    control_responses += 1;
+    let observed_client = client.metrics.snapshot();
+    let observed_server = transport.snapshot();
+    assert_eq!(observed_client.connections_total, 2);
+    assert_eq!(
+        observed_client.malformed_total - initial_client.malformed_total,
+        4
+    );
+    for metrics in [&observed_client, &observed_server] {
+        assert_eq!(metrics.deadlines_total, 0);
+        assert_eq!(metrics.liveness_failures_total, 0);
+        assert_eq!(metrics.rejected_total, 0);
+    }
+    eprintln!(
+        "Native-idle P/4-lane closure with active C: elapsed={:?}, control_responses={control_responses}, client_malformed_delta={}, server_malformed_delta={}, client_deadlines={}, server_deadlines={}, client_liveness_failures={}, server_liveness_failures={}, client_connections={}, server_connections={}, client_rejected={}, server_rejected={}",
+        started.elapsed(),
+        observed_client.malformed_total - initial_client.malformed_total,
+        observed_server.malformed_total - initial_server.malformed_total,
+        observed_client.deadlines_total,
+        observed_server.deadlines_total,
+        observed_client.liveness_failures_total,
+        observed_server.liveness_failures_total,
+        observed_client.connections_total,
+        observed_server.connections_total,
+        observed_client.rejected_total,
+        observed_server.rejected_total
+    );
+    let finish = Instant::now() + Duration::from_millis(500);
+    producer.shutdown(finish).await;
+    control.shutdown(finish).await;
+    client.close(finish).await.unwrap();
+    shutdown.send(true).unwrap();
+    tokio::time::timeout_at(finish, task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
