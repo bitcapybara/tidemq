@@ -73,6 +73,27 @@ collector_counter() {
     END { if (found && !invalid) printf "%.0f\n", total; else print "null" }
   ' "$1"
 }
+collector_port_available() {
+  local port=$1 probe='' probe_status=0
+  # Only a direct explicit refusal proves that this loopback endpoint is unused.
+  if probe=$(LC_ALL=C curl --disable --proxy '' --noproxy '*' --retry 0 \
+    --connect-timeout 1 --max-time 1 --output /dev/null --verbose \
+    "http://127.0.0.1:$port/" 2>&1 | head -c 8193); then
+    probe_status=0
+  else
+    probe_status=$?
+  fi
+  printf '%s' "$probe" > "$output/collector/preflight-$port.txt"
+  if [[ "$probe_status" == 7 && $(wc -c < "$output/collector/preflight-$port.txt") -le 8192 ]] \
+    && awk -v port="$port" '
+      index($0, "connect to 127.0.0.1 port " port " ") && index($0, "failed: Connection refused") { refused = 1 }
+      END { exit !refused }
+    ' "$output/collector/preflight-$port.txt"; then
+    return 0
+  fi
+  printf 'Collector port %s is occupied or availability is unknown\n' "$port" >&2
+  return 1
+}
 collector_snapshot() {
   local label=$1 path="$output/collector/metrics-$1.txt"
   : > "$path"
@@ -82,6 +103,7 @@ collector_snapshot() {
     printf 'Collector %s metrics capture failed\n' "$label" >&2; return 1
   fi
   [[ $(wc -c < "$path") -le 262144 ]] || { printf 'Collector metrics exceeded 256 KiB\n' >&2; return 1; }
+  kill -0 "$collector_pid" 2>/dev/null || { printf 'Owned Collector exited during %s capture\n' "$label" >&2; return 1; }
   {
     printf 'source=official_collector_process_self_metrics\nowned_pid=%s\n' "$collector_pid"
     awk '/^otelcol_process_/ { print; found = 1 } END { if (!found) print "process_metrics=unavailable" }' "$path"
@@ -112,6 +134,8 @@ EOF
 esac
 if [[ -n "$collector_bin" ]]; then
   mkdir "$output/collector"
+  collector_port_available 4318
+  collector_port_available 18888
   cp "$root/deploy/observability/collector.yaml" "$output/collector/config.yaml"
   version=$("$collector_bin" --version | head -c 4097)
   printf '%s\n' "$version" > "$output/collector/version.txt"
@@ -136,6 +160,7 @@ if [[ -n "$collector_bin" ]]; then
     sleep 0.1
   done
   [[ "$ready" == true ]] || { printf 'Collector readiness deadline expired\n' >&2; exit 1; }
+  kill -0 "$collector_pid" 2>/dev/null || { printf 'Owned Collector exited after readiness\n' >&2; exit 1; }
 fi
 case "$scenario" in
   small) load+=(--message-bytes 128 --batch-messages 32 --messages 4096 --warmup-messages 256) ;;
@@ -195,7 +220,11 @@ done
 sleep 1
 status=0
 if [[ -n "$collector_pid" ]]; then
-  collector_snapshot before || { status=1; collector_capture_errors=$((collector_capture_errors + 1)); }
+  if ! collector_snapshot before; then
+    printf '{"status":"startup_capture_failed","capture_errors":1}\n' > "$output/collector/evidence.json"
+    printf 'Collector validation failed before the SDK workload\n' >&2
+    exit 1
+  fi
 fi
 env -i PATH=/usr/bin:/bin "$build/perf_load" --endpoint 127.0.0.1:7410 --server-name node-1.local \
   --ca "$output/cluster/ca.pem" --token-file "$output/cluster/access.token" \
