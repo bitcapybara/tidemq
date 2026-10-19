@@ -738,7 +738,50 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
     assert_eq!(status.assignment.unwrap().acknowledged_before, 5);
-    let receipt = producer.retry(original, deadline()).await.unwrap();
+    let retry_deadline = deadline();
+    let receipt = loop {
+        assert!(
+            Instant::now() < retry_deadline,
+            "Original pending batch did not recover within its original deadline"
+        );
+        match producer
+            .retry(
+                original,
+                retry_deadline.min(Instant::now() + Duration::from_secs(2)),
+            )
+            .await
+        {
+            Ok(receipt) => break receipt,
+            Err(error) => {
+                let source = match &error {
+                    tidemq_sdk::Error::ProduceUnknown { source } => source.as_ref(),
+                    error => error,
+                };
+                assert!(
+                    source.outcome_unknown()
+                        && !matches!(
+                            source,
+                            tidemq_sdk::Error::Remote {
+                                retryable: false,
+                                ..
+                            }
+                        ),
+                    "Original pending batch received a terminal retry error: {error:?}"
+                );
+            }
+        }
+        assert_eq!(
+            identity,
+            (
+                original.operation_id(),
+                original.producer_epoch(),
+                original.first_sequence(),
+                original.digest().to_vec()
+            )
+        );
+        tokio::time::sleep_until(retry_deadline.min(Instant::now() + Duration::from_millis(25)))
+            .await;
+    };
     assert_eq!(receipt.first_offset, 5);
     assert_eq!(
         identity,
