@@ -60,6 +60,7 @@ struct PeerState {
     drop_claim_reply: bool,
     bulk_reads: usize,
     hot_reads: usize,
+    hot_offset: Option<u64>,
     barriers: Vec<u64>,
     acknowledgements: Vec<usize>,
     acknowledged_tokens: BTreeSet<Bytes>,
@@ -464,8 +465,9 @@ fn handle(
             } else {
                 assert!(assignment.received_before >= assignment.cold_before);
                 state.hot_reads += 1;
-                assignment.issued_before = 3;
-                2
+                let offset = state.hot_offset.unwrap_or(2);
+                assignment.issued_before = assignment.issued_before.max(offset + 1);
+                offset
             };
             let delivery = public::Delivery {
                 offset,
@@ -1173,6 +1175,59 @@ async fn owner_recovery_preserves_failed_keys_and_invalidates_old_tokens_across_
         );
         assert_eq!(state.acknowledgements, vec![1, 1, 1]);
     }
+}
+
+#[tokio::test]
+async fn hot_ack_frontier_can_cross_the_frozen_boundary_before_and_after_owner_recovery() {
+    let peer = peer(false, false).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    consumer.fill(deadline()).await.unwrap();
+    for offset in 0..2 {
+        let delivery = consumer.next().await.unwrap().unwrap();
+        assert_eq!(delivery.offset(), offset);
+        consumer.ack(&delivery, deadline()).await.unwrap();
+    }
+    for offset in 2..5 {
+        {
+            let mut state = peer.state.lock().unwrap();
+            state.hot_offset = Some(offset);
+            if offset == 4 {
+                advance_owner(&mut state, false);
+            }
+        }
+        assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+        let delivery = consumer.next().await.unwrap().unwrap();
+        assert_eq!(delivery.offset(), offset);
+        assert_eq!(
+            consumer
+                .ack(&delivery, deadline())
+                .await
+                .unwrap()
+                .acknowledged_before,
+            offset + 1
+        );
+    }
+    let state = peer.state.lock().unwrap();
+    let assignment = state.assignment.as_ref().unwrap();
+    assert_eq!(assignment.cold_before, 2);
+    assert_eq!(assignment.acknowledged_before, 5);
+    assert_eq!(assignment.received_before, 5);
+    assert_eq!(state.claims.len(), 2);
+    assert!(state.barriers.contains(&4));
+    assert!(state.barriers.contains(&5));
+    assert!(state.claims.iter().all(|claim| {
+        claim.session_id == bytes(peer.client.session_id()) && claim.replace_session_id.is_empty()
+    }));
 }
 
 #[tokio::test]
