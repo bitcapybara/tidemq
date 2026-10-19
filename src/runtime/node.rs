@@ -449,7 +449,7 @@ impl RunningNode {
         let _ = self.shutdown.send(true);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let mut failure = None;
-        for mut task in self.tasks.drain(..) {
+        for mut task in std::mem::take(&mut self.tasks) {
             match tokio::time::timeout_at(deadline, &mut task).await {
                 Ok(Ok(result)) => {
                     if let Err(error) = result {

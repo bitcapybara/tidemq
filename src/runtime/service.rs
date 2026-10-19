@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tidemq_protocol::Id;
-use tidemq_protocol::common::{CancelRequest, ErrorCode, Frame, FrameKind, Outcome, TrafficClass};
+use tidemq_protocol::common::{
+    CancelRequest, ErrorCode, ErrorReply, Frame, FrameKind, Outcome, TrafficClass,
+};
 use tidemq_protocol::framing::{decode_frame, decode_payload, encode_payload, frame_limit};
 use tidemq_protocol::internal::{InternalCommand, RaftRequest, SnapshotChunk};
 use tokio::sync::{Mutex, RwLock, watch};
@@ -397,17 +399,34 @@ impl Service {
                 .await;
         }
         let partition = super::data::partition(frame, &self.config.protocol)?;
-        let route = self
+        let mut route = self
             .authorize_partition(&access, partition, deadline)
             .await?;
         self.admit_partition(partition, route.epoch, kind)?;
         let mut forwarded = frame.clone();
-        super::data::set_owner_epoch(
+        let epoch = super::data::set_owner_epoch(
             &mut forwarded,
             route.epoch,
             &self.config.protocol,
             hops == 0,
-        )?;
+        );
+        if epoch
+            .as_ref()
+            .is_err_and(|error| hops > 0 && error.failure().code == i32::from(ErrorCode::Fenced))
+        {
+            self.routes.write().await.remove(&partition);
+            route = self
+                .authorize_partition(&access, partition, deadline)
+                .await?;
+            super::data::set_owner_epoch(
+                &mut forwarded,
+                route.epoch,
+                &self.config.protocol,
+                false,
+            )?;
+        } else {
+            epoch?;
+        }
         if route.owner_node != self.config.node_id && hops < 2 {
             return self
                 .forward(
@@ -481,7 +500,14 @@ impl Service {
             )
             .await?;
         drop(order);
-        let bytes = pending.receive().await?;
+        let bytes = match pending.receive().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.invalidate_forward(frame, group, error.failure().code)
+                    .await;
+                return Err(error);
+            }
+        };
         let response = decode_frame(bytes, class, &self.config.protocol)
             .map_err(|source| Error::operation("validate forwarded response", source))?;
         if response.request_id != frame.request_id || response.operation_id != frame.operation_id {
@@ -489,7 +515,24 @@ impl Service {
                 "Forwarded response does not match the original request",
             ));
         }
+        if response.kind == i32::from(FrameKind::Error) {
+            let error: ErrorReply = decode_payload(response.payload.clone(), &self.config.protocol)
+                .map_err(|source| Error::operation("decode delegated rejection", source))?;
+            self.invalidate_forward(frame, group, error.code).await;
+        }
         Ok(response)
+    }
+
+    async fn invalidate_forward(&self, frame: &Frame, group: u64, code: i32) {
+        if matches!(
+            ErrorCode::try_from(code),
+            Ok(ErrorCode::Fenced | ErrorCode::Unavailable)
+        ) {
+            if let Ok(partition) = super::data::partition(frame, &self.config.protocol) {
+                self.routes.write().await.remove(&partition);
+            }
+            self.leaders.write().await.remove(&group);
+        }
     }
 
     async fn internal(

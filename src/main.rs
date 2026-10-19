@@ -152,6 +152,9 @@ async fn run(cli: Cli) -> Result<()> {
                 Config::default()
             };
             config.validate()?;
+            if !config.runtime.peers.is_empty() {
+                config.runtime.validate(&config).map_err(runtime_error)?;
+            }
             print_json(&serde_json::json!({"version": env!("CARGO_PKG_VERSION"),
                 "scope": "current_process", "configuration": config,
                 "allocator": allocator::snapshot().await?, "messaging_runtime_available": true}))
