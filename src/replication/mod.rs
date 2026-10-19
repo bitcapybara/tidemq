@@ -3,6 +3,7 @@
 //! Raft log indices are consensus positions and must never be used as message offsets.
 
 mod log;
+pub mod rpc;
 mod snapshot;
 mod state_machine;
 mod store;
