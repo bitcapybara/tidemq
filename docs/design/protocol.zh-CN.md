@@ -22,6 +22,8 @@ git diff -- crates/tidemq-protocol/src/generated
 
 Id 使用 fallible entropy 生成 UUID v4，拒绝 nil 与错误长度；不使用可能因 RNG 失败 panic 的 Uuid::new_v4。Topic/producer/订阅等角色身份还需在对应权威状态中验证。
 
+cluster_id、topic/producer/subscription/operation 身份使用 Id；node_id 与 group_id 使用非零 u64。group_id 在集群内分配且不可复用，metadata_group_id 单独保留，数据组不能占用它；磁盘与内部网络使用同一组身份，不另建 UUID 到 wire ID 的隐式映射。
+
 错误使用固定 ErrorCode、retryable 和 Outcome；明确 rejected、committed、unknown，SDK 不匹配错误文本决定重试。敏感 token/body 不进入日志或 instrument 参数。取消按 request_id 处理，不能为取消一个请求 RESET 整条复用流。
 
 traceparent 只接受有界 W3C version 00；无效上下文在帧总额内丢弃，不改变业务身份。它不参与去重摘要、授权或持久状态机，不绑定共享 connection，不默认传任意 baggage。
