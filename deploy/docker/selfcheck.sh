@@ -84,7 +84,7 @@ for mode in rf1 rf3; do
   [[ $(grep -c 'max-size: 10m' "$rendered") == "$service_count" ]] || fail 'Log byte budget differs'
   [[ $(grep -c 'max-file: "3"' "$rendered") == "$service_count" ]] || fail 'Log retention differs'
   [[ $(grep -c 'mem_limit: "402653184"' "$rendered") == "$expected" ]] || fail 'Per-node memory budget differs'
-  if grep -Eq '^[[:space:]]+(ports|privileged|pid|ipc|devices):|network_mode: host|docker.sock' "$rendered"; then
+  if grep -Eq '^[[:space:]]+(ports|privileged|pid|ipc|devices|extra_hosts):|network_mode: host|docker.sock' "$rendered"; then
     fail 'Unexpected host exposure or namespace sharing'
   fi
   memory=$(awk '$1 == "mem_limit:" {gsub(/"/, "", $2); total += $2} END {printf "%.0f", total}' "$rendered")

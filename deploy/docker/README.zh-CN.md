@@ -122,7 +122,7 @@ dc exec -T rustfs /bin/sh -c 'test -w /var/lib/tidemq/objects && test "$(stat -c
 
 ## SDK 验证与诊断
 
-`validator` 属于显式 `tools` profile，挂载 `/run/client` 为只读，并独享 `validation-data:/var/lib/tidemq`。RF1 的网关地址为 `127.0.0.1:7410`，RF3 的 Gateway 41 为 `127.0.0.1:7810`。server name 必须匹配生成的 SAN。每次使用尚不存在的 case 子目录：
+`validator` 属于显式 `tools` profile，挂载 `/run/client` 为只读，并独享 `validation-data:/var/lib/tidemq`。RF1 的网关地址为 `127.0.0.1:7410`，RF3 的 Gateway 41 为 `127.0.0.1:7810`。server name 必须匹配生成的 SAN，通过独立 TLS 参数传入，无需 DNS 或 `extra_hosts`；Docker 的 [container 网络模式不支持 add-host](https://docs.docker.com/engine/network/#container-networks)，不能在共享 namespace 服务上配置它。每次使用尚不存在的 case 子目录：
 
 ```bash
 dc --profile tools run --rm --no-deps validator \
