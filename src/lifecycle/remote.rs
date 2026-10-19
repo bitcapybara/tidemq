@@ -631,7 +631,7 @@ impl MetadataHandler {
     }
     async fn query_scope(&self, peer: &NodeGrant, group: u64, query: &Query) -> Result<()> {
         let (objects, partitions) = match query {
-            Query::Object(id) | Query::Diagnose(id) => (vec![*id], vec![]),
+            Query::Object(id) | Query::Diagnose(id) | Query::Compaction(id) => (vec![*id], vec![]),
             Query::Prepare(ranges) => {
                 if ranges.len() > 64 {
                     return Err(Error::Wire);
@@ -828,6 +828,19 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                 && pin.objects.len() <= 64
                 && pin.ttl_millis > 0
                 && pin.ttl_millis <= 10_000
+        }),
+        (Query::Compaction(_), View::Compaction(ranges)) => ranges.as_ref().is_none_or(|ranges| {
+            !ranges.is_empty()
+                && ranges.len() <= super::types::MAX_PARTITIONS
+                && ranges
+                    .iter()
+                    .all(|range| range.offsets.start < range.offsets.end)
+                && ranges
+                    .iter()
+                    .map(|range| range.partition)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == ranges.len()
         }),
         (Query::Diagnose(id), View::Diagnostic(diagnostic)) => diagnostic.object_id == *id,
         (Query::DataVoters, View::DataVoters(group)) => {

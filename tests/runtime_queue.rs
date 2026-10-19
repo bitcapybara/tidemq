@@ -9,6 +9,9 @@ use rcgen::{
 };
 use tidemq::config::{Config, Role, TlsConfig};
 use tidemq::runtime::{GroupConfig, PeerConfig, RunningNode, RuntimeConfig};
+#[path = "runtime_support/udp_proxy.rs"]
+mod udp_proxy;
+
 use tidemq_sdk::{
     Bytes, Client, ClientConfig, ClientTls, Consumer, ConsumerConfig, Id, PeerTarget, Producer,
     public,
@@ -57,7 +60,11 @@ impl Fixture {
         let mut peers = Vec::new();
         for (node, role) in nodes {
             let key = KeyPair::generate().unwrap();
-            let mut params = CertificateParams::new(vec![format!("node-{node}.local")]).unwrap();
+            let mut names = vec![format!("node-{node}.local")];
+            if role.serves_gateway() {
+                names.push("queue.local".into());
+            }
+            let mut params = CertificateParams::new(names).unwrap();
             params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
             params.extended_key_usages = vec![
                 ExtendedKeyUsagePurpose::ClientAuth,
@@ -526,6 +533,14 @@ async fn durable_produce(producer: &Producer, body: &'static [u8]) -> u64 {
     let pending = producer.pending_batches().await.unwrap();
     assert_eq!(pending.len(), 1);
     let batch = pending.first().unwrap();
+    durable_retry(producer, batch, until).await
+}
+
+async fn durable_retry(
+    producer: &Producer,
+    batch: &tidemq_sdk::PendingBatch,
+    until: Instant,
+) -> u64 {
     let identity = (
         batch.operation_id(),
         batch.producer_epoch(),
@@ -769,6 +784,12 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
         "/metrics",
     )
     .await;
+    assert!(
+        metrics.starts_with("HTTP/1.1 200"),
+        "Management response was empty or failed: {} bytes",
+        metrics.len()
+    );
+    assert!(metrics.len() <= 262_144 + 1024);
     assert!(metrics.contains("tidemq_producer_new_messages_total 1"));
     for operation in ["Read", "Ack", "Control"] {
         let prefix =
@@ -983,6 +1004,137 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_network_faults() {
+    static BODY: [u8; 32 * 1024] = [b'p'; 32 * 1024];
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Combined),
+            (41, Role::Gateway),
+            (42, Role::Gateway),
+        ],
+        &[1],
+        &[1],
+    )
+    .await;
+    fixture
+        .configs
+        .get_mut(&41)
+        .unwrap()
+        .runtime
+        .capacity
+        .process_memory = tidemq::quota::Limits::default().process_memory;
+    for (node, config) in &fixture.configs {
+        if *node != 41 {
+            fixture
+                .running
+                .insert(*node, RunningNode::start(config.clone()).await.unwrap());
+        }
+    }
+    fixture.wait_ready().await;
+    let mut first_gateway = start_process(&fixture, 41).await;
+    let proxy = udp_proxy::Proxy::start([
+        fixture.configs.get(&41).unwrap().listen,
+        fixture.configs.get(&42).unwrap().listen,
+    ])
+    .await;
+    let mut sdk = ClientConfig::new(format!("queue.local:{}", proxy.address.port()));
+    sdk.request_timeout_ms = 20_000;
+    let client = Client::with_target(
+        sdk,
+        ClientTls {
+            trust_roots: fixture.roots.clone(),
+            identity: None,
+            expected_nodes: Vec::new(),
+        },
+        PeerTarget {
+            address: proxy.address,
+            server_name: "queue.local".into(),
+            local_role: "sdk".into(),
+            remote_role: "gateway".into(),
+            cluster_id: None,
+            node_id: None,
+        },
+        TOKEN.into(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    for offset in 0..3 {
+        assert_eq!(durable_produce(&producer, &BODY).await, offset);
+    }
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    for offset in 0..3 {
+        durable_consume(&consumer, offset).await;
+    }
+    let connections = client.transport_metrics().snapshot().connections_total;
+    first_gateway.kill().await.unwrap();
+    let _ = first_gateway.wait().await.unwrap();
+    proxy.switch();
+    proxy.set_mtu(1199);
+    let started = Instant::now();
+    let blocked = producer
+        .produce(
+            vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"after-gateway-crash"),
+            }],
+            Instant::now() + Duration::from_secs(4),
+        )
+        .await;
+    assert!(
+        blocked.is_err(),
+        "The MTU blackhole must not issue a successful receipt"
+    );
+    let pending = producer.pending_batches().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert!(
+        proxy.snapshot().over_mtu > 0,
+        "The blackhole must reject actual QUIC datagrams"
+    );
+    proxy.set_mtu(1200);
+    assert_eq!(
+        durable_retry(&producer, pending.first().unwrap(), deadline()).await,
+        3
+    );
+    durable_consume(&consumer, 3).await;
+    let observed = proxy.snapshot();
+    assert!(
+        observed.packets > 0
+            && observed.lost > 0
+            && observed.reordered > 0
+            && observed.over_mtu > 0,
+        "Every configured fault must have affected real traffic: {observed:?}"
+    );
+    assert!(
+        client.transport_metrics().snapshot().connections_total > connections,
+        "The original SDK must establish a new physical QUIC connection through the stable endpoint"
+    );
+    eprintln!(
+        "Stable UDP endpoint recovered original SDK after Gateway SIGKILL in {:?}; actual datagram faults: {observed:?}",
+        started.elapsed()
+    );
+    client.close(deadline()).await;
+    drop(consumer);
+    drop(producer);
+    drop(client);
+    proxy.close().await;
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
 async fn actual_runtime_sdk_replays_s3_after_published_local_reclamation() {
     run_runtime_s3(&[(1, Role::Combined)], &[1], &[1]).await;
@@ -1008,10 +1160,7 @@ async fn actual_runtime_sdk_rf3_separate_leaders_archive_and_replay_s3() {
     .await;
 }
 
-async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) {
-    let rustfs = rustfs::RustFs::start().await;
-    rustfs.create_bucket().await;
-    let mut fixture = Fixture::new(nodes, metadata, storage).await;
+async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {
     let credentials_file = fixture.directory.join("object-credentials.toml");
     let (access, secret) = rustfs.credentials();
     tokio::fs::write(
@@ -1036,6 +1185,109 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     {
         config.runtime.objects = Some(objects.clone());
     }
+}
+
+async fn wait_runtime_counter(fixture: &Fixture, node: u64, name: &str) -> String {
+    let until = deadline();
+    loop {
+        let metrics = http(
+            fixture.running.get(&node).unwrap().management_address,
+            "/metrics",
+        )
+        .await;
+        let value = metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if value > 0 {
+            return metrics;
+        }
+        assert!(
+            Instant::now() < until,
+            "Automatic runtime did not advance {name}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
+async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_reclaims_sources() {
+    let rustfs = rustfs::RustFs::start().await;
+    rustfs.create_bucket().await;
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    enable_objects(&mut fixture, &rustfs).await;
+    let config = fixture.configs.get_mut(&1).unwrap();
+    config.runtime.archive_interval_ms = 4000;
+    config.runtime.retention.minimum_age_ms = 0;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+        .await
+        .unwrap();
+    assert_eq!(durable_produce(&producer, b"expired-prefix").await, 0);
+    let bucket = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    while std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        == bucket
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(durable_produce(&producer, b"retained-suffix").await, 1);
+    let archived =
+        wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_reclaimed_bytes_total ").await;
+    assert!(
+        archived.contains("tidemq_lifecycle_published_total 1"),
+        "Both time buckets must share the first automatic object"
+    );
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig {
+            max_buffered_messages: 1,
+            ..ConsumerConfig::default()
+        },
+        deadline(),
+    )
+    .await
+    .unwrap();
+    durable_consume(&consumer, 0).await;
+    wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_compacted_total ").await;
+    wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_deleted_total ").await;
+    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    let retained = consumer.next().await.unwrap().unwrap();
+    assert_eq!(retained.offset(), 1);
+    assert_eq!(retained.body(), b"retained-suffix");
+    assert_eq!(
+        consumer
+            .ack(&retained, deadline())
+            .await
+            .unwrap()
+            .acknowledged_before,
+        2
+    );
+    client.close(deadline()).await;
+    drop(retained);
+    drop(consumer);
+    drop(producer);
+    drop(client);
+    fixture.close().await;
+}
+
+async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) {
+    let rustfs = rustfs::RustFs::start().await;
+    rustfs.create_bucket().await;
+    let mut fixture = Fixture::new(nodes, metadata, storage).await;
+    enable_objects(&mut fixture, &rustfs).await;
     if nodes.len() == 1 {
         for config in fixture.configs.values_mut() {
             config.runtime.groups.push(GroupConfig {

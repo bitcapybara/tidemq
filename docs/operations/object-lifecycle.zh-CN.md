@@ -16,12 +16,15 @@
 
 观察 `tidemq_lifecycle_operation_seconds`、`tidemq_lifecycle_active`、各阶段计数及 `tidemq_lifecycle_retries_total`。计数递增表示实际阶段请求完成，不表示整个对象链路完成。S3 阶段/完整流指标在对象存储看板；磁盘提交/快照错误在复制看板。ID 只用于有界诊断与采样日志，不添加到 Prometheus 标签。
 
+自动压缩每组每轮检查最多 8 个登记对象、执行最多一个候选，先恢复原任务并完成保留水位检查点，再通过 BackgroundSnapshot 配额门。`tidemq_lifecycle_compacted_total` 只记录通过全部当前 voter 持久检查点的自动替换；旧对象仍可能被读取 pin 或其他恢复屏障保留。`recovery_replacement` 从替换登记阶段即指向原任务，不能因为新对象尚未 Uploaded 而绕过此保护。Unknown 继续原 ID；保留水位变化导致原 CAS 不可满足时，必须先完成原任务不可逆取消，才能重新选择候选。
+
 初版每组最多 4,096 个永久对象身份、1,024 个读取 pin，每 pin 最多 64 个对象，pin TTL 最长 10 秒。容量耗尽时应限制新对象登记并扩容/升级退休边界方案，不删除终止记录腾空间。
 
 本地真实验证命令（使用已验证 RustFS 1.0.3 可执行文件）：
 
 ```bash
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/rustfs rtk cargo test -p tidemq --test lifecycle_persistence -- --ignored
+TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/rustfs rtk cargo test -p tidemq --test lifecycle_compaction -- --ignored
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/rustfs rtk cargo test -p tidemq --test runtime_queue actual_runtime_sdk_replays_s3_after_published_local_reclamation -- --ignored
 rtk cargo test -p tidemq --test s3_boundaries
 ```

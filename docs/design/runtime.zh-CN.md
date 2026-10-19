@@ -29,7 +29,7 @@ Metadata Leader、数据 Leader 和 owner Broker 可以在不同节点。远端�
 
 容量采样区分逻辑未确认 backlog、本地物理文件和对象注册上界、共享对象回收滞后、OS RSS 以及独立 cgroup headroom。物理文件采样只读配置内有限副本目录，包含真实 WAL、snapshot 和原子替换文件长度；不把已保留的编码日志字节数当成物理大小。RSS 不与 allocator resident 或 cgroup current 相加。未知或陈旧样本暂停可选准入，Read/ACK/Control/GC 保留出口。高低水位避免临界值来回抖动。
 
-管理 HTTP 使用独立 loopback 监听、四个并发槽、8 KiB 请求和 128 KiB 回复上限，拒绝带请求体和 Transfer-Encoding 的请求。统一 Registry 只导出一个 EOF；指标不以 topic、partition、node、operation 或任意外部字符串创建标签。
+管理 HTTP 使用独立 loopback 监听、四个并发槽、8 KiB 请求和 256 KiB 回复上限，拒绝带请求体和 Transfer-Encoding 的请求。统一 Registry 只导出一个 EOF；指标不以 topic、partition、node、operation 或任意外部字符串创建标签。
 
 
 ## 节点计划退出

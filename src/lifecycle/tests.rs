@@ -11,6 +11,7 @@ use crate::{
     producer::{AppendBatch, MessageData, ProducerLimits, ProducerState, RegisterProducer},
 };
 
+use super::catalog::key;
 use super::{
     Catalog, CatalogCommand, DataCommand, DataState, Rejection,
     types::{IntentPhase, PinRecord, Plan},
@@ -463,4 +464,176 @@ fn archive_reader_can_finish_publishing_logically_expired_hot_data() {
     assert!(producer.hot_read(0, 1, 1024).is_err());
     assert_eq!(producer.archive_read(0, 1, 1024).unwrap().messages.len(), 1);
     assert_eq!(producer.local_reclaim_end(), 0);
+}
+
+fn shared_plan(id: Id, ranges: &[(u32, u64, u64)], replaces: Vec<Id>) -> Plan {
+    let base = plan(id, vec![], 0);
+    let topic = base.descriptor.partitions.first().unwrap().topic_id;
+    let cluster = base.descriptor.identity.cluster_id;
+    let records = ranges
+        .iter()
+        .map(|(_, start, end)| {
+            (*start..*end)
+                .map(|offset| Record {
+                    offset,
+                    key: Bytes::from_static(b"k"),
+                    body: Bytes::from_static(b"body"),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let parts = ranges
+        .iter()
+        .zip(&records)
+        .map(|((partition, start, end), records)| CommittedPartition {
+            group_id: 9,
+            topic_id: topic,
+            partition_id: *partition,
+            offsets: OffsetRange::new(*start, *end).unwrap(),
+            committed_end: *end,
+            records,
+        })
+        .collect::<Vec<_>>();
+    let pack = Pack::build(
+        PackIdentity {
+            cluster_id: cluster,
+            group_id: 9,
+            object_id: id,
+        },
+        &parts,
+        PackLimits::default(),
+        &MemoryBudget::new(&crate::config::MemoryConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let mut grants = Vec::new();
+    let mut expected_generations = BTreeMap::new();
+    for (partition, _, _) in ranges {
+        let partition = PartitionKey {
+            topic_id: topic,
+            partition: *partition,
+        };
+        let mut grant = base.grants.first().unwrap().clone();
+        grant.partition = partition;
+        grants.push(grant);
+        expected_generations.insert(partition, u64::from(!replaces.is_empty()));
+    }
+    Plan {
+        descriptor: pack.descriptor().clone(),
+        grants,
+        expected_generations,
+        replaces,
+    }
+}
+
+#[test]
+fn shared_compaction_requires_all_live_ranges_and_keeps_registered_sources_durable() {
+    let source = shared_plan(Id::random().unwrap(), &[(0, 0, 3), (1, 0, 3)], vec![]);
+    let old_id = source.descriptor.identity.object_id;
+    let first = key(source.descriptor.partitions.first().unwrap());
+    let second = key(source.descriptor.partitions.get(1).unwrap());
+    let mut catalog = Catalog::default();
+    let mut data = DataState::default();
+    catalog
+        .apply(CatalogCommand::Register(source.clone()))
+        .unwrap();
+    data.apply(DataCommand::Authorize(source.clone())).unwrap();
+    catalog
+        .apply(CatalogCommand::Uploaded { object_id: old_id })
+        .unwrap();
+    catalog
+        .apply(CatalogCommand::Publish { object_id: old_id })
+        .unwrap();
+    data.apply(DataCommand::Published {
+        plan: source.clone(),
+        generations: BTreeMap::from([(first, 1), (second, 1)]),
+    })
+    .unwrap();
+    let bad = shared_plan(Id::random().unwrap(), &[(0, 1, 3)], vec![old_id]);
+    assert_eq!(
+        catalog.apply(CatalogCommand::Register(bad.clone())),
+        Err(Rejection::InvalidRange)
+    );
+    assert_eq!(
+        data.apply(DataCommand::Authorize(bad)),
+        Err(Rejection::InvalidRange)
+    );
+    let proof = super::types::FloorEvidence {
+        cluster_id: source.descriptor.identity.cluster_id,
+        group_id: 9,
+        partition: first,
+        before: 1,
+        manifest_generation: 1,
+        published_end: 3,
+        position: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 9),
+        voters: std::collections::BTreeSet::from([1]),
+    };
+    catalog
+        .apply(CatalogCommand::RetireBefore(proof.clone()))
+        .unwrap();
+    assert!(catalog.compaction_ranges(old_id).unwrap().is_none());
+    catalog
+        .apply(CatalogCommand::FloorCheckpoint {
+            proof,
+            snapshots: vec![(1, "floor-checkpoint".into(), 9)],
+        })
+        .unwrap();
+    data.apply(DataCommand::FloorCheckpoint {
+        partition: first,
+        before: 1,
+    })
+    .unwrap();
+    let selected = catalog.compaction_ranges(old_id).unwrap().unwrap();
+    assert_eq!(selected.len(), 2);
+    assert_eq!(
+        selected.first().unwrap().offsets,
+        OffsetRange::new(1, 3).unwrap()
+    );
+    assert_eq!(
+        selected.get(1).unwrap().offsets,
+        OffsetRange::new(0, 3).unwrap()
+    );
+    let missing_live = shared_plan(Id::random().unwrap(), &[(0, 1, 3)], vec![old_id]);
+    assert_eq!(
+        catalog.apply(CatalogCommand::Register(missing_live.clone())),
+        Err(Rejection::InvalidRange)
+    );
+    assert_eq!(
+        data.apply(DataCommand::Authorize(missing_live)),
+        Err(Rejection::InvalidRange)
+    );
+    let replacement = shared_plan(Id::random().unwrap(), &[(0, 1, 3), (1, 0, 3)], vec![old_id]);
+    let new_id = replacement.descriptor.identity.object_id;
+    catalog
+        .apply(CatalogCommand::Register(replacement.clone()))
+        .unwrap();
+    assert_eq!(
+        catalog.object(old_id).unwrap().recovery_replacement,
+        Some(new_id)
+    );
+    assert!(catalog.compaction_ranges(old_id).unwrap().is_none());
+    let other = shared_plan(Id::random().unwrap(), &[(0, 1, 3), (1, 0, 3)], vec![old_id]);
+    assert_eq!(
+        catalog.apply(CatalogCommand::Register(other)),
+        Err(Rejection::References)
+    );
+    let mut restored: Catalog =
+        postcard::from_bytes(&postcard::to_stdvec(&catalog).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(
+        restored.object(old_id).unwrap().recovery_replacement,
+        Some(new_id)
+    );
+    restored
+        .apply(CatalogCommand::RequestCancel { object_id: new_id })
+        .unwrap();
+    data.apply(DataCommand::Abort(replacement)).unwrap();
+    restored
+        .apply(CatalogCommand::FinishCancel {
+            object_id: new_id,
+            data_generation: 2,
+        })
+        .unwrap();
+    assert_eq!(restored.object(old_id).unwrap().recovery_replacement, None);
+    restored.validate().unwrap();
+    data.validate().unwrap();
 }
