@@ -48,6 +48,7 @@ pub struct PeerPool {
     pub(super) config: NetworkConfig,
     budget: MemoryBudget,
     metrics: Option<Arc<OperationMetrics>>,
+    repair: Option<crate::scaling::RepairBudget>,
 }
 
 impl PeerPool {
@@ -125,7 +126,14 @@ impl PeerPool {
             config,
             budget,
             metrics,
+            repair: None,
         })
+    }
+
+    /// Share the node-level budget with its membership coordinator before wrapping in Arc.
+    pub fn with_repair_budget(mut self, budget: crate::scaling::RepairBudget) -> Self {
+        self.repair = Some(budget);
+        self
     }
 
     pub(crate) async fn connection(
@@ -224,6 +232,22 @@ impl PeerPool {
         let id = frame.request_id.clone();
         let started = Instant::now();
         let received = async {
+            if matches!(class, TrafficClass::Replication | TrafficClass::Bulk)
+                && let Some(repair) = &self.repair
+                && (if class == TrafficClass::Replication {
+                    repair.is_learner(target, affinity)
+                } else {
+                    repair.is_repair(target, affinity)
+                })
+                .map_err(|source| Error::Repair { source })?
+            {
+                let queued = Instant::now();
+                let paced = repair.pace(frame.payload.len(), deadline).await;
+                if let Some(metrics) = &self.metrics {
+                    metrics.observe(Stage::Queue, queued.elapsed().as_secs_f64());
+                }
+                paced.map_err(|source| Error::Repair { source })?;
+            }
             let rpc = self.connection(target, class, deadline).await?;
             let received = if class == TrafficClass::Control {
                 rpc.call(frame, deadline).await

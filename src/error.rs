@@ -19,6 +19,8 @@ pub enum Error {
     ParseConfiguration { source: toml::de::Error },
     #[snafu(display("Invalid protocol configuration or message"))]
     Protocol { source: tidemq_protocol::Error },
+    #[snafu(display("Transport operation failed"))]
+    Transport { source: tidemq_transport::Error },
     #[snafu(display("Admission budget is exhausted for {traffic_class}"))]
     Admission {
         traffic_class: &'static str,

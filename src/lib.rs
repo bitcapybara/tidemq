@@ -16,6 +16,7 @@ pub mod quota;
 pub mod replication;
 pub mod retention;
 pub mod runtime;
+pub mod scaling;
 pub mod server;
 pub mod subscription;
 pub mod transport;

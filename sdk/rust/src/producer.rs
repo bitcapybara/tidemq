@@ -264,7 +264,8 @@ impl Producer {
             .await
             .map_err(Error::from);
         drop(state);
-        self.finish(batch, guard, response, deadline).await
+        let result = self.finish(batch.clone(), guard, response, deadline).await;
+        self.retry_rejected(&batch, result, deadline).await
     }
 
     fn make_payload(
@@ -365,6 +366,35 @@ impl Producer {
     }
 
     pub async fn retry(&self, batch: &PendingBatch, deadline: Instant) -> Result<ProduceReceipt> {
+        let result = self.retry_once(batch, deadline).await;
+        self.retry_rejected(batch, result, deadline).await
+    }
+
+    async fn retry_rejected(
+        &self,
+        batch: &PendingBatch,
+        mut result: Result<ProduceReceipt>,
+        deadline: Instant,
+    ) -> Result<ProduceReceipt> {
+        for attempt in 1..self.client.inner.config.max_reconnect_attempts {
+            if !result.as_ref().is_err_and(|error| error.retry_rejected()) {
+                break;
+            }
+            if self
+                .client
+                .backoff(batch.operation_id(), attempt - 1, deadline)
+                .await
+                .is_err()
+            {
+                break;
+            }
+            increment(&self.client.inner.metrics.retries, 1);
+            result = self.retry_once(batch, deadline).await;
+        }
+        result
+    }
+
+    async fn retry_once(&self, batch: &PendingBatch, deadline: Instant) -> Result<ProduceReceipt> {
         let _timer = self.client.inner.metrics.timer();
         let mut state = timeout_at(deadline, self.state.lock())
             .await

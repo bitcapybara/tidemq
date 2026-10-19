@@ -69,6 +69,7 @@ pub struct MetadataState {
     pub(crate) topic_names: BTreeMap<String, Id>,
     pub(crate) nodes: BTreeMap<u64, NodeRecord>,
     pub(crate) groups: BTreeMap<u64, DataGroup>,
+    pub(crate) migrations: BTreeMap<u64, crate::scaling::MigrationRecord>,
     pub(crate) partitions: BTreeMap<PartitionKey, PartitionRecord>,
     pub(crate) subscriptions: BTreeMap<Id, SubscriptionRecord>,
     pub(crate) subscription_names: BTreeMap<Id, BTreeMap<String, Id>>,
@@ -163,6 +164,12 @@ impl MetadataState {
 
     /// Deterministic business decisions; successful Raft transport alone is not acceptance.
     pub fn apply(&mut self, command: Command) -> Response {
+        if matches!(
+            command.action,
+            Action::PrepareMembership(_) | Action::CompleteMembership(_)
+        ) {
+            return self.apply_membership(&command);
+        }
         if matches!(command.action, Action::Lifecycle(_)) {
             return self.apply_new(&command);
         }
@@ -309,6 +316,8 @@ impl MetadataState {
                 command.operation_id,
                 revision,
             ),
+            Action::PrepareMembership(plan) => self.prepare_membership(plan, revision),
+            Action::CompleteMembership(proof) => self.complete_membership(proof, revision),
             Action::ObserveFence(evidence) => self.observe_fence(evidence),
             Action::ObserveRecovery(evidence) => self.observe_recovery(evidence),
             Action::ActivateRoute(evidence) => self.activate_route(evidence),
@@ -327,10 +336,12 @@ impl MetadataState {
         if previous.is_none() && self.nodes.len() >= self.limits.nodes {
             return Err(Rejection::Capacity);
         }
-        let storage_in_use = self
-            .groups
-            .values()
-            .any(|group| group.voters.contains(&spec.node_id));
+        let storage_in_use = previous
+            .is_some_and(|node| node.spec.roles.contains(&NodeRole::Storage))
+            || self
+                .groups
+                .values()
+                .any(|group| group.voters.contains(&spec.node_id));
         let broker_in_use = self.partitions.values().any(|partition| {
             partition
                 .grant

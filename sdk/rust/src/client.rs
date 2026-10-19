@@ -438,10 +438,10 @@ impl Client {
                     Err(error) => Err(error),
                 }
             };
-            match response {
-                Ok(response) => return self.decode(response, response_kind),
+            match response.and_then(|response| self.decode(response, response_kind)) {
+                Ok(response) => return Ok(response),
                 Err(error)
-                    if error.retry_transport()
+                    if (error.retry_transport() || error.retry_rejected())
                         && attempt + 1 < self.inner.config.max_reconnect_attempts =>
                 {
                     increment(&self.inner.metrics.retries, 1);
@@ -518,7 +518,12 @@ impl Client {
         )?)
     }
 
-    async fn backoff(&self, operation: Id, attempt: u32, deadline: Instant) -> Result<()> {
+    pub(crate) async fn backoff(
+        &self,
+        operation: Id,
+        attempt: u32,
+        deadline: Instant,
+    ) -> Result<()> {
         let jitter = operation
             .as_bytes()
             .first()
@@ -575,6 +580,7 @@ impl Client {
                 rpc.close(deadline).await;
             }
         }
+        let _ = self.inner.transport.close(deadline).await;
     }
 }
 
