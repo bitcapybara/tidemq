@@ -16,6 +16,10 @@ use tokio::{
 
 use super::Args;
 
+const MANAGEMENT_BODY_BYTES: usize = 262_144;
+const MANAGEMENT_HEADER_BYTES: usize = 1_024;
+const MANAGEMENT_RESPONSE_BYTES: usize = MANAGEMENT_BODY_BYTES + MANAGEMENT_HEADER_BYTES;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildIdentity {
@@ -232,24 +236,60 @@ async fn http(address: SocketAddr, path: &str) -> Result<String> {
             )
             .await?;
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(132_097)?;
-        stream.take(132_097).read_to_end(&mut bytes).await?;
+        bytes.try_reserve_exact(MANAGEMENT_RESPONSE_BYTES + 1)?;
+        stream
+            .take(u64::try_from(MANAGEMENT_RESPONSE_BYTES + 1)?)
+            .read_to_end(&mut bytes)
+            .await?;
         ensure!(
-            bytes.len() <= 132_096,
+            bytes.len() <= MANAGEMENT_RESPONSE_BYTES,
             "Management response exceeded its finite bound"
         );
         let text = String::from_utf8(bytes)?;
-        let (header, body) = text
-            .split_once("\r\n\r\n")
-            .context("Incomplete management response")?;
-        ensure!(
-            header.starts_with("HTTP/1.1 200 "),
-            "Management response was not successful"
-        );
-        Ok::<_, anyhow::Error>(body.to_owned())
+        management_body(&text)
     })
     .await
     .context("Management sampling deadline exceeded")?
+}
+
+fn management_body(response: &str) -> Result<String> {
+    let (header, body) = response
+        .split_once("\r\n\r\n")
+        .context("Incomplete management response")?;
+    ensure!(
+        header
+            .len()
+            .checked_add(4)
+            .is_some_and(|length| length <= MANAGEMENT_HEADER_BYTES)
+            && body.len() <= MANAGEMENT_BODY_BYTES,
+        "Management header or body exceeded its independent byte bound"
+    );
+    ensure!(
+        header.starts_with("HTTP/1.1 200 "),
+        "Management response was not successful"
+    );
+    let mut content_length = None;
+    for line in header.split("\r\n").skip(1) {
+        let (name, value) = line
+            .split_once(':')
+            .context("Invalid management response header")?;
+        ensure!(
+            !name.eq_ignore_ascii_case("transfer-encoding"),
+            "Management transfer encoding is unsupported"
+        );
+        if name.eq_ignore_ascii_case("content-length") {
+            ensure!(
+                content_length.is_none(),
+                "Duplicate management content length"
+            );
+            content_length = Some(value.trim().parse::<usize>()?);
+        }
+    }
+    ensure!(
+        content_length == Some(body.len()),
+        "Management content length does not match the bounded body"
+    );
+    Ok(body.to_owned())
 }
 
 pub async fn resource(args: &Args, started: Instant) -> ResourceSample {
@@ -420,5 +460,63 @@ mod tests {
             Some(7)
         );
         assert!(cold_misses("tidemq_s3_cache_misses_total unknown\n# EOF\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn management_tcp_accepts_the_final_metric_dictionary_and_enforces_the_body_limit() {
+        for (size, accepted) in [(138_163, true), (262_144, true), (262_145, false)] {
+            let body = format!("# {}\n# EOF\n", "x".repeat(size - 9));
+            assert_eq!(body.len(), size);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 128];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0 && request.len() < MANAGEMENT_HEADER_BYTES);
+                    request.extend_from_slice(chunk.get(..count).unwrap());
+                }
+                // The oversize case may close its socket before the test peer finishes writing.
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+            let result = metrics(address).await;
+            if accepted {
+                assert_eq!(result.unwrap(), body);
+            } else {
+                assert!(result.is_err());
+            }
+            tokio::time::timeout(Duration::from_secs(2), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn management_headers_have_an_independent_bound_and_unambiguous_length() {
+        assert!(
+            management_body(&format!(
+                "HTTP/1.1 200 OK\r\nX-Padding: {}\r\nContent-Length: 1\r\n\r\nx",
+                "x".repeat(MANAGEMENT_HEADER_BYTES)
+            ))
+            .is_err()
+        );
+        assert!(management_body("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx").is_err());
+        assert!(
+            management_body("HTTP/1.1 200 OK\r\nContent-Length: 1\r\nContent-Length: 1\r\n\r\nx")
+                .is_err()
+        );
+        assert!(
+            management_body(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n1\r\nx\r\n0\r\n\r\n"
+            )
+            .is_err()
+        );
     }
 }
