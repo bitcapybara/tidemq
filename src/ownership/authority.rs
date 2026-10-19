@@ -20,6 +20,8 @@ use super::{
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("The authoritative application is stopped after a local failure"))]
+    ApplicationStopped { source: crate::wal::Error },
     #[snafu(display("Ownership authority configuration is invalid"))]
     InvalidConfiguration,
     #[snafu(display("The authoritative linearizable read failed"))]
@@ -148,11 +150,12 @@ impl MetadataAuthority {
                 })?;
             let voters = stable_voters(&self.raft)?;
             self.state
-                .with_applied(|state, position| {
+                .try_with_applied(|state, position| {
                     validate_metadata_identity(state, self.cluster_id, self.group_id, &voters)?;
                     query(state, position)
                 })
                 .await
+                .context(ApplicationStoppedSnafu)?
         })
         .await
         .context(ReadDeadlineSnafu)??;
@@ -251,7 +254,7 @@ impl<A: OwnershipApplication> DataAuthority<A> {
                 return Err(Error::MembershipMismatch);
             }
             self.state
-                .with_applied(|state, position| {
+                .try_with_applied(|state, position| {
                     let state = state.ownership_state().ok_or(Error::FenceRequired)?;
                     if state.cluster_id() != self.cluster_id || state.group_id() != self.group_id {
                         return Err(Error::IdentityMismatch);
@@ -259,6 +262,7 @@ impl<A: OwnershipApplication> DataAuthority<A> {
                     query(state, position)
                 })
                 .await
+                .context(ApplicationStoppedSnafu)?
         })
         .await
         .context(ReadDeadlineSnafu)??;

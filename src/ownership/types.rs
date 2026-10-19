@@ -70,13 +70,26 @@ pub struct FenceEvidence {
 ///
 /// These are application-state revisions and a canonical state digest, not message offsets.
 /// A wire caller cannot certify recovery by supplying this structure.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryCheckpoint {
     pub fence_generation: u64,
     pub producer_state_revision: u64,
     pub ack_state_revision: u64,
     pub committed_end: u64,
     pub state_digest: [u8; 32],
+}
+
+impl std::fmt::Debug for RecoveryCheckpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecoveryCheckpoint")
+            .field("fence_generation", &self.fence_generation)
+            .field("producer_state_revision", &self.producer_state_revision)
+            .field("ack_state_revision", &self.ack_state_revision)
+            .field("committed_end", &self.committed_end)
+            .field("state_digest", &"[redacted]")
+            .finish()
+    }
 }
 
 impl RecoveryCheckpoint {
