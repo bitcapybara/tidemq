@@ -80,6 +80,13 @@ mutate() {
 remember() {
   affected_ids+=("$1"); affected_services+=("$2"); affected_actions+=("$3")
 }
+quorum_voters() {
+  case "$1" in
+    metadata-quorum) printf '11 12\n' ;;
+    storage-quorum) printf '21 22\n' ;;
+    *) return 1 ;;
+  esac
+}
 
 marker_read() {
   local name=$1 limit=$2 destination=$3
@@ -350,14 +357,14 @@ validate_report() {
 }
 
 main() {
-  [[ $# -eq 2 && $(uname -s) == Linux ]] || { fail 'Usage on Linux: docker-validate.sh STATE smoke|replay|storage-kill|broker-kill|metadata-quorum|gateway-kill|oom'; return 1; }
+  [[ $# -eq 2 && $(uname -s) == Linux ]] || { fail 'Usage on Linux: docker-validate.sh STATE smoke|replay|storage-kill|broker-kill|metadata-quorum|storage-quorum|gateway-kill|oom'; return 1; }
   for tool in docker timeout jq awk head wc mktemp stat cat mv mkdir basename sleep; do command -v "$tool" > /dev/null || return 1; done
   [[ -n ${TIDEMQ_IMAGE:-} && -n ${RUSTFS_BINARY:-} ]] || { fail 'TIDEMQ_IMAGE and RUSTFS_BINARY are required'; return 1; }
   state=$(cd "$1" && pwd -P); case_name=$2
   project=$(read_project "$state/project.env") || { fail 'project.env must be one canonical validation project line'; return 1; }
   mode=${project#tidemq-validation-}; mode=${mode%%-*}
   case "$mode:$case_name" in
-    rf1:smoke|rf1:replay|rf1:oom|rf3:smoke|rf3:replay|rf3:storage-kill|rf3:broker-kill|rf3:metadata-quorum|rf3:gateway-kill) ;;
+    rf1:smoke|rf1:replay|rf1:oom|rf3:smoke|rf3:replay|rf3:storage-kill|rf3:broker-kill|rf3:metadata-quorum|rf3:storage-quorum|rf3:gateway-kill) ;;
     *) fail 'Unsupported case for this topology'; return 1 ;;
   esac
   expected_image=$(dk image inspect --format '{{.Id}}' "$TIDEMQ_IMAGE")
@@ -388,7 +395,7 @@ main() {
     smoke|replay) ;;
     *) staged=true; expected=80; args+=(--stage-fault) ;;
   esac
-  case "$case_name" in metadata-quorum|gateway-kill|oom) require_unavailable=true; args+=(--require-unavailable) ;; esac
+  case "$case_name" in metadata-quorum|storage-quorum|gateway-kill|oom) require_unavailable=true; args+=(--require-unavailable) ;; esac
   validator_case=$(basename "$evidence")
   validator_name="$project-$validator_case"
   case_dir="/var/lib/tidemq/$validator_case"
@@ -422,8 +429,8 @@ main() {
         ;;
       gateway-kill) target=41 ;;
       oom) target=1 ;;
-      metadata-quorum)
-        for node in 11 12; do
+      metadata-quorum|storage-quorum)
+        for node in $(quorum_voters "$case_name"); do
           id=$(container_id "node-$node"); remember "$id" "node-$node" pause
           mutate "$id" "node-$node" pause > /dev/null
         done
