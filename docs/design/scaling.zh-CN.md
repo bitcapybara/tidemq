@@ -27,6 +27,14 @@ metadata/data leader 不必相同；每个 `remote::Service` 仅持有本节点�
 
 成员执行器在 Unknown 后保留对应 repair lease，继续限制后台追赶；恢复同一计划完成 stable 和元数据后才释放。运行时需在组的整个迁移生命周期保留 coordinator；不能丢弃 coordinator 后继续让该组执行无预算修复。节点退出先停止新的迁移并完成/恢复已有迁移，再关闭复制任务与预算。
 
+## 有界自动触发
+
+运行时的 owned ticker 调用 `remote::Service::tick(&mut Placement, fixed_standby_map, deadline)`，不创建第二套调度器。配置最多 16 个数据组，每组当前 voter 和固定 standby 的并集最多 32 个节点；每轮只评估一个组并最多推进一个计划。选择按 round-robin 排序，优先原 pending 计划、已停止调度的节点和已确认不可达的副本。pending 只恢复原 operation/复制预留，Unknown 不切换目标。
+
+每轮最多并发四个只读容量 RPC，每次上限 500ms，仍受原总 deadline 限制。`CapacityUnavailable` 表示本地采样器无有效数据，不能当作故障；只有真实 RPC 不可达连续至少三轮且跨越至少三秒，才可作为故障修复候选，实际执行仍须当前多数派、learner 追赶和原计划证明。普通均衡要求 voter 和 standby 容量观测齐全，归一化 CPU/流量/连接/ACK 得分至少改善 200，完成后同组冷却 60 秒。故障或已停止调度节点的修复可以绕过冷却，不能绕过目标容量、三区或共识检查。源端快照估计后重新采集容量，避免耗时快照使旧观测被沿用。
+
+`Placement::diagnose` 返回固定的 group、operation、原因枚举和单调观测年龄；原因包括缺样/过期、磁盘余量、CPU、应用字节率、活动连接、ACK 逻辑状态、拓扑、冷却、已均衡、准入和 Unknown，没有无界指标标签。冷却和不可达连续次数属于本进程采样历史，重启重新建立；持久 migration slot、复制预留和 generation 高水位继续用于恢复与防旧操作复活。
+
 ## 计算节点排空
 
 先将节点 `schedulable=false` 持久化，阻止新的组/所有权分配；已有状态和身份保留。`DrainPlan::inspect` 根据真实元数据返回仍拥有的分区、Storage 组、未完成成员计划以及 Metadata 角色阻塞。它不以修改节点发现记录作为“已退出”。
@@ -43,7 +51,7 @@ Gateway 扩容承接新连接；缩容由 `reconnect_gateway` 执行有限受控
 
 传输层 `TransportSnapshot::active_connections` 和 Prometheus `active_connections` gauge 统计仍保有连接资源的物理连接，关闭但仍被 stream/Connection 持有的排空资源继续计入；Session/Connection 克隆不重复计数，最后一个 ConnectionState 释放时归零。容量与排空不得使用累计 connections_total 替代此值。
 
-服务恢复与恢复完整副本分别统计。计划 Broker 移交从预热开始至新路由验证成功记 ServiceRecovery；存储修复从本地原计划开始至 stable+metadata 完成记 ReplicaRepair。它们不能代替客户端故障发生至 SDK 第一次成功的全链路测量。日志只在逻辑完成边界输出 operation/group/generation，不在状态机重放或每个字节/重试输出日志，不含正文、token 或私钥。
+服务恢复与恢复完整副本分别统计。计划 Broker 移交从预热开始至新路由验证成功记 ServiceRecovery；本地执行器的存储修复从原计划开始至 stable+metadata 完成记 ReplicaRepair；远端执行器从 data Change 建立本地 repair lease 至 Finish 核实 metadata complete 记 ReplicaRepair，源快照估计和 prepare 需结合其他阶段及外部时间线查看。不同 leader 的本地执行跨度可能分别观测，不能将 histogram count 当作逻辑迁移次数。它们不能代替客户端故障发生至 SDK 第一次成功的全链路测量。日志只在逻辑完成边界输出 operation/group/generation，不在状态机重放或每个字节/重试输出日志，不含正文、token 或私钥。
 
 本地真实 UDP/TLS 测试验证共识和调度边界；同机 RF3 不是物理三区证据。≤1 秒计划迁移、Broker/Gateway P99≤5 秒、单区 P99≤10 秒仍是候选目标，需要完整运行时和真实资源测量。
 

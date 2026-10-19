@@ -7,13 +7,21 @@ mod support;
 
 use prometheus_client::registry::Registry;
 use quic::{Cluster, GROUP, WAIT};
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use support::{Command, State};
 use tidemq::{
     metadata::MetadataState,
     replication::{Raft, rpc::GroupRole},
     scaling::{
-        Capacity, Error, MembershipPlan, RepairBudget, RepairLimits, Result, ScalingMetrics,
+        BlockReason, Capacity, Error, MembershipPlan, Placement, PlacementPolicy, RepairBudget,
+        RepairLimits, Result, ScalingMetrics,
         remote::{self, CapacitySource, LocalReplicas, Query, Reply, Rpc, Service, ServiceConfig},
     },
     transport::NodeGrant,
@@ -21,16 +29,19 @@ use tidemq::{
 use tidemq_protocol::{Id, common::TrafficClass};
 use tokio::{sync::RwLock, time::Instant};
 
-struct Sample(u64);
+struct Sample(u64, Arc<AtomicBool>);
 impl CapacitySource for Sample {
     fn snapshot(&self) -> Option<Capacity> {
+        if self.0 == 4 && !self.1.load(Ordering::Acquire) {
+            return None;
+        }
         Some(Capacity {
             node_id: self.0,
             observed_at: std::time::Instant::now(),
             free_bytes: 100 * 1024 * 1024 * 1024,
             reserved_bytes: 0,
             bytes_per_second: 0,
-            cpu_per_mille: 1,
+            cpu_per_mille: if self.0 == 3 { 800 } else { 1 },
             connections: 0,
             ack_bytes: 0,
         })
@@ -127,6 +138,16 @@ impl Rpc for Client {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_semantics_reconcile_native_quic_groups_with_distinct_leaders_and_measured_copy_bounds()
  {
+    exercise(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn automatic_tick_waits_for_capacity_then_moves_one_native_replica_and_reconciles_original_plan()
+ {
+    exercise(true).await;
+}
+
+async fn exercise(automatic: bool) {
     let cluster = Id::random().unwrap();
     let data =
         Cluster::<State>::with_identity(&[1, 2, 3, 4], cluster, GROUP, GroupRole::Data).await;
@@ -152,6 +173,7 @@ async fn remote_semantics_reconcile_native_quic_groups_with_distinct_leaders_and
     // Only the data group loses node 1; metadata still has its real leader on node 1.
     data.isolated.write().await.insert(1);
     let router = Arc::new(Router::default());
+    let available = Arc::new(AtomicBool::new(!automatic));
     for id in 1..=4 {
         router
             .data
@@ -194,7 +216,7 @@ async fn remote_semantics_reconcile_native_quic_groups_with_distinct_leaders_and
             config,
             replicas,
             client,
-            Arc::new(Sample(id)),
+            Arc::new(Sample(id, available.clone())),
             RepairBudget::new(RepairLimits::default()).unwrap(),
             Arc::new(ScalingMetrics::register(&mut Registry::default())),
         )
@@ -217,6 +239,22 @@ async fn remote_semantics_reconcile_native_quic_groups_with_distinct_leaders_and
         .unwrap()
         .clone();
     let plan = MembershipPlan::new(cluster, &group, [1, 2, 4].into()).unwrap();
+    let incompatible = tidemq::metadata::DataGroup {
+        group_id: GROUP,
+        generation: 2,
+        voters: [1, 2, 4].into(),
+    };
+    let incompatible = MembershipPlan::new(cluster, &incompatible, [1, 2, 5].into()).unwrap();
+    assert!(matches!(
+        client
+            .call(
+                leader,
+                Query::Estimate { plan: incompatible },
+                Instant::now() + WAIT
+            )
+            .await,
+        Err(Error::Authority)
+    ));
     let driver = remote::Coordinator::new(client.clone(), 77).unwrap();
     assert_eq!(
         driver
@@ -225,11 +263,59 @@ async fn remote_semantics_reconcile_native_quic_groups_with_distinct_leaders_and
             .unwrap(),
         plan
     );
-    let first = driver.execute(&plan, Instant::now() + WAIT).await;
-    if first.is_err() {
-        // Retiring the joint leader requires discovering its successor before final proof.
-        driver.execute(&plan, Instant::now() + WAIT).await.unwrap();
+    if automatic {
+        let service = router.nodes.read().await.get(&1).unwrap().clone();
+        let mut placement = Placement::new(PlacementPolicy::default()).unwrap();
+        let groups = BTreeMap::from([(GROUP, [4].into())]);
+        let blocked = service
+            .tick(&mut placement, &groups, Instant::now() + WAIT)
+            .await
+            .unwrap();
+        assert_eq!(blocked.blocked, Some(BlockReason::MissingObservation));
+        assert!(
+            meta.node(1)
+                .state
+                .application()
+                .await
+                .membership_change(GROUP)
+                .is_none()
+        );
+        available.store(true, Ordering::Release);
+        let mut completed = None;
+        for _ in 0..3 {
+            if let Ok(result) = service
+                .tick(&mut placement, &groups, Instant::now() + WAIT)
+                .await
+            {
+                completed = result.completed;
+                if completed.is_some() {
+                    break;
+                }
+            }
+        }
+        assert_eq!(completed, Some(plan.clone()));
+        let repeated = service
+            .tick(&mut placement, &groups, Instant::now() + WAIT)
+            .await
+            .unwrap();
+        assert!(repeated.completed.is_none());
+        assert_eq!(repeated.blocked, Some(BlockReason::NoStandby));
+        drop(service);
+    } else {
+        let first = driver.execute(&plan, Instant::now() + WAIT).await;
+        if first.is_err() {
+            // Retiring the joint leader requires discovering its successor before final proof.
+            driver.execute(&plan, Instant::now() + WAIT).await.unwrap();
+        }
     }
+    assert_eq!(
+        driver
+            .plan(cluster, GROUP, 3, 4, Instant::now() + WAIT)
+            .await
+            .unwrap(),
+        plan,
+        "A lost completion response must return the latest frozen original plan"
+    );
     let applied = meta.node(1).state.application().await;
     let record = applied.membership_change(GROUP).unwrap();
     assert!(record.is_complete());
