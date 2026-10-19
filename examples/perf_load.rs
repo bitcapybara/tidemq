@@ -102,8 +102,8 @@ impl Args {
             "Warmup messages exceeded their bound"
         );
         ensure!(
-            (32..=262_144).contains(&self.message_bytes),
-            "Body bytes must be in 32..=262144"
+            (32..=262_136).contains(&self.message_bytes),
+            "Body bytes must be in 32..=262136, reserving eight key bytes within the message limit"
         );
         ensure!(
             (1..=1_024).contains(&self.batch_messages),
@@ -332,6 +332,8 @@ mod tests {
         assert!(args.validate().is_err());
         args.batch_messages = 1;
         args.messages = 64;
+        assert!(args.validate().is_err());
+        args.message_bytes = 262_136;
         args.validate().unwrap();
         args.require_cold = true;
         assert!(args.validate().is_err());

@@ -29,7 +29,7 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 | 场景 | 测量消息 | 正文/批量 | 并行 worker | 消费与控制 |
 | --- | ---: | --- | ---: | --- |
 | small | 4096 | 128 B / 32 条 | 4 | 有界批量 ACK；每 50 ms 一个真实 topic 查询 |
-| large | 64 | 256 KiB / 1 条 | 4 | 同样的 ACK/控制路径；不关闭持久化 |
+| large | 64 | 262136 B 正文 + 8 B key = 256 KiB / 1 条 | 4 | 同样的 ACK/控制路径；不关闭持久化 |
 | slow | 2048 | 128 B / 32 条 | 4 | 每 ACK 批次人为等待 20 ms，观察业务积压和尾延迟 |
 | replay | 256 | 64 KiB / 4 条 | 4 | 生产后等待 5 s，再创建消费分配；要求真实冷读计数增加 |
 
