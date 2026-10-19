@@ -11,6 +11,7 @@ pub mod object_store;
 pub mod observability;
 pub mod ownership;
 pub mod producer;
+pub mod quota;
 pub mod replication;
 pub mod retention;
 pub mod server;
