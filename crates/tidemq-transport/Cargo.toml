@@ -1,0 +1,26 @@
+[package]
+name = "tidemq-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared authenticated and bounded native QUIC transport for TideMQ."
+
+[dependencies]
+blake3.workspace = true
+bytes.workspace = true
+prometheus-client.workspace = true
+prost.workspace = true
+s2n-quic.workspace = true
+serde.workspace = true
+snafu.workspace = true
+tidemq-protocol.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rcgen = { version = "=0.14.10", default-features = false, features = ["pem", "aws_lc_rs"] }
+
+[lints.rust]
+unsafe_code = "forbid"

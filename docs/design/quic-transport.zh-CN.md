@@ -22,7 +22,9 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 ## T01 实际接口与边界
 
-`src/transport` 已实现真实 s2n-quic UDP socket 与 TLS 1.3 连接。`Server::bind` 返回有界接受器，内部并行完成 HELLO，避免一个慢握手阻塞其他连接；`Client::connect` 建立独立连接，`Client::pooled` 在同一 runtime 内复用。池键包括实际拨号地址、TLS 服务名、两端角色、凭证摘要、逻辑 session 和连接类别；协议版本由固定 ALPN 绑定。不同认证作用域和 session 不共享连接，B 只有调用时才建立。一个 LB 地址背后的物理后端由该次连接固定；CID 路由与真实四层 LB 部署仍待 T10/T12 验证。
+传输实现位于独立 tidemq-transport crate，服务端通过 tidemq::transport 重导出。MemoryBudget/MemoryLimits 也由该 crate 提供，root 的 MemoryConfig 转换保持原调用兼容。SDK 直接使用公共传输，不依赖服务端/OpenRaft/S3，也不引入全局分配器或日志设施。
+
+`crates/tidemq-transport` 已实现真实 s2n-quic UDP socket 与 TLS 1.3 连接。`Server::bind` 返回有界接受器，内部并行完成 HELLO，避免一个慢握手阻塞其他连接；`Client::connect` 建立独立连接，`Client::pooled` 在同一 runtime 内复用。池键包括实际拨号地址、TLS 服务名、两端角色、凭证摘要、逻辑 session 和连接类别；协议版本由固定 ALPN 绑定。不同认证作用域和 session 不共享连接，B 只有调用时才建立。一个 LB 地址背后的物理后端由该次连接固定；CID 路由与真实四层 LB 部署仍待 T10/T12 验证。
 
 `Session::connection` 返回可克隆的开流句柄，`take_initial_streams` 将初始流移交给唯一 dispatcher。C 默认先建 2 条 Core 常驻流，其他类初始流为 Request。应用须保存并驱动全部初始流；丢弃其中一条会使本端 Core 活跃数不足，暂停新增 ACK。`Session::accept` 与读帧/处理业务独立运行，每个流由调用方安排有限 reader/handler。不要在 accept 循环等待磁盘、业务处理或持久 ACK。
 
