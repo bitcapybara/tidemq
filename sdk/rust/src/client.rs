@@ -35,6 +35,7 @@ pub struct ClientConfig {
     pub max_reconnect_attempts: u32,
     pub request_lanes: usize,
     pub retry_backoff: Duration,
+    pub liveness_timeout: Duration,
     pub protocol: ProtocolLimits,
     pub transport: TransportConfig,
     pub transport_memory_bytes: u64,
@@ -64,6 +65,7 @@ impl ClientConfig {
             max_reconnect_attempts: 3,
             request_lanes: 4,
             retry_backoff: Duration::from_millis(25),
+            liveness_timeout: Duration::from_secs(1),
             protocol: ProtocolLimits::default(),
             transport: TransportConfig::default(),
             transport_memory_bytes: 128 * 1024 * 1024,
@@ -91,6 +93,8 @@ impl ClientConfig {
             || self.request_lanes > 64
             || self.retry_backoff.is_zero()
             || self.retry_backoff > Duration::from_secs(5)
+            || self.liveness_timeout < Duration::from_millis(100)
+            || self.liveness_timeout > Duration::from_secs(10)
         {
             return Err(Error::Configuration {
                 reason: "endpoint, deadline, queue or retry bound is invalid",
@@ -269,6 +273,10 @@ impl Client {
     pub fn metrics(&self) -> Arc<Metrics> {
         self.inner.metrics.clone()
     }
+    /// Register the fixed native transport collector in the host registry alongside SDK metrics.
+    pub fn transport_metrics(&self) -> Arc<tidemq_transport::TransportMetrics> {
+        self.inner.transport.metrics.clone()
+    }
     pub fn session_id(&self) -> Id {
         match &self.inner.credentials {
             ClientCredentials::External { session_id, .. } => *session_id,
@@ -313,6 +321,7 @@ impl Client {
                 max_pending_requests: self.inner.config.max_pending_requests as usize,
                 max_pending_bytes: self.inner.config.max_pending_bytes as u32,
                 read_idle_timeout: self.inner.config.transport.idle_timeout,
+                liveness_timeout: self.inner.config.liveness_timeout,
             },
             self.inner.config.request_lanes,
             deadline,

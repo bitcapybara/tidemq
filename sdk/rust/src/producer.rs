@@ -377,7 +377,10 @@ impl Producer {
         deadline: Instant,
     ) -> Result<ProduceReceipt> {
         for attempt in 1..self.client.inner.config.max_reconnect_attempts {
-            if !result.as_ref().is_err_and(|error| error.retry_rejected()) {
+            if !result.as_ref().is_err_and(|error| {
+                error.retry_rejected()
+                    || matches!(error, Error::ProduceUnknown { source } if source.retry_transport())
+            }) {
                 break;
             }
             if self

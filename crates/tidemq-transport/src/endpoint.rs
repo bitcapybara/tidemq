@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -23,7 +23,7 @@ use tidemq_protocol::{
     public::HelloResult,
 };
 use tokio::{
-    sync::{Mutex, RwLock, Semaphore, mpsc},
+    sync::{Mutex, Notify, RwLock, Semaphore, mpsc},
     task::{JoinHandle, JoinSet},
     time::{Instant, timeout_at},
 };
@@ -80,6 +80,14 @@ struct TlsEvidence {
     completed: bool,
     peer_pin: Option<[u8; 32]>,
     recovery: Option<super::RecoverySnapshot>,
+    probe: Arc<ProbeSignal>,
+}
+
+#[derive(Default)]
+struct ProbeSignal {
+    sent: AtomicU64,
+    acknowledged: AtomicU64,
+    changed: Notify,
 }
 struct EvidenceSubscriber(Arc<TransportMetrics>);
 
@@ -131,6 +139,37 @@ impl Subscriber for EvidenceSubscriber {
     ) {
         add(&self.0.packets_lost, 1);
     }
+    fn on_packet_sent(
+        &mut self,
+        context: &mut Self::ConnectionContext,
+        _: &events::ConnectionMeta,
+        event: &events::PacketSent,
+    ) {
+        if let events::PacketHeader::OneRtt { number, .. } = event.packet_header {
+            context
+                .probe
+                .sent
+                .fetch_max(number.saturating_add(1), Ordering::Release);
+        }
+    }
+    fn on_ack_range_received(
+        &mut self,
+        context: &mut Self::ConnectionContext,
+        _: &events::ConnectionMeta,
+        event: &events::AckRangeReceived,
+    ) {
+        if matches!(event.packet_header, events::PacketHeader::OneRtt { .. }) {
+            let number = event.ack_range.end().saturating_add(1);
+            if context
+                .probe
+                .acknowledged
+                .fetch_max(number, Ordering::AcqRel)
+                < number
+            {
+                context.probe.changed.notify_waiters();
+            }
+        }
+    }
     fn on_frame_sent(
         &mut self,
         _: &mut Self::ConnectionContext,
@@ -160,6 +199,35 @@ impl Subscriber for EvidenceSubscriber {
             congestion_limited: event.congestion_limited,
         });
     }
+}
+
+pub(super) async fn probe_connection(
+    handle: &s2n_quic::connection::Handle,
+    deadline: Instant,
+) -> Result<()> {
+    let signal = handle
+        .query_event_context(|context: &TlsEvidence| context.probe.clone())
+        .map_err(|_| Error::Closed)?;
+    let baseline = signal.sent.load(Ordering::Acquire);
+    handle.clone().ping().map_err(|source| Error::Connection {
+        operation: "send native liveness probe",
+        source,
+    })?;
+    timeout_at(deadline, async {
+        loop {
+            let changed = signal.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if signal.acknowledged.load(Ordering::Acquire) > baseline {
+                return;
+            }
+            changed.await;
+        }
+    })
+    .await
+    .map_err(|_| Error::Deadline {
+        operation: "await acknowledgement of a newly sent native packet",
+    })
 }
 
 struct EndpointLimits {
