@@ -1985,6 +1985,7 @@ dependencies = [
  "mimalloc",
  "openraft",
  "prometheus-client",
+ "prost",
  "rcgen",
  "s2n-quic",
  "serde",
