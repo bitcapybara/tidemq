@@ -16,7 +16,7 @@ bash scripts/perf-build.sh target/perf-candidates all
 
 ## 有限本地试跑
 
-每次使用全新的输出目录。脚本创建私有证书、限定作用域的开发 token 和 RF1 数据目录，启动独立服务，运行预热与测量，然后等待排空退出。固定占用 `127.0.0.1:7410/7411/8410`；回放额外占用 `127.0.0.1:19000`。端口冲突会失败，不会连接已有进程后假定其归本次试跑所有。
+每次使用全新的输出目录。脚本创建私有证书、限定作用域的开发 token 和 RF1 数据目录，启动独立服务，运行预热与测量，然后等待排空退出。服务和负载进程清空继承环境，仅保留固定 PATH，服务显式设置 `TOKIO_WORKER_THREADS=4`，负载程序自身也固定四个 worker，避免继承宿主 malloc 调试选项干扰对照。`execution.json` 记录该策略；这不代表整个服务只有四个 OS 线程，阻塞采样和原生库还可能使用其他线程。固定占用 `127.0.0.1:7410/7411/8410`；回放额外占用 `127.0.0.1:19000`。端口冲突会失败，不会连接已有进程后假定其归本次试跑所有。
 
 ```bash
 bash scripts/perf-run.sh target/perf-candidates/system target/perf-results/system-small small recommended
@@ -69,6 +69,10 @@ TIDEMQ_PERF_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 | `control_query` | 混合负载下真实 `GET_TOPIC` 往返，不与 ACK 的时延合并 |
 | 吞吐 | 实际成功消息数 / 对应生产或消费阶段的单调时间；回放等待不算消费吞吐时间 |
 | `resources` | 独立服务 PID 累计 CPU 时间、OS RSS 与服务实际诊断中的进程/cgroup/allocator/容量；不存在的值是 null |
+| `client_metrics_before/after` | SDK 自身的请求、重试、Unknown 与逻辑准入快照；包含 SDK 内部已透明恢复、未暴露给负载器的事件 |
+| `client_transport_before/after` | 真实 SDK QUIC 连接/stream、应用帧字节、原生流控阻塞、丢包与 PING 探测；应用帧字节不冒充线速 UDP 字节 |
+
+`logical_bytes` 是计划正文与 key 总量；另存实际提交/ACK 的逻辑字节和字节吞吐，不把失败阶段的计划量当作成功量。`produce_unknown` 与 `produce_recovered_original_identity` 仅统计暴露给负载器的 Unknown/显式恢复，SDK 内部重试应结合其前后快照判断。`artifact-sizes.txt` 记录报告、最终 metrics/diagnostics、服务/RustFS 日志的实际输出字节及本地数据目录的文件系统占用；后者不是累计写入 I/O，也不能与对象字节或 RSS 相加。固定 WAL quorum/fsync 语义，对照中不关闭持久化。
 
 直方图始终记录全部成功样本，固定 2048 个计数槽，不随消息数增长。分位是 log2 每级 32 子槽的上界，最大相对槽宽 3.125%，并非精确排序值。P99 至少需要 1000 个样本，P99.9 至少需要 10000 个样本；不足时为 null。小消息短跑只有 128 个生产批次，不能据此宣称 P99/P99.9。需要更大的有限样本时直接运行 `perf_load --help` 配置消息数和批量，仍受总字节、并发和阶段期限限制。
 
