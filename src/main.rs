@@ -35,6 +35,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Start authenticated listeners and durable queue authorities.
+    Serve {
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Validate configuration without opening listeners or writing data.
     ValidateConfig {
         #[arg(long)]
@@ -77,6 +82,28 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Some(Command::Serve { config }) => {
+            let config = Config::load(&config).await?;
+            let logging = tidemq::observability::logging::initialize(&config.logging)?;
+            let node_id = config.node_id;
+            let role = config.role.name();
+            let node = tidemq::runtime::RunningNode::start(config)
+                .await
+                .map_err(runtime_error)?;
+            node.attach_logging(logging.health.clone())
+                .map_err(runtime_error)?;
+            tracing::info!(event_code = "service_started", node_id, role, internal_address = %node.internal_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ runtime is accepting connections");
+            shutdown_signal().await?;
+            node.shutdown().await.map_err(runtime_error)?;
+            tracing::info!(
+                event_code = "service_stopped",
+                node_id,
+                role,
+                "TideMQ runtime drained and closed its durable storage"
+            );
+            drop(logging);
+            Ok(())
+        }
         Some(Command::ValidateConfig { config }) => {
             Config::load(&config).await?;
             print_json(&serde_json::json!({"valid": true}))
@@ -90,7 +117,7 @@ async fn run(cli: Cli) -> Result<()> {
             config.validate()?;
             print_json(&serde_json::json!({"version": env!("CARGO_PKG_VERSION"),
                 "scope": "current_process", "configuration": config,
-                "allocator": allocator::snapshot().await?, "messaging_runtime_available": false}))
+                "allocator": allocator::snapshot().await?, "messaging_runtime_available": true}))
         }
         Some(Command::Metrics) => {
             let text = tidemq::observability::metrics::Metrics::default().encode()?;
@@ -124,6 +151,35 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn runtime_error(source: tidemq::runtime::Error) -> Error {
+    Error::Io {
+        operation: "run queue service",
+        path: PathBuf::from("runtime"),
+        source: io::Error::other(source),
+    }
+}
+
+async fn shutdown_signal() -> Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .map_err(|source| Error::Io {
+            operation: "install termination signal handler",
+            path: PathBuf::from("signals"),
+            source,
+        })?;
+        tokio::select! { result = tokio::signal::ctrl_c() => result.map_err(|source| Error::Io { operation: "wait for interrupt signal", path: PathBuf::from("signals"), source }), _ = terminate.recv() => Ok(()) }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await.map_err(|source| Error::Io {
+        operation: "wait for interrupt signal",
+        path: PathBuf::from("signals"),
+        source,
+    })
 }
 
 fn print_json(value: &impl Serialize) -> Result<()> {
