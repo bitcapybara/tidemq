@@ -109,6 +109,7 @@ pub(crate) struct MembershipEvidence {
 pub struct MigrationRecord {
     pub plan: MembershipPlan,
     pub prepared_revision: u64,
+    pub copy_bytes: u64,
     pub(crate) completed: Option<(u64, MembershipEvidence)>,
 }
 

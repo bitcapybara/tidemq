@@ -6,12 +6,14 @@
 
 1. 从新鲜元数据读取 `DataGroup` 的 generation、旧 voter 和节点身份。`Placement` 综合字节率、CPU、连接数和 ACK 状态占用选候选；新节点必须已经注册 Storage、允许调度、满足三区放置，且有复制量之外的容量余量。观测最多 256 条，默认五秒失效；普通均衡有 60 秒冷却，故障修复可以绕过冷却。
 2. `MembershipPlan` 只替换一个 voter。规范操作 ID 绑定 cluster、group、旧 generation、旧/新 voter。元数据给每个已有组保留一个当前迁移槽和 prepare/complete 两个原结果；CRUD 账本满时仍可完成已有组修复。pending 计划不能换目标；超时、丢响应和重启均恢复原计划。
-3. `MembershipCoordinator` 重新验证真实元数据 quorum 与同 applied 锁中的稳定 membership、角色、zone、组配置；提交 prepare。新目标的可用空间报告必须包含拷贝量之外至少 1 GiB 余量，报告不超过五秒；候选调度器还限制负载。报告来自受信节点运行时，不能用客户端自报值绕过容量控制。
+3. `remote::Coordinator` 发现 metadata leader，以固定计划调用 Prepare。metadata leader 重新验证真实 quorum 与同 applied 锁中的稳定 membership、角色、zone、组配置；自行向 data leader 请求实际受限快照及配置副本目录的物理文件长度。复制预留还计入日志和快照硬上限的增长、临时替换及至少 1 GiB 余量，并将 `copy_bytes` 与原计划一起持久化。它向目标节点取得不超过五秒的本地容量观测，同时累计其他未完成计划对该节点的预留；CPU、字节率、活动连接和 ACK 状态观测缺失时拒绝分配。发起方的数字只可提高复制预留，不能降低真实源端上界或伪造目标余量。
 4. 调用 `add_learner(node, BasicNode, true)` 追赶。追赶后的控制授权重新取得，避免长时间传输沿用启动时的证明。随后调用 `change_membership(target, false)`，由 OpenRaft 提交 joint 和 stable；在任一阶段结果未知时保留原计划并对账，不重新选择目标。
 5. 完成 `ensure_linearizable()` 后，使用 `try_with_membership` 在同一 applied 读锁中读取真实应用身份、applied log、StoredMembership。只有单一稳定配置恰好等于 target，且提交位置覆盖 membership 日志，才生成不可反序列化、不可由外部字段构造的 `StableMembership`。证明有效期从读取发起开始，最多三秒。
 6. 元数据消费该能力生成的 complete 命令，检查原计划、原 generation 和 placement，更新 voter 并将 generation 增一。重复 complete 返回原结果；退休计划不能用更高 attempt revision 复活。
 
-metadata/data leader 不必相同。调用必须到各组当时的真实 leader；若 leader 变化或 quorum 不可达，返回阻塞/未知并恢复同一计划。运行时的远端适配只能提供受 mTLS 限制的语义操作，不能开放 serde `metadata::Command` 或 `DataCommand` 通用执行 RPC。joint 或声明/实际成员不一致时，新生产与控制能力保持保守暂停。
+metadata/data leader 不必相同；每个 `remote::Service` 仅持有本节点实际托管的 replica。`Rpc` 使用配置证书绑定的确切目标、独立 request/operation 相关性和原 deadline，调用各组当时的真实 leader。封闭 Query 仅包含 Group、View、Estimate、Capacity、Prepare、Change、ObserveStable、Complete、Finish，编码上限 16 KiB，不开放通用 `metadata::Command` 或 `DataCommand`。读写受 mTLS role/group/class 校验；metadata leader 的 Complete 自己向当前 data leader 取新鲜实际 stable 观测，经 cluster/group/plan/voter/位置核验后才构造私有证明，调用者不能提交自报证明。每节点控制、只读、源快照采样及迁移工作都有有限准入，忙时拒绝以保护原生共识控制。
+
+若 leader 变化或 quorum 不可达，返回阻塞/未知并恢复同一计划；新控制器通过 Group 查询返回原 pending 计划，不能盲建替代操作。完成后 Finish 对旧、新节点进行有限清理；未清理的 lease 由同一计划重试对账释放。joint 或声明/实际成员不一致时，新生产与控制能力保持保守暂停。元数据应用快照版本为 2；旧版目录显式拒绝，不隐式把没有复制预留的旧记录当作新版。
 
 元数据历史 fence/recovery 的 LogId 可能由已移出的 leader 产生。已提交冻结证据的快照校验核对 cluster/group、合法位置和永久注册的 Storage 身份；新证据仍须满足当前 voter 校验。已注册 Storage 身份及 zone 保留，退出节点设置 `schedulable=false`，不能删除角色或把旧身份改到另一区。这样不会因成员替换使原先成功的 fence/ACK 恢复记录变为非法。
 

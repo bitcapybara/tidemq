@@ -53,7 +53,7 @@ impl PhysicalSampler {
     }
 }
 
-fn replica_bytes(directory: &Path, snapshot_expected: bool) -> Result<u64> {
+pub(crate) fn replica_bytes(directory: &Path, snapshot_expected: bool) -> Result<u64> {
     let mut total = 0_u64;
     let mut journal = false;
     let mut snapshot = false;

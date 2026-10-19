@@ -144,3 +144,9 @@ pub async fn store(directory: &Path, identity: StorageIdentity) -> DiskStore<Sta
         .await
         .unwrap()
 }
+
+impl tidemq::scaling::MembershipApplication for State {
+    fn membership_identity(&self) -> Option<(Id, u64)> {
+        self.cluster.map(|id| (id, self.group))
+    }
+}
