@@ -30,6 +30,7 @@ pub struct DataGroupConfig {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct CapacityUsage {
     pub logical_backlog_upper_bytes: u64,
+    pub ack_state_logical_bytes: u64,
     pub hot_body_bytes: u64,
     pub unpublished_upper_bytes: u64,
     pub hot_messages: usize,
@@ -229,6 +230,15 @@ impl DataApplication {
             ..CapacityUsage::default()
         };
         for (partition, state) in &self.partitions {
+            usage.ack_state_logical_bytes = usage
+                .ack_state_logical_bytes
+                .checked_add(
+                    state
+                        .subscriptions
+                        .logical_state_bytes()
+                        .map_err(DataRejection::Subscription)?,
+                )
+                .ok_or(DataRejection::InvalidConfiguration)?;
             let backlog = state
                 .retention
                 .logical_backlog_upper_bytes(state.subscriptions.protected_before())

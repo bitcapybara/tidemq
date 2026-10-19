@@ -11,6 +11,22 @@ struct Fixture {
     context: DataContext,
 }
 
+#[test]
+fn ack_metadata_retains_holes_without_charging_message_bodies() {
+    let mut fixture = Fixture::new(Limits::default(), 0);
+    let baseline = fixture.state.logical_state_bytes().unwrap();
+    let first = fixture.deliver(0, 0, 1, DeliveryLane::Realtime);
+    let second = fixture.deliver(1, 0, 1, DeliveryLane::Realtime);
+    let issued = fixture.state.logical_state_bytes().unwrap();
+    assert!(issued > baseline);
+    fixture.ack(vec![second.token]).unwrap();
+    let hole = fixture.state.logical_state_bytes().unwrap();
+    assert!(hole > baseline);
+    assert!(hole <= issued);
+    fixture.ack(vec![first.token]).unwrap();
+    assert_eq!(fixture.state.logical_state_bytes().unwrap(), baseline);
+}
+
 impl Fixture {
     fn new(limits: Limits, cold_before: u64) -> Self {
         let id = Id::random().unwrap();
