@@ -165,7 +165,11 @@ impl Service {
             .map_err(|source| Error::operation("read metadata revision", source))
     }
 
-    async fn meta_write(&self, command: Command, deadline: Instant) -> Result<metadata::Outcome> {
+    pub(crate) async fn meta_write(
+        &self,
+        command: Command,
+        deadline: Instant,
+    ) -> Result<metadata::Outcome> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         let response = wire::within(deadline, replica.raft.client_write(command))
