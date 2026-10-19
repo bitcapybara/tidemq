@@ -43,6 +43,7 @@ pub struct ProducerState {
     limits: ProducerLimits,
     committed_end: u64,
     retained_floor: u64,
+    local_reclaim_end: u64,
     hot_bytes: u64,
     messages: VecDeque<MessageData>,
     next_registration_epoch: u64,
@@ -72,6 +73,7 @@ impl ProducerState {
             limits,
             committed_end: 0,
             retained_floor: 0,
+            local_reclaim_end: 0,
             hot_bytes: 0,
             messages: VecDeque::new(),
             next_registration_epoch: 1,
@@ -108,11 +110,12 @@ impl ProducerState {
     }
 
     pub fn message_bytes_at(&self, offset: u64) -> Result<u64> {
-        let relative = offset
-            .checked_sub(self.retained_floor)
-            .ok_or(Rejection::OffsetExpired {
-                floor: self.retained_floor,
-            })?;
+        let relative =
+            offset
+                .checked_sub(self.local_reclaim_end)
+                .ok_or(Rejection::OffsetExpired {
+                    floor: self.retained_floor,
+                })?;
         let index = usize::try_from(relative).map_err(|_| Rejection::InvalidBatch)?;
         self.messages
             .get(index)
@@ -231,6 +234,23 @@ impl ProducerState {
         available_bytes: u64,
         available_messages: usize,
     ) -> Result<BatchResult> {
+        self.append_admitted(
+            now_ms,
+            request,
+            available_bytes,
+            available_messages,
+            |_, _| Ok(()),
+        )
+    }
+
+    pub(crate) fn append_admitted(
+        &mut self,
+        now_ms: u64,
+        request: AppendBatch,
+        available_bytes: u64,
+        available_messages: usize,
+        before_commit: impl FnOnce(u64, u64) -> Result<()>,
+    ) -> Result<BatchResult> {
         let now_ms = now_ms.max(self.logical_time_ms);
         self.revision
             .checked_add(1)
@@ -262,6 +282,7 @@ impl ProducerState {
             ),
         };
         self.reserve_append(request.producer_epoch, request.messages.len())?;
+        before_commit(self.committed_end, next_offset)?;
         self.advance_time(now_ms)?;
         let session = self
             .sessions
@@ -393,7 +414,12 @@ impl ProducerState {
                 end: self.committed_end,
             });
         }
-        let start = usize::try_from(first.saturating_sub(self.retained_floor))
+        if first < self.local_reclaim_end {
+            return Err(Rejection::OffsetExpired {
+                floor: self.local_reclaim_end,
+            });
+        }
+        let start = usize::try_from(first.saturating_sub(self.local_reclaim_end))
             .map_err(|_| Rejection::ReadLimit)?;
         let mut messages = Vec::new();
         messages
@@ -436,6 +462,7 @@ impl ProducerState {
             partition_id: self.partition_id,
             committed_end: self.committed_end,
             retained_floor: self.retained_floor,
+            local_reclaim_end: self.local_reclaim_end,
             hot_messages: self.messages.len(),
             hot_message_capacity: self.messages.capacity(),
             hot_message_capacity_bytes: self
@@ -463,8 +490,10 @@ impl ProducerState {
     /// Full validation is for decoded snapshots and recovery, never per-message admission.
     pub fn validate(&self) -> Result<()> {
         self.limits.validate()?;
-        let message_count = self.committed_end.checked_sub(self.retained_floor);
+        let message_count = self.committed_end.checked_sub(self.local_reclaim_end);
         if self.revision == 0
+            || self.retained_floor > self.committed_end
+            || self.local_reclaim_end > self.committed_end
             || self.next_registration_epoch == 0
             || message_count != Some(self.messages.len() as u64)
             || self.messages.len() > self.limits.max_hot_messages
@@ -648,5 +677,49 @@ impl ProducerState {
                     .saturating_add(u64::from(result.message_count));
             }
         }
+    }
+}
+
+impl ProducerState {
+    pub fn local_reclaim_end(&self) -> u64 {
+        self.local_reclaim_end
+    }
+
+    pub fn set_retained_floor(&mut self, floor: u64) -> Result<()> {
+        if floor < self.retained_floor || floor > self.committed_end {
+            return Err(Rejection::InvalidSnapshot);
+        }
+        self.retained_floor = floor;
+        Ok(())
+    }
+
+    pub(crate) fn reclaim_hot(&mut self, end: u64) -> Result<()> {
+        if end < self.local_reclaim_end || end > self.committed_end {
+            return Err(Rejection::InvalidSnapshot);
+        }
+        let count = usize::try_from(end - self.local_reclaim_end)
+            .map_err(|_| Rejection::InvalidSnapshot)?;
+        if count > self.messages.len() {
+            return Err(Rejection::InvalidSnapshot);
+        }
+        let reclaimed = self
+            .messages
+            .iter()
+            .take(count)
+            .try_fold(0_u64, |total, message| {
+                total
+                    .checked_add(message.logical_bytes().ok_or(Rejection::InvalidSnapshot)?)
+                    .ok_or(Rejection::InvalidSnapshot)
+            })?;
+        let bytes = self
+            .hot_bytes
+            .checked_sub(reclaimed)
+            .ok_or(Rejection::InvalidSnapshot)?;
+        for _ in 0..count {
+            self.messages.pop_front();
+        }
+        self.local_reclaim_end = end;
+        self.hot_bytes = bytes;
+        Ok(())
     }
 }

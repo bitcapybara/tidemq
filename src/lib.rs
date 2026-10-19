@@ -22,3 +22,5 @@ pub mod transport;
 pub mod wal;
 
 pub use error::{Error, Result};
+
+pub mod lifecycle;
