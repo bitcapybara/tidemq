@@ -274,6 +274,7 @@ impl RunningNode {
         tasks.push(task);
         let maintenance = service.clone();
         tasks.push(tokio::spawn(maintenance.maintain(stopped.clone())));
+        tasks.push(tokio::spawn(service.clone().expire_pins(stopped.clone())));
         let bootstrap = service.clone();
         tasks.push(tokio::spawn(
             async move { bootstrap.reconcile(stopped).await },
@@ -379,7 +380,7 @@ impl RunningNode {
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = self.shutdown.send(true);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let mut failure = None;
         for mut task in self.tasks.drain(..) {
             match tokio::time::timeout_at(deadline, &mut task).await {
@@ -396,7 +397,9 @@ impl RunningNode {
                 }
             }
         }
-        self.service.close().await?;
+        tokio::time::timeout_at(deadline, self.service.close(deadline))
+            .await
+            .map_err(|_| Error::invalid("Runtime exceeded its total shutdown deadline"))??;
         failure.map_or(Ok(()), Err)
     }
 }

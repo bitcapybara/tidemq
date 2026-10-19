@@ -132,11 +132,9 @@ impl Service {
         })
     }
 
-    pub async fn close(&self) -> Result<()> {
+    pub async fn close(&self, deadline: Instant) -> Result<()> {
         for broker in self.brokers.values() {
-            let _ = broker
-                .drain(std::time::Instant::now() + Duration::from_secs(5))
-                .await;
+            let _ = broker.drain(deadline.into_std()).await;
         }
         for replica in self.data.values() {
             replica
@@ -164,8 +162,9 @@ impl Service {
         }
         self.rpc
             .pool
-            .close(Instant::now() + Duration::from_secs(2))
-            .await;
+            .close(deadline)
+            .await
+            .map_err(|source| Error::operation("drain internal QUIC endpoint", source))?;
         Ok(())
     }
 
@@ -624,6 +623,7 @@ impl Service {
 
 impl WireService for Service {
     type Error = Error;
+    #[tracing::instrument(level = "trace", skip_all, fields(node_id = self.config.node_id, role = self.config.role.name(), cluster_id = %self.cluster, request_id = ?wire::id(&frame.request_id), operation_id = ?wire::id(&frame.operation_id), traffic_class = frame.traffic_class, frame_kind = frame.kind, traceparent = frame.traceparent.as_str()))]
     async fn handle(
         &self,
         peer: Authorization,
@@ -631,6 +631,7 @@ impl WireService for Service {
         deadline: Instant,
         order: Option<SubmissionOrder>,
     ) -> Result<Option<Frame>> {
+        let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
         let result = match &peer {
             Authorization::External { .. } => {
                 let kind = frame_kind(frame)?;
@@ -689,6 +690,14 @@ impl WireService for Service {
             }
             Authorization::Server => Err(forbidden()),
         };
+        if let Some(started) = started {
+            tracing::trace!(
+                event_code = "runtime_request_completed",
+                elapsed_us = started.elapsed().as_micros(),
+                succeeded = result.is_ok(),
+                "Authenticated runtime request completed"
+            );
+        }
         match result {
             Ok(frame) => Ok(Some(frame)),
             Err(error) => wire::error_response(frame, &error, &self.config.protocol).map(Some),

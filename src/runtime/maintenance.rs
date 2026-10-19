@@ -24,16 +24,63 @@ struct Progress {
 }
 
 impl Service {
+    pub(crate) async fn expire_pins(
+        self: Arc<Self>,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<()> {
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut active = BTreeSet::new();
+        let mut cursors = BTreeMap::new();
+        let mut ticker = tokio::time::interval(Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! { _ = shutdown.changed() => break, _ = ticker.tick() => {} }
+            while let Some(Ok(key)) = tasks.try_join_next() {
+                active.remove(&key);
+            }
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = async {
+                    for (group, coordinator) in &self.objects {
+                        if active.len() >= 4 { break; }
+                        let Some(replica) = self.data.get(group) else { continue; };
+                        if self.require_leader(replica).is_err() { continue; }
+                        let deadline = Instant::now() + Duration::from_millis(500);
+                        let cursor = cursors.get(group).copied().flatten();
+                        let Ok(page) = coordinator.pending_pins(cursor, 64, deadline.into_std()).await else { continue; };
+                        cursors.insert(*group, page.next_after);
+                        for pin in page.pins {
+                            let key = (*group, pin);
+                            if active.len() >= 4 { break; }
+                            if !active.insert(key) { continue; }
+                            let coordinator = coordinator.clone();
+                            tasks.spawn(async move {
+                                let _ = coordinator.expire_pin(pin, std::time::Instant::now() + Duration::from_secs(15)).await;
+                                key
+                            });
+                        }
+                    }
+                } => {}
+            }
+        }
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        Ok(())
+    }
+
     pub(crate) fn admit_produce(&self) -> Result<()> {
         let available = self
             .disk_capacity
             .lock()
             .map_err(|_| Error::unavailable())?;
-        if available.as_ref().is_none_or(|(disk, sampled)| {
-            sampled.elapsed()
-                > Duration::from_millis(self.config.runtime.capacity.max_sample_age_ms)
-                || disk.available_bytes < 4_194_304
-        }) {
+        let Some((disk, sampled)) = available.as_ref() else {
+            return Err(Error::unavailable());
+        };
+        if sampled.elapsed() > Duration::from_millis(self.config.runtime.capacity.max_sample_age_ms)
+        {
+            return Err(Error::unavailable());
+        }
+        if disk.available_bytes < 4_194_304 {
             return Err(Error::reject(
                 ErrorCode::QuotaExceeded,
                 Outcome::Rejected,
@@ -45,7 +92,12 @@ impl Service {
             .lock()
             .map_err(|_| Error::unavailable())?
             .admit(crate::quota::Work::Produce, std::time::Instant::now())
-            .map_err(|_| Error::reject(ErrorCode::QuotaExceeded, Outcome::Rejected, true))
+            .map_err(|reason| match reason {
+                crate::quota::Error::Pressure { .. } => {
+                    Error::reject(ErrorCode::QuotaExceeded, Outcome::Rejected, true)
+                }
+                _ => Error::unavailable(),
+            })
     }
 
     pub(crate) async fn maintain(
@@ -59,6 +111,9 @@ impl Service {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! { _ = shutdown.changed() => return Ok(()), _ = ticker.tick() => {} }
+            tokio::select! {
+                _ = shutdown.changed() => return Ok(()),
+                _ = async {
             for (group, replica) in &self.data {
                 if self.require_leader(replica).is_err() {
                     progress.remove(group);
@@ -75,6 +130,8 @@ impl Service {
                     position.blocked = true;
                 }
                 let _ = self.maintain_partitions(*group, position, deadline).await;
+            }
+                } => {}
             }
         }
     }
