@@ -12,6 +12,12 @@
 
 `schedulable=false` 只停止新分配。节点身份、Storage 角色、zone 和数据目录的保留是历史证据的一部分；不通过删除身份绕过成员变更或对象恢复保护。
 
+## 自动均衡阻塞
+
+自动 tick 每轮只推进一个组/计划，固定 standby 必须实际托管该组并注册合法 Storage/zone。先检查 `Placement::diagnose` 的 group、operation、blocked、age_ms；再结合 Group 查询的持久 pending 和 `copy_bytes`。MissingObservation 表示缺失有效采样，不表示零负载或节点已宕机。只有真实 RPC 连续不可达且满足时间窗才进入故障修复；原 pending 始终优先恢复。
+
+Balanced 表示当前得分改善不足 200，Cooldown 表示普通均衡尚未过 60 秒。CPU、ByteRate、Connections、AckState 和 FreeCapacity 指向具体的受限资源；ACK 字节是实际保留记录的逻辑 metadata 口径，不能当作精确 heap。进程重启后冷却和不可达计数重新观测，迁移记录不会清空。
+
 ## Broker / Gateway 缩容
 
 先持久化停止新分配，然后按有限批次预热、停止该分区的新生产/投递准入、排空有限在途、执行固定旧 epoch/route 的移交。fence/恢复/激活间中断后恢复原 grant；更高 epoch 已取代时，旧操作只允许返回 Superseded。成功路由必须精确对应新 owner 和旧代次+1。

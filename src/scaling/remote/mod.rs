@@ -2,6 +2,7 @@
 
 mod data;
 mod metadata;
+mod tick;
 mod wire;
 
 use std::{
@@ -25,6 +26,7 @@ use crate::{
     transport::NodeGrant,
 };
 
+pub use tick::TickReport;
 pub use wire::{Query, Reply, decode_query, decode_reply, encode_query, encode_reply};
 
 /// Calls use the configured certificate-bound target, fresh request IDs and the original deadline.
@@ -235,11 +237,17 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         if node != self.config.node_id || !self.replicas.data.contains_key(&group) {
             return Err(Error::Authority);
         }
-        let report = self.capacity.snapshot().ok_or(Error::Placement)?;
+        let Some(report) = self.capacity.snapshot() else {
+            return Ok(Reply::CapacityUnavailable);
+        };
         if report.node_id != node {
             return Err(Error::Authority);
         }
-        wire::CapacityReport::from_sample(report).map(Reply::Capacity)
+        match wire::CapacityReport::from_sample(report) {
+            Ok(report) => Ok(Reply::Capacity(report)),
+            Err(Error::Placement) => Ok(Reply::CapacityUnavailable),
+            Err(error) => Err(error),
+        }
     }
 
     async fn call_leader(
@@ -290,25 +298,35 @@ impl<R: Rpc> Coordinator<R> {
         if current.group_id != group {
             return Err(Error::Authority);
         }
-        if let Some(record) = migration
-            && !record.is_complete()
-        {
-            if record
-                .plan
-                .previous
-                .difference(&record.plan.target)
-                .copied()
-                .eq([removed])
+        if let Some(record) = migration {
+            let same = record.plan.cluster_id == cluster
+                && record
+                    .plan
+                    .previous
+                    .difference(&record.plan.target)
+                    .copied()
+                    .eq([removed])
                 && record
                     .plan
                     .target
                     .difference(&record.plan.previous)
                     .copied()
-                    .eq([added])
+                    .eq([added]);
+            if same
+                && (!record.is_complete()
+                    || current.generation
+                        == record
+                            .plan
+                            .generation
+                            .checked_add(1)
+                            .ok_or(Error::Configuration)?
+                        && current.voters == record.plan.target)
             {
                 return Ok(record.plan);
             }
-            return Err(Error::Authority);
+            if !record.is_complete() {
+                return Err(Error::Authority);
+            }
         }
         let mut target = current.voters.clone();
         if !target.remove(&removed) || !target.insert(added) {

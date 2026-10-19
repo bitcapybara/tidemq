@@ -216,14 +216,80 @@ impl remote::Rpc for RuntimeRpc {
 }
 
 fn remote_error(source: Error) -> scaling::Error {
-    scaling::Error::Remote {
-        source: Box::new(source),
+    if unreachable(&source) {
+        scaling::Error::Unreachable {
+            source: Box::new(source),
+        }
+    } else {
+        scaling::Error::Remote {
+            source: Box::new(source),
+        }
     }
+}
+
+fn unreachable(source: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(source);
+    for _ in 0..16 {
+        let Some(error) = current else {
+            return false;
+        };
+        if let Some(transport) = error.downcast_ref::<crate::transport::Error>() {
+            return matches!(
+                transport,
+                crate::transport::Error::Closed
+                    | crate::transport::Error::Connection { .. }
+                    | crate::transport::Error::Stream { .. }
+                    | crate::transport::Error::Deadline { .. }
+            );
+        }
+        if let Some(rpc) = error.downcast_ref::<crate::transport::rpc::Error>() {
+            return match rpc {
+                crate::transport::rpc::Error::Closed => true,
+                crate::transport::rpc::Error::Deadline { may_have_been_sent } => {
+                    *may_have_been_sent
+                }
+                crate::transport::rpc::Error::Transport { source } => unreachable(source),
+                _ => false,
+            };
+        }
+        current = if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            io.get_ref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static))
+        } else {
+            error.source()
+        };
+    }
+    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semantic_unavailability_is_distinct_from_actual_transport_failure() {
+        assert!(!unreachable(&Error::unavailable()));
+        assert!(!unreachable(&Error::operation(
+            "local admission",
+            crate::transport::Error::Admission {
+                resource: "test slots"
+            }
+        )));
+        assert!(!unreachable(&Error::operation(
+            "local RPC queue",
+            crate::transport::rpc::Error::Deadline {
+                may_have_been_sent: false
+            }
+        )));
+        assert!(unreachable(&Error::operation(
+            "connect peer",
+            crate::transport::Error::Closed
+        )));
+        assert!(unreachable(&Error::operation(
+            "peer RPC",
+            crate::transport::rpc::Error::Closed
+        )));
+    }
 
     #[test]
     fn unavailable_or_stale_capacity_never_becomes_zero_load() {
