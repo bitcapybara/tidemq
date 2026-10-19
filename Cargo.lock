@@ -3074,9 +3074,16 @@ dependencies = [
 name = "tidemq-sdk"
 version = "0.1.0"
 dependencies = [
+ "bytes",
+ "prometheus-client",
+ "prost",
+ "rcgen",
  "snafu",
  "tidemq-protocol",
+ "tidemq-transport",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
