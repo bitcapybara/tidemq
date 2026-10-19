@@ -344,7 +344,7 @@ async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>
     let deadline = Instant::now() + Duration::from_secs(2);
     let _memory = service
         .budget
-        .try_reserve_core(262_144)
+        .try_reserve_core(524_288)
         .map_err(|source| Error::operation("admit management response", source))?;
     let mut request = Vec::new();
     let mut chunk = [0_u8; 1024];
@@ -394,7 +394,7 @@ async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>
             "{\"error\":\"A bounded GET request without a body is required\"}".into(),
         ),
     };
-    if body.len() > 131_072 {
+    if body.len() > 262_144 {
         return Err(Error::invalid(
             "Management response exceeded its finite bound",
         ));
