@@ -21,7 +21,16 @@ pub struct Snapshot {
     pub process_rss_bytes: u64,
     pub cgroup_current_bytes: Option<u64>,
     pub cgroup_limit_bytes: Option<u64>,
+    pub cgroup_limit: CgroupLimit,
     pub source: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub enum CgroupLimit {
+    Unsupported,
+    Unavailable,
+    Unbounded,
+    Bounded(u64),
 }
 
 pub struct MemorySampler {
@@ -83,7 +92,9 @@ fn cgroup_path(text: &str) -> io::Result<std::path::PathBuf> {
     let path = text
         .lines()
         .find_map(|line| line.strip_prefix("0::"))
-        .ok_or_else(|| io::Error::other("cgroup v2 membership is absent"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Unsupported, "cgroup v2 membership is absent")
+        })?;
     if path.len() > 4_096 || !path.starts_with('/') {
         return Err(io::Error::other("cgroup v2 path is invalid"));
     }
@@ -98,7 +109,19 @@ fn cgroup_path(text: &str) -> io::Result<std::path::PathBuf> {
     Ok(result)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
+fn parse_cgroup_limit(text: &str) -> io::Result<CgroupLimit> {
+    let value = text.trim();
+    if value == "max" {
+        return Ok(CgroupLimit::Unbounded);
+    }
+    value
+        .parse::<u64>()
+        .map(CgroupLimit::Bounded)
+        .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn read_limited(path: &std::path::Path, limit: u64) -> io::Result<String> {
     use std::io::Read;
     let mut text = String::new();
@@ -113,27 +136,87 @@ fn read_limited(path: &std::path::Path, limit: u64) -> io::Result<String> {
     Ok(text)
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn read_cgroup_level(path: &std::path::Path, root: bool) -> io::Result<(Option<u64>, CgroupLimit)> {
+    let limit = match read_limited(&path.join("memory.max"), 64) {
+        Ok(text) => parse_cgroup_limit(&text)?,
+        Err(error) if root && error.kind() == io::ErrorKind::NotFound => {
+            return Ok((None, CgroupLimit::Unbounded));
+        }
+        Err(error) => return Err(error),
+    };
+    let current = read_limited(&path.join("memory.current"), 64)?
+        .trim()
+        .parse::<u64>()
+        .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
+    Ok((Some(current), limit))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn read_cgroup_hierarchy(
+    path: &std::path::Path,
+    root: &std::path::Path,
+) -> io::Result<(Option<u64>, CgroupLimit)> {
+    let mut path = path;
+    let mut leaf_current = None;
+    let mut pressured: Option<(u64, u64)> = None;
+    for level in 0..64 {
+        if !path.starts_with(root) {
+            return Err(io::Error::other("cgroup observation escaped its mount"));
+        }
+        let (current, limit) = read_cgroup_level(path, path == root)?;
+        if level == 0 {
+            leaf_current = current;
+        }
+        if let (Some(current), CgroupLimit::Bounded(limit)) = (current, limit)
+            && pressured.is_none_or(|(previous, maximum)| {
+                limit == 0
+                    || (maximum != 0
+                        && u128::from(current) * u128::from(maximum)
+                            > u128::from(previous) * u128::from(limit))
+            })
+        {
+            pressured = Some((current, limit));
+        }
+        if path == root {
+            return Ok(pressured.map_or(
+                (leaf_current, CgroupLimit::Unbounded),
+                |(current, limit)| (Some(current), CgroupLimit::Bounded(limit)),
+            ));
+        }
+        path = path
+            .parent()
+            .ok_or_else(|| io::Error::other("cgroup mount root is unreachable"))?;
+    }
+    Err(io::Error::other(
+        "cgroup observation exceeds 64 visible levels",
+    ))
+}
+
 #[cfg(target_os = "linux")]
 fn read_snapshot() -> io::Result<Snapshot> {
     use std::path::Path;
     let process_rss_bytes = parse_rss(&read_limited(Path::new("/proc/self/status"), 32_768)?)?;
-    let cgroup = read_limited(Path::new("/proc/self/cgroup"), 16_384)
-        .and_then(|text| cgroup_path(&text))
-        .ok();
-    let (cgroup_current_bytes, cgroup_limit_bytes) = cgroup.map_or((None, None), |path| {
-        let current = read_limited(&path.join("memory.current"), 64)
-            .ok()
-            .and_then(|value| value.trim().parse().ok());
-        let limit = read_limited(&path.join("memory.max"), 64)
-            .ok()
-            .and_then(|value| value.trim().parse().ok());
-        (current, limit)
-    });
+    let cgroup =
+        read_limited(Path::new("/proc/self/cgroup"), 16_384).and_then(|text| cgroup_path(&text));
+    let (cgroup_current_bytes, cgroup_limit) = match cgroup {
+        Ok(path) => read_cgroup_hierarchy(&path, Path::new("/sys/fs/cgroup"))
+            .unwrap_or((None, CgroupLimit::Unavailable)),
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            (None, CgroupLimit::Unsupported)
+        }
+        Err(_) => (None, CgroupLimit::Unavailable),
+    };
+    let cgroup_limit_bytes = match cgroup_limit {
+        CgroupLimit::Bounded(bytes) => Some(bytes),
+        _ => None,
+    };
     Ok(Snapshot {
         process_rss_bytes,
         cgroup_current_bytes,
         cgroup_limit_bytes,
-        source: "linux_proc_status_cgroup_v2",
+        cgroup_limit,
+        source: "linux_proc_status_cgroup_v2_most_pressured_visible_ancestor",
     })
 }
 
@@ -176,6 +259,7 @@ fn read_snapshot() -> io::Result<Snapshot> {
         process_rss_bytes: info.resident_size,
         cgroup_current_bytes: None,
         cgroup_limit_bytes: None,
+        cgroup_limit: CgroupLimit::Unsupported,
         source: "macos_mach_task_basic_info",
     })
 }
@@ -195,6 +279,14 @@ mod tests {
 
     #[test]
     fn proc_fields_require_exact_units_and_cgroup_paths_stay_in_the_mount() {
+        assert_eq!(parse_cgroup_limit("max\n").unwrap(), CgroupLimit::Unbounded);
+        assert_eq!(
+            parse_cgroup_limit("1024\n").unwrap(),
+            CgroupLimit::Bounded(1024)
+        );
+        for invalid in ["", "-1", "max extra", "18446744073709551616"] {
+            assert!(parse_cgroup_limit(invalid).is_err());
+        }
         assert_eq!(
             parse_rss("Name:\ttidemq\nVmRSS:\t1234 kB\n").unwrap(),
             1_263_616
@@ -232,5 +324,38 @@ mod tests {
             .unwrap();
         assert!(snapshot.process_rss_bytes > 0);
         assert!(!snapshot.source.is_empty());
+    }
+
+    #[test]
+    fn visible_ancestor_pressure_includes_siblings_and_never_becomes_a_leaf_only_limit() {
+        let root = std::env::temp_dir().join(format!(
+            "tidemq-cgroup-{}",
+            tidemq_protocol::Id::random().unwrap()
+        ));
+        let parent = root.join("parent");
+        let leaf = parent.join("service");
+        std::fs::create_dir_all(&leaf).unwrap();
+        for (path, current, limit) in [(&leaf, "10", "100"), (&parent, "95", "100")] {
+            std::fs::write(path.join("memory.current"), current).unwrap();
+            std::fs::write(path.join("memory.max"), limit).unwrap();
+        }
+        assert_eq!(
+            read_cgroup_hierarchy(&leaf, &root).unwrap(),
+            (Some(95), CgroupLimit::Bounded(100))
+        );
+        std::fs::write(leaf.join("memory.max"), "max").unwrap();
+        assert_eq!(
+            read_cgroup_hierarchy(&leaf, &root).unwrap(),
+            (Some(95), CgroupLimit::Bounded(100))
+        );
+        std::fs::write(parent.join("memory.max"), "max").unwrap();
+        assert_eq!(
+            read_cgroup_hierarchy(&leaf, &root).unwrap(),
+            (Some(10), CgroupLimit::Unbounded)
+        );
+        std::fs::write(parent.join("memory.max"), "invalid").unwrap();
+        assert!(read_cgroup_hierarchy(&leaf, &root).is_err());
+        assert!(read_cgroup_hierarchy(&leaf, &root.join("unrelated")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
