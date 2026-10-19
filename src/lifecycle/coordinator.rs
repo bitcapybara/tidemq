@@ -192,6 +192,11 @@ impl Coordinator {
         Ok(self)
     }
 
+    pub fn with_metrics(mut self, metrics: Arc<LifecycleMetrics>) -> Result<Self> {
+        Arc::get_mut(&mut self.0).ok_or(Error::Configuration)?.metrics = metrics;
+        Ok(self)
+    }
+
     pub fn metrics(&self) -> Arc<LifecycleMetrics> {
         self.0.metrics.clone()
     }
