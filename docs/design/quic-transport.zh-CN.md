@@ -20,4 +20,46 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 外部 TLS 验证服务端并携带静态 scoped token，内部 mTLS 还需节点/集群/组授权。管理抓取 HTTP 是独立 loopback 接口。指标/trace/文件不决定任何持久成功。
 
-本文件是已批准的实现契约；真实网络、mTLS、CID/LB 和混合流量效果由 T01/T12/T13 分阶段验证。
+## T01 实际接口与边界
+
+`src/transport` 已实现真实 s2n-quic UDP socket 与 TLS 1.3 连接。`Server::bind` 返回有界接受器，内部并行完成 HELLO，避免一个慢握手阻塞其他连接；`Client::connect` 建立独立连接，`Client::pooled` 在同一 runtime 内复用。池键包括实际拨号地址、TLS 服务名、两端角色、凭证摘要、逻辑 session 和连接类别；协议版本由固定 ALPN 绑定。不同认证作用域和 session 不共享连接，B 只有调用时才建立。一个 LB 地址背后的物理后端由该次连接固定；CID 路由与真实四层 LB 部署仍待 T10/T12 验证。
+
+`Session::connection` 返回可克隆的开流句柄，`take_initial_streams` 将初始流移交给唯一 dispatcher。C 默认先建 2 条 Core 常驻流，其他类初始流为 Request。应用须保存并驱动全部初始流；丢弃其中一条会使本端 Core 活跃数不足，暂停新增 ACK。`Session::accept` 与读帧/处理业务独立运行，每个流由调用方安排有限 reader/handler。不要在 accept 循环等待磁盘、业务处理或持久 ACK。
+
+初始流直接交换 HELLO/HELLO_RESULT；后续 bidi 流先交换 2 字节 prelude：发起方 `0x71,purpose`，接收方准入后回复 `0xa1,purpose`，purpose 为 Core=1、Request=2、Ack=3。它是当前 ALPN 的一部分。所有流仍使用统一 Frame；ready 只说明开流准入，不表示后续数据成功或持久化。
+
+`Connection::open` 对 Core、普通和 ACK 使用独立额度。C 拒绝 Request，其他连接拒绝 Core/Ack；Core 不接收 ACK_BATCH/ACK_RESULT，Ack 只接收 ACK、ERROR/CANCEL。普通 ACK 在本端 Core 数量达到配置值后才准入，远端也独立检查。QUIC MAX_STREAMS 没有业务类别预留能力，因此先建控制流、限制诚实发送方的普通开流；恶意对端占满自己的 wire credit 不会被解释为全局控制保证。Core 丢失后应先清理旧 reader/handler，再修复流；若远端仍持有旧额度则排空/替换连接。
+
+`FramedStream::split` 提供独立 `FrameSender` 和 `FrameReceiver`。`send` 在本地 send-ready 后重新缩减剩余期限并入队，保留发送流水线，不为每帧等待 native flush/QUIC ACK。`receive` 在首字节到达后开始扣减该帧预算，读 body/解码后再扣减，空闲等待不消耗下一请求的期限。调用方跨跳传递同一剩余预算和本地 deadline，不重置原操作的总期限；网络单向时间不可由本地单调时钟精确测出，端到端超时及结果恢复仍由 SDK/业务层保证。
+
+单请求取消使用 CANCEL Frame 和原 request_id。取消/超时发生在部分读写时，lane 会 poison，不允许从未知字节边界继续；它只允许整 lane 的未决请求按原身份恢复。`finish` 是流结束，`reset` 是整 lane 失效，两者均不能撤销已提交操作。当前没有业务结果恢复、producer/partition 顺序调度、冷/热屏障或 OpenRaft RPC 语义解析；T02/T04/T05/T06/T10 负责这些调用层契约，不能将传输层通过当作业务完成。
+
+## TLS 与权限
+
+外部监听要求 native TLS 链验证、正确服务名和 tidemq/1 ALPN；客户端使用独立 trust roots，清空系统默认根，不提供跳过证书验证选项。PEM 输入必须是有界 UTF-8 文本，以 `&str` 交给 s2n provider；该版本 `&[u8]` 重载代表 DER，会触发其不支持 DER 的路径。证书链最大深度为 8。
+
+外部 HELLO 的 token 先检查 32—256 字节 ASCII 编码，再对 BLAKE3 Hash 做常量时间 Eq。`TokenGrant` 将 token 绑定 principal、scope 和允许 FrameKind；内部/Raft kind 不能授给外部 token。授权 scope 是已验证上下文，Gateway/Broker 还须依据权威资源映射校验 topic、订阅和管理权限，不能把 scope 字符串当作客户端自报授权。每条连接独立认证同一个 session，不将 socket/CID 当作 producer epoch 或 assignment。
+
+内部监听必须要求客户端证书，验证配置 CA 链及精确证书名称白名单；客户端同样验证服务端 CA、服务名及预期 pin。随后从已成功握手的 TLS 会话获取 leaf DER 的 BLAKE3 pin，配置 `NodeGrant` 显式绑定 certificate_name、cluster_id、node_id、role、allowed_classes 和 allowed_groups。`ClientTls.expected_nodes` 是有限授权表，内部 `PeerTarget` 必填精确 cluster_id/node_id，逐次拨号只接受该目标身份的证书；同一个 pin 不能配置给不同节点身份。不能把已受信任的 node1 当作 node3 的 Raft 回包。PeerHello 仅能声明此授权下的身份，不能扩大它。RaftRequest、SnapshotChunk、InternalCommand 的 group_id 在交给业务前检查；opaque RPC 是否为空心跳、term/prev-log/commit 因果和响应关联由 OpenRaft 适配层校验。内部客户端的本地 role 与 cluster 也须与目标授权一致。
+
+当前 s2n-quic-tls 0.91.0 没有填充 `take_tls_context`。唯一集中封装的证据路径是 `TlsExporterReady.session.peer_cert_chain_der`，上游将其标为 doc-hidden、用于不稳定用途。证据不存在、查询失败或 pin 不匹配一律拒绝内部连接。固定版本不是稳定性承诺，升级必须重新跑有效链、未知 CA、错误名称、无客户端证书、同 CA 未登记 pin、伪造 node/role、越权 group 的真实 socket 测试，不能只确认编译成功。
+
+证书轮换先把新证书的名称/pin 和原节点同等范围同时加入对端授权，再部署新证书并排空旧连接，确认新连接握手/授权与业务恢复正常后撤销旧 pin。不得用 `allowed_groups` 空集合代表全部组；它代表没有组权限。令牌/证书/私钥/正文不进入日志；未通过认证的连接只递增聚合计数，避免攻击制造日志风暴。
+
+## 有界内存与关闭
+
+首个未分类 HELLO 独立限制为 `min(max_control_frame_bytes,16KiB)`。接收先读取 4 字节前缀、验证长度，再取得两倍 frame 长度的全局额度并渐进读取 body；Prost fields 仍由公共 codec 检查。接收 Bytes 的 owner 持有额度，所以 payload clone 也保持计费直到最后一份释放。发送先拿全局额度再编码，native QUIC 持有 Bytes 时也持有其额度，不在仅入队后提前返还。
+
+进程共享 `MemoryBudget` 将控制预留的 1/2 专用于 Core、1/4 专用于 handshake；剩余总额度为 normal，数据还同时经过 data 门。普通 Control、ACK 和长期连接 envelope 也必须经过 normal，不能先占总额度、再让数据吃掉本应保留的 Core 余量。Core 帧收发用 `try_reserve_core`；未分类 HELLO 及其结果用 `try_reserve_handshake`，未认证连接不能消耗 Core 配额。`available_{data,normal,core,handshake}_bytes` 提供固定只读诊断。此保证是内存额度隔离，CPU/磁盘/执行队列仍须各自预留和限流。
+
+每条连接另以 `connection_window_bytes + max_streams × send_buffer_bytes` 保守预留传输 envelope；服务端预认证 envelope 先占独立 handshake，认证后取得对应类别的 normal/data envelope，再释放握手额度；客户端已知目标类别，C 使用 normal Control。数据额度满时，新 C 仍可认证并传递 ACK，不要求关闭已有 D。handshake 配额满只拒绝/超时新握手，不侵占 Core。默认 connection/stream/send buffer 分别为 64KiB/16KiB/16KiB，最大连接 128、握手 16、流 16、Core 2、ACK 8；默认 1MiB handshake 配额会进一步限制同时进入应用 HELLO 的连接数量。它们是可测的起点，未声明为生产吞吐最优值。native TLS、UDP packet buffer、连接元数据及操作系统 socket 内存不等于该公式，必须同时看 RSS/allocator 与进程上限。
+
+所有连接、握手、stream prelude、读取、发送均有有限数量/期限；无使用的 uni stream 窗口为 0。应用接收队列满时拒绝/reset 新流，不让 dispatcher 队列无限增长。`Connection::close` 会立即关闭所有流，未决结果可能未知。应用先停止新准入并排空有限在途请求，再显式关闭 Session，最后 `Server::shutdown` 停止接受并取消/等待握手任务；它不替业务排空或宣称所有消息已提交。
+
+## 诊断与已验证范围
+
+`TransportMetrics` 提供固定、无动态标签的快照，并实现 prometheus-client `Collector`；管理入口用固定服务端/客户端前缀注册同一实例，不能每个请求新建实例。包含认证连接、拒绝、流、帧/字节、期限、读/解码失败、send 等待秒、TLS 失败、native 丢包和 DATA_BLOCKED/STREAM_DATA_BLOCKED/STREAMS_BLOCKED 通知。block frame 计数可以含重复通知，不等于阻塞持续时间。`Connection::recovery_snapshot` 只读查询最近的 min/smoothed/latest RTT、PTO count、cwnd、bytes in flight 和 congestion_limited；没有样本时为 None，不能当作零 RTT。
+
+`tests/quic_transport.rs` 使用逐测试独立的内存证书、随机 UDP 端口和真实 TLS/socket。已覆盖大于 stream window 的帧及同流连续请求、证书/权限拒绝、双 pin 轮换与错目标节点、超大 HELLO 和非法 frame、半帧超时 poison、ACK 满时 Core 前进、慢 B 时 C 前进、并发池复用/分类隔离、空闲期限、payload clone 计费，以及 data 满且 D 保持连接时 C 重新认证、ACK 到达 dispatcher 后释放测试持有的积压额度。normal 被普通 Control 和 data 用尽时 Core 帧仍前进；此测试不宣称已实现业务持久 ACK。故障网、3AZ、CID/LB、按租户/分区公平调度、Core 自动修复、业务取消后的重试/去重、T13 吞吐/P99/P99.9 实测仍需各后续阶段验收。
+
+版本来源：[s2n-quic 1.91.0](https://docs.rs/s2n-quic/1.91.0/s2n_quic/)、[TLS Server Builder](https://docs.rs/s2n-quic-tls/0.91.0/s2n_quic_tls/server/struct.Builder.html)、[TLS session 源码](https://docs.rs/s2n-quic-tls/0.91.0/src/s2n_quic_tls/session.rs.html)、[event TLS API 源码](https://docs.rs/s2n-quic-core/0.91.0/src/s2n_quic_core/event.rs.html)、[send/flush 语义](https://docs.rs/s2n-quic/1.91.0/s2n_quic/stream/struct.SendStream.html)。
