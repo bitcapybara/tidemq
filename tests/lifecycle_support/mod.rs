@@ -367,6 +367,16 @@ impl Fixture {
     }
     pub async fn produce(&self, count: u64) -> AppendBatch {
         let producer_id = Id::random().unwrap();
+        let epoch = self
+            .data
+            .state
+            .with_application(|state| {
+                state
+                    .producer(self.partition)
+                    .unwrap()
+                    .next_registration_epoch()
+            })
+            .await;
         let writer = WriterFence {
             node_id: 1,
             owner_epoch: 1,
@@ -377,7 +387,7 @@ impl Fixture {
             now_ms: 1,
             command: ProducerCommand::Register(RegisterProducer {
                 producer_id,
-                expected_registration_epoch: 1,
+                expected_registration_epoch: epoch,
             }),
         };
         assert!(matches!(
@@ -399,7 +409,7 @@ impl Fixture {
             self.partition.topic_id,
             0,
             producer_id,
-            1,
+            epoch,
             0,
             messages.iter().map(|m| (m.key.as_ref(), m.body.as_ref())),
         )
@@ -408,7 +418,7 @@ impl Fixture {
             topic_id: self.partition.topic_id,
             partition_id: 0,
             producer_id,
-            producer_epoch: 1,
+            producer_epoch: epoch,
             first_sequence: 0,
             messages,
             content_digest: digest,

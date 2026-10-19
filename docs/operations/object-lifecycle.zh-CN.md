@@ -7,8 +7,8 @@
 | PendingTask | Registered/Uploaded 尚未完成；按原 object ID 调用 reconcile，保留正文。 |
 | CancelNeedsDataAbort | 元数据已阻止发布，但数据组尚未给出不可逆终止；恢复数据多数派后 cancel。 |
 | LiveManifest | 对象仍有有效分区引用；先发布完整替代对象或由保留策略安全移除引用。 |
-| ReadPin | 读取尚未 release；检查任务期限。遗留 pin 使用 expire_pin，须完整等待 TTL。 |
-| RecoverySnapshot | 旧快照/恢复仍依赖对象；恢复当前全部 voters 后对替代对象执行 checkpoint。 |
+| ReadPin | 读取尚未 release；检查任务期限。通过 pending_pins 按组分页发现遗留 pin，再使用 expire_pin 完整等待 TTL。 |
+| RecoverySnapshot | 旧快照/恢复仍依赖对象；恢复当前全部 voters，替代对象执行 checkpoint，逻辑保留回收执行 retire_before。 |
 | Checkpoint | 发布完成尚未有安全快照屏障；禁止回收本地正文。 |
 | DeletionRetry | DELETING 已阻止新引用；恢复 S3 后按原对象 collect。 |
 
@@ -22,7 +22,8 @@
 
 ```bash
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/rustfs rtk cargo test -p tidemq --test lifecycle_persistence -- --ignored
+TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/rustfs rtk cargo test -p tidemq --test runtime_queue actual_runtime_sdk_replays_s3_after_published_local_reclamation -- --ignored
 rtk cargo test -p tidemq --test s3_boundaries
 ```
 
-本地 RF1 重启证明不覆盖机器掉电、真实三可用区、S3 提供商故障或跨进程生命周期远程适配。生产放行应附平台、构建版本、Raft 拓扑、S3 配置和故障时间线。
+本地 RF1 重启与真实 QUIC/S3 冷读证明不覆盖机器掉电、真实三可用区、S3 提供商故障或独立操作系统进程的故障隔离。生产放行应附平台、构建版本、Raft 拓扑、S3 配置和故障时间线。

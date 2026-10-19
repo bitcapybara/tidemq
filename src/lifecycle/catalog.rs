@@ -18,6 +18,7 @@ pub struct Catalog {
     by_group: BTreeMap<u64, BTreeSet<Id>>,
     manifests: BTreeMap<PartitionKey, Manifest>,
     pins: BTreeMap<Id, PinRecord>,
+    pins_by_group: BTreeMap<u64, BTreeSet<Id>>,
     retired_floors: BTreeMap<PartitionKey, u64>,
     checkpointed_floors: BTreeMap<PartitionKey, u64>,
 }
@@ -43,7 +44,7 @@ impl Catalog {
     }
 
     pub fn capacity_usage(&self) -> super::CapacityUsage {
-        self.usage(self.objects.values())
+        self.usage(self.objects.values(), self.pins.len())
     }
 
     pub fn capacity_usage_for(&self, group: u64) -> super::CapacityUsage {
@@ -53,12 +54,17 @@ impl Catalog {
                 .into_iter()
                 .flat_map(|ids| ids.iter())
                 .filter_map(|id| self.objects.get(id)),
+            self.pins_by_group.get(&group).map_or(0, BTreeSet::len),
         )
     }
 
-    fn usage<'a>(&self, objects: impl Iterator<Item = &'a ObjectRecord>) -> super::CapacityUsage {
+    fn usage<'a>(
+        &self,
+        objects: impl Iterator<Item = &'a ObjectRecord>,
+        read_pins: usize,
+    ) -> super::CapacityUsage {
         let mut usage = super::CapacityUsage {
-            read_pins: self.pins.len(),
+            read_pins,
             ..super::CapacityUsage::default()
         };
         for object in objects {
@@ -144,6 +150,35 @@ impl Catalog {
     }
     pub(crate) fn pin(&self, id: Id) -> Option<&PinRecord> {
         self.pins.get(&id)
+    }
+
+    pub fn pins_page(
+        &self,
+        group: u64,
+        after: Option<Id>,
+        limit: usize,
+    ) -> Result<super::PinPage, Rejection> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        if limit == 0 || limit > 64 {
+            return Err(Rejection::Capacity);
+        }
+        let mut pins = Vec::new();
+        pins.try_reserve_exact(limit)
+            .map_err(|_| Rejection::Capacity)?;
+        let Some(ids) = self.pins_by_group.get(&group) else {
+            return Ok(super::PinPage {
+                pins,
+                next_after: None,
+            });
+        };
+        let mut iterator = ids.range((after.map_or(Unbounded, Excluded), Unbounded));
+        pins.extend(iterator.by_ref().take(limit).copied());
+        let next_after = if iterator.next().is_some() {
+            pins.last().copied()
+        } else {
+            None
+        };
+        Ok(super::PinPage { pins, next_after })
     }
 
     pub fn diagnose(&self, object_id: Id) -> Option<Diagnostic> {
@@ -428,10 +463,17 @@ impl Catalog {
         }
         for id in &pin.objects {
             let object = self.objects.get(id).ok_or(Rejection::NotFound)?;
-            if object.phase != ObjectPhase::Published || self.references(*id) == 0 {
+            if object.phase != ObjectPhase::Published
+                || self.references(*id) == 0
+                || object.descriptor().identity.group_id != pin.group_id
+            {
                 return Err(Rejection::References);
             }
         }
+        self.pins_by_group
+            .entry(pin.group_id)
+            .or_default()
+            .insert(pin.id);
         self.pins.insert(pin.id, pin);
         Ok(CatalogOutcome::Pinned)
     }
@@ -445,6 +487,12 @@ impl Catalog {
             return Err(Rejection::Conflict);
         }
         self.pins.remove(&pin.id);
+        if let Some(ids) = self.pins_by_group.get_mut(&pin.group_id) {
+            ids.remove(&pin.id);
+            if ids.is_empty() {
+                self.pins_by_group.remove(&pin.group_id);
+            }
+        }
         Ok(CatalogOutcome::Released)
     }
 
@@ -728,18 +776,34 @@ impl Catalog {
         }
         for (id, pin) in &self.pins {
             if *id != pin.id
+                || pin.group_id == 0
                 || pin.objects.len() > MAX_PIN_OBJECTS
                 || pin.objects.is_empty()
                 || pin.ttl_millis == 0
                 || u128::from(pin.ttl_millis) > MAX_PIN_TTL.as_millis()
                 || pin.objects.iter().any(|id| {
-                    self.objects
-                        .get(id)
-                        .is_none_or(|o| o.phase != ObjectPhase::Published)
+                    self.objects.get(id).is_none_or(|o| {
+                        o.phase != ObjectPhase::Published
+                            || o.descriptor().identity.group_id != pin.group_id
+                    })
                 })
+                || self
+                    .pins_by_group
+                    .get(&pin.group_id)
+                    .is_none_or(|ids| !ids.contains(id))
             {
                 return Err(Rejection::InvalidSnapshot);
             }
+        }
+        if self.pins_by_group.values().any(BTreeSet::is_empty)
+            || self
+                .pins_by_group
+                .values()
+                .map(BTreeSet::len)
+                .sum::<usize>()
+                != self.pins.len()
+        {
+            return Err(Rejection::InvalidSnapshot);
         }
         Ok(())
     }
