@@ -40,6 +40,8 @@ ACK 批次全部预验证后原子应用，包含坏 token 时整批拒绝；批
 
 每订阅与每分区同时限制窗口槽数和在途字节，每订阅另限制在途消息、attempt 次数和 ACK 批大小。字节数包括投递消息的 key/body 等业务计费字节，实际发送/解码/token 的缓冲还必须加入运行时全进程 MemoryBudget；状态中的逻辑字节计数不是 RSS。所有默认值是功能验证起点，性能阶段需要在同总预算下实测。
 
+默认 `max_ack_batch=256` 是状态硬上限，C 类默认 frame 为 16KiB 时，101 字节 token 的实际可发送条数更少。SDK/handler 必须同时按编码后的 frame 字节预算切批，不能只按 token 数量切批。此限制不允许把普通 ACK 挤入核心控制流的保留执行额度。
+
 retry 索引按 deadline/offset 排序，查询只取有界数量，不为每次 poll 扫描全订阅。时间来自受信 handler 写入命令，状态机不读取时钟；时钟跳变可影响重试时机，不影响 attempt/token 的安全性。达到 attempt 上限后消息仍未确认并继续保护保留前沿，从自动 retry 索引移除以免饿死其他工作。不会跳过失败消息，也不会将 DLQ 写入视为 ACK；人工 replay/seek 必须显式授权。
 
 `protected_before()` 通过有界前沿索引直接返回所有活跃订阅的最低保护 offset。创建、删除、seek 与 floor 更新必须在同数据组排序。新建/seek 不能越过 retained floor，floor 不能越过任何活跃保护前沿。全局元数据的 desired 删除配置不等于数据组已删除，不能单凭该配置解除保护。多个分区部分完成时仍保留未完成分区的保护。

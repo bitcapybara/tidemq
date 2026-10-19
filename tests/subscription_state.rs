@@ -508,3 +508,113 @@ fn deterministic_ack_permutations_preserve_monotonic_frontier_and_bounded_snapsh
         assert_eq!(f.state.diagnostics(f.id).unwrap().window_slots, 0);
     }
 }
+
+#[test]
+fn a_bad_token_rejects_the_entire_batch_without_confirming_the_valid_subset() {
+    let mut f = Fixture::new(Limits::default(), 0);
+    let zero = f.deliver(0, 0, 0, DeliveryLane::Realtime);
+    let one = f.deliver(1, 0, 0, DeliveryLane::Realtime);
+    let mut bytes = one.token.as_bytes().to_vec();
+    *bytes.last_mut().unwrap() ^= 1;
+    assert_eq!(
+        f.ack(vec![
+            zero.token.clone(),
+            DeliveryToken::try_from(bytes).unwrap()
+        ]),
+        Err(Rejection::InvalidToken)
+    );
+    assert_eq!(f.state.protected_before(), Some(0));
+    assert_eq!(f.state.diagnostics(f.id).unwrap().in_flight_messages, 2);
+    assert_eq!(
+        f.ack(vec![zero.token, one.token])
+            .unwrap()
+            .acknowledged_before,
+        2
+    );
+}
+
+#[test]
+fn aggregate_byte_admission_is_bounded_across_subscriptions_and_ack_releases_it() {
+    let mut f = Fixture::new(
+        Limits {
+            max_in_flight_bytes: 20,
+            max_total_in_flight_bytes: 20,
+            ..Limits::default()
+        },
+        0,
+    );
+    let original_id = f.id;
+    let original_session = f.session;
+    let first = f.deliver(0, 0, 0, DeliveryLane::Realtime);
+    let second_id = Id::random().unwrap();
+    f.apply(Command::Create {
+        subscription_id: second_id,
+        operation_id: Id::random().unwrap(),
+        start_offset: 0,
+        signing_key: SigningKey::try_from([87; 32]).unwrap(),
+    })
+    .unwrap();
+    f.id = second_id;
+    f.session = Id::random().unwrap();
+    f.apply(Command::Claim {
+        subscription_id: f.id,
+        expected: Generations {
+            cursor: 1,
+            assignment: 0,
+        },
+        session_id: f.session,
+        replace_session_id: None,
+        cold_before: 0,
+    })
+    .unwrap();
+    f.deliver(0, 0, 0, DeliveryLane::Realtime);
+    let blocked = f.delivery_command(1, 0, 0, DeliveryLane::Realtime);
+    assert_eq!(f.apply(blocked), Err(Rejection::InFlightBytes));
+    let second_session = f.session;
+    f.id = original_id;
+    f.session = original_session;
+    f.ack(vec![first.token]).unwrap();
+    f.id = second_id;
+    f.session = second_session;
+    f.deliver(1, 0, 0, DeliveryLane::Realtime);
+    assert_eq!(f.state.diagnostics(f.id).unwrap().total_in_flight_bytes, 20);
+}
+
+#[test]
+fn retired_identities_consume_the_finite_fence_budget_and_claim_retries_keep_the_assignment() {
+    let mut f = Fixture::new(
+        Limits {
+            max_subscription_identities: 1,
+            ..Limits::default()
+        },
+        0,
+    );
+    let original = f.state.assignment(f.id).unwrap();
+    let repeated = f
+        .apply(Command::Claim {
+            subscription_id: f.id,
+            expected: Generations {
+                cursor: 1,
+                assignment: 0,
+            },
+            session_id: f.session,
+            replace_session_id: None,
+            cold_before: 0,
+        })
+        .unwrap();
+    assert_eq!(repeated, Outcome::Assigned(original));
+    f.apply(Command::Delete {
+        subscription_id: f.id,
+        expected_cursor_generation: 1,
+    })
+    .unwrap();
+    assert_eq!(
+        f.apply(Command::Create {
+            subscription_id: Id::random().unwrap(),
+            operation_id: Id::random().unwrap(),
+            start_offset: 0,
+            signing_key: SigningKey::try_from([87; 32]).unwrap()
+        }),
+        Err(Rejection::IdentityBudget)
+    );
+}

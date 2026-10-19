@@ -130,6 +130,7 @@ impl SubscriptionState {
         }
     }
 
+    // Keep exhaustive command dispatch together so every success advances the same revision.
     fn apply_inner(&mut self, context: DataContext, command: Command) -> Result<Outcome> {
         self.check_context(context)?;
         let revision = self
@@ -599,6 +600,7 @@ impl SubscriptionState {
         Ok(())
     }
 
+    // Validation and the bounded in-place commit stay together to make batch atomicity explicit.
     fn acknowledge(
         &mut self,
         id: Id,
@@ -1140,6 +1142,10 @@ impl Subscription {
 
     fn validate(&self, limits: Limits, committed_end: u64, retained_floor: u64) -> Result<()> {
         if self.generations.cursor == 0
+            || self.creation_offset > committed_end
+            || (self.session_id.is_some() && self.generations.assignment == 0)
+            || (self.last_seek.is_none()
+                && (self.generations.cursor != 1 || self.cursor_start != self.creation_offset))
             || self.generations.assignment < self.generations.cursor.saturating_sub(1)
             || self.cursor_start > self.acknowledged_before
             || retained_floor > self.acknowledged_before
