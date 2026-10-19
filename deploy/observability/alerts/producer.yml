@@ -1,0 +1,43 @@
+groups:
+  - name: tidemq-producer-examples
+    interval: 30s
+    rules:
+      - alert: TideMQProducerUnknownResults
+        expr: |
+          (increase(tidemq_producer_unknown_attempts_total[5m])
+            / clamp_min(increase(tidemq_producer_attempts_total[5m]), 1) > 0.01)
+          and (increase(tidemq_producer_attempts_total[5m]) >= 100)
+        for: 5m
+        labels:
+          severity: warning
+          component: producer
+        annotations:
+          summary: "Producer callers cannot determine durable results"
+          description: "Example threshold: over 1% unknown attempts for 5 minutes with at least 100 attempts. Preserve original batch identities. Clear after the sustained unknown ratio recovers."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/producer-troubleshooting.zh-CN.md"
+      - alert: TideMQProducerNoCommitProgress
+        expr: |
+          (tidemq_producer_pending_operations > 0)
+          and (increase(tidemq_producer_new_messages_total[5m]) == 0)
+          and (increase(tidemq_producer_attempts_total[5m]) >= 10)
+        for: 5m
+        labels:
+          severity: warning
+          component: producer
+        annotations:
+          summary: "Owned producer submissions are not making commit progress"
+          description: "Example threshold: pending work and no new committed messages for 5 minutes. Check quorum, storage sync, authorization and bounded admission. Clear when pending work drains or new commits resume."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/producer-troubleshooting.zh-CN.md"
+      - alert: TideMQProducerRejections
+        expr: |
+          (increase(tidemq_producer_rejected_attempts_total[5m])
+            / clamp_min(increase(tidemq_producer_attempts_total[5m]), 1) > 0.10)
+          and (increase(tidemq_producer_attempts_total[5m]) >= 100)
+        for: 10m
+        labels:
+          severity: warning
+          component: producer
+        annotations:
+          summary: "Producer admission or business rejections are sustained"
+          description: "Example threshold: over 10% rejected attempts for 10 minutes with at least 100 attempts. Inspect capacity, session expiry, sequence conflicts and current owner. Clear after rejection ratios recover."
+          runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/producer-troubleshooting.zh-CN.md"

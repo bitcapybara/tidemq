@@ -71,6 +71,10 @@ impl FenceState {
         self.group_id
     }
 
+    pub fn partition_count(&self) -> usize {
+        self.partitions.len()
+    }
+
     /// Call only for a committed command admitted through `VerifiedGrant`.
     pub fn apply(&mut self, command: FenceCommand) -> FenceResponse {
         let grant = command.grant;
