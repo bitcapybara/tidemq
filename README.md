@@ -6,7 +6,7 @@ A cloud-native message queue built on object storage, designed for high throughp
 
 TideMQ targets data ingestion and stream processing. Its architecture separates message serving, replicated write-ahead logs (WALs), object storage, and control metadata so that compute and storage can scale independently.
 
-> **Status:** The local runtime and in-repository Rust SDK support durable production, per-message acknowledgements, authenticated QUIC, separate metadata/data Raft groups, RustFS/S3 archival, cold reads, retention, and safe object reclamation. Native QUIC RF3, role separation, process restart, and membership recovery have local tests. Scaling integration and workload measurements are in progress; three-zone durability, production performance, and recovery percentiles remain unvalidated. See the [implementation status](docs/implementation-status.zh-CN.md).
+> **Status:** The local runtime and in-repository Rust SDK support durable production, per-message acknowledgements, authenticated QUIC, separate metadata/data Raft groups, RustFS/S3 archival, cold reads, retention, and safe object reclamation. Local RF3, separate roles, process failures, automatic takeover, and membership repair pass regression tests; 17 finite RF1 workloads have been measured. Small-message consumption with durable ACKs is about 60 messages/s. High-throughput, low-latency, three-zone, and recovery-percentile goals still require optimization and validation. See the [implementation status](docs/implementation-status.zh-CN.md) and [local performance report](docs/evidence/2026-10-20-local-performance.zh-CN.md).
 
 ## Design goals
 

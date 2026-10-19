@@ -172,6 +172,8 @@
 
 `operation=Produce` 的 WAL/Apply/Sync/CommitPersist 系列是同 DataGroup 的标签，也覆盖 RecordDelivery、ACK、ReceivedBarrier 等命令；不能把 4688 次 Apply 或 9376 次 Sync 当新生产 batch。独立 producer_new_batches/new_messages/new_bytes 增量为 **128 / 4096 / 557056**，与 SDK 生产账本相符。
 
+同一 #1 measured 中 Produce 的 Decode、Response、Replicate 的 count/sum 前后均为零，当前入口未提供这些阶段的有效延迟样本；不能将其解释为零成本，也不能由 RF1 推断跨节点复制延迟。完整阶段装配与对应负载仍需补验。
+
 Read Total 累计约 59.897 s，DataGroup 的 Sync 累计约 43.276 s、WalQueue 约 22.785 s；这些为累计、可嵌套或并发的阶段时间，不能相加当消费 wall time。本轮显示有必要进一步验证投递簿记持久化、WAL 排队和 group commit 的批量化改进，优化仍须保留相同 quorum、token、可见性与 ACK 语义；当前没有证明单一因果瓶颈。
 
 下表为最终诊断中的 WAL 运行累计计数与制品实际字节，**含初始化、预热、测量和冷却**。written_bytes 是应用编码/写入计数，sync 为 journal 计数，可能包含检查点重写；它们不是块设备累计 I/O 或物理写放大测量。data 占用取 `du -sk cluster/data-1`，是当前文件系统分配量，既不等于累计写字节，也未合并 RustFS 数据目录。

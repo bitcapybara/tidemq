@@ -8,7 +8,7 @@
 | `tidemq_stage_duration_seconds{operation,stage}` | 本进程单调分段直方图；Broker Admission/Queue/Commit 与 WAL WalAdmission/WalQueue/CommitPersist 分开，另有 Append/Sync/Replicate/RepairPace/Apply/Total。Decode/Response 未完整观测；无样本不能解释为零耗时。边界见[观测设计](../design/observability.zh-CN.md) |
 | `tidemq_producer_*` | attempts、committed/duplicate/rejected/unknown/failed、new_messages/new_bytes、owned pending。新持久消息与重复原结果分别统计；业务吞吐采用 new_messages |
 | `tidemq_dispatch_*` | 有限 handler 准入/拒绝/错误/活跃与限速日志抑制，独立于日志是否成功写出 |
-| `tidemq_internal_client_*` / `internal_server_*` / `external_server_*` | 连接、active_connections、流、帧/字节、deadline、TLS、丢包和连接/流 credit 阻塞；内部客户端还含 liveness probe/failure。连接总计与当前连接不是同一个值 |
+| `tidemq_internal_client_*` / `internal_server_*` / `external_server_*` | 连接、active_connections、流、帧/字节、deadline、TLS、丢包和连接/流 credit 阻塞；内部客户端还含 liveness probe/failure。连接总计是累计准入；active_connections 计仍持有状态/资源的连接对象，随最后引用释放而下降，不是精确的原生 open 连接数；缓存/RPC 可暂时保留已关闭连接 |
 | `tidemq_capacity_used_bytes{kind}` / `blocked{kind}` | LogicalBacklog、PhysicalStorage、SharedReclaimLag、ProcessMemory，四种独立口径，不相加。低水位迟滞与样本年龄共同决定新工作准入 |
 | `tidemq_capacity_container_blocked` / `container_observation_available` | 独立 cgroup headroom 与字段可用性；字段可用不表示样本永远新鲜。实际年龄、明确无限/不支持/读取失败见诊断 |
 | `tidemq_runtime_ready` / `process_rss_bytes` / `cgroup_current_bytes` / `cgroup_limit_bytes` | 角色就绪与真实 OS/容器用量；不可用字段不导出为 0。RSS 包含原生页与 allocator 驻留，不再重复相加 |

@@ -33,9 +33,11 @@
 
 默认不记录每消息正文或每次拒绝日志。认证成功只有固定格式 debug 事件；token、私钥、HELLO payload 和用户正文不进入事件。临时开启 debug 使用基础日志管理的期限/轮转/限量能力，先观察聚合计数，不将整个 native 事件流永久提升为生产 info。
 
-`connections_total`/`streams_total` 是累计准入量，不是当前活跃数。`frames_sent_total` 是已入队应用帧，不能作为持久成功。`bytes_sent_total` 含 4 字节前缀，接收统计不含前缀。`malformed_total` 包括 IO/读帧/解码失败；授权拒绝另进 rejected。`send_wait_seconds_total` 含 send-ready 与 enqueue 等待，不能标注为精确拥塞或 credit 时间。丢包通知包含 MTU probe；PTO 是最近一次 recovery 样本，不可跨连接相加当作业务重试次数。
+`connections_total`/`streams_total` 是累计准入量。`active_connections` 随 ConnectionState 创建/最后引用释放计数，缓存/RPC 可暂留已原生关闭的连接；它不能单独证明网络仍存活。`frames_sent_total` 是已入队应用帧，不能作为持久成功。`bytes_sent_total` 含 4 字节前缀，接收统计不含前缀。`malformed_total` 包括 IO/读帧/解码失败；授权拒绝另进 rejected。`send_wait_seconds_total` 含 send-ready 与 enqueue 等待，不能标注为精确拥塞或 credit 时间。丢包通知包含 MTU probe；PTO 是最近一次 recovery 样本，不可跨连接相加当作业务重试次数。
 
-空等首字节不增加 `deadlines_total` 或 `malformed_total`。收到首字节后的慢 prefix/body 仍有有限组帧期限；超时或取消导致 poison，不执行外层 Deadline 重试来重用未知字节边界。新入口只在首字节之前允许安全取消。握手/短 ACK/单次读取仍用 `receive(absolute_deadline)`；客户端原请求取消仅移除其 waiter，不能因此关闭其他共享请求。
+空等首字节本身不增加 `deadlines_total` 或 `malformed_total`；原生 idle 关闭带来的 IO 错误仍可计入后者。收到首字节后的慢 prefix/body 仍有有限组帧期限；超时或取消导致 poison，不执行外层 Deadline 重试来重用未知字节边界。新入口只在首字节之前允许安全取消。握手/短 ACK/单次读取仍用 `receive(absolute_deadline)`；客户端原请求取消仅移除其 waiter，不能因此关闭其他共享请求。
+
+独立回归 `native_idle_produce_connection_records_lane_read_errors_while_control_progresses` 配置原生 idle 一秒、组帧阈值 120 ms：P 的四条 lane 完成生产后静止，250 ms 时仍开；约 1.22 秒后 P 原生/RPC 关闭，两端 malformed 各增加四，deadline/探活失败/拒绝均为零，C 仍完成 52 次控制请求且没有新增连接。这个实验说明合法原生空闲关闭也能产生这组计数，不能仅由 malformed 推断坏帧或活跃连接误断；[本地性能报告](../evidence/2026-10-20-local-performance.zh-CN.md)中的原场景没有逐帧原因记录，归因仍保留推测边界。
 
 ## 本地回归
 

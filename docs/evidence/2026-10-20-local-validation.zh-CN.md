@@ -11,8 +11,8 @@
 | `cargo fmt --all` | 通过 |
 | `cargo clippy --workspace --tests --examples --no-deps --locked -j2 -- -D warnings` | 通过，零警告 |
 | workspace lib/bins 的 unwrap、expect、panic、todo、unimplemented、indexing/slicing 严格 clippy | 通过，命令见[测试方法](../testing-benchmarks.zh-CN.md) |
-| `cargo test --workspace --locked -j2 --no-fail-fast -- --test-threads=2` | **245 passed，9 ignored，34 suites，76.82 s** |
-| 指定真实 RustFS 与官方 Collector，`cargo test --workspace --locked -j2 -- --ignored --test-threads=1` | **9 passed，245 filtered out，34 suites，38.10 s** |
+| `cargo test --workspace --locked -j2 --no-fail-fast -- --test-threads=2` | **246 passed，9 ignored，34 suites，76.85 s** |
+| 指定真实 RustFS 与官方 Collector，`cargo test --workspace --locked -j2 -- --ignored --test-threads=1` | **9 passed，246 filtered out，34 suites，36.70 s** |
 | `cargo test --workspace --doc --locked -j2` | **3 passed，4 suites，0.28 s** |
 | `cargo test -p tidemq-sdk --locked --features 'metrics opentelemetry' -j2` | **26 passed，3 suites，0.61 s** |
 | protocol `codegen` 构建、fmt、generated diff | 通过，生成文件无差异 |
@@ -43,6 +43,10 @@
 
 修复的定向门禁另通过 transport 单元 5 项、QUIC 23 项、dispatch 3 项、SDK 含文档 26 项，以及真实 Gateway 强杀、丢包/重排、1199 B MTU 黑洞后恢复到 1200 B 的原身份恢复单例。后者测试共 11.26 秒，恢复段约 7.42 秒且含四秒注入黑洞，不代表恢复 SLO。负向回归覆盖首字节前取消后复用、无效组帧期限、prefix/body 超时与取消后 poison，以及首字节后的原预算扣减；失败原文、WAL 和脱敏前诊断只保存在各 worktree 私有 `target`，不提交业务正文或身份秘密。
 
+正式性能测量后另补纯测试提交 `b55c4ab`，生产代码、依赖和性能参数没有变化。`native_idle_produce_connection_records_lane_read_errors_while_control_progresses` 使用原生 idle 一秒及组帧阈值 120 ms：P 四 lane 在 250 ms 时仍开，约 1.22 秒后按原生 idle 关闭；C 持续完成 52 次 Diagnose，两端 malformed 各增加四，deadline/探活失败/拒绝为零且连接累计仍各为二。全 dispatch target 最终四项通过（1.76 秒），再次合流后普通 246 项和真实后端九项均通过。
+
+该独立实验支持“静止 P 原生关闭也可产生宽口径读错误”这一解释；性能原现场没有逐帧原因记录，不能当作全部错误已直接归因。`active_connections` 随连接状态最后引用释放而下降，缓存/RPC 可保留已原生关闭的状态，因此不能单看该值判断网络存活。排障方法见 [QUIC 手册](../operations/quic-troubleshooting.zh-CN.md)。
+
 ## 原生观测部署
 
 使用官方 Collector core 0.162.0、Prometheus 3.15.0、Grafana OSS 13.2.4 与真实 RF1 服务进程：
@@ -59,4 +63,4 @@
 
 真实三区、生产负载均衡/NAT/CID、Linux/cgroup OOM、掉电、长稳、生产规模和竞品公平对标仍未执行。未 Active 的原 grant 目标同时死亡时保守等待目标恢复或受信处理；对象永久账本等固定容量上限见[实施状态](../implementation-status.zh-CN.md)。这些边界不能由本地正确性通过推导为已验收。
 
-性能使用另行冻结的源码、锁文件、二进制和配置身份，运行独立矩阵；本记录的测试耗时、恢复单例和成功数量均不作为吞吐、P99 或生产 allocator 结论。
+性能使用另行冻结的 `1398353` 源码、锁文件、三种分配器 release 二进制和配置身份，17 项有限 RF1 负载的测量 36032 条、预热 2264 条均完整提交并持久 ACK；官方 Collector 实际接收 53 个 span。原始表、资源与分位口径见[本地性能报告](2026-10-20-local-performance.zh-CN.md)。小消息消费及持久 ACK 约 60 条/秒，不能作为高吞吐、低延迟或生产 allocator 已达标的结论。本记录的测试耗时、恢复单例和成功数量也不替代正式性能分布。
