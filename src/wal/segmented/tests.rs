@@ -377,3 +377,56 @@ async fn checkpoint_encoding_limit_rejects_before_io_and_keeps_the_writer_usable
         .unwrap();
     journal.close().await.unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn published_snapshot_rejects_symlinks_before_following_the_target() {
+    let dir = Directory::new();
+    let outside = Directory::new();
+    let (journal, _, recovery) = opened(dir.path()).await;
+    drop(recovery);
+    let data = vec![42; 128];
+    let target = outside.path().join("outside.bin");
+    std::fs::write(&target, &data).unwrap();
+    let name = format!(
+        "snapshot-{}.bin",
+        uuid::Uuid::from_bytes(format::new_id().unwrap())
+    );
+    std::os::unix::fs::symlink(&target, dir.path().join(&name)).unwrap();
+    assert!(
+        journal
+            .publish_snapshot(SnapshotRef {
+                file_name: name,
+                byte_len: data.len() as u64,
+                checksum: *blake3::hash(&data).as_bytes()
+            })
+            .await
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), data);
+    assert!(journal.current_snapshot().is_none());
+}
+#[tokio::test]
+async fn snapshot_reference_length_is_rejected_before_opening_its_file() {
+    let dir = Directory::new();
+    let (journal, _, recovery) = opened(dir.path()).await;
+    drop(recovery);
+    let missing = format!(
+        "snapshot-{}.bin",
+        uuid::Uuid::from_bytes(format::new_id().unwrap())
+    );
+    let snapshot = SnapshotRef {
+        file_name: missing,
+        byte_len: u64::MAX,
+        checksum: [0; 32],
+    };
+    assert!(journal.publish_snapshot(snapshot).await.is_err());
+    journal
+        .append(b"still-live".to_vec())
+        .await
+        .unwrap()
+        .durable()
+        .await
+        .unwrap();
+    journal.close().await.unwrap();
+}
