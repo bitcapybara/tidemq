@@ -38,6 +38,19 @@ SDK 和 runtime 的专项检查与 workspace 有重叠，不能相加为不同�
 
 所有失败试次的原始报告、服务日志、metrics/diagnostics 与 WAL 留在独立输出目录。失败记录包含运行凭据和数据路径，不能直接提交完整目录或公开分享。后续实验必须使用新目录，不覆盖这轮记录。
 
+## 固定速率探针：尚未形成有效校准
+
+首次固定速率场景仍为四个分区，每分区 64 条预热、256 条测量、160 ms 间隔，四分区错开，合计 25 条/秒。服务二进制与 SDK 源码保持 `5393238`；新负载来自 `50c87cf`，release 构建 43.48 s，负载 SHA-256 为 `d0b14d4b0b1bb9ce7f8ac9b8af34706b71f0211a5dba85bbbedc2df080f2fde7`。它是场景探针，不是新旧源码性能比较。
+
+| 输出目录 | 持久消息 | 生产 p99 上界 | 调度延误 p99 上界 | offered→持久 ACK p99 上界 |
+| --- | ---: | ---: | ---: | ---: |
+| `rf1-paced-smoke-1` | 1024 | 71.303167 ms | 1.605631 ms | 146.800639 ms |
+| `rf1-paced-smoke-2` | 1024 | 29.360127 ms | 1.835007 ms | 134.217727 ms |
+
+第三次 `rf1-paced-smoke-3` 失败，后续重复试次停止：预热四分区均持久 ACK 64 条；测量四分区均提交 256 条，持久 ACK 为 256、62、256、256，一个分区报 `Unavailable / Unknown`。没有丢弃失败样本后计算通过的 A/A 区间。已保留的服务指标显示 Control/Unknown 增加一次，Read/Unknown、Ack/Unknown 和 transport deadline 均未增加；具体原因需独立定位。
+
+代码检查另外发现，四组随机 topic/producer/subscription 身份经 affinity 哈希后，每次可能形成不同的 request-lane 碰撞。它是待控制变量，不是已证明的尾延迟根因。最终延迟场景改为一个分区、256 条预热、1024 条测量、40 ms 计划间隔，同样 25 条/秒；吞吐场景仍为四分区。上述两个成功探针和第三次失败都属于旧四分区场景，不能作为新场景或正确性修复的通过证据。
+
 ## CI 验证边界
 
 [Rust CI 39362732099](https://github.com/bitcapybara/tidemq/actions/runs/39362732099) 首次 Ubuntu validate 因 crates.io `socket2` 索引超时失败；allocator-system、allocator-mimalloc、allocator-jemalloc 的 Linux 检查与完整 root package 测试，以及 Linux/macOS heap-profile job 均通过。
