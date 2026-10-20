@@ -81,6 +81,8 @@ KeySerial 按配置的最多缓冲条数，为失败 offset 元数据在 consume
 
 `seek(offset, operation_id)` 使旧 token、排队数据、失败决定与接收屏障失效，并重新 Claim。seek 结果未知或 future 取消后，本地停止派发；以相同 operation ID 重试 seek。`fill`/`recv` 收到 owner 的 `Fenced`/`StaleGeneration` 后，在该操作的原总 deadline 和固定次数内查询最新 status 并 CAS 重新 Claim，Consumer clone 共享恢复后的状态。仅原逻辑 session 或未分配状态允许自动恢复；其他 session 已占用时返回 AssignmentBusy，自动路径不会复用配置中既有的 takeover consent 去抢占它。确需接管仍由业务明确调用 `reclaim`，并匹配 `replace_session_id`。
 
+接收屏障返回 Unknown 时，SDK 只在同一代次、同一 session、相同接收位置与同一 operation ID 下有限重试，次数受 `max_reconnect_attempts` 限制，所有尝试共享原总期限。服务端允许相等的接收位置，禁止倒退；确认之前不启用后续热读取。重试或退避预算耗尽时仍返回原 Unknown，不能解释为屏障未提交，也不创建替代分配。
+
 新代次从持久 ACK frontier 重新建立连续 enqueue/冷热屏障，旧 Delivery 的代次和 token 保持原样；旧 ACK 不会被改写到新分配或自动成功。`ack`/`ack_many` 本身返回原操作错误，让下一次 `fill`/`recv` 恢复，业务须按幂等契约处理重交付。`next` 只访问本地队列，没有网络 deadline，不主动恢复。普通 QUIC 断连自动重握手并保留原逻辑 session；无法确定的 seek 不会被 owner 自动恢复分支擅自重解释。
 
 ## connection、stream 与公平准入

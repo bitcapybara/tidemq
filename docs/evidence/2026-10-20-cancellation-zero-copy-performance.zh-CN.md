@@ -51,6 +51,24 @@ SDK 和 runtime 的专项检查与 workspace 有重叠，不能相加为不同�
 
 代码检查另外发现，四组随机 topic/producer/subscription 身份经 affinity 哈希后，每次可能形成不同的 request-lane 碰撞。它是待控制变量，不是已证明的尾延迟根因。最终延迟场景改为一个分区、256 条预热、1024 条测量、40 ms 计划间隔，同样 25 条/秒；吞吐场景仍为四分区。上述两个成功探针和第三次失败都属于旧四分区场景，不能作为新场景或正确性修复的通过证据。
 
+## Raft 控制准入错误修复
+
+使用相同的真实三 combined 进程、四 topic 各 64 条并发生产/消费与元数据线性读取，原实现 4.73 s 失败；仅解析合法 ErrorReply 后 8.50 s 仍因 quota 拒绝失败。定向探针确认，错误回复的类别、request_id、operation_id 全部正确，只有 kind 是合法 `Error`，实际错误为 `QuotaExceeded / Rejected / retryable`。原代码把该回复当作关联损坏，关闭所有组共享的 Core RPC，造成级联。
+
+`639be66` 修复错误分类并加入严格限定的退避，`384ccef` 只调整英文错误名。没有提高服务器控制并发额度。真实四队列回归转绿（14.43 s），原分角色 RF3 用例也通过（3.37 s）；各 64 条唯一交付和持久 ACK 前沿全部验证。
+
+四个真实认证 QUIC peer 边界测试覆盖：合法拒绝保留共享连接；只有完整关联、明确未执行的可重试 quota 拒绝才以原身份、原 payload owner 和原硬截止重试；剩余期限递减；Unknown/非 quota/不可重试只发送一次；非法外层/内层身份或非法错误枚举继续拒绝。另有三个既有 Raft QUIC 认证、隔离和恢复测试、格式、Clippy 与生产 panic/索引审计通过。
+
+## 接收屏障 Unknown 的恢复
+
+原 RF1 报告无法唯一证明失败发生于哪个 Control 命令。代码路径显示，每次接收位置前进后，SDK 在后续读取之前发送 `ReceiveBarrier`；其 Unknown 会直接传播为该次读取失败。原形态的两次独立进程复跑通过，说明它是间歇性症状；不能把未复现宣称修复。
+
+`6272842` 使用真实 UDP/TLS 协议 peer 加入确定性故障：屏障在提交前或提交后返回 `Unavailable / Unknown`，另验证持续 Unknown 耗尽重试。原代码测试失败，修复后两个测试通过（0.39 s）。SDK 仅在同一代次、session、接收位置和 operation ID 下有限重试该幂等屏障，各次 wire attempt 使用新 request_id；确认之前不发起热读取，原期限或重试预算耗尽仍保留原 Unknown。
+
+该修改的 SDK 普通测试 37 项及两项文档测试、Clippy 和生产 panic/索引审计通过。它证明屏障丢响应路径已补齐，不单独证明旧 RF1 制品的唯一根因。负载另为分配、receive、buffered dequeue、持久 ACK 和最终前沿查询增加固定英文阶段上下文，保留完整错误链；没有改变负载或 ACK/Unknown 语义。
+
+合流后的 root package 普通测试 86 项、真实 Raft QUIC 3 项、runtime queue 11 项通过；5 项 ignored 未运行。runtime queue 包括新的三 combined 四队列和原有分角色、强杀与恢复，不把其单机进程总用时当作三区恢复分位数。
+
 ## CI 验证边界
 
 [Rust CI 39362732099](https://github.com/bitcapybara/tidemq/actions/runs/39362732099) 首次 Ubuntu validate 因 crates.io `socket2` 索引超时失败；allocator-system、allocator-mimalloc、allocator-jemalloc 的 Linux 检查与完整 root package 测试，以及 Linux/macOS heap-profile job 均通过。
