@@ -10,6 +10,8 @@
 4. 任何超时/连接中断都先保留 operation ID，查询原计划、实际 membership 和目标 applied 位置。若已 stable 而元数据仍旧配置，用原计划重取真实证明补 complete；若仍 joint，用同一 target 继续，不能改成第三套成员。
 5. 完成 stable 和 metadata 后，重新取得数据组 authority 并对齐新 voter/generation。仅当所有组都不再引用退出节点、没有 pending 计划、对象恢复依赖通过当前完整稳定 voter 的快照屏障、安全排空全部本地任务时，才能关闭节点。
 
+首次迁移尚未 complete 的 Unknown，与已经 complete 后重放确认的 Unknown 必须分开。前者恢复原 pending；后者先按原 plan 对齐 canonical operation、generation、target 和持久完成记录，再取得真实稳定成员证明及再次 metadata 确认。完成记录不是跳过真实 quorum 的理由；退休记录不能复活。只读重放不应产生新的 membership log、metadata revision 或 SDK ACK 前沿变化。RPC 错误链保留固定阶段及原 typed source，例如 `verify completed stable membership`，线缆错误分类和原 deadline 保持不变。
+
 `schedulable=false` 只停止新分配。节点身份、Storage 角色、zone 和数据目录的保留是历史证据的一部分；不通过删除身份绕过成员变更或对象恢复保护。
 
 ## 自动均衡阻塞
