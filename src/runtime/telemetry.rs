@@ -3,12 +3,21 @@ use std::sync::{Arc, Mutex};
 use prometheus_client::{
     collector::Collector,
     encoding::{DescriptorEncoder, EncodeMetric},
-    metrics::{counter::ConstCounter, gauge::ConstGauge},
+    metrics::{
+        counter::{ConstCounter, Counter},
+        gauge::ConstGauge,
+    },
 };
 use serde::Serialize;
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct RuntimeMetrics(pub Arc<Mutex<Snapshot>>);
+pub(crate) struct RuntimeMetrics(pub Arc<Mutex<Snapshot>>, Counter);
+
+impl RuntimeMetrics {
+    pub(crate) fn hot_delivery_reclaimed(&self) {
+        self.1.inc();
+    }
+}
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct Snapshot {
@@ -29,6 +38,12 @@ impl Collector for RuntimeMetrics {
             "Role authority readiness from the latest bounded sample",
             None,
             ready.metric_type(),
+        )?)?;
+        self.1.encode(encoder.encode_descriptor(
+            "read_hot_reclaim_conflicts",
+            "Hot delivery attempts rejected after concurrent local body reclamation",
+            None,
+            self.1.metric_type(),
         )?)?;
         if let Some(memory) = snapshot.process_memory {
             for (name, help, value) in [

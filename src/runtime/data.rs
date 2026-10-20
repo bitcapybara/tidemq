@@ -54,6 +54,10 @@ fn read_refresh_hint(ttl: Duration, request_remaining: Duration) -> Duration {
     ttl.min(request_remaining) / 2
 }
 
+#[cfg(test)]
+#[path = "data_reclaim_tests.rs"]
+mod reclaim_tests;
+
 fn payload<T: Message + Default>(frame: &Frame, limits: &ProtocolLimits) -> Result<T> {
     decode_payload(frame.payload.clone(), limits)
         .map_err(|source| Error::operation("decode public business request", source))
@@ -399,6 +403,7 @@ impl Service {
     ) -> Result<subscription::Outcome> {
         self.subscription_commit(group, partition, lease, command, deadline, finalizing, None)
             .await
+            .and_then(subscription_outcome)
     }
 
     // Cold delivery adds one sealed object proof to the same writer, deadline, and finalization checks.
@@ -412,7 +417,7 @@ impl Service {
         deadline: Instant,
         finalizing: bool,
         cold: Option<crate::lifecycle::VerifiedColdDelivery>,
-    ) -> Result<subscription::Outcome> {
+    ) -> Result<DataResponse> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         let fence = replica
@@ -461,7 +466,15 @@ impl Service {
                 command,
             }
         };
-        let response = self.data_write(group, command, deadline).await?;
+        // Preserve the state machine's typed NoEffect rejection for the read/reclaim race.
+        self.require_leader(replica)?;
+        let response = wire::within(deadline, replica.raft.client_write(command))
+            .await?
+            .map_err(|source| Error::operation("commit data-group command", source))?
+            .data;
+        if matches!(response, DataResponse::Rejected(_)) {
+            return Ok(response);
+        }
         let current = replica
             .state
             .try_with_application(|state| {
@@ -479,12 +492,7 @@ impl Service {
             lease.check(&current, Work::ControlMutation)
         };
         valid.map_err(|_| Error::unknown())?;
-        match response {
-            DataResponse::Subscription(outcome) => Ok(outcome),
-            _ => Err(Error::invalid(
-                "Data group returned an unexpected subscription outcome",
-            )),
-        }
+        Ok(response)
     }
 
     async fn assignment(
@@ -910,6 +918,35 @@ impl Service {
         Ok(assignment)
     }
 
+    async fn require_retained_offset(
+        &self,
+        group: u64,
+        partition: PartitionKey,
+        offset: u64,
+        deadline: Instant,
+    ) -> Result<()> {
+        let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
+        let floor = wire::within(
+            deadline,
+            replica.state.try_with_application(|state| {
+                state
+                    .producer(partition)
+                    .map(|producer| producer.retained_floor())
+            }),
+        )
+        .await?
+        .map_err(|source| Error::operation("read logical retention boundary", source))?
+        .ok_or_else(not_found)?;
+        if offset < floor {
+            return Err(Error::reject(
+                ErrorCode::OffsetExpired,
+                Outcome::Rejected,
+                false,
+            ));
+        }
+        Ok(())
+    }
+
     async fn read_subscription(
         &self,
         frame: &Frame,
@@ -1012,7 +1049,10 @@ impl Service {
         let mut cold_page: Option<crate::lifecycle::GuardedPage> = None;
         let mut read_budget: Option<ReadBudget> = None;
         let mut bytes = 0usize;
-        for (offset, attempt) in candidates {
+        let mut candidates = candidates.into_iter();
+        let mut retry_candidate = None;
+        let mut retried_hot = false;
+        while let Some((offset, attempt)) = retry_candidate.take().or_else(|| candidates.next()) {
             if read_budget
                 .as_ref()
                 .is_some_and(|budget| !budget.admits(Instant::now()))
@@ -1048,25 +1088,8 @@ impl Service {
                     reason:
                         DataRejection::Producer(crate::producer::Rejection::OffsetExpired { .. }),
                 }) => {
-                    let floor = replica
-                        .state
-                        .try_with_application(|state| {
-                            state
-                                .producer(partition)
-                                .map(|producer| producer.retained_floor())
-                        })
-                        .await
-                        .map_err(|source| {
-                            Error::operation("read logical retention boundary", source)
-                        })?
-                        .ok_or_else(not_found)?;
-                    if offset < floor {
-                        return Err(Error::reject(
-                            ErrorCode::OffsetExpired,
-                            Outcome::Rejected,
-                            false,
-                        ));
-                    }
+                    self.require_retained_offset(group, partition, offset, deadline)
+                        .await?;
                     let cached = cold_page
                         .as_ref()
                         .map(|page| cold_message(page, offset))
@@ -1143,6 +1166,11 @@ impl Service {
                 break;
             }
             let operation = delivery_operation(wire::id(&frame.operation_id)?, offset)?;
+            let hot = proof.is_none();
+            #[cfg(test)]
+            if hot {
+                reclaim_tests::pause_hot_delivery(partition, offset, deadline).await;
+            }
             let outcome = self
                 .subscription_commit(
                     group,
@@ -1164,14 +1192,54 @@ impl Service {
                     proof,
                 )
                 .await;
+            #[cfg(test)]
+            let outcome = if matches!(
+                outcome,
+                Ok(DataResponse::Subscription(subscription::Outcome::Delivery(
+                    _
+                )))
+            ) && reclaim_tests::lose_delivery_reply(partition, offset)
+            {
+                Err(Error::unknown())
+            } else {
+                outcome
+            };
             match outcome {
-                Ok(subscription::Outcome::Delivery(receipt)) => deliveries.push(public::Delivery {
-                    offset,
-                    key: message.key.clone(),
-                    body: message.body.clone(),
-                    delivery_token: Bytes::copy_from_slice(receipt.token.as_bytes()),
-                }),
-                Ok(subscription::Outcome::DeliveryAlreadyAcknowledged { .. }) => {}
+                Ok(DataResponse::Subscription(subscription::Outcome::Delivery(receipt))) => {
+                    deliveries.push(public::Delivery {
+                        offset,
+                        key: message.key.clone(),
+                        body: message.body.clone(),
+                        delivery_token: Bytes::copy_from_slice(receipt.token.as_bytes()),
+                    })
+                }
+                Ok(DataResponse::Subscription(
+                    subscription::Outcome::DeliveryAlreadyAcknowledged { .. },
+                )) => {}
+                Ok(DataResponse::Rejected(DataRejection::Producer(
+                    crate::producer::Rejection::OffsetExpired { .. },
+                ))) if hot => {
+                    self.require_retained_offset(group, partition, offset, deadline)
+                        .await?;
+                    self.runtime_metrics.hot_delivery_reclaimed();
+                    // Reclamation changed no delivery state. Keep the original identity and slice.
+                    if !deliveries.is_empty() {
+                        break;
+                    }
+                    if retried_hot {
+                        return Err(Error::unavailable());
+                    }
+                    retried_hot = true;
+                    retry_candidate = Some((offset, attempt));
+                    continue;
+                }
+                Ok(DataResponse::Rejected(reason)) => {
+                    let error = data_rejection(reason);
+                    if error.failure().code == i32::from(ErrorCode::QuotaExceeded) {
+                        break;
+                    }
+                    return Err(error);
+                }
                 Err(Error::Rejected { failure })
                     if failure.code == i32::from(ErrorCode::QuotaExceeded) =>
                 {
@@ -1241,6 +1309,16 @@ impl Service {
                 .map_err(|_| Error::unknown())?;
         }
         Ok(response)
+    }
+}
+
+fn subscription_outcome(response: DataResponse) -> Result<subscription::Outcome> {
+    match response {
+        DataResponse::Subscription(outcome) => Ok(outcome),
+        DataResponse::Rejected(reason) => Err(data_rejection(reason)),
+        _ => Err(Error::invalid(
+            "Data group returned an unexpected subscription outcome",
+        )),
     }
 }
 
