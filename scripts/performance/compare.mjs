@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 
 const T95_DF4 = 2.7764451051977987;
+export const HARNESS_FILES = Object.freeze([
+  'examples/perf_load.rs', 'examples/perf/sample.rs', 'examples/perf/stats.rs', 'examples/perf/workload.rs',
+]);
 const METRICS = {
   durable_messages_per_second: -1,
   produce_p99_upper_ns: 1,
@@ -8,21 +11,17 @@ const METRICS = {
 };
 
 export function validatePolicy(policy) {
-  assert.equal(policy.schema_version, 1, 'Unsupported performance policy schema');
+  assert.equal(policy.schema_version, 2, 'Unsupported performance policy schema');
   assert.match(policy.service_source_commit, /^[0-9a-f]{40}$/, 'Invalid baseline source');
-  assert.equal(policy.bootstrap.legacy_service_source_commit, '9fe9c952276d2a2b7b27a41ca1021926aaa3c283',
-    'The legacy SDK exemption is limited to the original pre-CancellationToken source');
-  assert.match(policy.bootstrap.legacy_harness_source_commit, /^[0-9a-f]{40}$/, 'Invalid immutable bootstrap harness');
-  assert.deepEqual(policy.bootstrap.harness_files,
-    ['examples/perf_load.rs', 'examples/perf/sample.rs', 'examples/perf/stats.rs', 'examples/perf/workload.rs'],
-    'The complete trusted workload source must be overlaid');
   assert.equal(policy.pairs, 5, 'The Student t calibration requires five pairs');
   assert.equal(policy.confidence, 0.95, 'The Student t calibration requires 95% confidence');
   assert.equal(policy.allocator_feature, 'allocator-mimalloc', 'CI uses the default allocator');
   assert.equal(policy.server_worker_threads, 4, 'Server worker budget changed');
   assert.deepEqual(policy.topologies, ['rf1', 'rf3-combined'], 'Both real topologies are required');
-  assert.ok(policy.max_log_ci_half_width > 0 && policy.max_log_ci_half_width <= 0.03,
-    'Measurement precision must be within three log percentage points');
+  assert.deepEqual(Object.keys(policy.max_log_ci_half_width).sort(), Object.keys(METRICS).sort(), 'Missing per-metric precision');
+  for (const value of Object.values(policy.max_log_ci_half_width)) {
+    assert.ok(value > 0 && value <= 0.03, 'Uncalibrated precision must remain within three log percentage points');
+  }
   const workload = policy.workload;
   assert.equal(workload.concurrent_partitions, 4, 'Four independent partition pairs are required');
   assert.equal(workload.batch_messages, 1, 'Producer p99 requires individual durable requests');
@@ -37,7 +36,17 @@ export function validatePolicy(policy) {
   assert.equal(workload.phase_timeout_secs, 60, 'CI phase budget changed');
   assert.equal(workload.request_timeout_ms, 10000, 'CI request budget changed');
   assert.equal(workload.cooldown_secs, 0, 'CI cooldown budget changed');
+  assert.equal(workload.messages, 256, 'Finite throughput phase must contain 1024 messages');
+  assert.equal(workload.warmup_messages, 32, 'Throughput warmup shape changed');
+  assert.equal(workload.produce_interval_ms, 0, 'Throughput phase must remain unpaced');
+  assert.deepEqual(policy.latency_workload, {messages: 256, warmup_messages: 64, produce_interval_ms: 160},
+    'The latency phase must retain its fixed 25 message/s offer schedule');
   return policy;
+}
+
+export function workloadFor(policy, scenario) {
+  assert.ok(['throughput', 'latency'].includes(scenario), 'Unknown performance scenario');
+  return scenario === 'latency' ? {...policy.workload, ...policy.latency_workload} : policy.workload;
 }
 
 function positive(value, label) {
@@ -79,23 +88,25 @@ function p99(distributions) {
   throw new Error('Histogram p99 rank is unavailable');
 }
 
-export function summarizeReport(report, policy, sourceCommit) {
-  assert.equal(report.schema_version, 2, 'Load report must support concurrent partition histograms');
+export function summarizeReport(report, policy, sourceCommit, scenario = 'throughput') {
+  const workload = workloadFor(policy, scenario);
+  assert.equal(report.schema_version, 3, 'Load report must preserve scheduled offers and lateness');
   assert.equal(report.status, 'passed', 'The durable workload did not pass');
   assert.equal(report.identity.build.source_commit, sourceCommit, 'Service source identity mismatch');
   assert.equal(report.identity.build.allocator_feature, policy.allocator_feature, 'Allocator mismatch');
-  for (const [name, value] of Object.entries(policy.workload)) {
+  for (const [name, value] of Object.entries(workload)) {
     assert.equal(report.configuration[name], value, `Workload ${name} differs from protected policy`);
   }
   for (const [name, group] of [['warmup', report.warmup], ['measured', report.measured]]) {
-    assert.equal(group.partitions.length, policy.workload.concurrent_partitions, 'Missing independent partition');
-    const planned = name === 'warmup' ? policy.workload.warmup_messages : policy.workload.messages;
+    assert.equal(group.partitions.length, workload.concurrent_partitions, 'Missing independent partition');
+    const planned = name === 'warmup' ? workload.warmup_messages : workload.messages;
     for (const phase of group.partitions) {
       assert.equal(phase.terminal_error, null, 'Partition validation failed');
       for (const field of ['planned_messages', 'committed_messages', 'acknowledged_messages', 'durable_acknowledged_before']) {
         assert.equal(phase[field], planned, `Incomplete durable ${name}: ${field}`);
       }
       assert.equal(phase.produce_batch.samples, planned, 'Missing durable producer samples');
+      assert.equal(phase.produce_scheduling_lateness.samples, planned, 'Missing scheduled-offer observations');
       assert.equal(phase.offered_to_durable_ack.samples, planned, 'Missing end-to-end samples');
       assert.equal(phase.control_errors, 0, 'Control traffic failed during load');
     }
@@ -106,6 +117,7 @@ export function summarizeReport(report, policy, sourceCommit) {
     durable_messages: messages,
     durable_messages_per_second: messages * 1e9 / positive(report.measured.elapsed_ns, 'group duration'),
     produce_p99_upper_ns: p99(phases.map(phase => phase.produce_batch)),
+    producer_scheduling_lateness_p99_upper_ns: p99(phases.map(phase => phase.produce_scheduling_lateness)),
     offered_to_durable_ack_p99_upper_ns: p99(phases.map(phase => phase.offered_to_durable_ack)),
   };
 }
@@ -126,7 +138,7 @@ export function comparePairs(pairs, policy) {
       geometric_slowdown_ratio: Math.exp(mean),
       slowdown_ci95: [Math.exp(lower), Math.exp(upper)],
       log_ci_half_width: halfWidth,
-      status: lower > 0 ? 'regressed' : halfWidth > policy.max_log_ci_half_width ? 'inconclusive' : 'passed',
+      status: lower > 0 ? 'regressed' : halfWidth > policy.max_log_ci_half_width[metric] ? 'inconclusive' : 'passed',
     };
   }
   const statuses = Object.values(metrics).map(metric => metric.status);

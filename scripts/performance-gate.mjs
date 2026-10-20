@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
-import {comparePairs, summarizeReport, validatePolicy} from './performance/compare.mjs';
+import {comparePairs, summarizeReport, validatePolicy, workloadFor, HARNESS_FILES} from './performance/compare.mjs';
 
 const DEFAULT_TOOLS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOG_LIMIT = 32 * 1024 * 1024;
@@ -57,7 +57,7 @@ async function command(binary, args, settings = {}) {
   if (settings.log) await fs.writeFile(settings.log, bytesOutput, {mode: 0o600});
   assert.ok(!exceeded, `${binary} output exceeded its byte limit`);
   assert.equal(result.code, 0, `${binary} failed (${result.code ?? result.signal}); ${settings.log ?? output.slice(-4096)}`);
-  return settings.raw ? bytesOutput : output.trim();
+  return output.trim();
 }
 
 async function sourceIdentity(source) {
@@ -66,26 +66,23 @@ async function sourceIdentity(source) {
   return command('git', ['rev-parse', 'HEAD'], {cwd: source});
 }
 
-async function overlay(source, tools, directory, policy) {
+async function overlay(source, tools, directory) {
   const commit = await sourceIdentity(source);
   const toolsCommit = await sourceIdentity(tools);
-  const legacy = commit === policy.bootstrap.legacy_service_source_commit;
-  const harnessCommit = legacy ? policy.bootstrap.legacy_harness_source_commit : toolsCommit;
   await fs.mkdir(directory, {recursive: true, mode: 0o700});
   const archive = `${directory}.tar`;
   await command('git', ['archive', '--format=tar', '--output', archive, commit], {cwd: source});
   await command('tar', ['-xf', archive, '-C', directory]);
   await fs.unlink(archive);
   const harnessHashes = {};
-  for (const file of policy.bootstrap.harness_files) {
-    const bytes = legacy ? await command('git', ['show', `${harnessCommit}:${file}`], {cwd: tools, raw: true})
-      : await fs.readFile(path.join(tools, file));
+  for (const file of HARNESS_FILES) {
+    const bytes = await fs.readFile(path.join(tools, file));
     await fs.mkdir(path.dirname(path.join(directory, file)), {recursive: true});
     await fs.writeFile(path.join(directory, file), bytes);
     harnessHashes[file] = sha256(bytes);
   }
-  return {original_source: source, source_commit: commit, harness_source_commit: harnessCommit,
-    harness_files_sha256: harnessHashes, legacy_deadline_api_adapter: legacy};
+  return {original_source: source, source_commit: commit, harness_source_commit: toolsCommit,
+    harness_files_sha256: harnessHashes};
 }
 
 async function build(source, directory, target, policy, loadOverlay) {
@@ -203,8 +200,9 @@ async function stop(services) {
   }));
 }
 
-async function trial(tools, serviceBuild, loadBinary, output, topology, policy) {
+async function trial(tools, serviceBuild, loadBinary, output, topology, policy, scenarios = ['throughput', 'latency']) {
   assert.ok(policy.topologies.includes(topology), 'Unknown performance topology');
+  for (const scenario of scenarios) workloadFor(policy, scenario);
   await fs.mkdir(output, {mode: 0o700});
   const cluster = path.join(output, 'cluster');
   await command('bash', [path.join(tools, 'deploy/local/generate.sh'), topology, cluster]);
@@ -213,7 +211,7 @@ async function trial(tools, serviceBuild, loadBinary, output, topology, policy) 
   const identity = await json(path.join(serviceBuild, 'identity.json'));
   assert.equal(sha256(await fs.readFile(binary)), identity.service_binary_sha256, 'Fixed service binary changed');
   const services = [];
-  let report;
+  const summaries = {};
   let failure;
   try {
     for (const node of nodes) {
@@ -225,29 +223,33 @@ async function trial(tools, serviceBuild, loadBinary, output, topology, policy) 
       services.push(launch(binary, ['serve', '--config', config], path.join(output, `node-${node}.log`), policy.server_worker_threads));
     }
     await readiness(services, nodes);
-    const loadArgs = ['--endpoint', '127.0.0.1:7410', '--server-name', 'node-1.local',
+    const common = ['--endpoint', '127.0.0.1:7410', '--server-name', 'node-1.local',
       '--ca', path.join(cluster, 'ca.pem'), '--token-file', path.join(cluster, 'access.token'),
       '--management', '127.0.0.1:8410', '--service-pid', String(services[0].child.pid), '--service-binary', binary,
-      '--service-config', path.join(cluster, 'node-1.toml'), '--build-identity', path.join(serviceBuild, 'identity.json'),
-      '--output', path.join(output, 'report.json')];
-    for (const [key, value] of Object.entries(policy.workload)) loadArgs.push(`--${key.replaceAll('_', '-')}`, String(value));
-    await command(loadBinary, loadArgs, {timeoutMs: 240000, env: {PATH: process.env.PATH ?? '/usr/bin:/bin'}, log: path.join(output, 'load.log')});
-    report = await json(path.join(output, 'report.json'));
-    for (const node of nodes) {
-      await fs.writeFile(path.join(output, `node-${node}-metrics.txt`), await management(node, '/metrics'), {mode: 0o600});
-      await fs.writeFile(path.join(output, `node-${node}-diagnostics.json`), await management(node, '/diagnostics'), {mode: 0o600});
+      '--service-config', path.join(cluster, 'node-1.toml'), '--build-identity', path.join(serviceBuild, 'identity.json')];
+    for (const scenario of scenarios) {
+      const reportPath = path.join(output, `report-${scenario}.json`);
+      const loadArgs = [...common, '--output', reportPath];
+      for (const [key, value] of Object.entries(workloadFor(policy, scenario))) loadArgs.push(`--${key.replaceAll('_', '-')}`, String(value));
+      await command(loadBinary, loadArgs, {timeoutMs: 240000, env: {PATH: process.env.PATH ?? '/usr/bin:/bin'}, log: path.join(output, `load-${scenario}.log`)});
+      summaries[scenario] = summarizeReport(await json(reportPath), policy, identity.source_commit, scenario);
     }
   } catch (error) { failure = error; }
+  for (const node of nodes) {
+    try {
+      await fs.writeFile(path.join(output, `node-${node}-metrics.txt`), await management(node, '/metrics'), {mode: 0o600});
+      await fs.writeFile(path.join(output, `node-${node}-diagnostics.json`), await management(node, '/diagnostics'), {mode: 0o600});
+    } catch (error) { failure ??= error; }
+  }
   const exits = await stop(services);
   await save(path.join(output, 'execution.json'), {topology, node_count: nodes.length,
-    replication_factor: nodes.length, service_worker_threads: policy.server_worker_threads, exits,
+    replication_factor: nodes.length, service_worker_threads: policy.server_worker_threads, scenarios, exits,
     failure: failure?.message ?? null});
   if (failure) throw failure;
   assert.ok(exits.every(exit => exit.code === 0 && !exit.forced && !exit.output_error), 'An owned node did not drain cleanly');
-  const summary = summarizeReport(report, policy, identity.source_commit);
   // Successful WAL directories are disposable; failed trials retain them for diagnosis.
   for (const node of nodes) await fs.rm(path.join(cluster, `data-${node}`), {recursive: true, force: true});
-  return summary;
+  return summaries;
 }
 
 async function runGate(settings) {
@@ -265,14 +267,14 @@ async function runGate(settings) {
   assert.equal(await sourceIdentity(baseline), policy.service_source_commit, 'Baseline checkout is not the protected source');
   const target = path.resolve(settings['--target'] ?? path.join(tools, 'target/performance-gate'));
   const builds = path.join(output, 'builds');
-  const baselineOverlay = await overlay(baseline, tools, path.join(output, 'overlays/baseline'), policy);
-  const candidateOverlay = await overlay(candidate, tools, path.join(output, 'overlays/candidate'), policy);
+  const baselineOverlay = await overlay(baseline, tools, path.join(output, 'overlays/baseline'));
+  const candidateOverlay = await overlay(candidate, tools, path.join(output, 'overlays/candidate'));
   const baselineLoad = await build(path.join(output, 'overlays/baseline'), path.join(builds, 'baseline-load'), target, policy, baselineOverlay);
   const candidateLoad = await build(path.join(output, 'overlays/candidate'), path.join(builds, 'candidate-load'), target, policy, candidateOverlay);
   const baselineIdentity = await build(baseline, path.join(builds, 'baseline'), target, policy);
   const candidateIdentity = await build(candidate, path.join(builds, 'candidate'), target, policy);
   const summary = {
-    schema_version: 1, status: 'running', baseline_manifest_sha256: sha256(policyBytes),
+    schema_version: 2, status: 'running', baseline_manifest_sha256: sha256(policyBytes),
     policy, baseline: baselineIdentity, candidate: candidateIdentity,
     workload_binaries: {baseline: baselineLoad, candidate: candidateLoad},
     environment: {platform: os.platform(), arch: os.arch(), kernel: os.release(), node: process.version,
@@ -282,7 +284,7 @@ async function runGate(settings) {
     limitations: ['Closed-loop finite regression workload; no production saturation or availability-zone claim',
       'A stable interval containing one means no detected regression, not proof of zero performance difference',
       'P99 uses all observations merged in log2/32 upper-bound buckets with up to 3.125 percent bucket width',
-      'Only exact original source 9fe9c95 uses the committed legacy deadline API adapter; subsequent sources share the protected harness',
+      'Both SDK snapshots compile the same protected workload source overlay',
       'Student t intervals assume independent paired log ratios; confidence is per metric, not simultaneous'],
     topologies: {},
   };
@@ -294,8 +296,11 @@ async function runGate(settings) {
         const values = {};
         const order = pair % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
         for (const side of order) {
-          values[side] = await trial(tools, path.join(builds, side), path.join(builds, `${side}-load/perf_load`),
+          const workloads = await trial(tools, path.join(builds, side), path.join(builds, `${side}-load/perf_load`),
             path.join(output, topology, `${pair}-${side}`), topology, policy);
+          values[side] = {durable_messages_per_second: workloads.throughput.durable_messages_per_second,
+            produce_p99_upper_ns: workloads.latency.produce_p99_upper_ns,
+            offered_to_durable_ack_p99_upper_ns: workloads.latency.offered_to_durable_ack_p99_upper_ns, workloads};
           console.log(`${topology} pair ${pair + 1}/${policy.pairs} ${side}: ${values[side].durable_messages_per_second.toFixed(2)} durable messages/s`);
         }
         pairs.push({pair, order, ...values});
@@ -346,7 +351,8 @@ async function main() {
     const tools = path.resolve(settings['--tools'] ?? DEFAULT_TOOLS);
     const build = path.resolve(settings['--build']);
     console.log(JSON.stringify(await trial(tools, build, path.resolve(settings['--load'] ?? path.join(build, 'perf_load')),
-      path.resolve(settings['--output']), settings['--topology'] ?? 'rf1', validatePolicy(await json(policyPath(tools)))), null, 2));
+      path.resolve(settings['--output']), settings['--topology'] ?? 'rf1', validatePolicy(await json(policyPath(tools))),
+      settings['--scenario'] ? [settings['--scenario']] : ['throughput', 'latency']), null, 2));
   } else throw new Error('Usage: performance-gate.mjs source|run|trial|promote --tools directory [named paths]');
 }
 

@@ -43,6 +43,7 @@ pub struct PhaseReport {
     pub produce_logical_bytes_per_second: f64,
     pub consume_ack_logical_bytes_per_second: f64,
     pub produce_batch: Distribution,
+    pub produce_scheduling_lateness: Distribution,
     pub receive_call: Distribution,
     pub ack_batch: Distribution,
     pub offered_to_durable_ack: Distribution,
@@ -67,6 +68,7 @@ pub struct PhaseReport {
 
 struct ProduceStats {
     latency: Histogram,
+    scheduling_lateness: Histogram,
     messages: u64,
     unknown: u64,
     recovered: u64,
@@ -119,10 +121,17 @@ pub async fn group(
     }
     let started = Instant::now();
     let mut running = JoinSet::new();
-    for (label, prepared) in prepared {
+    for (partition, (label, prepared)) in prepared.into_iter().enumerate() {
         let client = client.clone();
         let args = args.clone();
-        running.spawn(async move { phase(&client, &args, &label, run, count, prepared).await });
+        let offset = args
+            .produce_interval_ms
+            .checked_mul(u64::try_from(partition)?)
+            .context("Partition offer offset overflow")?
+            / u64::try_from(args.concurrent_partitions)?;
+        running.spawn(
+            async move { phase(&client, &args, &label, run, count, prepared, offset).await },
+        );
     }
     let mut partitions = Vec::new();
     partitions.try_reserve_exact(args.concurrent_partitions)?;
@@ -171,6 +180,7 @@ async fn phase(
     run: Id,
     count: u64,
     prepared: Prepared,
+    offer_offset_ms: u64,
 ) -> Result<PhaseReport> {
     let Prepared {
         name,
@@ -221,6 +231,7 @@ async fn phase(
         topic,
         subscription,
         run,
+        offer_offset_ms,
     )
     .await;
     let _ = stop.send(true);
@@ -308,6 +319,7 @@ async fn phase(
         produce_logical_bytes_per_second: rate(committed_logical_bytes, produce_elapsed_ns),
         consume_ack_logical_bytes_per_second: rate(acknowledged_logical_bytes, consume.elapsed_ns),
         produce_batch: produce.latency.report(),
+        produce_scheduling_lateness: produce.scheduling_lateness.report(),
         receive_call: consume.receive.report(),
         ack_batch: consume.ack.report(),
         offered_to_durable_ack: consume.end_to_end.report(),
@@ -355,6 +367,7 @@ async fn produce_all(
     topic: Id,
     subscription: Id,
     run: Id,
+    offer_offset_ms: u64,
 ) -> Result<(ProduceStats, ConsumeStats, u64)> {
     let done = Arc::new(AtomicBool::new(false));
     let mut consuming = JoinSet::new();
@@ -388,13 +401,23 @@ async fn produce_all(
         let offsets = offsets.clone();
         workers.spawn(async move {
             produce(
-                producer, &args, worker, next, offsets, started, deadline, count, run,
+                producer,
+                &args,
+                worker,
+                next,
+                offsets,
+                started,
+                deadline,
+                count,
+                run,
+                offer_offset_ms,
             )
             .await
         });
     }
     let mut produced = ProduceStats {
         latency: Histogram::new()?,
+        scheduling_lateness: Histogram::new()?,
         messages: 0,
         unknown: 0,
         recovered: 0,
@@ -403,6 +426,9 @@ async fn produce_all(
     while let Some(result) = workers.join_next().await {
         let worker = result??;
         produced.latency.merge(&worker.latency)?;
+        produced
+            .scheduling_lateness
+            .merge(&worker.scheduling_lateness)?;
         produced.messages += worker.messages;
         produced.unknown += worker.unknown;
         produced.recovered += worker.recovered;
@@ -489,9 +515,11 @@ async fn produce(
     deadline: Instant,
     count: u64,
     run: Id,
+    offer_offset_ms: u64,
 ) -> Result<ProduceStats> {
     let mut stats = ProduceStats {
         latency: Histogram::new()?,
+        scheduling_lateness: Histogram::new()?,
         messages: 0,
         unknown: 0,
         recovered: 0,
@@ -507,20 +535,29 @@ async fn produce(
                 break;
             }
             let size = (count - first).min(u64::from(args.batch_messages));
-            let messages = messages(
-                args.message_bytes,
-                worker,
-                first,
-                size,
-                run,
-                nanos(started.elapsed())?,
+            let offered = offer_time(
+                started,
+                deadline,
+                batch,
+                args.produce_interval_ms,
+                offer_offset_ms,
+            )
+            .await?;
+            stats.scheduling_lateness.record(
+                nanos(started.elapsed())?
+                    .checked_sub(offered)
+                    .context("Offer timestamp is in the future")?,
             )?;
-            let begin = Instant::now();
+            let messages = messages(args.message_bytes, worker, first, size, run, offered)?;
             let result = RequestContext::with_deadline(deadline)
                 .scope(producer.produce(messages))
                 .await;
             let receipt = recover(&producer, result, deadline, &mut stats).await?;
-            stats.latency.record(nanos(begin.elapsed())?)?;
+            stats.latency.record(
+                nanos(started.elapsed())?
+                    .checked_sub(offered)
+                    .context("Produce completion predates its planned offer")?,
+            )?;
             ensure!(
                 u64::from(receipt.message_count) == size,
                 "Produce receipt count mismatch"
@@ -544,6 +581,34 @@ async fn produce(
     .await;
     stats.error = result.err().map(|error| format!("{error:#}"));
     Ok(stats)
+}
+
+async fn offer_time(
+    started: Instant,
+    deadline: Instant,
+    batch: u64,
+    interval_ms: u64,
+    offset_ms: u64,
+) -> Result<u64> {
+    if interval_ms == 0 {
+        return nanos(started.elapsed());
+    }
+    let scheduled = Duration::from_millis(
+        batch
+            .checked_mul(interval_ms)
+            .and_then(|delay| delay.checked_add(offset_ms))
+            .context("Offer schedule overflow")?,
+    );
+    let offered = started
+        .checked_add(scheduled)
+        .context("Offer deadline overflow")?;
+    ensure!(
+        offered < deadline,
+        "Offer exceeded the original phase deadline"
+    );
+    tokio::time::sleep_until(offered).await;
+    ensure!(Instant::now() < deadline, "Offer phase deadline expired");
+    nanos(scheduled)
 }
 
 async fn recover(
@@ -862,5 +927,24 @@ mod tests {
         assert!(decode(&messages.first().unwrap().body, Id::random().unwrap()).is_err());
         assert!(decode(b"TIDEPF01", run).is_err());
         assert_eq!(messages.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn delayed_producer_keeps_original_offer_times_and_rejects_expired_schedule() {
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(20))
+            .unwrap();
+        let deadline = Instant::now().checked_add(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            offer_time(started, deadline, 0, 4, 1).await.unwrap(),
+            1_000_000
+        );
+        assert_eq!(
+            offer_time(started, deadline, 2, 4, 1).await.unwrap(),
+            9_000_000
+        );
+        assert!(nanos(started.elapsed()).unwrap() >= 20_000_000);
+        assert!(offer_time(started, Instant::now(), 0, 4, 1).await.is_err());
+        assert!(offer_time(started, deadline, u64::MAX, 4, 1).await.is_err());
     }
 }

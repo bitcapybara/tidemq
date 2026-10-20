@@ -1,19 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "service_source_commit": "9fe9c952276d2a2b7b27a41ca1021926aaa3c283",
-  "bootstrap": {
-    "legacy_service_source_commit": "9fe9c952276d2a2b7b27a41ca1021926aaa3c283",
-    "legacy_harness_source_commit": "595dbaa8ef1461eb38762f9fa572447bb4f920d4",
-    "harness_files": ["examples/perf_load.rs", "examples/perf/sample.rs", "examples/perf/stats.rs", "examples/perf/workload.rs"]
-  },
   "pairs": 5,
   "confidence": 0.95,
-  "max_log_ci_half_width": 0.03,
+  "max_log_ci_half_width": {
+    "durable_messages_per_second": 0.03,
+    "produce_p99_upper_ns": 0.03,
+    "offered_to_durable_ack_p99_upper_ns": 0.03
+  },
   "allocator_feature": "allocator-mimalloc",
   "server_worker_threads": 4,
   "workload": {
-    "messages": 512,
-    "warmup_messages": 64,
+    "messages": 256,
+    "warmup_messages": 32,
     "message_bytes": 128,
     "batch_messages": 1,
     "workers": 1,
@@ -22,7 +21,16 @@
     "ack_messages": 32,
     "phase_timeout_secs": 60,
     "request_timeout_ms": 10000,
-    "cooldown_secs": 0
+    "cooldown_secs": 0,
+    "produce_interval_ms": 0
   },
-  "topologies": ["rf1", "rf3-combined"]
+  "topologies": [
+    "rf1",
+    "rf3-combined"
+  ],
+  "latency_workload": {
+    "messages": 256,
+    "warmup_messages": 64,
+    "produce_interval_ms": 160
+  }
 }

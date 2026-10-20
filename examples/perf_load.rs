@@ -64,6 +64,9 @@ struct Args {
     /// Independent one-partition topics measured concurrently after serial setup.
     #[arg(long, default_value_t = 1)]
     concurrent_partitions: usize,
+    /// Fixed per-partition offer interval; zero selects the finite burst workload.
+    #[arg(long, default_value_t = 0)]
+    produce_interval_ms: u64,
     /// Reused Request streams per active data class; Core and ACK limits stay fixed.
     #[arg(long, default_value_t = 4)]
     request_lanes: usize,
@@ -152,6 +155,23 @@ impl Args {
         ensure!(
             !self.require_cold || matches!(self.mode, Mode::Replay),
             "Cold validation requires replay mode"
+        );
+        ensure!(
+            self.produce_interval_ms <= 1_000,
+            "Offer interval exceeded one second"
+        );
+        let offered_ms = self
+            .messages
+            .max(self.warmup_messages)
+            .div_ceil(u64::from(self.batch_messages))
+            .checked_mul(self.produce_interval_ms)
+            .context("Offer schedule overflow")?;
+        ensure!(
+            self.produce_interval_ms == 0
+                || offered_ms
+                    .checked_add(self.request_timeout_ms)
+                    .is_some_and(|duration| duration < self.phase_timeout_secs * 1_000),
+            "Offer schedule must leave a full request budget inside the phase deadline"
         );
         let batch_bytes = (self.message_bytes + 96)
             .checked_mul(self.batch_messages as usize)
@@ -283,7 +303,7 @@ async fn run(args: &Args) -> Result<Report> {
                 .all(|phase| phase.terminal_error.is_none())
         });
     Ok(Report {
-        schema_version: 2,
+        schema_version: 3,
         status: if passed { "passed" } else { "failed" },
         generator_allocator: "std::alloc::System; four Tokio worker threads",
         configuration: args.clone(),
@@ -293,7 +313,7 @@ async fn run(args: &Args) -> Result<Report> {
         measured,
         cooldown,
         limitations: [
-            "Closed-loop finite load; no open-loop saturation or coordinated-omission correction claim",
+            "Bounded finite load; paced offers retain planned timestamps and scheduling lateness without a saturation claim",
             "Loopback nodes do not prove three physical availability zones or production SLOs",
             "Replay assignment alone is not physical cold I/O; require_cold checks a real server counter delta",
             "P99 requires 1000 samples and P99.9 requires 10000; missing tails are null",
@@ -425,6 +445,22 @@ mod tests {
         args.warmup_messages = 0;
         args.validate().unwrap();
         args.messages = 257;
+        assert!(args.validate().is_err());
+    }
+
+    #[test]
+    fn scheduled_latency_phase_leaves_its_original_request_budget() {
+        let mut args = args();
+        args.messages = 256;
+        args.warmup_messages = 64;
+        args.batch_messages = 1;
+        args.produce_interval_ms = 160;
+        args.phase_timeout_secs = 60;
+        args.validate().unwrap();
+        args.phase_timeout_secs = 50;
+        assert!(args.validate().is_err());
+        args.phase_timeout_secs = 60;
+        args.produce_interval_ms = 1_001;
         assert!(args.validate().is_err());
     }
 }
