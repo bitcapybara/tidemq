@@ -4,6 +4,11 @@ pub(super) struct RelocationPlan {
     pub segment: Segment,
     original: Vec<Location>,
 }
+struct RelocationInputs<'a> {
+    source: &'a Segment,
+    target: Option<&'a Segment>,
+    live: u64,
+}
 impl Writer {
     pub(super) fn plan_relocation(
         &self,
@@ -25,7 +30,50 @@ impl Writer {
             return Ok(None);
         }
         // The ordered checkpoint barrier seals the old active before any source frame is copied.
-        let candidate = self
+        let count_pressure = segments >= self.options.max_segments.saturating_sub(2);
+        let Some(inputs) = self.relocation_inputs(references, count_pressure) else {
+            return Ok(None);
+        };
+        let selected =
+            |id| id == inputs.source.id || inputs.target.is_some_and(|target| target.id == id);
+        let original = references
+            .iter()
+            .filter(|r| selected(r.segment))
+            .cloned()
+            .collect::<Vec<_>>();
+        let live = inputs.live;
+        let segment = Segment {
+            id: new_id()?,
+            first_sequence: inputs
+                .target
+                .map_or(inputs.source.first_sequence, |target| {
+                    target.first_sequence.min(inputs.source.first_sequence)
+                }),
+            reference_only: true,
+            records: original.len() as u64,
+            byte_len: SEGMENT_HEADER_BYTES.checked_add(live).ok_or(Error::Limit {
+                name: "relocation segment bytes",
+            })?,
+            checksum: [0; 32],
+        };
+        let mut offset = SEGMENT_HEADER_BYTES;
+        for location in references.iter_mut().filter(|r| selected(r.segment)) {
+            location.segment = segment.id;
+            location.offset = offset;
+            offset = offset
+                .checked_add(location.frame_bytes)
+                .ok_or(Error::Limit {
+                    name: "relocation reference offset",
+                })?;
+        }
+        Ok(Some(RelocationPlan { segment, original }))
+    }
+    fn relocation_inputs<'a>(
+        &'a self,
+        references: &[Location],
+        count_pressure: bool,
+    ) -> Option<RelocationInputs<'a>> {
+        let candidates = self
             .manifest
             .sealed
             .iter()
@@ -40,38 +88,51 @@ impl Writer {
                     .byte_len
                     .saturating_sub(SEGMENT_HEADER_BYTES)
                     .saturating_sub(live);
-                (live > 0 && dead > 0).then_some((segment, live, dead))
+                (live > 0).then_some((segment, live, dead))
             })
-            .max_by_key(|(_, _, dead)| *dead);
-        let Some((source, live, _)) = candidate else {
-            return Ok(None);
-        };
-        let original = references
-            .iter()
-            .filter(|r| r.segment == source.id)
-            .cloned()
             .collect::<Vec<_>>();
-        let segment = Segment {
-            id: new_id()?,
-            first_sequence: source.first_sequence,
-            reference_only: true,
-            records: original.len() as u64,
-            byte_len: SEGMENT_HEADER_BYTES.checked_add(live).ok_or(Error::Limit {
-                name: "relocation segment bytes",
-            })?,
-            checksum: [0; 32],
+        let paired = |source_id, source_live: u64| {
+            candidates
+                .iter()
+                .filter(|(segment, live, _)| {
+                    segment.reference_only
+                        && segment.id != source_id
+                        && source_live.checked_add(*live).is_some_and(|sum| {
+                            sum <= self
+                                .options
+                                .segment_target_bytes
+                                .saturating_sub(SEGMENT_HEADER_BYTES)
+                        })
+                })
+                .max_by_key(|(_, live, _)| *live)
         };
-        let mut offset = SEGMENT_HEADER_BYTES;
-        for location in references.iter_mut().filter(|r| r.segment == source.id) {
-            location.segment = segment.id;
-            location.offset = offset;
-            offset = offset
-                .checked_add(location.frame_bytes)
-                .ok_or(Error::Limit {
-                    name: "relocation reference offset",
-                })?;
+        if count_pressure
+            && let Some((source, live, _, target, target_live)) = candidates
+                .iter()
+                .filter(|(s, _, dead)| *dead > 0 || s.reference_only)
+                .filter_map(|(source, live, dead)| {
+                    paired(source.id, *live).map(|(target, target_live, _)| {
+                        (*source, *live, *dead, *target, *target_live)
+                    })
+                })
+                .max_by_key(|(_, _, dead, _, _)| *dead)
+        {
+            return Some(RelocationInputs {
+                source,
+                target: Some(target),
+                live: live + target_live,
+            });
         }
-        Ok(Some(RelocationPlan { segment, original }))
+        let (source, live, _) = candidates
+            .iter()
+            .filter(|(_, _, dead)| *dead > 0)
+            .max_by_key(|(_, _, dead)| *dead)?;
+        let target = paired(source.id, *live);
+        Some(RelocationInputs {
+            source,
+            target: target.map(|(target, _, _)| *target),
+            live: live + target.map_or(0, |(_, live, _)| *live),
+        })
     }
     pub(super) async fn copy_relocation(&mut self, plan: &RelocationPlan) -> Result<Segment> {
         let start = Instant::now();
@@ -103,7 +164,7 @@ impl Writer {
                 .ok_or(corrupt("Relocation source frame is incomplete"))?;
             if frame.sequence != location.sequence
                 || frame.bytes != location.frame_bytes
-                || decode_record(frame.payload.clone())?.id != Some(location.id)
+                || record_id(&frame.payload)? != Some(location.id)
             {
                 return Err(corrupt("Relocation source identity differs"));
             }
