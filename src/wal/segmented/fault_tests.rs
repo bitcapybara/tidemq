@@ -46,6 +46,21 @@ fn options() -> JournalOptions {
     }
 }
 
+fn relocation_options() -> JournalOptions {
+    JournalOptions {
+        max_record_bytes: 1024,
+        max_file_bytes: 96 * 1024,
+        max_pending_bytes: 4096,
+        group_commit_bytes: 1024,
+        segment_target_bytes: 4096,
+        max_segments: 32,
+        max_checkpoint_bytes: 4096,
+        max_retained_records: 64,
+        control_reserve_bytes: 60 * 1024,
+        ..JournalOptions::default()
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "Only the parent fault test launches this process with its own private paths"]
 async fn crash_boundary_child() {
@@ -55,7 +70,9 @@ async fn crash_boundary_child() {
     if scenario == "initialization" {
         tokio::fs::write(&arm, b"armed").await.unwrap();
     }
-    let journal_options = if scenario == "file-size" {
+    let journal_options = if scenario == "relocation" {
+        relocation_options()
+    } else if scenario == "file-size" {
         JournalOptions {
             segment_target_bytes: 2048,
             ..options()
@@ -70,6 +87,41 @@ async fn crash_boundary_child() {
         scenario, "initialization",
         "Initialization did not reach its requested boundary"
     );
+    if scenario == "relocation" {
+        let mut ids = Vec::new();
+        for value in 0..64 {
+            let (id, durable) = journal.append_retained(vec![value; 900]).await.unwrap();
+            durable.durable().await.unwrap();
+            ids.push(id);
+            if journal.statistics().current_file_bytes >= 32 * 1024 {
+                break;
+            }
+        }
+        assert!(journal.statistics().current_file_bytes >= 32 * 1024);
+        let count_path = path.with_extension("acknowledged-count");
+        tokio::fs::write(&count_path, ids.len().to_string())
+            .await
+            .unwrap();
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(count_path)
+            .await
+            .unwrap()
+            .sync_all()
+            .await
+            .unwrap();
+        let retained = ids
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, id)| (index % 3 != 0).then_some(id))
+            .collect();
+        tokio::fs::write(arm, b"armed").await.unwrap();
+        journal
+            .checkpoint(b"relocated-control".to_vec(), retained)
+            .await
+            .unwrap();
+        panic!("The requested relocation boundary was not observed");
+    }
     let (first, durable) = journal.append_retained(vec![1; 512]).await.unwrap();
     durable.durable().await.unwrap();
     if scenario == "file-size" {
@@ -311,5 +363,58 @@ async fn real_file_size_limit_never_acknowledges_the_failed_or_subsequent_write(
     assert_eq!(recovery.next().await.unwrap().unwrap().data, vec![1; 512]);
     assert!(recovery.next().await.unwrap().is_none());
     journal.close().await.unwrap();
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
+async fn sigkill_during_bounded_relocation_keeps_acknowledged_payloads_and_checkpoint_authority() {
+    let directory = std::env::temp_dir().join(format!(
+        "tidemq-segment-relocation-{}",
+        tidemq_protocol::Id::random().unwrap()
+    ));
+    tokio::fs::create_dir(&directory).await.unwrap();
+    for phase in [
+        "segment_sync",
+        "segment_directory_sync",
+        "relocation_copy_sync",
+        "checkpoint_sync",
+        "checkpoint_directory_sync",
+        "manifest_temp_sync",
+        "manifest_rename",
+        "manifest_directory_sync",
+        "gc_before_unlink",
+        "gc_after_unlink",
+        "gc_directory_sync",
+    ] {
+        let path = directory.join(phase);
+        kill_at_boundary(&path, phase, "relocation").await;
+        let count: u8 = tokio::fs::read_to_string(path.with_extension("acknowledged-count"))
+            .await
+            .unwrap()
+            .parse()
+            .unwrap();
+        let (journal, _, mut recovery) =
+            SegmentedJournal::open(&path, relocation_options(), IDENTITY)
+                .await
+                .unwrap();
+        let control = recovery.checkpoint().to_vec();
+        let mut actual = Vec::new();
+        while let Some(record) = recovery.next().await.unwrap() {
+            actual.push(record.data);
+        }
+        let expected = if control.is_empty() {
+            (0..count).map(|value| vec![value; 900]).collect::<Vec<_>>()
+        } else {
+            assert_eq!(control, b"relocated-control");
+            (0..count)
+                .filter(|value| value % 3 != 0)
+                .map(|value| vec![value; 900])
+                .collect()
+        };
+        assert_eq!(actual, expected, "{phase}");
+        journal.cleanup_orphans().await.unwrap();
+        journal.close().await.unwrap();
+    }
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
