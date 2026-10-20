@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tidemq::wal::{FRAME_HEADER_BYTES, JournalOptions, SegmentedJournal, inspect_segmented};
+use tidemq::wal::{Error, FRAME_HEADER_BYTES, JournalOptions, SegmentedJournal, inspect_segmented};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 const IDENTITY: [u8; 32] = [7; 32];
@@ -309,15 +309,19 @@ async fn checkpoint_references_preserve_segment_bytes_and_exclude_superseded_rec
         .await
         .unwrap();
     let after = support::directory_contents(&path).await;
+    let new_active = active_segment(&path, &options).await;
     let mut retained_segments = 0;
     for (file, bytes) in &after {
         if file.extension().is_some_and(|extension| extension == "wal") {
-            assert_eq!(
-                before.get(file),
-                Some(bytes),
-                "Checkpoint must not rewrite retained payloads"
-            );
-            retained_segments += 1;
+            if let Some(original) = before.get(file) {
+                assert_eq!(
+                    original, bytes,
+                    "Checkpoint must not rewrite retained payloads"
+                );
+                retained_segments += 1;
+            } else {
+                assert_eq!(file, &new_active);
+            }
         }
     }
     assert!(retained_segments >= 2);
@@ -430,10 +434,16 @@ async fn valid_manifest_is_verified_before_unreferenced_files_are_reclaimed() {
     let before = support::directory_contents(&path).await;
     inspect_segmented(&path, &options, IDENTITY).await.unwrap();
     assert_eq!(support::directory_contents(&path).await, before);
+    let (journal, _, mut recovery) = SegmentedJournal::open(&path, options, IDENTITY)
+        .await
+        .unwrap();
     assert_eq!(
-        recover(&path, options).await,
-        vec![b"acknowledged".to_vec()]
+        recovery.next().await.unwrap().unwrap().data,
+        b"acknowledged"
     );
+    assert!(recovery.next().await.unwrap().is_none());
+    journal.cleanup_orphans().await.unwrap();
+    journal.close().await.unwrap();
     assert!(!tokio::fs::try_exists(orphan).await.unwrap());
 }
 
@@ -448,4 +458,50 @@ async fn an_existing_legacy_layout_is_rejected_without_deleting_its_data() {
             .unwrap();
         assert_rejected_without_mutation(&path, &small_options()).await;
     }
+}
+
+#[tokio::test]
+async fn retained_record_limit_preserves_control_progress_and_checkpoint_can_release_capacity() {
+    let directory = support::Directory::new().await;
+    let path = directory.path().join("journal");
+    let options = JournalOptions {
+        max_retained_records: 2,
+        ..small_options()
+    };
+    let (journal, _, _) = SegmentedJournal::open(&path, options.clone(), IDENTITY)
+        .await
+        .unwrap();
+    let (first, durable) = journal.append_retained(vec![1; 128]).await.unwrap();
+    durable.durable().await.unwrap();
+    let (_, durable) = journal.append_retained(vec![2; 128]).await.unwrap();
+    durable.durable().await.unwrap();
+    let error = match journal.append_retained(vec![3; 128]).await {
+        Ok((_, pending)) => pending.durable().await.unwrap_err(),
+        Err(error) => error,
+    };
+    assert!(matches!(error, Error::Limit { .. }));
+    journal
+        .append(b"latest-vote".to_vec())
+        .await
+        .unwrap()
+        .durable()
+        .await
+        .unwrap();
+    journal
+        .checkpoint(b"latest-vote".to_vec(), vec![first])
+        .await
+        .unwrap();
+    journal
+        .append_retained(vec![3; 128])
+        .await
+        .unwrap()
+        .1
+        .durable()
+        .await
+        .unwrap();
+    journal.close().await.unwrap();
+    assert_eq!(
+        recover(&path, options).await,
+        vec![vec![1; 128], vec![3; 128]]
+    );
 }
