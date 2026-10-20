@@ -2,6 +2,9 @@ use std::fmt::Debug;
 use std::ops::{Bound, RangeBounds};
 use std::time::Instant;
 
+use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
+
 use openraft::storage::{LogFlushed, RaftLogStorage};
 use openraft::{ErrorSubject, ErrorVerb, LogId, OptionalSend, RaftLogReader, StorageError, Vote};
 use std::borrow::Cow;
@@ -318,12 +321,16 @@ impl<A: Application> RaftLogStorage<TypeConfig<A>> for DiskLog<A> {
     async fn truncate(&mut self, log_id: LogId<u64>) -> std::result::Result<(), StorageError<u64>> {
         let mut state = self.0.log.clone().lock_owned().await;
         let store = self.clone();
-        let result = finish_mutation(tokio::spawn(async move {
-            store
-                .persist_locked(&mut state, Record::Truncate(log_id))
-                .await?;
-            store.checkpoint_locked(&state, state.purged).await
-        }))
+        let result = finish_mutation(tokio::spawn(
+            async move {
+                store
+                    .persist_locked(&mut state, Record::Truncate(log_id))
+                    .await?;
+                store.checkpoint_locked(&state, state.purged).await
+            }
+            .in_current_span()
+            .with_current_subscriber(),
+        ))
         .await;
         result.map_err(|error| storage_error(ErrorSubject::Logs, ErrorVerb::Delete, error))
     }
@@ -331,21 +338,25 @@ impl<A: Application> RaftLogStorage<TypeConfig<A>> for DiskLog<A> {
     async fn purge(&mut self, log_id: LogId<u64>) -> std::result::Result<(), StorageError<u64>> {
         let mut state = self.0.log.clone().lock_owned().await;
         let store = self.clone();
-        let result = finish_mutation(tokio::spawn(async move {
-            if state.purged.is_some_and(|purged| log_id < purged) {
-                return Err(invalid("purged log boundary must not regress"));
+        let result = finish_mutation(tokio::spawn(
+            async move {
+                if state.purged.is_some_and(|purged| log_id < purged) {
+                    return Err(invalid("purged log boundary must not regress"));
+                }
+                // OpenRaft authorizes purge after snapshot coverage; recovery rechecks that contract.
+                store.checkpoint_locked(&state, Some(log_id)).await?;
+                #[cfg(test)]
+                super::cancellation_tests::boundary(&store.0.directory, "purge_published").await;
+                state.entries.retain(|index, _| *index > log_id.index);
+                state.entry_bytes.retain(|index, _| *index > log_id.index);
+                state.record_refs.retain(|index, _| *index > log_id.index);
+                state.retained_bytes = retained_bytes(&state)?;
+                state.purged = Some(log_id);
+                Ok(())
             }
-            // OpenRaft authorizes purge after snapshot coverage; recovery rechecks that contract.
-            store.checkpoint_locked(&state, Some(log_id)).await?;
-            #[cfg(test)]
-            super::cancellation_tests::boundary(&store.0.directory, "purge_published").await;
-            state.entries.retain(|index, _| *index > log_id.index);
-            state.entry_bytes.retain(|index, _| *index > log_id.index);
-            state.record_refs.retain(|index, _| *index > log_id.index);
-            state.retained_bytes = retained_bytes(&state)?;
-            state.purged = Some(log_id);
-            Ok(())
-        }))
+            .in_current_span()
+            .with_current_subscriber(),
+        ))
         .await;
         result.map_err(|error| storage_error(ErrorSubject::Logs, ErrorVerb::Delete, error))
     }
@@ -414,9 +425,15 @@ impl<A: Application> DiskLog<A> {
     async fn persist(&self, record: Record<'static, A>) -> Result<()> {
         let mut state = self.0.log.clone().lock_owned().await;
         let store = self.clone();
-        finish_mutation(tokio::spawn(async move {
-            store.persist_locked(&mut state, record).await
-        }))
+        finish_mutation(tokio::spawn(
+            async move {
+                #[cfg(test)]
+                super::cancellation_tests::boundary(&store.0.directory, "persist_started").await;
+                store.persist_locked(&mut state, record).await
+            }
+            .in_current_span()
+            .with_current_subscriber(),
+        ))
         .await
     }
 

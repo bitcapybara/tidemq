@@ -6,6 +6,8 @@ use openraft::{
     Snapshot, SnapshotMeta, StorageError, StoredMembership,
 };
 use tokio::io::AsyncWriteExt;
+use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
 
 use crate::observability::metrics::Stage;
 use crate::wal::{self, Error, FRAME_HEADER_BYTES, Result, SnapshotRef};
@@ -137,20 +139,24 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
                 registry.incoming()?
             };
             let this = self.clone();
-            tokio::spawn(async move {
-                let path = this.0.directory.join(name);
-                let limit = this
-                    .0
-                    .options
-                    .max_snapshot_bytes
-                    .checked_add(FRAME_HEADER_BYTES)
-                    .ok_or(Error::Limit {
-                        name: "incoming snapshot bytes",
-                    })?;
-                let file = SnapshotFile::open(&path, limit as u64, true, Some(lease)).await?;
-                *this.0.incoming.lock().await = Some(path);
-                Ok(Box::new(file))
-            })
+            tokio::spawn(
+                async move {
+                    let path = this.0.directory.join(name);
+                    let limit = this
+                        .0
+                        .options
+                        .max_snapshot_bytes
+                        .checked_add(FRAME_HEADER_BYTES)
+                        .ok_or(Error::Limit {
+                            name: "incoming snapshot bytes",
+                        })?;
+                    let file = SnapshotFile::open(&path, limit as u64, true, Some(lease)).await?;
+                    *this.0.incoming.lock().await = Some(path);
+                    Ok(Box::new(file))
+                }
+                .in_current_span()
+                .with_current_subscriber(),
+            )
             .await
             .map_err(|error| Error::Writer {
                 reason: format!("incoming snapshot task failed: {error}"),
@@ -168,10 +174,14 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
         let serial = self.0.snapshot_serial.clone().lock_owned().await;
         let this = self.clone();
         let saved_meta = meta.clone();
-        let result = tokio::spawn(async move {
-            let _serial = serial;
-            this.install_durable_snapshot(saved_meta, file).await
-        })
+        let result = tokio::spawn(
+            async move {
+                let _serial = serial;
+                this.install_durable_snapshot(saved_meta, file).await
+            }
+            .in_current_span()
+            .with_current_subscriber(),
+        )
         .await
         .map_err(|error| Error::Writer {
             reason: format!("snapshot installation task failed: {error}"),
@@ -285,10 +295,14 @@ impl<A: Application> DiskStateMachine<A> {
         let serial = self.0.snapshot_serial.clone().lock_owned().await;
         let this = self.clone();
         // Once publication starts, cancellation must not leave the manifest and memory disagreeing.
-        tokio::spawn(async move {
-            let _serial = serial;
-            this.build_snapshot_owned().await
-        })
+        tokio::spawn(
+            async move {
+                let _serial = serial;
+                this.build_snapshot_owned().await
+            }
+            .in_current_span()
+            .with_current_subscriber(),
+        )
         .await
         .map_err(|error| Error::Writer {
             reason: format!("snapshot build task failed: {error}"),

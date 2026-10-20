@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,19 +11,18 @@ use tokio::sync::{Notify, oneshot};
 use super::{Application, DiskStore, LogEntry, StorageIdentity, StorageOptions};
 
 struct Gate {
-    directory: PathBuf,
     operation: &'static str,
     reached: Option<oneshot::Sender<()>>,
     release: Arc<Notify>,
 }
 
-static GATE: Mutex<Option<Gate>> = Mutex::new(None);
+static GATE: Mutex<BTreeMap<PathBuf, Gate>> = Mutex::new(BTreeMap::new());
 
 pub(super) async fn boundary(directory: &Path, operation: &'static str) {
     let release = {
         let mut gate = GATE.lock().unwrap();
-        gate.as_mut()
-            .filter(|gate| gate.directory == directory && gate.operation == operation)
+        gate.get_mut(directory)
+            .filter(|gate| gate.operation == operation)
             .and_then(|gate| {
                 gate.reached.take().map(|reached| {
                     reached.send(()).unwrap();
@@ -39,13 +39,15 @@ fn hold(directory: &Path, operation: &'static str) -> (oneshot::Receiver<()>, Ar
     let (reached, receive) = oneshot::channel();
     let release = Arc::new(Notify::new());
     let mut gate = GATE.lock().unwrap();
-    assert!(gate.is_none());
-    *gate = Some(Gate {
-        directory: directory.to_owned(),
-        operation,
-        reached: Some(reached),
-        release: release.clone(),
-    });
+    let previous = gate.insert(
+        directory.to_owned(),
+        Gate {
+            operation,
+            reached: Some(reached),
+            release: release.clone(),
+        },
+    );
+    assert!(previous.is_none());
     (receive, release)
 }
 
@@ -170,7 +172,7 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
         );
         storage.log.close().await.unwrap();
         drop(storage);
-        *GATE.lock().unwrap() = None;
+        GATE.lock().unwrap().remove(&path);
         let mut reopened =
             DiskStore::<Ledger>::open(&path, identity, StorageOptions::default(), None)
                 .await
@@ -192,3 +194,5 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
     }
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }
+
+mod tracing_tests;
