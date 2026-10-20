@@ -18,6 +18,67 @@ pub struct SnapshotDiagnostics {
     pub snapshot_readers: usize,
     pub snapshot_incoming_files: usize,
     pub snapshot_gc_failures: u64,
+    pub snapshot_file_limit: usize,
+    pub snapshot_reader_limit: usize,
+    pub snapshot_publication_uncertain: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn uncertain_manifest_publication_freezes_cleanup_and_keeps_both_generations() {
+        let directory = std::env::temp_dir().join(format!(
+            "tidemq-snapshot-freeze-{}",
+            tidemq_protocol::Id::random().unwrap()
+        ));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let owner = Arc::new(std::fs::File::create(directory.join(".writer-lock")).unwrap());
+        let old = SnapshotRef {
+            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::random().unwrap()),
+            byte_len: 7,
+            checksum: [0; 32],
+        };
+        let new = SnapshotRef {
+            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::random().unwrap()),
+            byte_len: 11,
+            checksum: [1; 32],
+        };
+        for reference in [&old, &new] {
+            tokio::fs::write(
+                directory.join(&reference.file_name),
+                vec![0; reference.byte_len as usize],
+            )
+            .await
+            .unwrap();
+        }
+        let options = StorageOptions::default();
+        let mut registry = SnapshotRegistry::new(Some(old.clone()), &options, owner);
+        registry.candidate(new.clone()).unwrap();
+        registry.freeze_publication();
+        assert!(registry.cleanup(&directory).await.is_err());
+        assert!(registry.candidate(new.clone()).is_err());
+        assert!(registry.reserve_reader().is_err());
+        assert!(registry.incoming().is_err());
+        let diagnostic = registry.diagnostics();
+        assert!(diagnostic.snapshot_publication_uncertain);
+        assert_eq!(diagnostic.snapshot_file_bytes, 18);
+        assert_eq!(diagnostic.snapshot_file_limit, options.max_snapshot_files);
+        assert_eq!(
+            diagnostic.snapshot_reader_limit,
+            options.max_snapshot_readers
+        );
+        for reference in [&old, &new] {
+            assert!(
+                tokio::fs::try_exists(directory.join(&reference.file_name))
+                    .await
+                    .unwrap()
+            );
+        }
+        drop(registry);
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
 }
 
 #[derive(Debug)]
@@ -43,6 +104,7 @@ pub(crate) struct SnapshotRegistry {
     max_files: usize,
     max_readers: usize,
     gc_failures: u64,
+    publication_uncertain: bool,
 }
 
 impl SnapshotRegistry {
@@ -71,6 +133,7 @@ impl SnapshotRegistry {
             max_files: options.max_snapshot_files,
             max_readers: options.max_snapshot_readers,
             gc_failures: 0,
+            publication_uncertain: false,
         }
     }
 
@@ -82,6 +145,9 @@ impl SnapshotRegistry {
                 .saturating_sub(self.readers.available_permits()),
             snapshot_incoming_files: self.incoming_files.len(),
             snapshot_gc_failures: self.gc_failures,
+            snapshot_file_limit: self.max_files,
+            snapshot_reader_limit: self.max_readers,
+            snapshot_publication_uncertain: self.publication_uncertain,
             ..SnapshotDiagnostics::default()
         };
         for asset in &self.assets {
@@ -98,6 +164,7 @@ impl SnapshotRegistry {
     }
 
     pub fn reserve_reader(&self) -> Result<OwnedSemaphorePermit> {
+        self.ensure_available()?;
         self.readers
             .clone()
             .try_acquire_owned()
@@ -111,6 +178,7 @@ impl SnapshotRegistry {
         reference: &SnapshotRef,
         permit: OwnedSemaphorePermit,
     ) -> Result<Arc<SnapshotLease>> {
+        self.ensure_available()?;
         let asset = self
             .assets
             .iter()
@@ -128,6 +196,7 @@ impl SnapshotRegistry {
     }
 
     pub fn candidate(&mut self, reference: SnapshotRef) -> Result<Arc<SnapshotAsset>> {
+        self.ensure_available()?;
         if self.assets.len() >= self.max_files {
             return Err(Error::Limit {
                 name: "named snapshot generations",
@@ -145,7 +214,21 @@ impl SnapshotRegistry {
         self.current = Some(asset.reference.clone());
     }
 
+    pub fn freeze_publication(&mut self) {
+        self.publication_uncertain = true;
+    }
+
+    fn ensure_available(&self) -> Result<()> {
+        if self.publication_uncertain {
+            return Err(Error::Writer {
+                reason: "Snapshot publication outcome is uncertain; restart is required".into(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn incoming(&mut self) -> Result<(String, Arc<SnapshotLease>)> {
+        self.ensure_available()?;
         if !self.incoming_files.is_empty() {
             return Err(Error::Limit {
                 name: "incoming snapshot files",
@@ -175,6 +258,7 @@ impl SnapshotRegistry {
 
     /// Run only after the complete manifest, domain state, and recovery chain are validated.
     pub async fn cleanup(&mut self, directory: &Path) -> Result<()> {
+        self.ensure_available()?;
         self.discover(directory).await?;
         let mut removable = Vec::new();
         removable

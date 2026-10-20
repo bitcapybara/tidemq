@@ -369,10 +369,18 @@ impl<A: Application> DiskStateMachine<A> {
             registry.candidate(reference)?
         };
         snapshot::persist(&self.0.directory, bytes, asset.clone()).await?;
-        self.0
+        if let Err(error) = self
+            .0
             .journal
             .publish_snapshot(asset.reference.clone())
-            .await?;
+            .await
+        {
+            // A failed directory sync can leave the manifest naming this candidate.
+            self.0.snapshots.lock().await.freeze_publication();
+            return Err(error);
+        }
+        #[cfg(test)]
+        super::cancellation_tests::boundary(&self.0.directory, "snapshot_published").await;
         self.0.snapshots.lock().await.commit(&asset);
         Ok(asset)
     }

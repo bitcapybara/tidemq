@@ -47,7 +47,7 @@ record frame 保留 88 字节头部：magic/格式版本 8 字节、payload 长�
 
 段与 manifest 中的身份必须匹配目录 identity，不能把其他组的有效 WAL 单独复制过来使用。目录已有 durable data 而缺少 identity 时拒绝绑定新身份。
 
-`DiskLog::diagnostics` 报告本地恢复与运行统计，不读取正文或建立 quorum 权威。单文件 `wal::inspect` 不等价于整个分段恢复链校验。活跃 writer 可产生暂时尾部；严肃损坏排查应先保留证据并在隔离副本上复查，不能把一次并发检查结果直接作为删除依据。
+`DiskLog::diagnostics` 报告本地恢复与运行统计，不读取正文或建立 quorum 权威。`wal::inspect_segmented(directory, options, identity_digest)` 只读校验 manifest 指定的分段链，不修复 active 尾部；旧单文件 `Journal` / `inspect` API 已删除。活跃 writer 可产生暂时尾部；严肃损坏排查应先保留证据并在隔离副本上复查，不能把一次并发检查结果直接作为删除依据。
 
 ## 持久顺序与 group commit
 
@@ -72,7 +72,7 @@ record frame 保留 88 字节头部：magic/格式版本 8 字节、payload 长�
 4. 真正 OpenRaft core 在快照成功后才可压缩对应日志。checkpoint 先同步有限控制状态及存活位置引用，再原子发布 manifest 并同步目录，最后删除没有引用的 sealed 段；旧文件在新恢复链持久成功前保留。
 5. 重开时，purged 范围必须被 durable snapshot 覆盖，committed 尾部必须连续且身份一致，否则拒绝恢复。
 
-purge 不再重编码所有 retained payload。检查点引用仍存活的物理 record，完整失效段只有在新 checkpoint/manifest 已持久后才删除。混合段保留，未提交 suffix 的 truncate 仍通过有序记录和精确重放边界排除；逻辑失效字节在文件真正删除前继续占容量。控制 reserve 和剩余段槽位用于检查点/回收，不能用满所有空间后再假设 GC 不需要临时空间。任一写入、同步或发布错误都会 poison writer，不绕过持久语义继续返回成功。
+purge 不再重编码所有 retained payload。检查点引用仍存活的物理 record，完整失效段只有在新 checkpoint/manifest 已持久后才删除。混合段先保留；存在空间压力时，一次最多选择一个有界 sealed 混合段，按原始有效 frame 搬迁并校验，再持久化新引用/checkpoint/manifest，最后删除旧段。未提交 suffix 的 truncate 仍通过有序记录和精确重放边界排除；逻辑失效字节在文件真正删除前继续占容量。控制 reserve 和两个剩余段槽位用于轮转、搬迁和检查点，不能用满所有空间后再假设 GC 不需要临时空间。任一写入、同步或发布错误都会 poison writer，不绕过持久语义继续返回成功。
 
 快照 reader 持有目录 owner、reader 槽位和文件引用。当前、退休及候选快照默认合计最多 4 个具名文件，reader 默认最多 8 个，另允许一个 incoming 文件；reader 还在执行 IO 时，取消等待者不会提前解除 pin。退休文件保留名称直到最后一个 reader 释放，所以物理采样不会漏算已 unlink 但仍占磁盘的快照。达到文件或 reader 上限时拒绝新增工作，不无限积累旧快照。
 
@@ -89,7 +89,7 @@ purge 不再重编码所有 retained payload。检查点引用仍存活的物理
 | 单 journal payload | 4 MiB，包含实际编码开销 |
 | WAL 总文件字节 | 128 MiB；包括 active、sealed、checkpoint、manifest、WAL staging 和未清理的退休文件 |
 | 目标段大小 / 段数 | 16 MiB / 64；按整批 frame 长度轮转，检查点保留所需槽位 |
-| WAL 控制 reserve | 8 MiB，包含于 128 MiB 总额；不能额外用作正常新写额度 |
+| WAL 控制 reserve | 32 MiB，包含于 128 MiB 总额；覆盖一个有界段搬迁、checkpoint、manifest/段头及控制余量，不能额外用作正常新写额度 |
 | 控制/索引 checkpoint | 8 MiB；旧/新 checkpoint、manifest 和段头共存也须先通过 WAL 硬限额 |
 | 等待与同步中 payload | 16 MiB；64 条记录，计入活跃 group |
 | group commit | 1 MiB 或 1 ms；单个较大记录仍受 4 MiB 上限 |
