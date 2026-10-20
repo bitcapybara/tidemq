@@ -2,7 +2,7 @@
 
 运行时在一个进程拥有监听器、共享预算、统一指标 Registry 和后台任务。库不安装全局日志 subscriber、分配器或 exporter；进程入口选择这些设施。Combined 装配完整 RF1，其他角色只创建其托管的真实组件。Storage 只有本组磁盘副本，Broker 不创建假的本地数据状态。
 
-TOML 的角色边界在配置反序列化时校验并归一化，运行时消费者继续使用同一份 `Config` / `RuntimeConfig`。`role` 显式选择单角色或 Combined；Gateway 的外部监听位于 `[gateway]`，数据角色的 retention、归档间隔与 S3 位于 `[storage]`。未启用角色的表会被拒绝，未启用外部监听也不占用或冲突检查其默认地址。Broker/Metadata 没有额外本地参数，不造空表。可信拓扑、内部监听、bootstrap、容量水位留在共享 `[runtime]`；各角色内部 delegated 授权和 Metadata 派生投递密钥需要的秘密文件路径留在共享 `[authorization]`，不能因分角色而绕过检查。旧布局仅保留完整读取兼容，拒绝新旧混合；生成器与配置序列化统一输出新布局，配置升级与回退契约见[配置指南](../guide/configuration.zh-CN.md)。
+TOML 的角色边界在配置反序列化时校验并归一化，运行时消费者继续使用同一份 `Config` / `RuntimeConfig`。`role` 显式选择单角色或 Combined；Gateway 的外部监听位于 `[gateway]`，数据角色的 retention、归档间隔与 S3 位于 `[storage]`。未启用角色的表会被拒绝，未启用外部监听也不占用或冲突检查其默认地址。Broker/Metadata 没有额外本地参数，不造空表。可信拓扑、内部监听、bootstrap、容量水位留在共享 `[runtime]`；各角色内部 delegated 授权和 Metadata 派生投递密钥需要的秘密文件路径留在共享 `[authorization]`，不能因分角色而绕过检查。当前开发阶段只接受这一种布局，删除旧配置读取与输出分支；旧字段、新旧混合和多余生成器参数都失败。已有开发环境按[配置指南](../guide/configuration.zh-CN.md)更新配置并保留原身份与数据，不自动清理已有持久目录。
 
 ## 请求路径
 

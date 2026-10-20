@@ -261,6 +261,8 @@ mod tests {
             original.runtime.delivery_key_file = "private/delivery.key".into();
             original.runtime.archive_interval_ms = 2_000;
             if role.stores_data() {
+                original.runtime.retention.minimum_age_ms = 1234;
+                original.runtime.retention.max_time_boundaries = 512;
                 original.runtime.objects = Some(crate::runtime::ObjectConfig {
                     endpoint: "http://127.0.0.1:9000".into(),
                     region: "us-east-1".into(),
@@ -285,6 +287,8 @@ mod tests {
             );
             if role.stores_data() {
                 assert_eq!(parsed.runtime.archive_interval_ms, 2_000);
+                assert_eq!(parsed.runtime.retention.minimum_age_ms, 1234);
+                assert_eq!(parsed.runtime.retention.max_time_boundaries, 512);
                 assert_eq!(
                     serde_json::to_value(&parsed.runtime.objects).unwrap(),
                     serde_json::to_value(&original.runtime.objects).unwrap()
@@ -295,9 +299,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_configuration_preserves_explicit_settings() {
-        let parsed: Config = toml::from_str(
-            r#"
+    fn legacy_configuration_is_rejected() {
+        let legacy = r#"
 role = 'combined'
 listen = '127.0.0.1:7810'
 [runtime]
@@ -307,21 +310,10 @@ archive_interval_ms = 3000
 [runtime.retention]
 minimum_age_ms = 1234
 max_time_boundaries = 512
-"#,
-        )
-        .unwrap();
-        assert_eq!(parsed.listen.port(), 7810);
-        assert_eq!(parsed.runtime.access_file, PathBuf::from("old/access.toml"));
-        assert_eq!(
-            parsed.runtime.delivery_key_file,
-            PathBuf::from("old/delivery.key")
-        );
-        assert_eq!(parsed.runtime.archive_interval_ms, 3000);
-        assert_eq!(parsed.runtime.retention.minimum_age_ms, 1234);
-        assert_eq!(parsed.runtime.retention.max_time_boundaries, 512);
-        let text = toml::to_string(&parsed).unwrap();
-        assert!(text.contains("[storage.retention]"));
-        assert!(!text.contains("[runtime.retention]"));
+"#;
+        assert!(toml::from_str::<Config>(legacy).is_err());
+        assert!(toml::from_str::<Config>("role = 'broker'").is_err());
+        assert!(toml::from_str::<Config>("").is_err());
     }
 
     #[test]
