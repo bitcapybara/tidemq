@@ -1,23 +1,23 @@
 # 实施状态
 
-2026-10-20：完整计划已获用户批准，当前在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库。所有本地提交均保留在开发分支，尚未推送或合并远端 main。
+2026-10-20：完整计划已获用户批准，当前在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库。此前实现与默认 mimalloc 已合并并推送 main（`9fe9c95`）；本轮取消上下文、共享缓冲区及性能门禁已推送集成分支，正在处理真实三节点和性能校准发现的问题，尚未晋升数值基线。
 
 | 任务 | 已实现与已有行为证据 | 剩余验收边界 |
 | --- | --- | --- |
 | T00 基础与内存 | 四个 package、schema/codec/ID/边界、Snafu 错误、有限日志/指标、配置、应用许可与控制预留；默认 mimalloc，System/jemalloc 为互斥选项，实际二进制可识别；同 jemalloc 发布构建可符号化采样；Linux Docker 的 System/cgroup 与 RF1 受控 OOM 恢复已验 | 默认 mimalloc 的生产性能、Linux 分配栈与长稳待验 |
-| T01 QUIC | 实际 s2n-quic 1.91、TLS/mTLS、有限分类连接池/流/队列、独立读写、单请求取消、原生新包 ACK 活性探测；空闲 sibling 不关闭活跃连接，半帧仍有限组装；原期限内关闭 owned I/O 并释放端口；有限 2/4 lane 同预算对照 | 真实 LB/NAT/CID、混合连接/短流/公平性与完整规模矩阵待验 |
+| T01 QUIC | 实际 s2n-quic 1.91、TLS/mTLS、有限分类连接池/流/队列、独立读写、单请求取消、原生新包 ACK 活性探测；空闲 sibling 不关闭活跃连接，半帧仍有限组装；原期限内关闭 owned I/O 并释放端口；大块唯一所有 payload 分段发送、容量计费与末引用许可；有限 2/4 lane 同预算对照 | 真实 LB/NAT/CID、混合连接/短流/公平性与完整规模矩阵待验；codec 探针不能代替服务性能结论 |
 | T02 持久化 | fsync WAL/vote/log/commit/snapshot、官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 恢复、物理日志压缩与失败关闭 | 真实掉电、跨区故障和长稳待验；同机不代表独立故障域 |
 | T03 控制与所有权 | 独立元数据组、CRUD 容量与永久身份、grant/fence/recover/activate、有限 TTL；真实 Broker 强杀后自动接管、旧身份拒绝及元数据少数派停授权 | 未 Active 的原 grant 目标同时死亡时保守阻塞；三区与长期故障组合待验 |
 | T04 生产 | 同组持久 producer/epoch/sequence/摘要/原结果、显式注册、固定过期、owned 提交；稳定版本 key 路由 helper | 无持久 outbox；有限原结果窗口届满不能自动以新身份重发 |
 | T05 订阅 | 同组持久 attempt/token/ACK、连续前沿/ACK 洞、seek/代次、冷读 H/接收屏障与 B 重试、窗口硬上限；部分冷页提交后丢响应、尾部先 ACK 和重启补投 | 外部业务副作用仍需幂等；高压力和长稳待验 |
-| T06 Rust SDK | 原生 QUIC Admin/Producer/Consumer、总 deadline/有限重试、保留 PendingBatch、独立宿主观测；原对象跨 Broker/Storage/Gateway 强杀恢复及稳定 UDP 地址上的丢包/重排/MTU 故障 | SDK 重启无自动 outbox；真实生产 LB/NAT/CID 和跨区恢复待验 |
+| T06 Rust SDK | 原生 QUIC Admin/Producer/Consumer、默认逻辑调用总预算、`RequestContext` / `CancellationToken` 取消域、有限重试、保留 PendingBatch、独立宿主观测；嵌套期限、关闭与发送后 Unknown；原对象跨 Broker/Storage/Gateway 强杀恢复及稳定 UDP 地址上的丢包/重排/MTU 故障 | SDK 重启无自动 outbox；新 Tokio task 需显式传入取消域；真实生产 LB/NAT/CID 和跨区恢复待验 |
 | T07 S3 | 固定 aws-sdk-s3、不可变 pack/校验/索引/Range、合装、multipart 取消对账、有界缓存；真实 RustFS 基础及 AWS SDK 测试 | 生产 S3/网络故障、持续中断容量与掉电待验 |
 | T08 生命周期 | 两权威注册/授权/发布/完成/取消、原对象对账、pin/恢复保护、自动整理替换验证/换引用、全 voter 持久检查点、floor/本地回收、DELETING 重试；RF1/RF3 真实 RustFS 多消息回收后冷读 | 新 voter 加入与冷回收的压力组合、对象永久账本规模待验；账本硬上限 4096 |
 | T09 保留与配额 | 同 apply 年龄/ACK/CAS floor、有界时间索引、独立逻辑/物理/共享滞后/RSS 水位、真实磁盘/RSS 采样、cgroup v2 可见祖先 headroom、已有 ACK/control/GC 保留准入；Linux 384 MiB→6 MiB 真实 OOM、恢复原限额/原 Pending 与持久 ACK 已验 | 默认限额自然压力、持续归档中断和高压力下隔离待验 |
 | T10 运行时 | serve、组合/独立角色、实际内外 QUIC、管理健康/就绪/指标/诊断、TLS/静态授权、正常关闭；兼容 LibreSSL 的配置生成器；真实 RF1/RF3 热冷路径、独立 OS 进程故障与原 SDK 恢复；Linux 独立 Docker 项目、UID/卷/cgroup/无宿主端口实际核验 | 真实生产部署、跨区及长期压力待验 |
 | T11 弹性 | 私有稳定成员证明、learner/joint/stable、真实 Raft 迁移、独立修复预算、真实容量/CPU/网络/连接/ACK 评分；owned ticker 驱动显式/自动 Storage 修复及 Broker 移交 | 冷却/长期均衡、高压力及跨区容量待验 |
 | T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；独立 RF3 CLI 与 Linux Docker 的 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启、RF1 真 OOM；新版十个 Docker case 合计 736 条完整唯一交付和持久 ACK；新版 Linux 普通 246、十个真实 RustFS ignored 及三个 docs 通过 | macOS drain 瞬时拒绝未确证；Linux 官方 Collector ignored 未执行；生产 LB/三区、掉电与长稳待验 |
-| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；测量 36032 条、预热 2264 条完整持久 ACK；PID 和 Collector 独立资源 | 小消息消费约 60 条/秒，高吞吐低延迟目标未放行；完整布局/长稳/诊断成本/生产规模/竞品/三区及默认 allocator 待验 |
+| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；测量 36032 条、预热 2264 条完整持久 ACK；PID 和 Collector 独立资源；新增真实 RF1/三进程 RF3 的同机交错配对门禁与受保护策略 | 首轮 RF1 尾延迟精度不足，RF3 暴露控制 RPC 错误；失败保留、基线未更新，见[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)；高吞吐低延迟、长稳与三区目标未放行 |
 | T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；可选 OTLP 有界导出、实际四角色关联、Collector 多故障隔离；统一导航、76 条覆盖、Linux Docker 构建/隔离/故障脚本与真实命令证据 | Linux 分配栈、生产命令与浏览器画面仍按对应环境验收 |
 
 ## 证据口径

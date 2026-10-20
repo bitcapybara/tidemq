@@ -153,4 +153,4 @@ OS `ps` 的累计 CPU 分辨率依平台，不能从短至几毫秒的差值推�
 
 本工具固定当前正式 C/P/D/B 与内部 C/R/B 类别隔离，仅对已有的 2/4 Request lanes 做同预算对照。混合连接/短流后端、网络丢包与限速、RF3 三区 quorum、跨 Gateway 故障、长时间突发/排空/冷却、Linux cgroup/OOM、同 allocator 的符号化存活栈和竞品同语义对照仍须分别取得证据。实际内存诊断能力见 [allocator 发布构建证据](evidence/2026-10-19-allocator-release.zh-CN.md)，该 jemalloc profiling 证据不能冒充 mimalloc 或 System 的现场采样。
 
-allocator 生产默认保持未定案。短跑吞吐、一次 RSS 差值或 malloc 微基准均不足以冻结它；还必须满足目标平台、长期内存与同 allocator 排查能力的计划关卡。
+仓库当前默认 allocator 为用户指定的 mimalloc，System/jemalloc 通过互斥 features 选择。这个配置决定不表示它已通过生产性能验收；短跑吞吐、一次 RSS 差值或 malloc 微基准不足以证明它是全局最佳选择，仍需目标平台、长期内存与同 allocator 排查能力的独立证据。
