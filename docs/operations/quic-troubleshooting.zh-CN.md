@@ -22,6 +22,7 @@
 | 大帧卡住 | stream/window、读任务和全局额度 | 保证读取渐进释放 QUIC credit，不在读完整大帧前等待业务 ACK；frame 可以大于 window，禁止按最大帧一次性扩大所有连接窗口 |
 | 吞吐正常但尾延迟升高 | C/P/D/B 混合比例、共享 CPU/磁盘、WAL 队列 | 分离 bulk，限制准入和已入 native 队列的字节；多连接仍共享机器资源，不能只增加连接数 |
 | 接收/发送返回 Memory/Admission | 全局 available_bytes、活跃连接与 envelope、payload 生命周期 | 检查持有的 ReceivedFrame/Bytes clone、未消费队列和 bulk 并发；不能重新建一个 MemoryBudget 绕过限额 |
+| 内部 Raft 返回 QuotaExceeded 或期限耗尽 | 原 RPC/frame deadline、Core 执行槽、core 内存余量、dispatch admitted/rejected 与 handler 耗时 | 仅认证 Core Raft 在原期限内等现有两个执行槽；每 stream 最多保留一个已计费待帧。其他类别及内存不足仍可立即拒绝。拒绝累计量不定位具体额度，也不能据此认定 WAL 或磁盘已满；不增加槽位、PeerPool 尝试次数或 hard TTL 掩盖问题 |
 | data 满时 C 重认证或 Core 失败 | data/normal/core/handshake 各自余量、旧连接引用、握手并发 | data 满不能解释为 Core 配额耗尽；C 长期 envelope/ACK 仍需 normal，握手有独立小额度。先结束失效连接引用/handler，避免旧 envelope 一直保留；不要让普通工作改用 try_reserve_core 绕过门禁 |
 | RSS 不回落但业务 Bytes 已释放 | allocator live/retained、RSS、native TLS/socket 量 | 结合内存排障手册区分真实存活、缓存/碎片与 native 缓冲；transport envelope 不是精确 RSS 计量 |
 | Deadline 后下一帧报 Poisoned | 是否发生部分 prefix/body 或 send | 关闭并恢复该 lane 的全部未决请求，沿用原业务身份；不能继续猜测帧边界，超时不等于未提交 |
@@ -37,6 +38,8 @@
 
 空等首字节本身不增加 `deadlines_total` 或 `malformed_total`；原生 idle 关闭带来的 IO 错误仍可计入后者。收到首字节后的慢 prefix/body 仍有有限组帧期限；超时或取消导致 poison，不执行外层 Deadline 重试来重用未知字节边界。新入口只在首字节之前允许安全取消。握手/短 ACK/单次读取仍用 `receive(absolute_deadline)`；客户端原请求取消仅移除其 waiter，不能因此关闭其他共享请求。
 
+Core Raft 的执行槽等待发生在完整帧接收并授权之后，沿用该 frame 的绝对 deadline。等待由既有 reader 持有 transport-charged ReceivedFrame，不增加任务、工作队列、字节或槽位额度；到期、连接关闭、服务关闭会归还待帧，已 owned handler 继续原有有限 drain。两条 lane 都等待时，同流后续 CANCEL 可能延至前帧到期后才继续处理，不承诺无队头阻塞。完整帧已接收后的等待结束，不等于部分 prefix/body 取消，也不因此 poison 健康共享流。
+
 独立回归 `native_idle_produce_connection_records_lane_read_errors_while_control_progresses` 配置原生 idle 一秒、组帧阈值 120 ms：P 的四条 lane 完成生产后静止，250 ms 时仍开；约 1.22 秒后 P 原生/RPC 关闭，两端 malformed 各增加四，deadline/探活失败/拒绝均为零，C 仍完成 52 次控制请求且没有新增连接。这个实验说明合法原生空闲关闭也能产生这组计数，不能仅由 malformed 推断坏帧或活跃连接误断；[本地性能报告](../evidence/2026-10-20-local-performance.zh-CN.md)中的原场景没有逐帧原因记录，归因仍保留推测边界。
 
 ## 本地回归
@@ -45,7 +48,10 @@
 cargo fmt --all
 cargo clippy -p tidemq --tests --no-deps -j 2
 cargo test -p tidemq --test quic_transport -j 2 -- --test-threads=2
+cargo nextest run -p tidemq --test server_dispatch_internal --test server_dispatch --profile ci --locked
 ```
+
+后一个命令覆盖 `fd3c01e` 的四项真实内部 mTLS 准入/关闭边界及既有五项 dispatcher 回归，具体断言与证明范围见 [Raft 网络接入](../design/raft-network.zh-CN.md#实际验证)。`4f79a5` 原完整 RF3 性能 cohort 的失败记录仍保留，同版两个独立通过的 trial 不构成修复验收；完整性能结果必须对应新冻结代码重跑。
 
 测试只监听 loopback 随机端口，内存生成独立证书与身份，不依赖固定证书目录、生产凭据或互联网服务。TLS、native s2n、socket 真实参与测试。当前未测真实网络丢包/带宽、Linux 生产宿主和四层 LB/CID；正式吞吐/尾延迟应遵循开发计划中的固定总资源、固定观测开销矩阵。
 

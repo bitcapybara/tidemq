@@ -16,7 +16,7 @@ s2n-quic 1.91.0 为唯一实现。首轮默认每实际活跃物理对端/角色
 
 同一顺序域不能任意跨流散发。冷 B 切热 D 使用同 generation 的排他屏障 H，SDK 连续接收并有界入队全部 offset < H 后确认，D 才交付 offset ≥ H；它不是业务 ACK，不推进持久前沿。公平流轮换也不等待全部业务 ACK。
 
-accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。QUIC send-ready 总等待可计时，但不能未经验证拆成精确的 stream/connection credit 与拥塞耗时。关闭 0-RTT；Gateway 故障走新握手和原身份重试。
+accept 不等待磁盘或 handler，reader 不直接执行这些工作；已认证原生 Raft Core reader 可在原 frame 绝对 deadline 内等待现有执行槽，其他类别保持立即尝试准入。发送、读取和回执各自有界。QUIC send-ready 总等待可计时，但不能未经验证拆成精确的 stream/connection credit 与拥塞耗时。关闭 0-RTT；Gateway 故障走新握手和原身份重试。
 
 外部 TLS 验证服务端并携带静态 scoped token，内部 mTLS 还需节点/集群/组授权。管理抓取 HTTP 是独立 loopback 接口。指标/trace/文件不决定任何持久成功。
 
@@ -74,7 +74,9 @@ SDK 的应用操作使用 `RequestContext` 与 `CancellationToken` 管理取消�
 
 `Client::close(deadline)` 阻止新连接、关闭缓存和直接连接，并停止及 join 本进程持有的原生 Tokio I/O 主任务。固定版本 s2n-quic 的默认 Provider 丢弃这个 JoinHandle，连接关闭状态又可能保留三倍当前 PTO，故障后的退避不能作为五秒进程关闭的前置等待。传输层仅薄封装公开 Provider，正常业务停止后才取消该主任务；上游 RX/TX 环形队列随之关闭，退出前以有界 socket 重新绑定验证端口确实释放，超时继续返回真实错误。未决 RPC 收到 Closed/Unknown，不能当作未提交。没有延长关闭预算，也不启用 SO_REUSEPORT。这些资源关闭操作均不证明消息已持久提交。
 
-原生 Raft 的 vote/空 Append 心跳在内部 mTLS Core 上使用独立的 2 个执行槽与队列；语义 Core 默认 8、短 ACK 默认 32、数据默认 128。语义线性化控制可能等待 Raft，因此不能占用 Raft 自己的执行槽。满队列立即拒绝新工作，不能排队占满全部控制执行能力。它们仍共享有限的 Core 帧内存和 CPU；执行隔离不承诺抗无限可信节点流量。真实 mTLS 测试将语义 Core 执行槽全部阻塞，验证同一复用连接上的原生 Raft 控制帧仍能返回。
+原生 Raft 的 vote/空 Append 心跳在内部 mTLS Core 上使用独立的 2 个执行槽与队列；语义 Core 默认 8、短 ACK 默认 32、数据默认 128。语义线性化控制可能等待 Raft，因此不能占用 Raft 自己的执行槽。仅已认证并授权的 Core Raft 请求在槽满时等待原 frame 绝对 deadline；每 stream 的既有 reader 最多持有一个已由 transport 计费的 ReceivedFrame，不复制 payload、不新增任务或工作队列、不增加字节和槽位预算。其他类别仍立即尝试准入，额度不足即拒绝；PeerPool 八次尝试上限和原 hard TTL 不变。
+
+等待到期、连接关闭或服务关闭释放尚未准入的帧与内存，已 owned handler 继续遵守原有限 drain。两条 Core lane 可能同时等待到各自原短期限，后面的 CANCEL 可在到期释放后继续处理，仍受同流顺序及自身期限约束；这不是消除全部队头阻塞。它们仍共享有限的 Core 帧内存和 CPU；执行隔离不承诺抗无限可信节点流量。真实 mTLS 测试将语义 Core 执行槽全部阻塞，验证同一复用连接上的原生 Raft 控制帧仍能返回；`fd3c01e` 新增的四项真实槽满/到期/关闭回归及性能证明范围见 [Raft 网络接入](raft-network.zh-CN.md#实际验证)。
 
 RPC 每个物理连接拥有一项有界存活观察任务，仅在存在未决请求、短 ACK 流或原生未确认字节时探测。默认间隔和单次期限各一秒，可通过 RpcConfig/SDK ClientConfig 的 liveness_timeout 在 100ms–10s 调整。PING 发起前记录最后已发送的 OneRtt packet number，只把其后新包得到的认证 ACK 视为网络前进；迟到旧 ACK 不算。网络期限耗尽才关闭该失活物理连接并让原业务身份重握手，慢 handler 仍能收到原生 ACK 时继续等待。PING 不占业务流窗口，也不构成 WAL/quorum/消费 ACK 证明；单请求取消或期限仍不直接重置健康复用流。真正 CLI 子进程 SIGKILL/原端口重启回归保持原 Producer、PendingBatch 和 Consumer；慢语义 handler 回归验证不会被存活任务误杀。
 

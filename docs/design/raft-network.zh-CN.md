@@ -18,11 +18,17 @@ tests/raft_quic.rs 使用临时磁盘目录、独立 CA 与逐节点证书、随
 
 真实认证 QUIC peer 还验证合法拒绝不会关闭 sibling RPC、未知或非法错误仍严格拒绝、Quota 退避不重置硬截止。三 combined 进程的四队列生产/消费/元数据并发回归同时验证唯一交付与持久 ACK 前沿；它保留了触发共享 Core 控制额度拒绝的真实并发，不以缩小负载替代修复。
 
+`fd3c01e` 的准入回归位于 [tests/server_dispatch_internal.rs](../../tests/server_dispatch_internal.rs)：真实 mTLS、默认两个 Raft 执行槽，验证原 100ms 期限内释放槽位后原请求完成、两条 Core lane 的等待到期后 CANCEL 继续处理并归还帧额度、服务关闭与对端关闭释放待帧且已 owned handler 继续完成。最大活跃 Raft handler 保持为 2。原 [tests/server_dispatch.rs](../../tests/server_dispatch.rs) 的五项回归继续覆盖迟到回复不关闭共享流、生产顺序与独立 Core/ACK、空闲 sibling lane 和原生 idle 关闭。这些边界回归不代表完整性能验收：`4f79a5` 的完整 RF3 性能 cohort 已失败，同版两个独立绿色 trial 也不能替代新冻结版本的完整 cohort。
+
 强制选举可能在旧 leader 租约有效期内被正确拒绝；故障测试启用真实自动选举并等待剩余 quorum 达成新 leader。单机测试不构成恢复 P99 或三区证据。
 
 ## 业务分派
 
 server::run 分别保留 Core、ACK、数据执行额度，接收、业务执行和回复写入各自有界。已准入任务由统一 executor 持有，不因单个 stream reset 就宣称撤销；队列/回包字节与任务数均有限。每个 P 流的 SubmissionOrder 一直保留到业务实际入提交队列，之后释放顺序再独立等待持久回执。不能在整个 durable ACK 等待期间持有它，也不能在进入业务提交前释放。
+
+仅已通过内部认证与授权、在 Core 流传输的 RaftVote/空 RaftAppend，在原 frame 绝对 deadline 内等待现有 Raft 执行槽；默认仍为两个槽。每条 stream 由既有 reader 至多持有一个等待中的 ReceivedFrame，其 payload 保留 transport 已申请的内存额度，不新增任务、工作队列、复制或字节/槽位预算。语义 Core、ACK、Data 等仍使用立即尝试、额度不足即拒绝的准入方式；PeerPool 的八次尝试上限与原 hard TTL 不变。
+
+请求到期、连接关闭或服务关闭会释放尚未准入的待帧及其额度，已 owned handler 保持原有有限 drain 契约。两条 Core lane 都可能等待至各自原短期限，后续 CANCEL 仍受同流顺序影响，到期释放后才可继续读取与处理；不承诺消除所有队头阻塞，也不通过重置期限或增加槽位绕过反压。
 
 短 ACK 流发送 FIN 后，服务端继续排空已准入回复，再结束发送方向。关闭先停新准入、有限排空，再关闭连接。分派器记录有限标签的准入、拒绝、执行失败、在途任务及日志抑制指标；同类 handler 警告最多每秒一条，失败计数不采样。所有 Collector 通过单一进程根 Registry 导出，避免重复前缀和多个 OpenMetrics EOF。tests/server_dispatch.rs 验证两个生产 handler 都等待结果时 Core 与独立 ACK 仍能前进、同 P 流准入顺序正确及 ACK 半关闭后可收到回包。
 

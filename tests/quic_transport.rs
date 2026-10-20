@@ -837,13 +837,17 @@ async fn oversized_unclassified_hello_is_rejected_without_body_allocation() {
         .send(Bytes::copy_from_slice(&16_385_u32.to_be_bytes()))
         .await
         .unwrap();
+    let received = timeout(Duration::from_secs(2), stream.receive())
+        .await
+        .unwrap();
+    let metrics = server.metrics.snapshot();
+    // Rejection can finish the stream or close it with an error; neither may return data.
     assert!(
-        timeout(Duration::from_secs(2), stream.receive())
-            .await
-            .unwrap()
-            .is_err()
+        matches!(&received, Err(_) | Ok(None)),
+        "An oversized unclassified HELLO must not return data: {received:?}"
     );
-    assert!(server.metrics.snapshot().rejected_total > 0);
+    assert!(metrics.rejected_total > 0);
+    assert_eq!(metrics.frames_received_total, 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
