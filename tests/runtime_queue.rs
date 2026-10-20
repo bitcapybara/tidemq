@@ -225,38 +225,52 @@ async fn durable_retry(
     }
 }
 
-async fn durable_consume(consumer: &Consumer, offset: u64) {
-    let until = Instant::now() + Duration::from_secs(20);
+async fn durable_consume(consumer: &Consumer, offsets: std::ops::Range<u64>, body: &[u8]) {
+    // A lost durable Read reply can retain deliveries for the full default lease.
+    let budget = Duration::from_millis(tidemq::subscription::Limits::default().ack_timeout_ms)
+        + Duration::from_secs(20);
+    let until = Instant::now() + budget;
     let mut previous = String::new();
-    let delivery = loop {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut acknowledged = offsets.start;
+    while acknowledged < offsets.end {
         let result = tidemq_sdk::RequestContext::with_deadline(
             until.min(Instant::now() + Duration::from_secs(2)),
         )
         .scope(consumer.recv())
         .await;
         if let Ok(Some(delivery)) = result {
-            break delivery;
+            assert!(offsets.contains(&delivery.offset()));
+            assert_eq!(delivery.body(), body);
+            assert!(
+                seen.insert(delivery.offset()),
+                "Duplicate recovered delivery"
+            );
+            while seen.contains(&acknowledged) {
+                acknowledged += 1;
+            }
+            assert_eq!(
+                tidemq_sdk::RequestContext::with_deadline(until)
+                    .scope(consumer.ack(&delivery))
+                    .await
+                    .unwrap()
+                    .acknowledged_before,
+                acknowledged
+            );
+            continue;
         }
         let detail = format!("{result:?}");
         if previous != detail {
-            eprintln!("Consumer recovery for offset {offset}: {detail}");
+            eprintln!("Consumer recovery for offsets {offsets:?}: {detail}");
             previous = detail;
         }
         assert!(
             Instant::now() < until,
-            "Original consumer could not resume after data leader recovery"
+            "Original consumer did not recover every offset: expected={offsets:?}, seen={seen:?}, last={result:?}"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
-    };
-    assert_eq!(delivery.offset(), offset);
-    assert_eq!(
-        tidemq_sdk::RequestContext::with_deadline(until)
-            .scope(consumer.ack(&delivery))
-            .await
-            .unwrap()
-            .acknowledged_before,
-        offset + 1
-    );
+    }
+    assert_eq!(seen, offsets.collect());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -302,9 +316,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     )
     .await
     .unwrap();
-    for offset in 0..4 {
-        durable_consume(&consumer, offset).await;
-    }
+    durable_consume(&consumer, 0..4, b"quorum-persisted").await;
     let diagnostics = http(
         fixture.configs.get(&21).unwrap().management_listen,
         "/diagnostics",
@@ -329,7 +341,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         durable_produce(&producer, b"after-one-storage-crash").await,
         4
     );
-    durable_consume(&consumer, 4).await;
+    durable_consume(&consumer, 4..5, b"after-one-storage-crash").await;
     eprintln!(
         "Independent RF3 single-storage recovery completed in {:?}",
         single_failure.elapsed()
@@ -434,7 +446,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
             original.digest().to_vec()
         )
     );
-    durable_consume(&consumer, 5).await;
+    durable_consume(&consumer, 5..6, b"minority-unknown").await;
     client.close().await;
     for process in processes.values_mut() {
         process.kill().await.unwrap();
@@ -816,9 +828,7 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
     )
     .await
     .unwrap();
-    for offset in 0..3 {
-        durable_consume(&consumer, offset).await;
-    }
+    durable_consume(&consumer, 0..3, &BODY).await;
     let connections = client.transport_metrics().snapshot().connections_total;
     first_gateway.kill().await.unwrap();
     let _ = first_gateway.wait().await.unwrap();
@@ -847,7 +857,7 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
         durable_retry(&producer, pending.first().unwrap(), deadline()).await,
         3
     );
-    durable_consume(&consumer, 3).await;
+    durable_consume(&consumer, 3..4, b"after-gateway-crash").await;
     let observed = proxy.snapshot();
     assert!(
         observed.packets > 0
@@ -970,7 +980,7 @@ async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_recl
     )
     .await
     .unwrap();
-    durable_consume(&consumer, 0).await;
+    durable_consume(&consumer, 0..1, b"expired-prefix").await;
     wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_compacted_total ").await;
     wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_deleted_total ").await;
     assert_eq!(consumer.fill().await.unwrap(), 1);

@@ -313,7 +313,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     )
     .await
     .unwrap();
-    durable_consume(&consumer, 0).await;
+    durable_consume(&consumer, 0..1, b"before-broker-crash").await;
     let mut observer = Observer::new(&fixture, 41).await;
     let before = observer.wait_owner(partition, 31).await;
     processes.get_mut(&31).unwrap().kill().await.unwrap();
@@ -330,7 +330,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     let pending = producer.pending_batches().await.unwrap();
     let batch = pending.first().unwrap();
     assert_eq!(durable_retry(&producer, batch, deadline()).await, 1);
-    durable_consume(&consumer, 1).await;
+    durable_consume(&consumer, 1..2, b"after-broker-crash").await;
     eprintln!(
         "Broker SIGKILL to original SDK durable producer and consumer ACK: {:?}",
         fault.elapsed()
@@ -345,7 +345,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         durable_produce(&producer, b"after-old-broker-restart").await,
         2
     );
-    durable_consume(&consumer, 2).await;
+    durable_consume(&consumer, 2..3, b"after-old-broker-restart").await;
     let metadata_lost = Instant::now();
     for node in [12, 13, 32] {
         processes.get_mut(&node).unwrap().kill().await.unwrap();
@@ -385,7 +385,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         wait_process(&fixture, node, processes.get_mut(&node).unwrap()).await;
     }
     assert_eq!(durable_retry(&producer, original, deadline()).await, 3);
-    durable_consume(&consumer, 3).await;
+    durable_consume(&consumer, 3..4, b"metadata-minority").await;
     let restored = observer.wait_owner(partition, 31).await;
     assert_eq!(restored.epoch, after.epoch + 1);
     assert_eq!(restored.generation, after.generation + 1);
