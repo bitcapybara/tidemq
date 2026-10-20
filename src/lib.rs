@@ -1,5 +1,8 @@
 //! TideMQ service building blocks. Only the executable selects process-wide facilities.
 
+#[cfg(test)]
+extern crate self as tidemq;
+
 pub mod allocator;
 pub mod archive;
 pub mod broker;
