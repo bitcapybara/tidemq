@@ -24,7 +24,7 @@ function options(values) {
   const result = {};
   while (values.length) {
     const key = values.shift();
-    assert.match(key, /^--[a-z-]+$/, 'Invalid performance gate option');
+    assert.match(key, /^--[a-z][a-z0-9-]*$/, 'Invalid performance gate option');
     const value = key === '--require-baseline-unchanged' ? true : values.shift();
     assert.ok(value && !String(value).startsWith('--'), `Missing ${key} value`);
     assert.ok(!(key in result), `Duplicate ${key} option`);
