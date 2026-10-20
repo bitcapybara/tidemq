@@ -565,17 +565,7 @@ impl Consumer {
             delivery_generation: generation.assignment,
             session_id: bytes(generation.session),
         };
-        let response: Result<public::AssignmentResult> = self
-            .client
-            .request(
-                FrameKind::ReceiveBarrier,
-                FrameKind::AssignmentResult,
-                TrafficClass::Control,
-                Id::random()?,
-                &request,
-                deadline,
-            )
-            .await;
+        let response = self.request_barrier(&request, deadline).await;
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -598,6 +588,46 @@ impl Consumer {
         state.barrier_confirmed = state.received_before >= state.assignment.cold_before;
         state.assignment.received_before = state.received_before;
         Ok(())
+    }
+
+    async fn request_barrier(
+        &self,
+        request: &public::ReceiveBarrier,
+        deadline: Instant,
+    ) -> Result<public::AssignmentResult> {
+        let operation = Id::random()?;
+        for attempt in 0..self.client.inner.config.max_reconnect_attempts {
+            let result = self
+                .client
+                .request(
+                    FrameKind::ReceiveBarrier,
+                    FrameKind::AssignmentResult,
+                    TrafficClass::Control,
+                    operation,
+                    request,
+                    deadline,
+                )
+                .await;
+            match result {
+                Err(error)
+                    if error.outcome_unknown()
+                        && attempt + 1 < self.client.inner.config.max_reconnect_attempts =>
+                {
+                    // Equal progress in the same generation is idempotent; reads stay behind confirmation.
+                    if self
+                        .client
+                        .backoff(operation, attempt, deadline)
+                        .await
+                        .is_err()
+                    {
+                        return Err(error);
+                    }
+                    increment(&self.client.inner.metrics.retries, 1);
+                }
+                result => return result,
+            }
+        }
+        Err(Error::Deadline)
     }
 
     /// Returns queued work. KeySerial keeps a key blocked until explicit ACK or retry.
