@@ -34,11 +34,11 @@
 
 这些都是本地状态，不能据此宣布当前 leader 或控制授权仍有效。业务排查的 offset 应从应用权威状态获取，不能把 Raft index 当 offset。
 
-分段目录以 `manifest.bin` 为唯一恢复权威，使用 `segment-<uuid>.wal`、`checkpoint-<uuid>.bin` 和 `snapshot-<uuid>.bin`。`wal::inspect(path, &JournalOptions).await` 是底层单文件 frame 检查，不能证明整个分段 manifest、checkpoint、快照和恢复链有效。使用与运行实例一致的大小上限，超出上限不能简单调大后忽略；frame 头仍为 88 字节。
+分段目录以 `manifest.bin` 为唯一恢复权威，使用 `segment-<uuid>.wal`、`checkpoint-<uuid>.bin` 和 `snapshot-<uuid>.bin`。`wal::inspect_segmented(directory, &JournalOptions, identity_digest).await` 是只读 manifest 链检查；只有正常 `open` 才可修复 active 的不完整末尾。旧单文件 `Journal` / `inspect` API 已删除。使用与运行实例一致的大小上限，超出上限不能简单调大后忽略；frame 头仍为 88 字节。
 
 `capacity.usage.physical_storage_bytes` 合计本地具名文件的实际长度和已登记对象的保守上界；`capacity.data_filesystem.available_bytes` 独立反映配置数据目录的文件系统可用空间。`reserved_storage_bytes` 只表示完整未来文件预算尚未被本地文件占用的部分，不能再次扣除当前文件。统计包括 manifest 未引用的文件、staging 和 reader 正在持有的退休快照。未识别名称、symlink、非普通文件、目录项超限、缺少必需布局或超时使样本不可用；unknown 不能填 0 供新生产或迁移使用。
 
-默认 WAL 总文件预算为 128 MiB，包含段、控制/索引 checkpoint、manifest 和 WAL staging；8 MiB 控制 reserve 在其中。4 个具名 snapshot 加一个 incoming 各受 64 MiB payload + 88 字节 frame 约束，另有 64 KiB identity/control 文件余量，合计约 448.06 MiB/副本。该口径是文件长度预算，不认证文件系统元数据、块分配或设备空间；部署必须保留相应余量。
+默认 WAL 总文件预算为 128 MiB，包含段、控制/索引 checkpoint、manifest 和 WAL staging；32 MiB 控制 reserve 在其中，用于有界混合段搬迁、检查点与控制余量。4 个具名 snapshot 加一个 incoming 各受 64 MiB payload + 88 字节 frame 约束，另有 64 KiB identity/control 文件余量，合计约 448.06 MiB/副本。该口径是文件长度预算，不认证文件系统元数据、块分配或设备空间；部署必须保留相应余量。
 
 活跃写入中的最后一帧可能尚未完成。先停止该副本的新任务或复制证据到隔离目录，再判断是否持续损坏。支持包只包含诊断、构建/配置身份、有限事件和校验结论；默认不复制 journal/snapshot 正文。
 
@@ -73,7 +73,7 @@ rtk cargo clippy -p tidemq --all-targets --no-deps --locked -j2 -- -D warnings
 rtk cargo test -p tidemq --test wal_journal --test replication_storage --test replication_crash --test raft_cluster --locked -j2
 ```
 
-- `wal_journal`：底层实际文件 group commit、只读检查、partial header/payload、完整 checksum 与长度头损坏、容量失败 poison；不能单独替代分段恢复链测试。
+- `wal_journal`：实际分段 group commit、只读 manifest 链检查、partial header/payload、完整 checksum 与长度头损坏、容量失败 poison；与应用快照和 core 恢复测试共同验证。
 - `replication_storage`：官方 OpenRaft storage-v2 完整 Suite，以及 vote/commit/fence/原结果重开、未提交尾替换、跨节点快照、错组/metadata/损坏拒绝、锁/容量/查询与真实 stage 样本。
 - `replication_crash`：单独 test 子进程在持久边界停住，父进程 SIGKILL 后重开，验证未执行 Drop/close 时仍恢复已持久结果。子进程只由测试持有句柄管理；具体分段边界与实际运行结果以实施证据为准。
 - `raft_cluster`：真正 OpenRaft 的 RF1/RF3、同身份响应丢失重试、leader 隔离、剩余多数派选举、磁盘重开、成员变更、新副本分块 snapshot，以及控制心跳先到/缺失 prev_log/旧 term 因果。
