@@ -33,22 +33,25 @@ test('unstable samples are inconclusive and missing or invalid trials fail', () 
   assert.throws(() => comparePairs(pairs([1, 1, 0, 1, 1]), policy));
 });
 
-function fixture() {
-  const histogram = {samples: 256, maximum_ns: 1024, histogram_buckets: [[320, 256]]};
+function fixture(scenario = 'throughput') {
+  const workload = workloadFor(policy, scenario);
+  const measured = workload.messages;
+  const warmupCount = workload.warmup_messages;
+  const histogram = {samples: measured, maximum_ns: 1024, histogram_buckets: [[320, measured]]};
   const phase = {
-    terminal_error: null, planned_messages: 256, committed_messages: 256,
-    acknowledged_messages: 256, durable_acknowledged_before: 256,
+    terminal_error: null, planned_messages: measured, committed_messages: measured,
+    acknowledged_messages: measured, durable_acknowledged_before: measured,
     produce_batch: histogram, produce_scheduling_lateness: histogram, offered_to_durable_ack: histogram, control_errors: 0,
   };
-  const warmup = {...phase, planned_messages: 32, committed_messages: 32, acknowledged_messages: 32,
-    durable_acknowledged_before: 32, produce_batch: {...histogram, samples: 32, histogram_buckets: [[320, 32]]},
-    offered_to_durable_ack: {...histogram, samples: 32, histogram_buckets: [[320, 32]]},
-    produce_scheduling_lateness: {...histogram, samples: 32, histogram_buckets: [[320, 32]]}};
+  const warmup = {...phase, planned_messages: warmupCount, committed_messages: warmupCount, acknowledged_messages: warmupCount,
+    durable_acknowledged_before: warmupCount, produce_batch: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]},
+    offered_to_durable_ack: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]},
+    produce_scheduling_lateness: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]}};
   return {
-    schema_version: 3, status: 'passed', configuration: policy.workload,
+    schema_version: 3, status: 'passed', configuration: workload,
     identity: {build: {source_commit: policy.service_source_commit, allocator_feature: policy.allocator_feature}},
-    warmup: {elapsed_ns: 1000, partitions: Array.from({length: 4}, () => structuredClone(warmup))},
-    measured: {elapsed_ns: 2000000000, partitions: Array.from({length: 4}, () => structuredClone(phase))},
+    warmup: {elapsed_ns: 1000, partitions: Array.from({length: workload.concurrent_partitions}, () => structuredClone(warmup))},
+    measured: {elapsed_ns: 2000000000, partitions: Array.from({length: workload.concurrent_partitions}, () => structuredClone(phase))},
   };
 }
 
@@ -148,23 +151,19 @@ test('promotion rejects a stale report or dirty source and accepts only the clea
 
 test('latency uses the protected fixed schedule and throughput remains unpaced', () => {
   assert.equal(workloadFor(policy, 'throughput').produce_interval_ms, 0);
-  assert.equal(workloadFor(policy, 'latency').produce_interval_ms, 160);
-  assert.equal(workloadFor(policy, 'latency').warmup_messages, 64);
+  assert.equal(workloadFor(policy, 'throughput').concurrent_partitions, 4);
+  assert.equal(workloadFor(policy, 'latency').produce_interval_ms, 40);
+  assert.equal(workloadFor(policy, 'latency').warmup_messages, 256);
+  assert.equal(workloadFor(policy, 'latency').concurrent_partitions, 1);
   assert.throws(() => workloadFor(policy, 'unsupported'));
 });
 
 test('A/A calibration binds both binaries and never promotes its source', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'tidemq-perf-calibrate-'));
   try {
-    const report = fixture();
-    report.configuration = workloadFor(policy, 'latency');
+    const report = fixture('latency');
     report.identity.service_binary_blake3 = '1'.repeat(64);
     report.identity.generator_binary_blake3 = '2'.repeat(64);
-    report.warmup.partitions = report.warmup.partitions.map(phase => ({...phase, planned_messages: 64,
-      committed_messages: 64, acknowledged_messages: 64, durable_acknowledged_before: 64,
-      produce_batch: {...phase.produce_batch, samples: 64, histogram_buckets: [[320, 64]]},
-      produce_scheduling_lateness: {...phase.produce_scheduling_lateness, samples: 64, histogram_buckets: [[320, 64]]},
-      offered_to_durable_ack: {...phase.offered_to_durable_ack, samples: 64, histogram_buckets: [[320, 64]]}}));
     const inputs = [];
     for (let index = 0; index < 10; index++) {
       const input = path.join(temporary, `${index}.json`);
@@ -184,4 +183,14 @@ test('A/A calibration binds both binaries and never promotes its source', async 
     await writeFile(inputs[9], JSON.stringify(report));
     assert.equal(cli(path.join(temporary, 'invalid.json')).status, 1);
   } finally { await rm(temporary, {recursive: true, force: true}); }
+});
+
+test('latency validates its own single-partition counts and all 1024 observations', () => {
+  const report = fixture('latency');
+  const result = summarizeReport(report, policy, policy.service_source_commit, 'latency');
+  assert.equal(result.durable_messages, 1024);
+  assert.equal(result.produce_p99_upper_ns, 1024);
+  assert.throws(() => summarizeReport(report, policy, policy.service_source_commit, 'throughput'));
+  report.measured.partitions.push(structuredClone(report.measured.partitions[0]));
+  assert.throws(() => summarizeReport(report, policy, policy.service_source_commit, 'latency'));
 });

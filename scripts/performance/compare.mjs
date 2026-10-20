@@ -39,8 +39,8 @@ export function validatePolicy(policy) {
   assert.equal(workload.messages, 256, 'Finite throughput phase must contain 1024 messages');
   assert.equal(workload.warmup_messages, 32, 'Throughput warmup shape changed');
   assert.equal(workload.produce_interval_ms, 0, 'Throughput phase must remain unpaced');
-  assert.deepEqual(policy.latency_workload, {messages: 256, warmup_messages: 64, produce_interval_ms: 160},
-    'The latency phase must retain its fixed 25 message/s offer schedule');
+  assert.deepEqual(policy.latency_workload, {messages: 1024, warmup_messages: 256, concurrent_partitions: 1, produce_interval_ms: 40},
+    'The latency phase must retain one partition at its fixed 25 message/s offer schedule');
   return policy;
 }
 
