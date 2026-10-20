@@ -200,3 +200,11 @@ combined 端到端 fixture 在原 50 s 总窗口内显式恢复 Read Unknown 和
 生产修复与消费 fixture 冻结为 `56a83498ae4ad31ff122504b2f865a7caf7c1126`。最终 workspace 普通及文档测试为 34 个 suite、284 passed、12 ignored、0 failed，其中 runtime queue 11 passed/3 ignored、82.22 s。workspace tests/examples Clippy、最后变动 runtime fixture 的 Clippy、严格 production lib/bins panic/索引审计和 fmt 均通过；31 项 Node 测试通过。日志分别为 `/tmp/tidemq-final-read-contract-workspace-tests-20261020.log`、`/tmp/tidemq-final-read-contract-clippy-20261020.log`、`/tmp/tidemq-final-combined-contract-clippy-20261020.log`、`/tmp/tidemq-final-read-contract-panic-audit-20261020.log` 与 `/tmp/tidemq-performance-identity-tests-20261020.log`。
 
 由于尚未接受任何数值基线，新一轮初始源码引用更新为上述包含全部正确性修复的冻结提交；原 `3b75d9c` 不再作为未修复漏洞的起点。该更新没有修改统计策略或重标旧报告。下一轮在构建和测量分离的 VM 上完整执行固定 32 个试次，对应 main Rust CI 必须成功；运行开始前仍没有 `baseline-report.json`，本地正确性通过不等于性能通过。
+
+## 冻结源码的远端正确性与测量入口
+
+[Rust 39383759191](https://github.com/bitcapybara/tidemq/actions/runs/39383759191) 在精确 main `077004ee6884de7304a658e9b551aad2c381242f` 终态成功：Linux/macOS validate、System/mimalloc/jemalloc、两个 heap-profile 共七项全部通过。Linux workspace 的普通/文档步骤核对为 34 个 suite、284 passed/12 ignored/0 failed；后续单独 doc 步骤有重叠，不叠加。System 包为 224 passed/11 ignored/0 failed，其 `cargo test` 步骤约 8 min 39 s，其中编译为 6 min 45 s，套件报告耗时合计 111.08 s、runtime queue 72.92 s；较长步骤不是运行时挂起。日志为 `/tmp/tidemq-ci-job-118498626878.log` 与 `/tmp/tidemq-ci-job-118498626631.log`。
+
+同提交的 [Performance 39383759275](https://github.com/bitcapybara/tidemq/actions/runs/39383759275) 构建成功，但 fresh measurement 在任何 trial 之前失败：选项解析器只允许小写字母和连字符，拒绝新 `--manifest-sha256` 参数中的数字，报 `Invalid performance gate option`。外部 manifest SHA 为 `09e086dc451219c1a287e78bd68a5d87c47a064cb7573d145b2049aeca632c7c`；实际 measure 日志为 `/tmp/tidemq-ci-job-118503788502.log`。本轮零试次、没有 summary 或数值基线，汇总检查正确失败、晋升跳过。
+
+`142b7c2` 只修正 CLI 参数名解析，并新增真实 measure CLI 的入口回归：合法格式但错误的摘要必须到达 artifact 校验并被拒绝，输出目录不产生、四个固定文件仍保持不可执行。32 项 Node 测试通过。生产源码、SDK、Cargo 依赖及冻结 `56a8349` 的统计策略均未改变；下一轮须完整重新开始，不把本次构建或零试次写成性能通过。
