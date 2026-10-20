@@ -35,29 +35,46 @@ fn capacity() -> [Capacity; 1] {
     }]
 }
 
-async fn coordinator_leader(
+async fn coordinator_leaders(
     metadata: &Cluster<MetadataState>,
     data: &Cluster<State>,
     eligible: &[u64],
     deadline: Instant,
-) -> u64 {
-    tokio::time::timeout_at(deadline, async {
+    stage: &str,
+) -> (u64, u64) {
+    let ready = tokio::time::timeout_at(deadline, async {
         loop {
             let current = data.node(2).raft.metrics().borrow().current_leader;
             let observed = data.node(4).raft.metrics().borrow().current_leader;
             // Published leader IDs do not prove either group's quorum is ready.
             if current == observed
                 && let Some(leader) = current.filter(|leader| eligible.contains(leader))
-                && metadata.node(1).raft.ensure_linearizable().await.is_ok()
+                && let Some(metadata_leader) = fresh_metadata_leader(metadata, &[1, 2, 3]).await
                 && data.node(leader).raft.ensure_linearizable().await.is_ok()
             {
-                return leader;
+                return (metadata_leader, leader);
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .expect("The replacement coordinator requires a ready leader")
+    .await;
+    match ready {
+        Ok(leader) => leader,
+        Err(error) => {
+            panic!("The replacement coordinator requires a ready leader during {stage}: {error}")
+        }
+    }
+}
+
+async fn fresh_metadata_leader(metadata: &Cluster<MetadataState>, eligible: &[u64]) -> Option<u64> {
+    for &leader in eligible {
+        let raft = &metadata.node(leader).raft;
+        let current = raft.metrics().borrow().current_leader;
+        if current == Some(leader) && raft.ensure_linearizable().await.is_ok() {
+            return Some(leader);
+        }
+    }
+    None
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -339,29 +356,69 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
     data.stop(1).await;
     data.pause_final_membership.store(false, Ordering::Release);
     let resume_deadline = Instant::now() + WAIT;
-    coordinator_leader(&meta, &data, &[2, 3, 4], resume_deadline).await;
+    let (previous_metadata, _) = coordinator_leaders(
+        &meta,
+        &data,
+        &[2, 3, 4],
+        resume_deadline,
+        "after_data_leader_loss",
+    )
+    .await;
     // Keep the data leader visible while the coordinator's metadata authority is unavailable.
-    meta.isolated.write().await.insert(1);
-    let barrier = meta.node(1).raft.ensure_linearizable().await;
+    meta.isolated.write().await.insert(previous_metadata);
+    let barrier = meta
+        .node(previous_metadata)
+        .raft
+        .ensure_linearizable()
+        .await;
     assert!(matches!(
         barrier,
         Err(openraft::error::RaftError::APIError(
             openraft::error::CheckIsLeaderError::QuorumNotEnough(_)
         ))
     ));
-    let leader = {
-        let ready = coordinator_leader(&meta, &data, &[2, 3, 4], resume_deadline);
+    let eligible_metadata: Vec<_> = meta
+        .nodes
+        .keys()
+        .copied()
+        .filter(|node| *node != previous_metadata)
+        .collect();
+    let replacement_metadata = tokio::time::timeout_at(resume_deadline, async {
+        loop {
+            if let Some(leader) = fresh_metadata_leader(&meta, &eligible_metadata).await {
+                break leader;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("A real metadata quorum elects a replacement while the former leader is isolated");
+    assert_ne!(replacement_metadata, previous_metadata);
+    // A genuine metadata leader election still cannot bypass a subsequent quorum loss.
+    meta.isolated.write().await.insert(replacement_metadata);
+    let (mut metadata_leader, leader) = {
+        let ready = coordinator_leaders(
+            &meta,
+            &data,
+            &[2, 3, 4],
+            resume_deadline,
+            "after_metadata_isolation",
+        );
         tokio::pin!(ready);
         tokio::select! {
-            ready = &mut ready => panic!("Leader metrics cannot prove metadata quorum readiness: {ready}"),
+            ready = &mut ready => panic!("Leader metrics cannot prove metadata quorum readiness: {ready:?}"),
             _ = tokio::time::sleep(Duration::from_millis(20)) => {}
         }
-        meta.isolated.write().await.remove(&1);
+        {
+            let mut isolated = meta.isolated.write().await;
+            isolated.remove(&previous_metadata);
+            isolated.remove(&replacement_metadata);
+        }
         ready.await
     };
     let resumed = MembershipCoordinator::new(
-        meta.node(1).raft.clone(),
-        meta.node(1).state.clone(),
+        meta.node(metadata_leader).raft.clone(),
+        meta.node(metadata_leader).state.clone(),
         data.node(leader).raft.clone(),
         data.node(leader).state.clone(),
         budget,
@@ -377,10 +434,18 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
         );
         drop(resumed);
         let resume_deadline = Instant::now() + WAIT;
-        let next = coordinator_leader(&meta, &data, &[2, 4], resume_deadline).await;
+        let (next_metadata, next) = coordinator_leaders(
+            &meta,
+            &data,
+            &[2, 4],
+            resume_deadline,
+            "after_data_leader_retirement",
+        )
+        .await;
+        metadata_leader = next_metadata;
         let resumed = MembershipCoordinator::new(
-            meta.node(1).raft.clone(),
-            meta.node(1).state.clone(),
+            meta.node(next_metadata).raft.clone(),
+            meta.node(next_metadata).state.clone(),
             data.node(next).raft.clone(),
             data.node(next).state.clone(),
             RepairBudget::new(RepairLimits::default()).unwrap(),
@@ -393,6 +458,14 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
     } else {
         drop(resumed);
     }
+    let completed = meta
+        .node(metadata_leader)
+        .raft
+        .metrics()
+        .borrow()
+        .last_applied
+        .unwrap();
+    meta.applied(&[1, 2, 3], completed.index).await;
     assert!(
         meta.node(1)
             .state
