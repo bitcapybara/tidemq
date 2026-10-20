@@ -64,6 +64,8 @@ target/debug/tidemq serve --config /tmp/tidemq-demo/node-1.toml
 
 生成器需要 OpenSSL 和尚不存在的输出目录，证书仅供短期本地开发；令牌保存在私有文件中。创建 Topic、生产、消费、持久 ACK 及 RF3 操作见[运行指南](docs/guide/running.zh-CN.md)和[Rust SDK](sdk/rust/README.md)。管理接口在 loopback 展示运行中服务；独立 `diagnose` 命令只描述它自身的短生命周期进程。
 
+副本存储使用带版本的分段 WAL、记录引用检查点和按代次命名的完整快照。本开发版本要求全新状态目录或 Docker 数据卷；旧 `raft.wal` / `snapshot.bin` 布局会被拒绝启动，已有文件不会自动清空。恢复时保留完整副本目录，包括 manifest 及其引用文件；容量限制、reader pin 和安全回收见[存储契约](docs/design/storage-recovery.zh-CN.md)。
+
 Docker 部署文件均在 [deploy/docker](deploy/docker/README.zh-CN.md) 中版本管理，包括[构建 Dockerfile](deploy/docker/Dockerfile.builder)、[运行 Dockerfile](deploy/docker/Dockerfile)、完整 [RF1 Compose](deploy/docker/compose.rf1.yaml)、[RF3 Compose](deploy/docker/compose.rf3.yaml) 和[部署准备脚本](deploy/docker/prepare.sh)。先生成私有状态目录，再使用其中的 Compose 配置；构建、启动、验证和清理命令见部署文档。
 
 安装 cargo-nextest 0.9.148 后，按 CI 的 target 范围执行本地验证：

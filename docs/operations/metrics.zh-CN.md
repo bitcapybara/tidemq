@@ -5,7 +5,7 @@
 | 指标族 | 口径与用途 |
 | --- | --- |
 | `tidemq_operations_total{operation,outcome}` | 固定 Produce/Read/Ack/Control/Archive/Recover 与 Committed/Rejected/Unknown/Failed。按记录节点和权威阶段理解；不能把跨角色转发计数相加当作唯一业务消息数 |
-| `tidemq_stage_duration_seconds{operation,stage}` | 本进程单调分段直方图；Broker Admission/Queue/Commit 与 WAL WalAdmission/WalQueue/CommitPersist 分开，另有 Append/Sync/Replicate/RepairPace/Apply/Total。Decode/Response 未完整观测；无样本不能解释为零耗时。边界见[观测设计](../design/observability.zh-CN.md) |
+| `tidemq_stage_duration_seconds{operation,stage}` | 本进程单调分段直方图；Broker Admission/Queue/Commit 与 WAL WalAdmission/WalQueue/CommitPersist 分开，另有 Append/Sync/Replicate/RepairPace/Apply/Total。WalRotate、WalCheckpoint、WalRelocate、WalGc 记录已完成的轮转、引用检查点、单段整理和回收耗时。Decode/Response 未完整观测；无样本不能解释为零耗时。边界见[观测设计](../design/observability.zh-CN.md) |
 | `tidemq_producer_*` | attempts、committed/duplicate/rejected/unknown/failed、new_messages/new_bytes、owned pending。新持久消息与重复原结果分别统计；业务吞吐采用 new_messages |
 | `tidemq_dispatch_*` | 有限 handler 准入/拒绝/错误/活跃与限速日志抑制，独立于日志是否成功写出 |
 | `tidemq_internal_client_*` / `internal_server_*` / `external_server_*` | 连接、active_connections、流、帧/字节、deadline、TLS、丢包和连接/流 credit 阻塞；内部客户端还含 liveness probe/failure。连接总计是累计准入；active_connections 计仍持有状态/资源的连接对象，随最后引用释放而下降，不是精确的原生 open 连接数；缓存/RPC 可暂时保留已关闭连接 |
@@ -20,6 +20,8 @@
 | `tidemq_scaling_*` | 原计划 learner/catch-up/joint/stable 等阶段时长与 Unknown；实际新鲜容量、成员和拒绝原因见有限诊断 |
 
 公共阶段 bucket 为 50μs、100μs、500μs、1ms、5ms、10ms、50ms、100ms、500ms、1s、5s、30s 和 +Inf。先合并相同口径的 bucket，再算分位；不要平均 P99、相加阶段 P99，或把服务端批次耗时当作 SDK 单消息持久时延。计数器重启会归零，不作为精确审计。
+
+`/diagnostics` 的每组 `storage.journal_runtime` 提供 active/sealed/checkpoint/staging/retired 字节、段数、存活引用数及估算索引字节、rotations、checkpoint_rewrites、relocation_operations/relocated_bytes、reclaimed_bytes 和 gc_failures。`storage.snapshots` 独立给出快照具名文件/退休字节、reader 数及上限。以上是有限诊断字段，不能当作已导出的 Prometheus 指标族；结合实际文件采样和 `available` 判断压力。索引估算不包含 BTreeMap 节点及 allocator 开销，不等于 RSS。
 
 ## 本地 Prometheus 与 Grafana
 

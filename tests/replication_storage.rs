@@ -255,6 +255,97 @@ async fn new_store_publishes_only_the_segmented_layout() {
 }
 
 #[tokio::test]
+async fn purging_old_segments_preserves_control_state_retained_entries_and_original_results() {
+    let directory = Directory::new().await;
+    let path = directory.path().join("replica");
+    let identity = identity(Id::random().unwrap(), 1, 1);
+    let options = StorageOptions {
+        journal: tidemq::wal::JournalOptions {
+            max_record_bytes: 512,
+            max_file_bytes: 128 * 1024,
+            max_pending_bytes: 4096,
+            group_commit_bytes: 512,
+            segment_target_bytes: 2048,
+            max_segments: 64,
+            max_checkpoint_bytes: 8192,
+            max_retained_records: 64,
+            control_reserve_bytes: 16 * 1024,
+            ..tidemq::wal::JournalOptions::default()
+        },
+        max_log_entries: 64,
+        max_log_bytes: 8192,
+        max_snapshot_bytes: 8192,
+        max_replication_batch_bytes: 512,
+        ..StorageOptions::default()
+    };
+    let mut storage = DiskStore::<State>::open(&path, identity.clone(), options.clone(), None)
+        .await
+        .unwrap();
+    storage
+        .log
+        .save_vote(&Vote::new_committed(2, 1))
+        .await
+        .unwrap();
+    for index in 0..33 {
+        let command = if index == 0 {
+            Command::Fence(5)
+        } else {
+            Command::Append {
+                epoch: 5,
+                request: index,
+                value: index * 10,
+            }
+        };
+        let entry = entry(2, index, command);
+        storage.log.blocking_append([entry.clone()]).await.unwrap();
+        storage.state_machine.apply([entry]).await.unwrap();
+    }
+    storage.state_machine.build_snapshot().await.unwrap();
+    let before = support::directory_contents(&path).await;
+    storage.log.purge(log_id(2, 17)).await.unwrap();
+    let after = support::directory_contents(&path).await;
+    assert!(before.keys().any(
+        |file| file.extension().is_some_and(|extension| extension == "wal")
+            && !after.contains_key(file)
+    ));
+    for (file, bytes) in &after {
+        if file.extension().is_some_and(|extension| extension == "wal") {
+            if let Some(original) = before.get(file) {
+                assert_eq!(original, bytes);
+            }
+        }
+    }
+    storage.log.close().await.unwrap();
+    drop(storage);
+    let mut reopened = DiskStore::<State>::open(&path, identity, options, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.log.read_vote().await.unwrap(),
+        Some(Vote::new_committed(2, 1))
+    );
+    assert_eq!(
+        reopened.log.read_committed().await.unwrap(),
+        Some(log_id(2, 32))
+    );
+    assert_eq!(
+        reopened.log.diagnostics().await.purged_log,
+        Some(log_id(2, 17))
+    );
+    let entries = reopened.log.try_get_log_entries(0..40).await.unwrap();
+    assert_eq!(
+        entries.iter().map(|entry| entry.log_id).collect::<Vec<_>>(),
+        (18..33).map(|index| log_id(2, index)).collect::<Vec<_>>()
+    );
+    let application = reopened.state_machine.application().await;
+    assert_eq!(application.writer_epoch, 5);
+    assert_eq!(application.next_offset, 32);
+    assert_eq!(application.results.get(&1), Some(&(0, 10)));
+    assert_eq!(application.results.get(&32), Some(&(31, 320)));
+    reopened.log.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn durable_snapshot_covers_purged_logs_and_install_validates_group_and_metadata() {
     let directory = Directory::new().await;
     let cluster = Id::random().unwrap();
