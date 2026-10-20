@@ -85,11 +85,33 @@ async function overlay(source, tools, directory) {
     harness_files_sha256: harnessHashes};
 }
 
+export function canReuseBuilds(baseline, candidate) {
+  return /^[0-9a-f]{40}$/.test(baseline.source_commit)
+    && baseline.source_commit === candidate.source_commit
+    && HARNESS_FILES.every(file => /^[0-9a-f]{64}$/.test(baseline.harness_files_sha256?.[file])
+      && baseline.harness_files_sha256[file] === candidate.harness_files_sha256?.[file]);
+}
+
+export async function reuseBuild(source, directory, binary, identity) {
+  assert.ok(['tidemq', 'perf_load'].includes(binary), 'Unknown reusable binary');
+  assert.deepEqual(await json(path.join(source, 'identity.json')), identity, 'Reusable build identity changed');
+  const hash = binary === 'tidemq' ? identity.service_binary_sha256 : identity.binary_sha256;
+  assert.equal(sha256(await fs.readFile(path.join(source, binary))), hash, 'Reusable build binary changed');
+  await fs.mkdir(directory, {mode: 0o700});
+  await fs.copyFile(path.join(source, binary), path.join(directory, binary));
+  await fs.copyFile(path.join(source, 'identity.json'), path.join(directory, 'identity.json'));
+  assert.equal(sha256(await fs.readFile(path.join(directory, binary))), hash, 'Copied build binary differs');
+  await fs.writeFile(path.join(directory, 'build.log'),
+    `Reused the exact baseline ${binary} binary and identity for source ${identity.source_commit}; no second compilation.\n`, {mode: 0o600});
+  return identity;
+}
+
 async function build(source, directory, target, policy, loadOverlay) {
   await fs.mkdir(directory, {recursive: true, mode: 0o700});
   const loadOnly = loadOverlay !== undefined;
   const original = loadOnly ? loadOverlay.original_source : source;
   const commit = await sourceIdentity(original);
+  if (loadOnly) assert.equal(commit, loadOverlay.source_commit, 'Archived SDK source changed before build');
   const args = ['build', '--manifest-path', path.join(source, 'Cargo.toml'), '--release', '--locked', '-p', 'tidemq',
     loadOnly ? '--example' : '--bin', loadOnly ? 'perf_load' : 'tidemq', '--no-default-features', '--features', policy.allocator_feature, '-j2'];
   await command('cargo', args, {cwd: source, env: {...process.env, CARGO_TARGET_DIR: target},
@@ -102,9 +124,11 @@ async function build(source, directory, target, policy, loadOverlay) {
       assert.equal(sha256(await fs.readFile(path.join(source, file))), hash, 'Trusted harness changed during build');
     }
     const {original_source: _original, ...identity} = loadOverlay;
-    return {...identity, sdk_source_commit: commit, generator_allocator: 'system',
+    const loadIdentity = {...identity, sdk_source_commit: commit, generator_allocator: 'system',
       cargo_lock_sha256: sha256(await fs.readFile(path.join(source, 'Cargo.lock'))),
       binary_sha256: sha256(await fs.readFile(path.join(directory, name)))};
+    await save(path.join(directory, 'identity.json'), loadIdentity);
+    return loadIdentity;
   }
   const identity = {
     source_commit: commit,
@@ -269,12 +293,22 @@ async function runGate(settings) {
   const builds = path.join(output, 'builds');
   const baselineOverlay = await overlay(baseline, tools, path.join(output, 'overlays/baseline'));
   const candidateOverlay = await overlay(candidate, tools, path.join(output, 'overlays/candidate'));
+  const reused = canReuseBuilds(baselineOverlay, candidateOverlay);
   const baselineLoad = await build(path.join(output, 'overlays/baseline'), path.join(builds, 'baseline-load'), target, policy, baselineOverlay);
-  const candidateLoad = await build(path.join(output, 'overlays/candidate'), path.join(builds, 'candidate-load'), target, policy, candidateOverlay);
+  const candidateLoad = reused
+    ? await reuseBuild(path.join(builds, 'baseline-load'), path.join(builds, 'candidate-load'), 'perf_load', baselineLoad)
+    : await build(path.join(output, 'overlays/candidate'), path.join(builds, 'candidate-load'), target, policy, candidateOverlay);
   const baselineIdentity = await build(baseline, path.join(builds, 'baseline'), target, policy);
-  const candidateIdentity = await build(candidate, path.join(builds, 'candidate'), target, policy);
+  const candidateIdentity = reused
+    ? await reuseBuild(path.join(builds, 'baseline'), path.join(builds, 'candidate'), 'tidemq', baselineIdentity)
+    : await build(candidate, path.join(builds, 'candidate'), target, policy);
+  assert.equal(baselineIdentity.source_commit, baselineOverlay.source_commit, 'Baseline build source differs from its snapshot');
+  assert.equal(candidateIdentity.source_commit, candidateOverlay.source_commit, 'Candidate build source differs from its snapshot');
+  assert.equal(await sourceIdentity(baseline), baselineOverlay.source_commit, 'Baseline source changed during build');
+  assert.equal(await sourceIdentity(candidate), candidateOverlay.source_commit, 'Candidate source changed during build');
   const summary = {
     schema_version: 2, status: 'running', baseline_manifest_sha256: sha256(policyBytes),
+    same_source_reused_builds: reused,
     policy, baseline: baselineIdentity, candidate: candidateIdentity,
     workload_binaries: {baseline: baselineLoad, candidate: candidateLoad},
     environment: {platform: os.platform(), arch: os.arch(), kernel: os.release(), node: process.version,
@@ -284,7 +318,7 @@ async function runGate(settings) {
     limitations: ['Closed-loop finite regression workload; no production saturation or availability-zone claim',
       'A stable interval containing one means no detected regression, not proof of zero performance difference',
       'P99 uses all observations merged in log2/32 upper-bound buckets with up to 3.125 percent bucket width',
-      'Both SDK snapshots compile the same protected workload source overlay',
+      'Both sides use the protected workload source overlay; matching sources reuse the exact build artifacts',
       'Student t intervals assume independent paired log ratios; confidence is per metric, not simultaneous'],
     topologies: {},
   };
