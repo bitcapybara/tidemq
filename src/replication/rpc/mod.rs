@@ -23,7 +23,9 @@ pub enum Error {
     #[snafu(display("Invalid Raft RPC: {reason}"))]
     Invalid { reason: &'static str },
     #[snafu(display(
-        "Raft peer rejected RPC: {code:?}; outcome: {outcome:?}; retryable: {retryable}"
+        "Raft peer rejected RPC: {}; outcome: {}; retryable: {retryable}",
+        code.as_str_name(),
+        outcome.as_str_name()
     ))]
     PeerRejected {
         code: tidemq_protocol::common::ErrorCode,
