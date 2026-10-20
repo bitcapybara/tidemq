@@ -29,8 +29,9 @@
     "rf3-combined"
   ],
   "latency_workload": {
-    "messages": 256,
-    "warmup_messages": 64,
-    "produce_interval_ms": 160
+    "messages": 1024,
+    "warmup_messages": 256,
+    "concurrent_partitions": 1,
+    "produce_interval_ms": 40
   }
 }
