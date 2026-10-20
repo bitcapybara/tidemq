@@ -30,9 +30,11 @@ async function main() {
   const compared = comparePairs(pairs, policy);
   const metrics = Object.fromEntries(Object.entries(compared.metrics).filter(([metric]) => metric !== 'durable_messages_per_second'));
   const statuses = Object.values(metrics).map(metric => metric.status);
+  const biased = Object.values(metrics).some(metric =>
+    metric.slowdown_ci95[0] > 1 || metric.slowdown_ci95[1] < 1);
   const result = {
     schema_version: 1, kind: 'same_binary_scheduled_latency_calibration', calibration_only: true, scenario: 'latency',
-    status: statuses.includes('regressed') ? 'temporal_bias_detected' : statuses.includes('inconclusive') ? 'inconclusive' : 'passed',
+    status: biased ? 'temporal_bias_detected' : statuses.includes('inconclusive') ? 'inconclusive' : 'passed',
     service_source_commit: first.build.source_commit,
     service_binary_blake3: first.service_binary_blake3,
     workload_binary_blake3: first.generator_binary_blake3,

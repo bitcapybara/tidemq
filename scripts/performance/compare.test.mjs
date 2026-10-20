@@ -179,6 +179,18 @@ test('A/A calibration binds both binaries and never promotes its source', async 
     assert.equal(result.kind, 'same_binary_scheduled_latency_calibration');
     assert.equal(result.status, 'passed');
     assert.ok(!('durable_messages_per_second' in result.metrics));
+    for (const [label, maximum, bucket] of [['faster', 512, 288], ['slower', 2048, 352]]) {
+      const biased = structuredClone(report);
+      for (const field of ['produce_batch', 'offered_to_durable_ack']) {
+        biased.measured.partitions[0][field] = {
+          samples: 1024, maximum_ns: maximum, histogram_buckets: [[bucket, 1024]],
+        };
+      }
+      for (let index = 1; index < inputs.length; index += 2) await writeFile(inputs[index], JSON.stringify(biased));
+      const biasedOutput = path.join(temporary, `${label}.json`);
+      assert.equal(cli(biasedOutput).status, 0);
+      assert.equal(JSON.parse(await readFile(biasedOutput, 'utf8')).status, 'temporal_bias_detected');
+    }
     report.identity.generator_binary_blake3 = '3'.repeat(64);
     await writeFile(inputs[9], JSON.stringify(report));
     assert.equal(cli(path.join(temporary, 'invalid.json')).status, 1);
