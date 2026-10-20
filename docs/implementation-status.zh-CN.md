@@ -1,6 +1,6 @@
 # 实施状态
 
-2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区、元数据创建/迁移重放及持久 Read 前缀结果边界已修复，冻结 `56a8349` 的 workspace 为 284 passed/12 ignored、34 个 suite、0 failed，Clippy/严格审计通过。main `077004e` 的七项 Rust CI job 全部通过，历史失败与修复按[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)分别保留。开发机和 GitHub 的两轮八对比较均完成 32 个语义试次，但统计不确定；构建/测量分离后的首次入口因 CLI 解析错误在零试次时失败，工具已修复。尚未晋升数值基线，不能将其写成性能达标。
+2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区、元数据创建/迁移重放及持久 Read 前缀结果边界已修复，冻结 `56a8349` 的 workspace 为 284 passed/12 ignored、34 个 suite、0 failed，Clippy/严格审计通过。main `077004e` 与 `d7c913e` 的七项 Rust CI job 均全部通过；`077004e` 的 Linux Docker 十项矩阵及 736 条完整持久 ACK 通过，精确版本与隔离审计见[最新记录](evidence/2026-10-20-docker-077004e.zh-CN.md)。隔离构建/测量的 `d7c913e` 完整 32 个试次、汇总与晋升均成功，`e16c79d` 已提交真实数值基线。四项 p99 仍为 imprecise，不证明小幅尾回退已排除或生产性能已达标；历史失败和不确定报告按[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)分别保留。
 
 | 任务 | 已实现与已有行为证据 | 剩余验收边界 |
 | --- | --- | --- |
@@ -16,8 +16,8 @@
 | T09 保留与配额 | 同 apply 年龄/ACK/CAS floor、有界时间索引、独立逻辑/物理/共享滞后/RSS 水位、真实磁盘/RSS 采样、cgroup v2 可见祖先 headroom、已有 ACK/control/GC 保留准入；Linux 384 MiB→6 MiB 真实 OOM、恢复原限额/原 Pending 与持久 ACK 已验 | 默认限额自然压力、持续归档中断和高压力下隔离待验 |
 | T10 运行时 | serve、组合/独立角色、实际内外 QUIC、管理健康/就绪/指标/诊断、TLS/静态授权、正常关闭；兼容 LibreSSL 的配置生成器；真实 RF1/RF3 热冷路径、独立 OS 进程故障与原 SDK 恢复；Linux 独立 Docker 项目、UID/卷/cgroup/无宿主端口实际核验 | 真实生产部署、跨区及长期压力待验 |
 | T11 弹性 | 私有稳定成员证明、learner/joint/stable、真实 Raft 迁移、独立修复预算、真实容量/CPU/网络/连接/ACK 评分；owned ticker 驱动显式/自动 Storage 修复及 Broker 移交 | 冷却/长期均衡、高压力及跨区容量待验 |
-| T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；独立 RF3 CLI 与 Linux Docker 的 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启、RF1 真 OOM；新版十个 Docker case 合计 736 条完整唯一交付和持久 ACK；新版 Linux 普通 246、十个真实 RustFS ignored 及三个 docs 通过 | macOS drain 瞬时拒绝未确证；Linux 官方 Collector ignored 未执行；生产 LB/三区、掉电与长稳待验 |
-| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；测量 36032 条、预热 2264 条完整持久 ACK；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；开发机/GitHub 各 32 个八对试次通过持久语义；构建与测量 VM 已拆分 | 两轮八对统计均 inconclusive，未晋升数值基线；完整校准报告已入库。固定门槛和尾部检测边界见[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)；新隔离 cohort、高吞吐低延迟、长稳与三区目标待验 |
+| T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；独立 RF3 CLI 与 Linux Docker 的 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启、RF1 真 OOM；`077004e` 十个 Docker case 合计 736 条完整唯一交付和持久 ACK；`d7c913e` Linux workspace 284 passed/12 ignored、34 个 suite | 历史 RustFS ignored 与当前普通门禁分开计数；Linux 官方 Collector ignored 未执行；生产 LB/三区、掉电与长稳待验 |
+| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；构建与测量 VM 分离的 `d7c913e` 完整 32 试次及固定统计策略通过，`e16c79d` 已入库首份真实回归基线 | 旧两轮 inconclusive 保留；当前四项 p99 仍 imprecise，不保证小幅尾回退检出；高吞吐低延迟、长稳与三区目标待验。固定门槛和尾部检测边界见[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md) |
 | T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；可选 OTLP 有界导出、实际四角色关联、Collector 多故障隔离；统一导航、79 条覆盖、Linux Docker 构建/隔离/故障脚本与真实命令证据 | Linux 分配栈、生产命令与浏览器画面仍按对应环境验收 |
 
 ## 证据口径
@@ -32,8 +32,10 @@ RustFS 1.0.3 原生隔离实例已覆盖 PUT/GET/HEAD、206/416、multipart、AW
 
 原生 Collector/Prometheus/Grafana 已验证实际 RF1 与 Collector 抓取、29 个看板面板、50 条 PromQL 和只读权限；该观测部署验证的四个自有进程正常退出，五个 TCP 和两个 UDP 端口释放。
 
-按用户指定，阶段 F 先在 `ssh dev` 完成 [Linux Docker 隔离验证](evidence/2026-10-20-linux-docker.zh-CN.md)。新版冻结 `a3f8f4e` 的 RF1 三项和 RF3 七项全部通过；同时修复热正文取得与持久签发之间的本地回收竞态，真正逻辑过期仍终态拒绝，Unknown 仍使整批报错。RF1 已停，RF3 十角色、RustFS 和 namespace holder 保留运行；没有宿主端口，原身份、卷与受限证据保留。部署前后既有 17 个业务容器的 ID、运行状态、启动时间和重启次数完全一致。
+按用户指定，阶段 F 先在 `ssh dev` 完成 [Linux Docker 隔离验证](evidence/2026-10-20-linux-docker.zh-CN.md)。旧版冻结 `a3f8f4e` 的 RF1 三项和 RF3 七项全部通过；同时修复热正文取得与持久签发之间的本地回收竞态，真正逻辑过期仍终态拒绝，Unknown 仍使整批报错。该历史 RF1 已停，RF3 十角色、RustFS 和 namespace holder 保留运行；没有宿主端口，原身份、卷与受限证据保留。
 
-新版 Linux 的普通测试 246 通过、11 ignored，另显式执行十个真实 RustFS ignored 全部通过；验证 driver 六项和 workspace 文档三项通过。SDK metrics＋OpenTelemetry 组合另有 25 项普通及一项文档测试通过。格式、Clippy 和生产 panic/索引审计通过。新四项读取边界、feature 与文档检查有重叠，不能相加；Linux 官方 Collector ignored 尚未运行。旧 macOS 多 fixture 回归中的 drain 瞬时拒绝仍保留原日志，本轮 Linux 相同串行条件下该用例通过，不代表 macOS 问题已定位。
+最新另建的 [077004e Docker 矩阵](evidence/2026-10-20-docker-077004e.zh-CN.md)同样十项通过、736 条完整持久 ACK；原 Pending、逻辑 SDK session、关闭及最终配额归零全部核验。该版服务实际为 mimalloc，driver 自身为 System；不混用身份。新项目所有容器和网络已移除，保留 15 个自有卷和私有证据；原 17 个业务容器及旧 RF3 的 12 个容器，精确身份、运行状态、启动时间和重启次数前后一致，旧镜像 tag 身份也一致。故障中允许不可达的采集错误及单主机网络边界在记录中明确保留，不作为独立三区或恢复分位数证据。
+
+历史 `a3f8f4e` Linux 的普通测试 246 通过、11 ignored，另显式执行十个真实 RustFS ignored 全部通过；验证 driver 六项和 workspace 文档三项通过。SDK metrics＋OpenTelemetry 组合另有 25 项普通及一项文档测试通过。格式、Clippy 和生产 panic/索引审计通过。新四项读取边界、feature 与文档检查有重叠，不能相加；Linux 官方 Collector ignored 尚未运行。旧 macOS 多 fixture 回归中的 drain 瞬时拒绝仍保留原日志，该版 Linux 相同串行条件下用例通过，不代表旧 macOS 问题的现场根因已唯一确认。
 
 真实三区阶段尚未创建云资源，没有三可用区 SLA、生产 allocator 结论或 Kafka/Pulsar/AutoMQ 性能结论。候选秒级恢复目标需要从故障发生至原 SDK 再次持久成功单独计时，单例和测试总用时不能当作恢复分位数。

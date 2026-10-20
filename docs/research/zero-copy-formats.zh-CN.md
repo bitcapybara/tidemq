@@ -71,4 +71,6 @@ FlatBuffers 官方明确允许相同输入由不同实现编码为不同的合�
 3. WAL 使用有界 Postcard 编码并通过 `DeserializeOwned` 恢复模型。rkyv 不是 Serde codec 的直接替代：需要独立的 Archived 读取路径、缓冲区生命周期、对齐、格式身份和升级边界。
 4. 首个可考虑的 rkyv 原型应是可重建的本地只读索引/缓存；FlatBuffers 原型应围绕多语言、大块只读数据；FlexBuffers 保留给确需动态结构的用户 payload。原型结果应同时报告校验成本、分配字节、延迟、保留内存和兼容性，而非只报无校验的访问速度。
 
+FlatBuffers 也可以先作为用户消息 body 的格式验证：应用从 `Delivery::body()` 取得字节切片，调用带验证的 root 入口取得借用视图，TideMQ 继续按 opaque bytes 传输与计费。这条路径不需要修改 MQ 协议或持久格式；应用仍负责 schema 身份、版本、验证边界和借用生命周期。它是采用建议，本轮没有增加这种应用层 codec 或完成端到端对照。
+
 本轮未进行三种新格式的 TideMQ 基准对比、兼容迁移或第三方实现的完整安全审计；没有据此宣布替换 Postcard、Protobuf 或现有归档格式。

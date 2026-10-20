@@ -208,3 +208,36 @@ combined 端到端 fixture 在原 50 s 总窗口内显式恢复 Read Unknown 和
 同提交的 [Performance 39383759275](https://github.com/bitcapybara/tidemq/actions/runs/39383759275) 构建成功，但 fresh measurement 在任何 trial 之前失败：选项解析器只允许小写字母和连字符，拒绝新 `--manifest-sha256` 参数中的数字，报 `Invalid performance gate option`。外部 manifest SHA 为 `09e086dc451219c1a287e78bd68a5d87c47a064cb7573d145b2049aeca632c7c`；实际 measure 日志为 `/tmp/tidemq-ci-job-118503788502.log`。本轮零试次、没有 summary 或数值基线，汇总检查正确失败、晋升跳过。
 
 `142b7c2` 只修正 CLI 参数名解析，并新增真实 measure CLI 的入口回归：合法格式但错误的摘要必须到达 artifact 校验并被拒绝，输出目录不产生、四个固定文件仍保持不可执行。32 项 Node 测试通过。生产源码、SDK、Cargo 依赖及冻结 `56a8349` 的统计策略均未改变；下一轮须完整重新开始，不把本次构建或零试次写成性能通过。
+
+## 最新 main 的正确性与 Docker 证据
+
+[Rust 39386162678](https://github.com/bitcapybara/tidemq/actions/runs/39386162678) 在精确 main `d7c913ebd21a5f1f07840304e9b8f8d9d8a3bfae` 终态 success，七个 job 均通过，包含两个平台的 validate、三个 allocator 和两个 heap-profile。Linux workspace 的普通及文档测试步骤为 34 个 suite、284 passed/12 ignored/0 failed；后续单独 doc 步骤不重复计数。该 job 的测试命令先编译 7 min 18 s，再运行套件；日志为 `/tmp/tidemq-ci-job-118506397521.log`。
+
+同版主生产及测试代码仍与冻结 `56a8349` 一致；CLI 修复和文档不改 Rust 数据路径。另在 `ssh dev` 精确源码 `077004e` 完成十项 Docker 故障矩阵，736 条完整提交、唯一交付和持久 ACK，六项原 Pending 身份核对及所有逻辑 session / close 检查通过。服务实际 mimalloc，driver 自身 System。新的容器和网络已移除，原 29 个容器及旧镜像身份前后一致。镜像、二进制、故障现场、采样缺口和终态审计见[独立记录](2026-10-20-docker-077004e.zh-CN.md)；不把它重标为其他提交的镜像，也不与 workspace 或历史 Docker 数量相加。
+
+## 首份通过并实际晋升的数值基线
+
+[Performance 39386162718](https://github.com/bitcapybara/tidemq/actions/runs/39386162718) 在精确 main `d7c913ebd21a5f1f07840304e9b8f8d9d8a3bfae` 完成全部固定 cohort：build、measure、稳定汇总检查和 promote 均成功。build 用时 6 min 50 s；measure 从 07:30:07 至 08:06:14 UTC，共 36 min 07 s；汇总和晋升分别于 08:06:19、08:06:30 UTC 成功。对应同一提交的七项 Rust CI job 已成功，晋升前 main 未前进。
+
+晋升提交为 `e16c79d87fb0633c33a0c9b0a465d200dc4c1e6d`。它实际新增 [baseline-report.json](../../performance/baseline-report.json)，并把 [baseline.json](../../performance/baseline.json) 的接受源码推进到 `d7c913e`。初始比较侧为冻结 `56a8349`，候选和可信工具为 `d7c913e`；两侧源码身份不同、实际服务和负载二进制分别完全相同，因此这是 A/A 校准，`same_source_reused_builds=false` 仍原样保留。
+
+| 固定身份 | SHA-256 |
+| --- | --- |
+| 原始 summary / 入库 baseline report，57,260 B | `9de469f60a4e5b7fbcf8cf9a2ca438f7687bf1df056f57247b9dd5ce11105b73` |
+| 外部绑定的 prepared manifest | `58da8ada68e8212276922028005feda69a577954a0fc905568430b21ace8cb76` |
+| 受保护比较策略 | `4b814c6568095ef4b2bd4a02517f38154d3877b683ca6926871a4f4819700621` |
+| 两侧实际服务二进制 | `fafa6e7321dfa350fdb4356dae464db25b6b620d51922f383d80c5fc6b1de40f` |
+| 两侧实际负载二进制 | `d999fbc448fd95870f7e7931c8b450bcb7cf6cd63f5416b9d413ab323f8d3a62` |
+
+独立下载的原始 summary 与晋升提交中的报告逐字节一致。[comparison artifact 12249592039](https://github.com/bitcapybara/tidemq/actions/runs/39386162718/artifacts/12249592039) 为 7,961,839 B，GitHub 元数据记录的 ZIP SHA-256 为 `4ec0b33970fd442f107385b95373017fad55e9a7d248f9d6fdc7fd6fd1d7a7ae`。按冻结 `d7c913e` 工具核对全部 64 份原始场景报告、32 个试次：65,536 条测量消息及另计的 12,288 条预热消息均通过完整身份、唯一交付、持久 ACK、前沿和 clean drain 检查。构建静态 13 文件、源码/SDK/lock/harness、四个实际二进制摘要和 manifest 外部绑定均已复核；没有把尚在运行的步骤计作成功。
+
+五项指标乘两拓扑全部重新计算，指标状态和两项拓扑判定与原报告严格一致。仅跨平台复算的一项 H 浮点末位相差 `6.94e-18`，没有改变任何判定、生产阈值或策略。三个主指标的校正 log 区间半宽 H 如下：
+
+| 拓扑 | 持久吞吐 H | 生产原始均值 H | offered→持久 ACK 均值 H | 拓扑终态 |
+| --- | ---: | ---: | ---: | --- |
+| RF1 | 0.017508 | 0.097781 | 0.028353 | passed |
+| RF3 combined | 0.029574 | 0.076448 | 0.038698 | passed |
+
+六项主指标均满足原定 0.15 log 半宽预算，没有检测到同二进制的显著双向时序偏差。四项 p99 仍为 `imprecise`：RF1 的生产/持久 ACK H 为 0.795919 / 0.425811，RF3 为 0.581813 / 0.289689；其区间都包含 1，但不能据此保证小幅或稀有尾退化被检出。通过代表固定策略下的有限回归基线成立，不是代码提速、生产 SLO 或物理三区性能证明。
+
+没有删除首轮或长尾、追加样本、重跑挑选 cohort，也没有修改八对、十项比较族、五项指标和精度预算。旧失败与 inconclusive 报告继续保留；此前失败后分别进行了已记录的正确性修复、构建/测量隔离及 CLI 入口修复。本次原始下载目录为 `/tmp/tidemq-perfgate-comparison-39386162718`，独立审计为 `/tmp/tidemq-perfgate-cohort-audit-39386162718.json`；长期入库的 summary 和完整 workflow 制品是对外复核入口。
