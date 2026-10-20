@@ -22,6 +22,7 @@ use tokio::{
     sync::{Mutex, Semaphore},
     time::{Instant, timeout_at},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::{Admin, Error, Metrics, Result, metrics::increment};
 
@@ -147,6 +148,7 @@ pub(crate) struct Inner {
     pub metrics: Arc<Metrics>,
     pub consumer_claims: std::sync::Mutex<HashSet<(Id, u32, Id)>>,
     closed: AtomicBool,
+    cancellation: CancellationToken,
 }
 
 /// One logical session shared across independently authenticated C/P/D/B connections.
@@ -163,7 +165,20 @@ impl Client {
         access_token: String,
     ) -> Result<Self> {
         config.validate()?;
-        let deadline = deadline_after(Duration::from_millis(config.request_timeout_ms))?;
+        crate::request::run(
+            Duration::from_millis(config.request_timeout_ms),
+            &CancellationToken::new(),
+            |deadline| Self::connect_inner(config, trust_roots, access_token, deadline),
+        )
+        .await
+    }
+
+    async fn connect_inner(
+        config: ClientConfig,
+        trust_roots: Bytes,
+        access_token: String,
+        deadline: Instant,
+    ) -> Result<Self> {
         let addresses = timeout_at(deadline, tokio::net::lookup_host(config.endpoint.as_str()))
             .await
             .map_err(|_| Error::Deadline)?
@@ -197,7 +212,7 @@ impl Client {
             cluster_id: None,
             node_id: None,
         };
-        Self::with_target(
+        Self::with_target_inner(
             config.clone(),
             ClientTls {
                 trust_roots,
@@ -212,6 +227,21 @@ impl Client {
     }
 
     pub async fn with_target(
+        config: ClientConfig,
+        tls: ClientTls,
+        target: PeerTarget,
+        access_token: String,
+    ) -> Result<Self> {
+        config.validate()?;
+        crate::request::run(
+            Duration::from_millis(config.request_timeout_ms),
+            &CancellationToken::new(),
+            |deadline| Self::with_target_inner(config, tls, target, access_token, deadline),
+        )
+        .await
+    }
+
+    async fn with_target_inner(
         mut config: ClientConfig,
         tls: ClientTls,
         target: PeerTarget,
@@ -259,6 +289,7 @@ impl Client {
                 metrics: Arc::new(Metrics::default()),
                 consumer_claims: std::sync::Mutex::new(HashSet::new()),
                 closed: AtomicBool::new(false),
+                cancellation: CancellationToken::new(),
             }),
         };
         client.rpc(TrafficClass::Control, deadline).await?;
@@ -283,8 +314,16 @@ impl Client {
             ClientCredentials::Internal { session_id, .. } => *session_id,
         }
     }
-    pub fn deadline(&self) -> Result<Instant> {
-        deadline_after(Duration::from_millis(self.inner.config.request_timeout_ms))
+    pub(crate) async fn operation<T, F: std::future::Future<Output = Result<T>>>(
+        &self,
+        operation: impl FnOnce(Instant) -> F,
+    ) -> Result<T> {
+        crate::request::run(
+            Duration::from_millis(self.inner.config.request_timeout_ms),
+            &self.inner.cancellation,
+            operation,
+        )
+        .await
     }
 
     pub(crate) async fn rpc(&self, class: TrafficClass, deadline: Instant) -> Result<RpcClient> {
@@ -437,13 +476,16 @@ impl Client {
                 self.ack_attempt(frame, deadline).await
             } else {
                 match self.rpc(class, deadline).await {
-                    Ok(rpc) => match affinity {
-                        Some(affinity) => rpc
-                            .call_affinity(frame, deadline, affinity)
-                            .await
-                            .map_err(Error::from),
-                        None => rpc.call(frame, deadline).await.map_err(Error::from),
-                    },
+                    Ok(rpc) => {
+                        crate::request::mark_sent();
+                        match affinity {
+                            Some(affinity) => rpc
+                                .call_affinity(frame, deadline, affinity)
+                                .await
+                                .map_err(Error::from),
+                            None => rpc.call(frame, deadline).await.map_err(Error::from),
+                        }
+                    }
                     Err(error) => Err(error),
                 }
             };
@@ -480,6 +522,7 @@ impl Client {
             .connection()
             .open(tidemq_transport::StreamPurpose::Ack, deadline)
             .await?;
+        crate::request::mark_sent();
         stream.sender.send(&frame, deadline).await?;
         stream.sender.finish()?;
         let response = stream
@@ -556,7 +599,12 @@ impl Client {
     }
 
     /// Cancellation addresses one request and does not reset its shared lane.
-    pub async fn cancel(&self, request_id: Id, deadline: Instant) -> Result<()> {
+    pub async fn cancel(&self, request_id: Id) -> Result<()> {
+        self.operation(|deadline| self.cancel_inner(request_id, deadline))
+            .await
+    }
+
+    async fn cancel_inner(&self, request_id: Id, deadline: Instant) -> Result<()> {
         let frame = self.frame(
             FrameKind::Cancel,
             TrafficClass::Control,
@@ -574,8 +622,17 @@ impl Client {
         Ok(())
     }
 
-    pub async fn close(&self, deadline: Instant) {
+    pub async fn close(&self) {
         self.inner.closed.store(true, Ordering::Release);
+        self.inner.cancellation.cancel();
+        self.inner.bytes.close();
+        self.inner.producer_bytes.close();
+        self.inner.requests.close();
+        let Ok(deadline) =
+            deadline_after(Duration::from_millis(self.inner.config.request_timeout_ms))
+        else {
+            return;
+        };
         for class in [
             TrafficClass::Control,
             TrafficClass::Produce,

@@ -16,6 +16,7 @@ use tidemq_protocol::{
 };
 use tidemq_sdk::{
     Client, ClientConfig, Consumer, ConsumerConfig, DeliveryOrdering, Error, Producer,
+    RequestContext,
 };
 use tidemq_transport::{
     ClientTls, FramedStream, PeerTarget, Server, ServerAuthorization, ServerTls, Session,
@@ -50,6 +51,10 @@ struct PeerState {
     reject_produces: u32,
     drop_first_produce: bool,
     drop_first_admin: bool,
+    hold_registration: bool,
+    registrations: Vec<public::OpenProducer>,
+    hold_admin: bool,
+    admin_requests: usize,
     pair_produces: bool,
     assignment: Option<public::AssignmentResult>,
     claims: Vec<public::ClaimAssignment>,
@@ -168,7 +173,6 @@ async fn peer(drop_first_produce: bool, skip_hole: bool) -> Peer {
         },
         target,
         TOKEN.into(),
-        deadline(),
     )
     .await
     .unwrap();
@@ -267,6 +271,15 @@ fn handle(
     state: &mut PeerState,
 ) -> Option<Frame> {
     state.traceparents.push(request.traceparent.clone());
+    if matches!(
+        FrameKind::try_from(request.kind),
+        Ok(FrameKind::CreateTopic | FrameKind::GetTopic)
+    ) {
+        state.admin_requests += 1;
+        if state.hold_admin {
+            return None;
+        }
+    }
     if request.kind == i32::from(FrameKind::CreateTopic) && state.drop_first_admin {
         state.drop_first_admin = false;
         session.close();
@@ -305,6 +318,10 @@ fn handle(
             let open: public::OpenProducer =
                 decode_payload(request.payload.clone(), &limits).unwrap();
             assert_eq!(open.owner_epoch, 0);
+            state.registrations.push(open.clone());
+            if state.hold_registration {
+                return None;
+            }
             response(
                 request,
                 FrameKind::ProducerSessionResult,
@@ -595,34 +612,29 @@ async fn unresolved_production_leaves_consumption_capacity_and_does_not_retain_h
         .unwrap();
     let mut producers = Vec::new();
     for producer_id in [3, 4] {
-        let producer = Producer::open(client.clone(), id(1), 0, id(producer_id), deadline())
+        let producer = Producer::open(client.clone(), id(1), 0, id(producer_id))
             .await
             .unwrap();
         peer.state.lock().unwrap().drop_first_produce = true;
-        let result = producer
-            .produce(
-                vec![public::Message {
-                    key: Bytes::new(),
-                    body: Bytes::from(vec![b'x'; 262_144]),
-                }],
-                Instant::now() + Duration::from_millis(80),
-            )
+        let result = RequestContext::with_timeout(Duration::from_millis(80))
+            .unwrap()
+            .scope(producer.produce(vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from(vec![b'x'; 262_144]),
+            }]))
             .await;
         assert!(matches!(result, Err(Error::ProduceUnknown { .. })));
         producers.push(producer);
     }
-    let third = Producer::open(client.clone(), id(1), 0, id(5), deadline())
+    let third = Producer::open(client.clone(), id(1), 0, id(5))
         .await
         .unwrap();
     assert!(matches!(
         third
-            .produce(
-                vec![public::Message {
-                    key: Bytes::new(),
-                    body: Bytes::from(vec![b'x'; 262_144])
-                }],
-                deadline()
-            )
+            .produce(vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from(vec![b'x'; 262_144])
+            }])
             .await,
         Err(Error::Admission)
     ));
@@ -638,14 +650,13 @@ async fn unresolved_production_leaves_consumption_capacity_and_does_not_retain_h
             max_buffered_messages: 1,
             ..ConsumerConfig::default()
         },
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     let delivery = consumer.next().await.unwrap().unwrap();
     assert_eq!(delivery.body().len(), 262_144);
-    consumer.ack(&delivery, deadline()).await.unwrap();
+    consumer.ack(&delivery).await.unwrap();
     assert!(client.metrics().snapshot().admitted_bytes <= 1_048_576);
 
     struct Backing {
@@ -670,19 +681,17 @@ async fn unresolved_production_leaves_consumption_capacity_and_does_not_retain_h
     });
     let small = backing.slice(..4);
     drop(backing);
-    let producer = Producer::open(peer.client.clone(), id(1), 0, id(6), deadline())
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(6))
         .await
         .unwrap();
     peer.state.lock().unwrap().drop_first_produce = true;
     assert!(matches!(
-        producer
-            .produce(
-                vec![public::Message {
-                    key: Bytes::new(),
-                    body: small
-                }],
-                Instant::now() + Duration::from_millis(80)
-            )
+        RequestContext::with_timeout(Duration::from_millis(80))
+            .unwrap()
+            .scope(producer.produce(vec![public::Message {
+                key: Bytes::new(),
+                body: small
+            }]))
             .await,
         Err(Error::ProduceUnknown { .. })
     ));
@@ -699,52 +708,31 @@ async fn consumer_credit_includes_metadata_and_last_handle_releases_its_claim() 
         max_buffered_bytes: 1_024,
         ..ConsumerConfig::default()
     };
-    let consumer = Consumer::claim(
-        peer.client.clone(),
-        id(1),
-        0,
-        id(2),
-        config.clone(),
-        deadline(),
-    )
-    .await
-    .unwrap();
+    let consumer = Consumer::claim(peer.client.clone(), id(1), 0, id(2), config.clone())
+        .await
+        .unwrap();
     let clone = consumer.clone();
     assert!(
-        Consumer::claim(
-            peer.client.clone(),
-            id(1),
-            0,
-            id(2),
-            config.clone(),
-            deadline()
-        )
-        .await
-        .is_err()
+        Consumer::claim(peer.client.clone(), id(1), 0, id(2), config.clone())
+            .await
+            .is_err()
     );
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let delivery = consumer.next().await.unwrap().unwrap();
     assert!(!delivery.body().is_empty());
     assert!(peer.client.metrics().snapshot().admitted_bytes <= 1_024);
     drop(consumer);
     assert!(
-        Consumer::claim(
-            peer.client.clone(),
-            id(1),
-            0,
-            id(2),
-            config.clone(),
-            deadline()
-        )
-        .await
-        .is_err()
+        Consumer::claim(peer.client.clone(), id(1), 0, id(2), config.clone())
+            .await
+            .is_err()
     );
     drop(clone);
     drop(delivery);
     assert_eq!(peer.client.metrics().snapshot().admitted_bytes, 0);
     // Dropping a handle releases local admission, not the server's durable assignment.
     peer.state.lock().unwrap().assignment = None;
-    Consumer::claim(peer.client.clone(), id(1), 0, id(2), config, deadline())
+    Consumer::claim(peer.client.clone(), id(1), 0, id(2), config)
         .await
         .unwrap();
 }
@@ -757,12 +745,12 @@ async fn trace_context_is_request_scoped_validated_and_does_not_leak_across_lane
     let peer = peer(false, false).await;
     let admin = peer.client.admin();
     let (a, b) = tokio::join!(
-        scope_traceparent(FIRST, admin.topic("events", deadline())),
-        scope_traceparent(SECOND, admin.topic("events", deadline()))
+        scope_traceparent(FIRST, admin.topic("events")),
+        scope_traceparent(SECOND, admin.topic("events"))
     );
     a.unwrap();
     b.unwrap();
-    admin.topic("events", deadline()).await.unwrap();
+    admin.topic("events").await.unwrap();
     let polled = std::sync::atomic::AtomicBool::new(false);
     let invalid = scope_traceparent("invalid", async {
         polled.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -787,15 +775,15 @@ async fn dns_endpoint_connects_to_the_ipv4_local_development_listener() {
     )
     .await
     .unwrap();
-    client.admin().topic("events", deadline()).await.unwrap();
-    client.close(deadline()).await;
+    client.admin().topic("events").await.unwrap();
+    client.close().await;
 }
 
 #[tokio::test]
 async fn sdk_producer_pipelines_sequence_order_without_waiting_for_each_response() {
     let peer = peer(false, false).await;
     peer.state.lock().unwrap().pair_produces = true;
-    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3), deadline())
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3))
         .await
         .unwrap();
     let message = public::Message {
@@ -803,8 +791,8 @@ async fn sdk_producer_pipelines_sequence_order_without_waiting_for_each_response
         body: Bytes::from_static(b"body"),
     };
     let (first, second) = tokio::join!(
-        producer.produce(vec![message.clone()], deadline()),
-        producer.produce(vec![message], deadline())
+        producer.produce(vec![message.clone()]),
+        producer.produce(vec![message])
     );
     assert_eq!(first.unwrap().first_offset, 0);
     assert_eq!(second.unwrap().first_offset, 1);
@@ -824,17 +812,14 @@ async fn sdk_producer_pipelines_sequence_order_without_waiting_for_each_response
 async fn many_producer_domains_share_a_fixed_lane_set_and_one_produce_connection() {
     let peer = peer(false, false).await;
     for producer_id in 3..35 {
-        let producer = Producer::open(peer.client.clone(), id(1), 0, id(producer_id), deadline())
+        let producer = Producer::open(peer.client.clone(), id(1), 0, id(producer_id))
             .await
             .unwrap();
         producer
-            .produce(
-                vec![public::Message {
-                    key: Bytes::new(),
-                    body: Bytes::from_static(b"body"),
-                }],
-                deadline(),
-            )
+            .produce(vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"body"),
+            }])
             .await
             .unwrap();
     }
@@ -856,12 +841,7 @@ async fn many_producer_domains_share_a_fixed_lane_set_and_one_produce_connection
 async fn reconnect_uses_the_same_logical_session_after_a_physical_connection_closes() {
     let peer = peer(false, false).await;
     peer.state.lock().unwrap().drop_first_admin = true;
-    let topic = peer
-        .client
-        .admin()
-        .create_topic("events", 1, deadline())
-        .await
-        .unwrap();
+    let topic = peer.client.admin().create_topic("events", 1).await.unwrap();
     assert_eq!(topic.topic_id, bytes(id(1)));
     let state = peer.state.lock().unwrap();
     assert_eq!(
@@ -880,19 +860,16 @@ async fn reconnect_uses_the_same_logical_session_after_a_physical_connection_clo
 #[tokio::test]
 async fn cancelling_a_produce_future_preserves_its_recoverable_pending_batch() {
     let peer = peer(true, false).await;
-    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3), deadline())
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3))
         .await
         .unwrap();
     let clone = producer.clone();
     let task = tokio::spawn(async move {
         clone
-            .produce(
-                vec![public::Message {
-                    key: Bytes::from_static(b"key"),
-                    body: Bytes::from_static(b"secret-payload"),
-                }],
-                deadline(),
-            )
+            .produce(vec![public::Message {
+                key: Bytes::from_static(b"key"),
+                body: Bytes::from_static(b"secret-payload"),
+            }])
             .await
     });
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -909,13 +886,7 @@ async fn cancelling_a_produce_future_preserves_its_recoverable_pending_batch() {
     assert!(task.await.unwrap_err().is_cancelled());
     let pending = producer.pending_batches().await.unwrap().pop().unwrap();
     assert!(!format!("{pending:?}").contains("secret-payload"));
-    assert!(
-        producer
-            .retry(&pending, deadline())
-            .await
-            .unwrap()
-            .duplicate
-    );
+    assert!(producer.retry(&pending).await.unwrap().duplicate);
 }
 
 #[tokio::test]
@@ -927,16 +898,15 @@ async fn ack_batches_obey_encoded_control_frame_limits_and_count_limits() {
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     let delivery = consumer.next().await.unwrap().unwrap();
     let deliveries = vec![delivery; 400];
     tidemq_sdk::scope_traceparent(
         "00-11111111111111111111111111111111-2222222222222222-01",
-        consumer.ack_many(&deliveries, deadline()),
+        consumer.ack_many(&deliveries),
     )
     .await
     .unwrap();
@@ -974,11 +944,7 @@ async fn sdk_uses_the_existing_host_subscriber_and_omits_credentials() {
         .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
     let peer = peer(false, false).await;
-    peer.client
-        .admin()
-        .topic("events", deadline())
-        .await
-        .unwrap();
+    peer.client.admin().topic("events").await.unwrap();
     tracing::info!("host-subscriber-survived");
     let text = String::from_utf8(output.lock().unwrap().clone()).unwrap();
     assert!(text.contains("host-subscriber-survived"));
@@ -990,11 +956,7 @@ async fn sdk_uses_the_existing_host_subscriber_and_omits_credentials() {
 #[tokio::test]
 async fn optional_metrics_register_into_the_hosts_registry() {
     let peer = peer(false, false).await;
-    peer.client
-        .admin()
-        .topic("events", deadline())
-        .await
-        .unwrap();
+    peer.client.admin().topic("events").await.unwrap();
     let mut registry = prometheus_client::registry::Registry::default();
     peer.client
         .metrics()
@@ -1010,17 +972,14 @@ async fn optional_metrics_register_into_the_hosts_registry() {
 async fn transient_rejection_retries_the_original_batch_with_a_bounded_attempt_budget() {
     let peer = peer(false, false).await;
     peer.state.lock().unwrap().reject_produces = 2;
-    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3), deadline())
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3))
         .await
         .unwrap();
     let message = public::Message {
         key: Bytes::from_static(b"key"),
         body: Bytes::from_static(b"body"),
     };
-    let receipt = producer
-        .produce(vec![message.clone()], deadline())
-        .await
-        .unwrap();
+    let receipt = producer.produce(vec![message.clone()]).await.unwrap();
     assert_eq!(receipt.first_offset, 0);
     assert!(!receipt.duplicate);
     {
@@ -1044,7 +1003,7 @@ async fn transient_rejection_retries_the_original_batch_with_a_bounded_attempt_b
     }
     peer.state.lock().unwrap().reject_produces = u32::MAX;
     assert!(matches!(
-        producer.produce(vec![message], deadline()).await,
+        producer.produce(vec![message]).await,
         Err(Error::Remote {
             code: tidemq_protocol::common::ErrorCode::Unavailable,
             outcome: tidemq_protocol::common::Outcome::Rejected,
@@ -1064,28 +1023,26 @@ async fn transient_rejection_retries_the_original_batch_with_a_bounded_attempt_b
 #[tokio::test]
 async fn unknown_produce_retries_original_identity_without_reassigning_sequence() {
     let peer = peer(true, false).await;
-    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3), deadline())
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3))
         .await
         .unwrap();
     let message = public::Message {
         key: Bytes::from_static(b"key"),
         body: Bytes::from_static(b"body"),
     };
-    let result = producer
-        .produce(
-            vec![message.clone()],
-            Instant::now() + Duration::from_millis(100),
-        )
+    let result = RequestContext::with_timeout(Duration::from_millis(100))
+        .unwrap()
+        .scope(producer.produce(vec![message.clone()]))
         .await;
     assert!(matches!(result, Err(Error::ProduceUnknown { .. })));
     assert!(matches!(
-        producer.produce(vec![message], deadline()).await,
+        producer.produce(vec![message]).await,
         Err(Error::ProducerBlocked)
     ));
     let pending = producer.pending_batches().await.unwrap().pop().unwrap();
     assert_eq!(pending.first_sequence(), 0);
     assert_eq!(peer.client.metrics().snapshot().pending_batches, 1);
-    let receipt = producer.retry(&pending, deadline()).await.unwrap();
+    let receipt = producer.retry(&pending).await.unwrap();
     assert!(receipt.duplicate);
     assert!(producer.pending_batches().await.unwrap().is_empty());
     assert!(peer.client.metrics().snapshot().admitted_bytes > 0);
@@ -1110,6 +1067,258 @@ async fn unknown_produce_retries_original_identity_without_reassigning_sequence(
     );
 }
 
+async fn wait_for_produces(peer: &Peer, count: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if peer.state.lock().unwrap().producer_requests.len() >= count {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn cancellation_retains_original_batch_and_does_not_reset_other_producers() {
+    let peer = peer(true, false).await;
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3))
+        .await
+        .unwrap();
+    let other = Producer::open(peer.client.clone(), id(1), 0, id(4))
+        .await
+        .unwrap();
+    let context = RequestContext::with_timeout(Duration::from_secs(3)).unwrap();
+    let cancellation = context.cancellation_token();
+    let clone = producer.clone();
+    let task = tokio::spawn(async move {
+        context
+            .scope(clone.produce(vec![public::Message {
+                key: Bytes::from_static(b"key"),
+                body: Bytes::from_static(b"cancelled-result"),
+            }]))
+            .await
+    });
+    wait_for_produces(&peer, 1).await;
+    cancellation.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(result, Err(Error::ProduceUnknown { .. })));
+    assert!(result.unwrap_err().outcome_unknown());
+    assert_eq!(peer.client.metrics().snapshot().unknown, 1);
+    let pending = producer.pending_batches().await.unwrap().pop().unwrap();
+    let cancelled_retry = RequestContext::new(deadline(), cancellation);
+    assert!(matches!(
+        cancelled_retry.scope(producer.retry(&pending)).await,
+        Err(Error::ProduceUnknown { .. })
+    ));
+    {
+        let state = peer.state.lock().unwrap();
+        let (operation, payload) = state.producer_attempts.first().unwrap();
+        assert_eq!(operation.as_ref(), pending.operation_id().as_bytes());
+        assert_eq!(pending.first_sequence(), payload.first_sequence);
+        assert_eq!(pending.digest(), payload.content_digest.as_ref());
+    }
+    other
+        .produce(vec![public::Message {
+            key: Bytes::new(),
+            body: Bytes::from_static(b"unrelated"),
+        }])
+        .await
+        .unwrap();
+    assert!(producer.retry(&pending).await.unwrap().duplicate);
+    assert!(producer.pending_batches().await.unwrap().is_empty());
+    drop(pending);
+    assert_eq!(peer.client.metrics().snapshot().admitted_bytes, 0);
+}
+
+#[tokio::test]
+async fn cancelling_queued_produce_releases_admission_without_creating_an_identity() {
+    let peer = peer(true, false).await;
+    let mut config = ClientConfig::new(peer.endpoint.clone());
+    config.max_pending_requests = 1;
+    let client = Client::connect(config, peer.ca.clone(), TOKEN.into())
+        .await
+        .unwrap();
+    let first = Producer::open(client.clone(), id(1), 0, id(3))
+        .await
+        .unwrap();
+    let second = Producer::open(client.clone(), id(1), 0, id(4))
+        .await
+        .unwrap();
+    let message = public::Message {
+        key: Bytes::new(),
+        body: Bytes::from_static(b"queued"),
+    };
+    let result = RequestContext::with_timeout(Duration::from_millis(80))
+        .unwrap()
+        .scope(first.produce(vec![message.clone()]))
+        .await;
+    assert!(matches!(result, Err(Error::ProduceUnknown { .. })));
+    let before = client.metrics().snapshot().admitted_bytes;
+    let context = RequestContext::with_timeout(Duration::from_secs(3)).unwrap();
+    let cancellation = context.cancellation_token();
+    let clone = second.clone();
+    let queued = message.clone();
+    let task = tokio::spawn(async move { context.scope(clone.produce(vec![queued])).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(!task.is_finished());
+    assert_eq!(peer.state.lock().unwrap().producer_requests.len(), 1);
+    cancellation.cancel();
+    assert!(matches!(task.await.unwrap(), Err(Error::Cancelled)));
+    assert!(second.pending_batches().await.unwrap().is_empty());
+    assert_eq!(client.metrics().snapshot().admitted_bytes, before);
+    let pending = first.pending_batches().await.unwrap().pop().unwrap();
+    assert!(first.retry(&pending).await.unwrap().duplicate);
+    drop(pending);
+    let receipt = second.produce(vec![message]).await.unwrap();
+    assert_eq!(receipt.first_offset, 0);
+    assert_eq!(client.metrics().snapshot().admitted_bytes, 0);
+    client.close().await;
+}
+
+#[tokio::test]
+async fn closing_client_cancels_in_flight_production_and_preserves_pending_identity() {
+    let peer = peer(true, false).await;
+    let producer = Producer::open(peer.client.clone(), id(1), 0, id(3))
+        .await
+        .unwrap();
+    let clone = producer.clone();
+    let task = tokio::spawn(async move {
+        clone
+            .produce(vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"closing"),
+            }])
+            .await
+    });
+    wait_for_produces(&peer, 1).await;
+    tokio::time::timeout(Duration::from_secs(2), peer.client.close())
+        .await
+        .unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(Error::ProduceUnknown { .. })
+    ));
+    let pending = producer.pending_batches().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending.first().unwrap().first_sequence(), 0);
+    assert!(matches!(
+        peer.client.admin().topic("events").await,
+        Err(Error::Closed)
+    ));
+}
+
+#[tokio::test]
+async fn cancelled_registration_keeps_its_epoch_and_admin_submission_remains_unknown() {
+    let peer = peer(false, false).await;
+    peer.state.lock().unwrap().hold_registration = true;
+    let context = RequestContext::with_timeout(Duration::from_secs(3)).unwrap();
+    let cancellation = context.cancellation_token();
+    let client = peer.client.clone();
+    let task =
+        tokio::spawn(async move { context.scope(Producer::open(client, id(1), 0, id(3))).await });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while peer.state.lock().unwrap().registrations.is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    cancellation.cancel();
+    assert!(
+        matches!(task.await.unwrap(), Err(Error::RegistrationUnknown {
+        producer_id, registration_epoch: 1, ..
+    }) if producer_id == id(3))
+    );
+    peer.state.lock().unwrap().hold_registration = false;
+    let producer = Producer::open_at(peer.client.clone(), id(1), 0, id(3), 1)
+        .await
+        .unwrap();
+    assert_eq!(producer.epoch(), 1);
+    {
+        let mut state = peer.state.lock().unwrap();
+        assert_eq!(state.registrations.len(), 2);
+        assert_eq!(state.registrations.first(), state.registrations.last());
+        state.hold_admin = true;
+    }
+    let context = RequestContext::with_timeout(Duration::from_secs(3)).unwrap();
+    let cancellation = context.cancellation_token();
+    let client = peer.client.clone();
+    let task = tokio::spawn(async move {
+        context
+            .scope(client.admin().create_topic("cancelled", 1))
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while peer.state.lock().unwrap().admin_requests == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    cancellation.cancel();
+    let result = task.await.unwrap();
+    assert!(matches!(result, Err(Error::RequestUnknown { .. })));
+    assert!(result.unwrap_err().outcome_unknown());
+}
+
+#[tokio::test]
+async fn default_timeout_bounds_production_and_cancellation_interrupts_retry_backoff() {
+    let peer = peer(true, false).await;
+    let mut config = ClientConfig::new(peer.endpoint.clone());
+    config.request_timeout_ms = 120;
+    let client = Client::connect(config, peer.ca.clone(), TOKEN.into())
+        .await
+        .unwrap();
+    let producer = Producer::open(client.clone(), id(1), 0, id(3))
+        .await
+        .unwrap();
+    let message = public::Message {
+        key: Bytes::new(),
+        body: Bytes::from_static(b"timeout"),
+    };
+    let started = Instant::now();
+    assert!(matches!(
+        producer.produce(vec![message.clone()]).await,
+        Err(Error::ProduceUnknown { .. })
+    ));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let pending = producer.pending_batches().await.unwrap().pop().unwrap();
+    assert!(producer.retry(&pending).await.unwrap().duplicate);
+    drop(pending);
+    peer.state.lock().unwrap().reject_produces = u32::MAX;
+    let mut config = ClientConfig::new(peer.endpoint.clone());
+    config.retry_backoff = Duration::from_secs(1);
+    let retry_client = Client::connect(config, peer.ca.clone(), TOKEN.into())
+        .await
+        .unwrap();
+    let retrying = Producer::open(retry_client.clone(), id(1), 0, id(4))
+        .await
+        .unwrap();
+    let context = RequestContext::with_timeout(Duration::from_secs(3)).unwrap();
+    let cancellation = context.cancellation_token();
+    let clone = retrying.clone();
+    let task = tokio::spawn(async move { context.scope(clone.produce(vec![message])).await });
+    wait_for_produces(&peer, 3).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    cancellation.cancel();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_millis(500), task)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(Error::ProduceUnknown { .. })
+    ));
+    assert_eq!(peer.state.lock().unwrap().producer_requests.len(), 3);
+    assert_eq!(retrying.pending_batches().await.unwrap().len(), 1);
+    client.close().await;
+    retry_client.close().await;
+}
+
 #[tokio::test]
 async fn owner_recovery_preserves_failed_keys_and_invalidates_old_tokens_across_clones() {
     for unassigned in [false, true] {
@@ -1123,13 +1332,12 @@ async fn owner_recovery_preserves_failed_keys_and_invalidates_old_tokens_across_
                 ordering: DeliveryOrdering::KeySerial,
                 ..ConsumerConfig::default()
             },
-            deadline(),
         )
         .await
         .unwrap();
         let clone = consumer.clone();
-        consumer.fill(deadline()).await.unwrap();
-        consumer.fill(deadline()).await.unwrap();
+        consumer.fill().await.unwrap();
+        consumer.fill().await.unwrap();
         let old = consumer.next().await.unwrap().unwrap();
         consumer.fail(old.clone()).await.unwrap();
         {
@@ -1137,34 +1345,27 @@ async fn owner_recovery_preserves_failed_keys_and_invalidates_old_tokens_across_
             advance_owner(&mut state, unassigned);
             state.other_hot_key = true;
         }
-        clone.fill(deadline()).await.unwrap();
+        clone.fill().await.unwrap();
         assert_eq!(peer.client.metrics().snapshot().active_deliveries, 2);
-        consumer.fill(deadline()).await.unwrap();
+        consumer.fill().await.unwrap();
         assert!(clone.next().await.unwrap().is_none());
         assert!(matches!(
-            consumer.ack(&old, deadline()).await,
+            consumer.ack(&old).await,
             Err(Error::StaleDelivery)
         ));
         drop(old);
-        consumer.fill(deadline()).await.unwrap();
+        consumer.fill().await.unwrap();
         let unrelated = clone.next().await.unwrap().unwrap();
         assert_eq!(unrelated.offset(), 2);
-        clone.ack(&unrelated, deadline()).await.unwrap();
+        clone.ack(&unrelated).await.unwrap();
         assert!(consumer.next().await.unwrap().is_none());
         consumer.retry_failed(0).await.unwrap();
         let first = clone.next().await.unwrap().unwrap();
         assert_eq!(first.offset(), 0);
-        clone.ack(&first, deadline()).await.unwrap();
+        clone.ack(&first).await.unwrap();
         let second = consumer.next().await.unwrap().unwrap();
         assert_eq!(second.offset(), 1);
-        assert_eq!(
-            consumer
-                .ack(&second, deadline())
-                .await
-                .unwrap()
-                .acknowledged_before,
-            3
-        );
+        assert_eq!(consumer.ack(&second).await.unwrap().acknowledged_before, 3);
         let state = peer.state.lock().unwrap();
         assert_eq!(state.claims.len(), 2);
         assert!(
@@ -1186,16 +1387,15 @@ async fn hot_ack_frontier_can_cross_the_frozen_boundary_before_and_after_owner_r
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
     for offset in 0..2 {
         let delivery = consumer.next().await.unwrap().unwrap();
         assert_eq!(delivery.offset(), offset);
-        consumer.ack(&delivery, deadline()).await.unwrap();
+        consumer.ack(&delivery).await.unwrap();
     }
     for offset in 2..5 {
         {
@@ -1205,15 +1405,11 @@ async fn hot_ack_frontier_can_cross_the_frozen_boundary_before_and_after_owner_r
                 advance_owner(&mut state, false);
             }
         }
-        assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+        assert_eq!(consumer.fill().await.unwrap(), 1);
         let delivery = consumer.next().await.unwrap().unwrap();
         assert_eq!(delivery.offset(), offset);
         assert_eq!(
-            consumer
-                .ack(&delivery, deadline())
-                .await
-                .unwrap()
-                .acknowledged_before,
+            consumer.ack(&delivery).await.unwrap().acknowledged_before,
             offset + 1
         );
     }
@@ -1239,14 +1435,13 @@ async fn cancelled_reclaim_cannot_resume_its_obsolete_queue_and_recovery_keeps_t
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     peer.state.lock().unwrap().drop_claim_reply = true;
     let clone = consumer.clone();
-    let task = tokio::spawn(async move { clone.reclaim(deadline()).await });
+    let task = tokio::spawn(async move { clone.reclaim().await });
     let stop = deadline();
     while peer.state.lock().unwrap().claims.len() < 2 {
         assert!(Instant::now() < stop);
@@ -1255,8 +1450,8 @@ async fn cancelled_reclaim_cannot_resume_its_obsolete_queue_and_recovery_keeps_t
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     assert!(matches!(consumer.next().await, Err(Error::StaleDelivery)));
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
     let fresh = consumer.next().await.unwrap().unwrap();
     assert_eq!(fresh.offset(), 0);
     let state = peer.state.lock().unwrap();
@@ -1282,12 +1477,11 @@ async fn same_generation_refresh_rebuilds_enqueue_evidence_before_unlocking_keys
             ordering: DeliveryOrdering::KeySerial,
             ..ConsumerConfig::default()
         },
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
     let failed = consumer.next().await.unwrap().unwrap();
     consumer.fail(failed).await.unwrap();
     {
@@ -1296,11 +1490,11 @@ async fn same_generation_refresh_rebuilds_enqueue_evidence_before_unlocking_keys
         state.idempotent_claim = true;
         state.other_hot_key = true;
     }
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     assert!(consumer.next().await.unwrap().is_none());
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     assert!(consumer.next().await.unwrap().is_none());
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     let unrelated = consumer.next().await.unwrap().unwrap();
     assert_eq!(unrelated.offset(), 2);
     consumer.retry_failed(0).await.unwrap();
@@ -1318,38 +1512,30 @@ async fn old_ack_is_not_rewritten_and_recv_recovers_from_the_durable_frontier() 
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
     let first = consumer.next().await.unwrap().unwrap();
     assert_eq!(first.offset(), 0);
-    consumer.ack(&first, deadline()).await.unwrap();
+    consumer.ack(&first).await.unwrap();
     let old = consumer.next().await.unwrap().unwrap();
     advance_owner(&mut peer.state.lock().unwrap(), true);
     assert!(matches!(
-        consumer.ack(&old, deadline()).await,
+        consumer.ack(&old).await,
         Err(Error::Remote {
             code: tidemq_protocol::common::ErrorCode::Fenced,
             ..
         })
     ));
-    let fresh = consumer.recv(deadline()).await.unwrap().unwrap();
+    let fresh = consumer.recv().await.unwrap().unwrap();
     assert_eq!(fresh.offset(), 1);
     assert!(matches!(
-        consumer.ack(&old, deadline()).await,
+        consumer.ack(&old).await,
         Err(Error::StaleDelivery)
     ));
-    assert_eq!(
-        consumer
-            .ack(&fresh, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
-        2
-    );
+    assert_eq!(consumer.ack(&fresh).await.unwrap().acknowledged_before, 2);
     let state = peer.state.lock().unwrap();
     assert_eq!(state.claims.len(), 2);
     assert_eq!(state.assignment.as_ref().unwrap().acknowledged_before, 2);
@@ -1368,7 +1554,6 @@ async fn automatic_owner_recovery_never_reuses_explicit_takeover_consent_for_ano
             replace_session_id: Some(id(9)),
             ..ConsumerConfig::default()
         },
-        deadline(),
     )
     .await
     .unwrap();
@@ -1378,7 +1563,7 @@ async fn automatic_owner_recovery_never_reuses_explicit_takeover_consent_for_ano
         state.assignment.as_mut().unwrap().session_id = bytes(id(9));
     }
     assert!(matches!(
-        consumer.fill(deadline()).await,
+        consumer.fill().await,
         Err(Error::Remote {
             code: tidemq_protocol::common::ErrorCode::AssignmentBusy,
             ..
@@ -1395,7 +1580,7 @@ async fn automatic_owner_recovery_never_reuses_explicit_takeover_consent_for_ano
             .session_id,
         bytes(id(9))
     );
-    consumer.reclaim(deadline()).await.unwrap();
+    consumer.reclaim().await.unwrap();
     let state = peer.state.lock().unwrap();
     assert_eq!(state.claims.len(), 2);
     assert_eq!(
@@ -1413,12 +1598,11 @@ async fn last_allowed_assignment_refresh_can_issue_its_final_read_without_holdin
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
     peer.state.lock().unwrap().reject_reads = 9;
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     assert_eq!(peer.state.lock().unwrap().claims.len(), 4);
 }
 
@@ -1431,15 +1615,14 @@ async fn repeated_fences_stop_at_the_shared_deadline_and_finite_recovery_budget(
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
     peer.state.lock().unwrap().reject_reads = 50;
     let begin = Instant::now();
     assert!(
-        consumer
-            .fill(begin + Duration::from_millis(500))
+        RequestContext::with_deadline(begin + Duration::from_millis(500))
+            .scope(consumer.fill())
             .await
             .is_err()
     );
@@ -1459,35 +1642,31 @@ async fn gaps_do_not_cross_bulk_barrier_and_failed_keys_remain_blocked() {
             ordering: DeliveryOrdering::KeySerial,
             ..ConsumerConfig::default()
         },
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     assert!(consumer.next().await.unwrap().is_none());
     assert_eq!(peer.state.lock().unwrap().hot_reads, 0);
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
     let first = consumer.next().await.unwrap().unwrap();
     assert_eq!(first.offset(), 0);
     consumer.fail(first).await.unwrap();
     assert!(consumer.next().await.unwrap().is_none());
     consumer.retry_failed(0).await.unwrap();
     let first = consumer.next().await.unwrap().unwrap();
-    consumer.ack(&first, deadline()).await.unwrap();
+    consumer.ack(&first).await.unwrap();
     let second = consumer.next().await.unwrap().unwrap();
     assert_eq!(second.offset(), 1);
-    consumer.ack(&first, deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.ack(&first).await.unwrap();
+    consumer.fill().await.unwrap();
     assert!(consumer.next().await.unwrap().is_none());
-    consumer.ack(&second, deadline()).await.unwrap();
+    consumer.ack(&second).await.unwrap();
     let hot = consumer.next().await.unwrap().unwrap();
     assert_eq!(hot.offset(), 2);
-    consumer
-        .seek(2, Id::random().unwrap(), deadline())
-        .await
-        .unwrap();
+    consumer.seek(2, Id::random().unwrap()).await.unwrap();
     assert!(matches!(
-        consumer.ack(&hot, deadline()).await,
+        consumer.ack(&hot).await,
         Err(Error::StaleDelivery)
     ));
     let state = peer.state.lock().unwrap();
@@ -1512,12 +1691,11 @@ async fn persisted_ack_ranges_bridge_receive_holes_without_business_ack() {
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
     let state = peer.state.lock().unwrap();
     assert!(state.barriers.contains(&2));
     assert_eq!(state.hot_reads, 1);
@@ -1533,14 +1711,13 @@ async fn bulk_retries_remain_available_after_hot_delivery_starts_without_busines
         0,
         id(2),
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
-    consumer.fill(deadline()).await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
+    consumer.fill().await.unwrap();
     let state = peer.state.lock().unwrap();
     assert_eq!(state.hot_reads, 1);
     assert_eq!(state.bulk_reads, 3);

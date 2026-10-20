@@ -19,6 +19,10 @@ pub enum Error {
     Resolve { source: std::io::Error },
     #[snafu(display("Client deadline exceeded"))]
     Deadline,
+    #[snafu(display("Client request cancelled"))]
+    Cancelled,
+    #[snafu(display("Request interrupted after submission; its outcome is unknown"))]
+    RequestUnknown { source: Box<Error> },
     #[snafu(display("Client admission budget exhausted"))]
     Admission,
     #[snafu(display("Server rejected the operation: {code:?}; outcome: {outcome:?}"))]
@@ -71,7 +75,9 @@ impl Error {
 
     pub fn outcome_unknown(&self) -> bool {
         match self {
-            Self::ProduceUnknown { .. } | Self::RegistrationUnknown { .. } => true,
+            Self::ProduceUnknown { .. }
+            | Self::RegistrationUnknown { .. }
+            | Self::RequestUnknown { .. } => true,
             Self::Transport { source } => transient_transport(source),
             Self::Rpc { source } => matches!(
                 source,
