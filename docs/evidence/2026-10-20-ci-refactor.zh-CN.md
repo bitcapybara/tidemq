@@ -14,7 +14,7 @@ Rust 固定 1.99.1，覆盖率与普通测试使用 cargo-nextest 0.9.148、carg
 
 ## 本地实际检查
 
-以下为 macOS arm64 的实际终态，Rust 源码相同；CI 合流只增加脚本、配置和文档。
+以下为 macOS arm64 的实际终态；最终 Rust 源码对应 `1102c1b`，`693f9bd` 仅补充证据和本轮 cohort 声明。早期检查单独标注，不与最终检查混为同一次运行。
 
 | 检查 | 结果与范围 |
 | --- | --- |
@@ -43,7 +43,7 @@ Gateway 的授权身份与取消请求索引复用 `Arc<str>`，仅在网络编�
 
 WAL 分析建议生产版本采用 segment，避免 purge 时 O(保留尾部) 重写；应用完整快照仍有独立的 O(状态) 复制／编码成本。分段实现必须同步容量采样、迁移预留、manifest、读者 pin 与恢复／删除屏障。本轮没有实现新存储格式或为其新增故障测试，详情见 `docs/research/wal-segments.zh-CN.md`。
 
-## Linux CI 与基线
+## 第一轮 Linux CI 与基线
 
 Rust：[39402803302](https://github.com/bitcapybara/tidemq/actions/runs/39402803302)。
 
@@ -74,7 +74,61 @@ Performance 构建完成后，候选 `validate-config` 拒绝新 `authorization`
 
 这些修复完成后声明新一轮完整 cohort：候选为合入 `6f8ca0d`、`95194d6`、`f8eb251` 的下一次干净 main push，由工作流记录完整 Git SHA；基线仍为 `d7c913e`，使用同一 Rust 1.99.1。两拓扑各八个交替 A/B、B/A pair，不能复用首轮样本、删除慢试次或追加直到通过。只有新一轮全部 Rust／覆盖率和完整性能比较成功才联合晋升；现有基线与历史失败报告不重标。
 
-新 Linux 终态、覆盖率计数、性能结论与晋升提交在实际完成后补充；进行中的流程不计成功。
+## 第二轮实际结果与基线
+
+候选完整源码为 `693f9bd91a570758f7891f15edb2e95fdcf47864`，与基线 `d7c913e` 均使用 Rust 1.99.1。测量结束前 main 保持在该候选，未复用首轮样本或修改验收策略。
+
+[Rust run 39411371654](https://github.com/bitcapybara/tidemq/actions/runs/39411371654) 的 8／8 job 全部成功。Linux／macOS workspace 各 310 passed／12 skipped，文档各 4 passed；Linux SDK 默认 feature 为 37 passed；System／jemalloc 各 250 passed／11 skipped，heap 两平台各 1 passed，Node 边界测试 44 passed。这些检查存在重叠，不相加。
+
+System 中首轮两个失败场景本轮分别在 7.926 秒和 3.816 秒通过，jemalloc 分别为 6.239 秒和 3.602 秒；新增过期回复回归也通过。Linux 默认下同三场景分别为 5.970、2.896 和 0.600 秒。未放宽原期限或添加重试。
+
+Coverage 原始 LLVM artifact 为 `12259986265`，共 127 个源码文件，范围与首轮相同，包含 workspace build.rs。独立审计重算原始计数并通过受保护的 `validatePromotion`：
+
+| 覆盖率 | 已覆盖／总数 | 展示比例 |
+| --- | --- | --- |
+| 行 | 27907／35176 | 79.3353% |
+| 函数 | 2576／3637 | 70.8276% |
+| region | 38365／49848 | 76.9640% |
+
+原始 LLVM JSON SHA-256 为 `f62befee53ba66d1870dfa643acd61f5859c1a1191a2989e35cd3880b9eb23bf`，策略 SHA-256 为 `ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57`。门禁仍比较三项原始整数分数，展示比例不参与判断。
+
+[Performance run 39411371718](https://github.com/bitcapybara/tidemq/actions/runs/39411371718) 的 build job `118589678584` 与 measure job `118593430705` 均成功。构建耗时 9 分 41 秒，两侧服务分别实际编译 2 分 34 秒，负载工具分别编译 1 分 26 秒和 1 分 24 秒。取回四个实际产物后重新计算 SHA-256，均与固定 manifest 一致，两侧服务与负载哈希分别不同：
+
+| 产物 | 基线 SHA-256 前缀 | 候选 SHA-256 前缀 |
+| --- | --- | --- |
+| 服务 | `5760bb1fdfb2` | `a3d5788789cd` |
+| SDK 负载 | `9de104797498` | `829f133cd4b4` |
+
+完整 manifest SHA-256 为 `b318e4e1b0c1c3a3005ac54c23c5b2796dd41c276ce2030c6aaf8f82798e8205`，性能汇总 SHA-256 为 `c16e933c8d0074b04acc8fbc1923b658855c5e01d0486bf3a60249d5529ec058`。另一个 agent 独立重算全部 64 份原始 workload 报告与 32 份 execution：65,536 条测量消息、12,288 条预热消息均有持久 ACK，64 个节点退出均正常；全部配置预算、生成器 Git 原始摘要、四个真实二进制和冻结 Cargo.lock 身份相符。
+
+两拓扑各八对固定样本、五项指标严格重算均无 resolved regression，三个主指标的 log CI 半宽均不超过原有 0.15 门槛。下表慢化比率统一为大于 1 表示变慢，吞吐取倒数；区间为原有十项比较族的单项 99.5% 校正区间。
+
+| 拓扑 | 指标 | 慢化比率 | 校正 CI | log 半宽 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| RF1 | 吞吐 | 1.0015 | 0.9934—1.0096 | 0.0081 | passed |
+| RF1 | produce 均值 | 0.9927 | 0.8882—1.1094 | 0.1112 | passed |
+| RF1 | produce p99 上界 | 1.0267 | 0.9130—1.1545 | 0.1173 | diagnostic |
+| RF1 | offered→持久 ACK 均值 | 0.9957 | 0.9633—1.0292 | 0.0331 | passed |
+| RF1 | offered→持久 ACK p99 上界 | 0.9978 | 0.9705—1.0258 | 0.0277 | diagnostic |
+| RF3 | 吞吐 | 0.9952 | 0.9570—1.0349 | 0.0391 | passed |
+| RF3 | produce 均值 | 1.0215 | 0.9654—1.0808 | 0.0564 | passed |
+| RF3 | produce p99 上界 | 1.1828 | 0.7636—1.8322 | 0.4376 | imprecise |
+| RF3 | offered→持久 ACK 均值 | 1.0117 | 0.9932—1.0304 | 0.0184 | passed |
+| RF3 | offered→持久 ACK p99 上界 | 1.1672 | 0.7677—1.7747 | 0.4190 | imprecise |
+
+RF3 两项 p99 精度不足，点估计也较慢，不能宣称尾延迟无退化；按原有策略，p99 保留显著回退否决，宽度本身不阻塞主指标验收。全部慢试次保留，没有删样本、补试次、放宽门槛或重标旧报告。跨平台复算两处派生浮点值相差 1 ULP，严格比较的结论相同，原 Linux 报告逐字节保留。
+
+## 计费阻塞与本地审计晋升
+
+Performance workflow 整体状态仍为 failure：汇总 job `118607602402` 的 `runner_id=0`、`steps=[]`，GitHub 拒绝启动 runner，注释原文为：
+
+> The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings
+
+因此自动晋升 job 被跳过，不能把该 workflow 写成成功。付款或额度设置没有更改，额度处理已交用户决定。
+
+在 main 仍为 `693f9bd`、Rust 全部成功、performance build／measure 成功及原始数据交叉审计通过后，本地执行了与工作流相同、未经修改的 `scripts/promote-baselines.mjs`，同时传入 Rust run `39411371654` 和 Performance run `39411371718`。原脚本重新核验同一干净 HEAD、生成器与配置、全部统计结论、覆盖率原始计数、策略／旧基线／制品摘要和 run 身份后，才写入两套基线。
+
+提交 `d38fb80` 一次记录 `coverage/baseline.json`、`performance/baseline.json` 和 `performance/baseline-report.json`；两套基线均指向真实测量源码 `693f9bd`，性能报告与原 artifact 逐字节相同。当前覆盖率已是数值基线，后续 PR 三项任意精确比例下降都会失败。此次为本地审计晋升，未伪造 hosted 汇总结果；恢复 Actions 额度后的远端验收仍需实际运行。
 
 ## 验收边界
 

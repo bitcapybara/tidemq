@@ -219,7 +219,7 @@ combined 端到端 fixture 在原 50 s 总窗口内显式恢复 Read Unknown 和
 
 [Performance 39386162718](https://github.com/bitcapybara/tidemq/actions/runs/39386162718) 在精确 main `d7c913ebd21a5f1f07840304e9b8f8d9d8a3bfae` 完成全部固定 cohort：build、measure、稳定汇总检查和 promote 均成功。build 用时 6 min 50 s；measure 从 07:30:07 至 08:06:14 UTC，共 36 min 07 s；汇总和晋升分别于 08:06:19、08:06:30 UTC 成功。对应同一提交的七项 Rust CI job 已成功，晋升前 main 未前进。
 
-晋升提交为 `e16c79d87fb0633c33a0c9b0a465d200dc4c1e6d`。它实际新增 [baseline-report.json](../../performance/baseline-report.json)，并把 [baseline.json](../../performance/baseline.json) 的接受源码推进到 `d7c913e`。初始比较侧为冻结 `56a8349`，候选和可信工具为 `d7c913e`；两侧源码身份不同、实际服务和负载二进制分别完全相同，因此这是 A/A 校准，`same_source_reused_builds=false` 仍原样保留。
+晋升提交为 `e16c79d87fb0633c33a0c9b0a465d200dc4c1e6d`。它实际新增 [baseline-report.json](https://github.com/bitcapybara/tidemq/blob/e16c79d87fb0633c33a0c9b0a465d200dc4c1e6d/performance/baseline-report.json)，并把 [baseline.json](https://github.com/bitcapybara/tidemq/blob/e16c79d87fb0633c33a0c9b0a465d200dc4c1e6d/performance/baseline.json) 的接受源码推进到 `d7c913e`。初始比较侧为冻结 `56a8349`，候选和可信工具为 `d7c913e`；两侧源码身份不同、实际服务和负载二进制分别完全相同，因此这是 A/A 校准，`same_source_reused_builds=false` 仍原样保留。
 
 | 固定身份 | SHA-256 |
 | --- | --- |

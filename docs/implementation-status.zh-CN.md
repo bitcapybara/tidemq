@@ -1,10 +1,10 @@
 # 实施状态
 
-2026-10-20 本轮重构：Rust 已固定为 1.99.1，配置仅接受当前按角色拆分的格式。源码 `267226d` 的 macOS arm64 workspace 全 target nextest 为 309 passed、12 skipped，另有 4 项文档测试通过；严格全 target Clippy 与生产 panic／索引审计通过。无效参数、错误日志位置、共享身份字符串及 multipart 许可生命周期已整理；SDK 可选 OpenTelemetry 指标复用宿主 provider。CI 覆盖率与性能联合晋升仍须以本轮 Linux main 的实际报告验收。WAL segment 的结论、容量模型和落地边界见[分析](research/wal-segments.zh-CN.md)，本轮没有实现分段写入器。
+2026-10-20 本轮重构：Rust 已固定为 1.99.1，配置仅接受当前按角色拆分的格式。源码 `693f9bd` 的 Rust CI 8／8 job 成功，Linux／macOS workspace 各 310 passed／12 skipped，文档各 4 passed；System／jemalloc 各 250 passed／11 skipped，全 target 严格 Clippy 与生产 panic／索引审计通过。无效参数、错误日志位置、共享身份字符串及 multipart 许可生命周期已整理；SDK 可选 OpenTelemetry 指标复用宿主 provider。WAL segment 的结论、容量模型和落地边界见[分析](research/wal-segments.zh-CN.md)，本轮没有实现分段写入器。
 
 首轮 main `401c7c9` 的两平台默认测试与 Linux 覆盖率通过，但 System 两例超时，性能候选在配置校验退出；覆盖率与性能基线均未晋升。已修复可复现的过期 Control 回复关闭共享 stream、换主测试固定旧 Metadata 权威，以及共享 Cargo target 错用另一源码产物三个缺陷；均有实际 red／green 回归，未改 lease、deadline、重试、负载或统计门槛。原始失败记录及新完整 cohort 声明见[本轮证据](evidence/2026-10-20-ci-refactor.zh-CN.md)。
 
-源码 `1102c1b` 的最终 macOS CI 串行 profile 已通过 310 项／12 skipped，全 target 严格 Clippy 与生产审计通过。新一轮 Linux main 的完整测试、覆盖率与性能基线验收仍以实际终态为准。
+第二轮完整 32 个性能试次和原有统计门禁通过；覆盖率原始计数为行 27907／35176、函数 2576／3637、region 38365／49848。Performance 汇总 job 未获得 runner，GitHub 注释明确付款／spending limit 问题，整体 workflow 仍为 failure，自动晋升被跳过。独立重算全部原始报告、核对源码及实际成功 job 后，本地运行原联合脚本，以 `d38fb80` 一次记录指向 `693f9bd` 的两套数值基线和逐字节原报告。RF3 两项 p99 仍 imprecise，不能宣称尾延迟无退化；付款设置未改，恢复额度后的远端验收仍待实际运行，详见[本轮证据](evidence/2026-10-20-ci-refactor.zh-CN.md)。
 
 2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区、元数据创建/迁移重放及持久 Read 前缀结果边界已修复，冻结 `56a8349` 的 workspace 为 284 passed/12 ignored、34 个 suite、0 failed，Clippy/严格审计通过。main `077004e` 与 `d7c913e` 的七项 Rust CI job 均全部通过；`077004e` 的 Linux Docker 十项矩阵及 736 条完整持久 ACK 通过，精确版本与隔离审计见[最新记录](evidence/2026-10-20-docker-077004e.zh-CN.md)。隔离构建/测量的 `d7c913e` 完整 32 个试次、汇总与晋升均成功，`e16c79d` 已提交真实数值基线。四项 p99 仍为 imprecise，不证明小幅尾回退已排除或生产性能已达标；历史失败和不确定报告按[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)分别保留。
 
@@ -23,7 +23,7 @@
 | T10 运行时 | serve、组合/独立角色、实际内外 QUIC、管理健康/就绪/指标/诊断、TLS/静态授权、正常关闭；兼容 LibreSSL 的配置生成器；真实 RF1/RF3 热冷路径、独立 OS 进程故障与原 SDK 恢复；Linux 独立 Docker 项目、UID/卷/cgroup/无宿主端口实际核验 | 真实生产部署、跨区及长期压力待验 |
 | T11 弹性 | 私有稳定成员证明、learner/joint/stable、真实 Raft 迁移、独立修复预算、真实容量/CPU/网络/连接/ACK 评分；owned ticker 驱动显式/自动 Storage 修复及 Broker 移交 | 冷却/长期均衡、高压力及跨区容量待验 |
 | T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；独立 RF3 CLI 与 Linux Docker 的 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启、RF1 真 OOM；`077004e` 十个 Docker case 合计 736 条完整唯一交付和持久 ACK；`d7c913e` Linux workspace 284 passed/12 ignored、34 个 suite | 历史 RustFS ignored 与当前普通门禁分开计数；Linux 官方 Collector ignored 未执行；生产 LB/三区、掉电与长稳待验 |
-| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；构建与测量 VM 分离的 `d7c913e` 完整 32 试次及固定统计策略通过，`e16c79d` 已入库首份真实回归基线 | 旧两轮 inconclusive 保留；当前四项 p99 仍 imprecise，不保证小幅尾回退检出；高吞吐低延迟、长稳与三区目标待验。固定门槛和尾部检测边界见[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md) |
+| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；`693f9bd` 隔离构建／测量完整 32 试次通过，`d38fb80` 本地审计晋升真实性能／覆盖率数值基线 | 历史失败与 inconclusive 保留；当前 RF3 两项 p99 仍 imprecise，无法排除尾回退；GitHub 计费阻塞远端汇总，高吞吐低延迟、长稳与三区目标待验。细节见[本轮记录](evidence/2026-10-20-ci-refactor.zh-CN.md) |
 | T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；可选 OTLP 有界导出、实际四角色关联、Collector 多故障隔离；统一导航、84 条覆盖、Linux Docker 构建/隔离/故障脚本与真实命令证据 | Linux 分配栈、生产命令与浏览器画面仍按对应环境验收 |
 
 ## 证据口径

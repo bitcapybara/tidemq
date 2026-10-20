@@ -16,6 +16,8 @@ PR 从 base commit 读取比较器、测试范围、nextest 配置与既有基�
 
 性能与覆盖率统一在 [Performance 的晋升 job](../.github/workflows/performance.yml) 中更新，避免一个工作流提前推进 main 令另一个固定 cohort 失去源码身份。晋升要求当前 main 未前进、同提交最新 push Rust 工作流成功，下载该 run 的覆盖率制品，再独立重算 LLVM 原始计数、策略/旧基线/制品摘要、Rust run ID 以及 RF1/RF3 全部成对性能结果。任一不通过，两套基线都不写入；通过后只产生一次包含两套基线的提交。首次部署这一流水线时必须先完成这次 main cohort，不能将 `uninitialized` 当作已建立数值基线。
 
+当前数值基线对应源码 `693f9bd`：行 27907／35176、函数 2576／3637、region 38365／49848。Rust run `39411371654` 的 8 个 job 成功，Performance run `39411371718` 的构建、32 个测量试次及统计比较成功；其后汇总 job 因 GitHub 计费限制没有启动。对全部原始制品做独立交叉审计后，本地运行同一联合脚本，以 `d38fb80` 一次记录覆盖率和性能基线，未修改样本或阈值，也未把整个 Performance workflow 标为成功。后续 PR 使用这个已接受数值基线严格比较，恢复 Actions 额度后的远端验收仍须实际运行；详见[本轮证据](evidence/2026-10-20-ci-refactor.zh-CN.md)。
+
 构建缓存使用 Swatinem/rust-cache：相同 OS/工具链的普通 debug job 共享 key 前缀，再按默认、System/jemalloc 与 heap-profiling 分开 variant key，避免 GitHub 不可变缓存只保留最早写入的后端子集。LLVM instrumentation 使用独立 key 和 target，release 性能构建另用独立 key。保留依赖指纹和锁文件校验，不把覆盖率对象链接进普通二进制，也不把过期 workspace 二进制当作命中。所有编译缓存允许失败时保存，nextest/llvm-cov 下载固定预构建版本；性能测量使用全新 runner，既不编译，也不恢复构建缓存。
 
 当前 GitHub 私有仓库套餐不能设置 required checks；工作流会失败，但有合并权限的人仍可绕过。具备平台条件后，应将稳定名称 `Rust gate` 和 `Performance gate (RF1 and RF3)` 都设为必需检查。
@@ -79,7 +81,7 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 | S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../examples/deploy_validation.rs)、[读取回收回归](../src/runtime/data_reclaim_tests.rs)、[最新 Docker 记录](evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
 | M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
 | P01 [性能工具与报告口径](performance.zh-CN.md)、[17 项报告](evidence/2026-10-20-local-performance.zh-CN.md) | 外部 SDK、独立 RF1 服务进程、warmup/measure/cooldown、原 PendingBatch、unique ID/offset 与最终持久 ACK；36032 条测量/2264 条预热；三 allocator、日志三档、同预算 2/4 lanes 及官方 Collector 53 span | 单消费者的有限闭环短跑；高吞吐低延迟、生产 P99.9、长稳及公平竞品未验。原 16 项缺独立子进程 exit-status 制品；样本不足高分位为 null |
-| P02 [CI 性能门禁](../.github/workflows/performance.yml)、[统计校验](../scripts/performance/compare.test.mjs)、[产物校验](../scripts/performance/prepared.test.mjs)、[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md) | 真 RF1/三进程 RF3、两版服务/SDK、独立构建 runner 与测量 runner、四个固定二进制校验、同机八对平衡交错、独立吞吐/计划发送延迟；十项比较族校正，五项显著回退否决、三项主指标精度验收；`d7c913e` 完整 32 试次与七项 Rust CI 成功，`e16c79d` 已晋升真实基线 | 四项 p99 在成功报告中仍为 imprecise，不保证小幅尾退化检出；旧失败与不确定报告保留；当前套餐无法将检查设为 required status |
+| P02 [CI 性能门禁](../.github/workflows/performance.yml)、[统计校验](../scripts/performance/compare.test.mjs)、[产物校验](../scripts/performance/prepared.test.mjs)、[本轮记录](evidence/2026-10-20-ci-refactor.zh-CN.md) | 真 RF1/三进程 RF3、两版服务/SDK、独立构建 runner 与测量 runner、四个固定二进制校验、同机八对平衡交错、独立吞吐/计划发送延迟；十项比较族校正，五项显著回退否决、三项主指标精度验收；`693f9bd` 完整 32 试次及八项 Rust CI 成功，`d38fb80` 本地执行原联合脚本晋升数值基线 | RF3 两项 p99 仍 imprecise，无法排除尾退化；旧失败／不确定报告保留；远端汇总受 GitHub 计费阻塞，套餐另限制 required status |
 
 ## 构建、生成与 allocator
 

@@ -22,7 +22,9 @@ main 只有 Markdown 或 LICENSE 变动时跳过重复性能测量，PR 检查�
 
 本轮 `401c7c9` 的 [39402803303](https://github.com/bitcapybara/tidemq/actions/runs/39402803303) 构建结束，但候选配置校验拒绝新 `authorization` 段，未产生候选测量数据；[原始失败汇总](../performance/calibrations/20261020-401c7c9-build-cache-failed.json) 保留。取回准确产物后确认两版服务、两版负载工具分别哈希相同，候选构建仅耗时 0.26／0.19 秒；真实双目录最小回归复现 Cargo 以旧源码时间戳复用另一 checkout 的输出。这个失败不支持代码性能回退结论，也不晋升覆盖率或性能基线。修复后每个构建都清理 workspace 包、保留外部依赖缓存；失败摘要同时保留有界错误原因和配置校验日志，下一轮必须从头执行完整固定 cohort。源码 HEAD 与二进制摘要一致的记录不能单独证明 Cargo 实际编译了该源码，当前清理与真实 Cargo 回归承担这一保证。
 
-2026-10-20 的初始比较源码冻结为 `56a83498ae4ad31ff122504b2f865a7caf7c1126`，包含元数据创建、已完成迁移重放与持久 Read 前缀的正确性修复。旧 `3b75d9c` 的完整失败/不确定报告继续保留，schema、八对试次、负载、比较族、指标与精度预算不变。随后 [Performance 39386162718](https://github.com/bitcapybara/tidemq/actions/runs/39386162718) 完整完成 32 个试次，测量、汇总与晋升均成功；对应 `d7c913e` 的七项 Rust CI job 全部成功。`e16c79d` 已将真实 [baseline-report.json](../performance/baseline-report.json) 入库，并将接受源码推进到 `d7c913ebd21a5f1f07840304e9b8f8d9d8a3bfae`。
+修复后的 `693f9bd` 已完成 [39411371718](https://github.com/bitcapybara/tidemq/actions/runs/39411371718) 全部 32 个固定试次，build／measure 两个真实 job 成功，三个主指标的原统计门禁通过；RF3 两项 p99 为 `imprecise`，不能宣称尾延迟无退化。随后汇总 job 因 GitHub 付款／spending limit 问题未获得 runner，整体 workflow 为 failure，自动晋升跳过。独立核对 64 份 workload、32 份 execution、四个实际二进制及同源码 Rust 8／8 成功结果后，本地执行未经修改的联合脚本，以 `d38fb80` 一次记录两套数值基线与逐字节原性能报告。此处明确为本地审计晋升，不冒充 hosted 汇总成功；当前性能基线源码为 `693f9bd`，详细计数、区间、摘要与计费注释见[验收证据](evidence/2026-10-20-ci-refactor.zh-CN.md)。
+
+2026-10-20 的初始比较源码冻结为 `56a83498ae4ad31ff122504b2f865a7caf7c1126`，包含元数据创建、已完成迁移重放与持久 Read 前缀的正确性修复。旧 `3b75d9c` 的完整失败/不确定报告继续保留，schema、八对试次、负载、比较族、指标与精度预算不变。随后 [Performance 39386162718](https://github.com/bitcapybara/tidemq/actions/runs/39386162718) 完整完成 32 个试次，测量、汇总与晋升均成功；对应 `d7c913e` 的七项 Rust CI job 全部成功。`e16c79d` 已将真实 [baseline-report.json](https://github.com/bitcapybara/tidemq/blob/e16c79d87fb0633c33a0c9b0a465d200dc4c1e6d/performance/baseline-report.json) 入库，并将接受源码推进到 `d7c913ebd21a5f1f07840304e9b8f8d9d8a3bfae`。
 
 这次两侧实际服务和负载二进制各自完全相同，属于 A/A 校准；六项主指标通过固定 0.15 log 半宽预算，四项 p99 仍显示 `imprecise`。它建立有限回归负载的首份数值基线，不是代码提速证明，也不证明已排除小幅尾延迟退化或已达到生产性能目标。完整身份、原始报告和区间见[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)。
 
@@ -74,7 +76,7 @@ node scripts/performance-gate.mjs measure \
   --output /absolute/path/to/new-measurements
 ```
 
-完整成功的 main 运行才会晋升基线，同时提交真实报告；晋升前重新比较全部五项指标，校验受保护策略摘要、报告 schema、基线身份和当前干净 HEAD，并要求同一 main 提交最新 push Rust 工作流已完成且成功。晋升 job 下载该 Rust run 的覆盖率原始 JSON 与摘要，重算 lines/functions/regions 的精确分数，校验策略、旧基线、原始制品与 run ID；只有两套门禁都通过才一次性提交性能报告和两套基线，避免独立机器人提交令另一个 cohort 的 main 身份失效。正确性/覆盖率失败、仍在运行或不存在时均不晋升；main 已前进时旧运行直接跳过，跳过不代表基线更新。首次覆盖率初始化与 PR 的受保护范围见[测试手册](testing-benchmarks.zh-CN.md#ci-门禁与覆盖率基线)。policy/summary 使用 schema 4，原始 Rust 报告仍为 schema 3；旧五对或旧统计 schema 的报告不能复用。失败保留 `summary.json`、原始报告、每节点指标/诊断、有限进程日志与失败 WAL；成功时在检查所有节点并正常排空后清理试次数据目录。CI artifact 保留 30 天，仓库基线报告长期跟随 Git 历史。Rust 工作流另在失败时上传临时目录中的 `process-*.log`，保留 7 天，不上传配置、token 和证书文件。
+自动晋升要求完整成功的 main 运行，同时提交真实报告；晋升前重新比较全部五项指标，校验受保护策略摘要、报告 schema、基线身份和当前干净 HEAD，并要求同一 main 提交最新 push Rust 工作流已完成且成功。晋升 job 下载该 Rust run 的覆盖率原始 JSON 与摘要，重算 lines/functions/regions 的精确分数，校验策略、旧基线、原始制品与 run ID；只有两套门禁都通过才一次性提交性能报告和两套基线，避免独立机器人提交令另一个 cohort 的 main 身份失效。正确性/覆盖率失败、仍在运行或不存在时均不晋升；main 已前进时旧运行直接跳过，跳过不代表基线更新。首次覆盖率初始化与 PR 的受保护范围见[测试手册](testing-benchmarks.zh-CN.md#ci-门禁与覆盖率基线)。policy/summary 使用 schema 4，原始 Rust 报告仍为 schema 3；旧五对或旧统计 schema 的报告不能复用。失败保留 `summary.json`、原始报告、每节点指标/诊断、有限进程日志与失败 WAL；成功时在检查所有节点并正常排空后清理试次数据目录。CI artifact 保留 30 天，仓库基线报告长期跟随 Git 历史。Rust 工作流另在失败时上传临时目录中的 `process-*.log`，保留 7 天，不上传配置、token 和证书文件。
 
 GitHub 的 `Performance gate (RF1 and RF3)` 检查失败会阻止该检查通过。当前私有仓库套餐的分支保护 API 返回 403，无法设为平台强制的 required status check；具有合并权限的人仍可能绕过失败检查。升级套餐或调整仓库可见性后，应将该名称设为 main 的必需检查并保留原有规则。
 
