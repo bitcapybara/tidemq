@@ -120,7 +120,11 @@ pub(super) async fn hash_file(path: &Path, expected: u64) -> Result<[u8; 32]> {
     }
     let mut hash = blake3::Hasher::new();
     let mut remaining = expected;
-    let mut buffer = [0u8; 65_536];
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(65_536).map_err(|_| Error::Limit {
+        name: "storage checksum buffer",
+    })?;
+    buffer.resize(65_536, 0);
     while remaining != 0 {
         let count =
             usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| Error::Limit {
