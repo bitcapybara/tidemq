@@ -1,14 +1,31 @@
 name: Rust
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 2
+  WORKSPACE_FEATURES: tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 
 jobs:
   validate:
+    name: Validate (${{ matrix.os }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Free unused Android SDK space for WAL and replica-copy headroom
@@ -16,21 +33,52 @@ jobs:
         run: |
           sudo rm -rf -- /usr/local/lib/android
           df -h .
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-${{ runner.os }}-debug
+          key: default
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace --tests --examples --no-deps --locked -- -D warnings
-      - run: cargo clippy --workspace --lib --bins --no-deps --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unimplemented -D clippy::todo -D clippy::indexing_slicing
-      # Runtime tests share process-wide tracing and launch bounded Raft subprocesses.
-      - run: cargo test --workspace --locked -- --test-threads=1
-      - run: cargo test --workspace --doc --locked
-      - run: cargo build -p tidemq-protocol --features codegen --locked
-      - run: cargo fmt --all
-      - run: git diff --exit-code -- crates/tidemq-protocol/src/generated
+      - name: Lint every Rust target and optional SDK instrumentation
+        run: cargo clippy --workspace --all-targets --no-deps --locked --features "$WORKSPACE_FEATURES" -- -D warnings
+      - name: Audit production panic and indexing hazards
+        run: cargo clippy --workspace --lib --bins --no-deps --locked --features "$WORKSPACE_FEATURES" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unimplemented -D clippy::todo -D clippy::unreachable -D clippy::indexing_slicing
+      - name: Run unit, integration and target test harnesses with nextest
+        run: cargo nextest run --workspace --all-targets --locked --features "$WORKSPACE_FEATURES" --profile ci
+      - name: Run stable Rust documentation tests
+        run: cargo test --workspace --doc --locked --features "$WORKSPACE_FEATURES"
+      - name: Lint the SDK without optional instrumentation
+        if: runner.os == 'Linux'
+        run: cargo clippy -p tidemq-sdk --all-targets --no-deps --locked -- -D warnings
+      - name: Run the SDK without optional instrumentation
+        if: runner.os == 'Linux'
+        run: |
+          cp target/nextest/ci/junit.xml target/nextest/ci/workspace-junit.xml
+          cargo nextest run -p tidemq-sdk --all-targets --locked --profile ci
+      - name: Check generated protocol sources
+        run: |
+          cargo build -p tidemq-protocol --features codegen --locked
+          cargo fmt --all
+          git diff --exit-code -- crates/tidemq-protocol/src/generated
       - run: cargo run --locked -- validate-config --config config/local.toml
       - run: cargo run --locked -- allocator-probe --blocks 2
+      - name: Check coverage and performance gate trust boundaries
+        if: runner.os == 'Linux'
+        run: node --test scripts/coverage/*.test.mjs scripts/performance/*.test.mjs
+      - name: Preserve test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}
+          path: target/nextest/ci/*junit.xml
+          if-no-files-found: warn
+          retention-days: 14
       - name: Locate failed runtime logs
         if: failure()
         id: runtime-logs
@@ -45,24 +93,41 @@ jobs:
           retention-days: 7
 
   allocator:
-    runs-on: ubuntu-latest
+    name: Allocator (${{ matrix.backend }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     strategy:
+      fail-fast: false
       matrix:
-        backend: [allocator-system, allocator-mimalloc, allocator-jemalloc]
+        # Default validation and LLVM coverage already exercise mimalloc.
+        backend: [allocator-system, allocator-jemalloc]
     steps:
       - uses: actions/checkout@v4
       - name: Free unused Android SDK space for WAL and replica-copy headroom
         run: |
           sudo rm -rf -- /usr/local/lib/android
           df -h .
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: rust-${{ runner.os }}-debug
           key: ${{ matrix.backend }}
-      - run: cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features ${{ matrix.backend }} -- -D warnings
-      - run: cargo test -p tidemq --locked --no-default-features --features ${{ matrix.backend }} -- --test-threads=1
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+      - run: cargo clippy -p tidemq --all-targets --no-deps --locked --no-default-features --features ${{ matrix.backend }} -- -D warnings
+      - run: cargo nextest run -p tidemq --all-targets --locked --no-default-features --features ${{ matrix.backend }} --profile ci
+      - name: Preserve test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.backend }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 14
       - name: Locate failed runtime logs
         if: failure()
         id: runtime-logs
@@ -77,19 +142,105 @@ jobs:
           retention-days: 7
 
   heap-profile:
+    name: Heap profile (${{ matrix.os }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
-          components: rustfmt, clippy
+          components: clippy
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libunwind-dev
       - uses: Swatinem/rust-cache@v2
         with:
+          shared-key: rust-${{ runner.os }}-debug
           key: heap-profile
-      - run: cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features heap-profiling -- -D warnings
-      - run: cargo test -p tidemq --locked --no-default-features --features heap-profiling --test heap_profile
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148
+      - run: cargo clippy -p tidemq --all-targets --no-deps --locked --no-default-features --features heap-profiling -- -D warnings
+      - run: cargo nextest run -p tidemq --locked --no-default-features --features heap-profiling --test heap_profile --profile ci
+
+  coverage:
+    name: Coverage baseline (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out protected coverage scope and comparator
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the proposed source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Free unused Android SDK space for instrumented builds
+        run: |
+          sudo rm -rf -- /usr/local/lib/android
+          df -h .
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: candidate -> target/llvm-cov-target
+          shared-key: rust-${{ runner.os }}-llvm-cov
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.148,cargo-llvm-cov@0.9.1
+      - name: Validate the protected coverage comparator
+        run: node --test trusted/scripts/coverage/*.test.mjs
+      - name: Run instrumented nextest and compare exact LLVM counts
+        env:
+          COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}
+        run: bash trusted/scripts/coverage-run.sh candidate coverage-result $COVERAGE_GATE_MODE
+      - name: Preserve LLVM JSON, LCOV, HTML and nextest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            coverage-result
+            candidate/target/llvm-cov-target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Locate failed runtime logs
+        if: failure()
+        id: runtime-logs
+        run: printf 'root=%s\n' "$(node -p 'require("node:os").tmpdir()')" >> "$GITHUB_OUTPUT"
+      - name: Preserve failed runtime process logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-process-logs-coverage
+          path: ${{ steps.runtime-logs.outputs.root }}/tidemq-runtime-*/process-*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  rust:
+    name: Rust gate
+    if: always()
+    needs: [validate, allocator, heap-profile, coverage]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require every validation and coverage job to pass
+        env:
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          ALLOCATOR_RESULT: ${{ needs.allocator.result }}
+          HEAP_RESULT: ${{ needs.heap-profile.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+        run: '[[ "$VALIDATE_RESULT" == "success" && "$ALLOCATOR_RESULT" == "success" && "$HEAP_RESULT" == "success" && "$COVERAGE_RESULT" == "success" ]]'

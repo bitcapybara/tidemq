@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Compare both source revisions with the same explicitly selected compiler.
+  RUSTUP_TOOLCHAIN: 1.99.1
+
 concurrency:
   group: performance-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -48,11 +52,11 @@ jobs:
           ref: ${{ github.sha }}
           path: candidate
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: trusted -> target/performance-gate
-          key: performance-mimalloc-release
+          shared-key: rust-Linux-performance-mimalloc-release
           cache-on-failure: true
       - name: Validate the trusted comparator
         run: node --test trusted/scripts/performance/*.test.mjs
@@ -159,11 +163,11 @@ jobs:
         run: '[[ "$BUILD_RESULT" == "success" && "$MEASURE_RESULT" == "success" ]]'
 
   promote-baseline:
-    name: Record successful main baseline
+    name: Record successful main performance and coverage baselines
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: performance
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 45
     permissions:
       contents: write
       actions: read
@@ -185,15 +189,24 @@ jobs:
             printf 'Main advanced during measurement; its own run will promote the next baseline\n'
             exit 0
           fi
-          rust_run_success="$(gh run list --workflow rust.yml --branch main --commit "$VALIDATED_COMMIT" --limit 1 --json status,conclusion --jq '.[0] | .status == "completed" and .conclusion == "success"')"
-          if [[ "$rust_run_success" != "true" ]]; then
-            printf 'Rust validation for %s must complete successfully before baseline promotion\n' "$VALIDATED_COMMIT" >&2
-            exit 1
+          gh run list --workflow rust.yml --branch main --commit "$VALIDATED_COMMIT" --event push --limit 1 --json databaseId,status,conclusion > rust-run.json
+          rust_run_id="$(node -e 'const [run] = require("./rust-run.json"); if (!Number.isSafeInteger(run?.databaseId)) throw new Error("No Rust push run exists for the measured main commit"); console.log(run.databaseId)')"
+          gh run watch "$rust_run_id" --exit-status --interval 30
+          gh run download "$rust_run_id" --name coverage-report --dir covered
+          git fetch origin main
+          if [[ "$(git rev-parse origin/main)" != "$VALIDATED_COMMIT" ]]; then
+            printf 'Main advanced while waiting for Rust validation; baselines remain unchanged\n'
+            exit 0
           fi
-          node scripts/performance-gate.mjs promote --tools . --report measured/summary.json
+          node scripts/promote-baselines.mjs . measured/summary.json covered/coverage-result/summary.json covered/coverage-result/llvm.json "$rust_run_id" "$GITHUB_RUN_ID"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add performance/baseline.json performance/baseline-report.json
+          git add performance/baseline.json performance/baseline-report.json coverage/baseline.json
           git diff --cached --quiet && exit 0
-          git commit -m 'chore(perf): record validated main performance baseline'
+          git commit -m 'chore(ci): record validated performance and coverage baselines'
+          git fetch origin main
+          if [[ "$(git rev-parse origin/main)" != "$VALIDATED_COMMIT" ]]; then
+            printf 'Main advanced before baseline publication; the local baseline commit will not be pushed\n'
+            exit 0
+          fi
           git push origin HEAD:main
