@@ -85,6 +85,12 @@ impl WireService for Service {
                 &ProtocolLimits::default(),
             )?,
             _ => {
+                let diagnostic: CreateTopic =
+                    decode_payload(request.payload.clone(), &ProtocolLimits::default())?;
+                if diagnostic.name == "deferred" {
+                    self.submitted.lock().unwrap().push(0);
+                    self.replies.acquire().await.unwrap().forget();
+                }
                 let mut reply = request.clone();
                 reply.kind = FrameKind::DiagnosticResult.into();
                 reply
@@ -209,6 +215,82 @@ impl Fixture {
             transport,
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expired_handler_reply_keeps_other_control_requests_live() {
+    let Fixture {
+        client,
+        service,
+        target,
+        credentials,
+        shutdown,
+        task,
+        transport: _,
+    } = Fixture::start(DispatchConfig::default()).await;
+    let session = client
+        .connect(target, &credentials, TrafficClass::Control, deadline())
+        .await
+        .unwrap();
+    let core = RpcClient::from_session(session, RpcConfig::default())
+        .await
+        .unwrap();
+    let deferred = || {
+        request(
+            FrameKind::Diagnose,
+            TrafficClass::Control,
+            &CreateTopic {
+                name: "deferred".into(),
+                partitions: 1,
+            },
+        )
+    };
+    let mut expiring = deferred();
+    expiring.remaining_timeout_ms = 100;
+    // Expire the server budget before the caller deadline so release always enqueues a late reply.
+    let first = core
+        .submit(expiring, Instant::now() + Duration::from_millis(500))
+        .await
+        .unwrap();
+    tokio::time::timeout_at(deadline(), async {
+        while service.submitted.lock().unwrap().len() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let second = core.submit(deferred(), deadline()).await.unwrap();
+    tokio::time::timeout_at(deadline(), async {
+        while service.submitted.lock().unwrap().len() != 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(first.receive().await.is_err());
+    service.replies.add_permits(1);
+    core.call(
+        request(
+            FrameKind::Diagnose,
+            TrafficClass::Control,
+            &CreateTopic {
+                name: "live-control".into(),
+                partitions: 1,
+            },
+        ),
+        deadline(),
+    )
+    .await
+    .expect("An expired handler reply must not close the shared Control lane");
+    service.replies.add_permits(1);
+    assert_eq!(
+        second.receive().await.unwrap().frame().kind,
+        i32::from(FrameKind::DiagnosticResult)
+    );
+    core.shutdown(deadline()).await;
+    client.close(deadline()).await.unwrap();
+    shutdown.send(true).unwrap();
+    task.await.unwrap().unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

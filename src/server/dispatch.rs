@@ -474,6 +474,10 @@ async fn serve_stream<S: WireService>(
     };
     let write = async {
         while let Some(reply) = outgoing.recv().await {
+            // An expired reply must not reset other in-flight RPCs sharing this stream.
+            if Instant::now() >= reply.deadline {
+                continue;
+            }
             if sender.send(&reply.frame, reply.deadline).await.is_err() {
                 return;
             }
