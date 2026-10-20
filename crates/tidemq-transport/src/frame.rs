@@ -5,7 +5,7 @@ use prost::Message;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use tidemq_protocol::{
     common::{Frame, FrameKind, TrafficClass},
-    framing::{decode_frame, encode_frame, frame_length},
+    framing::{decode_frame, encode_frame, encode_frame_parts, frame_length},
 };
 use tokio::{
     io::AsyncReadExt,
@@ -21,6 +21,7 @@ use super::{
 };
 
 const RESET_INVALID: u32 = 0x101;
+const MIN_SHARED_PAYLOAD_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy)]
 pub(super) enum FrameAdmission {
@@ -47,7 +48,7 @@ impl FrameAdmission {
     }
 }
 
-/// Keep this lease alive while application code retains payload clones.
+/// Payload clones retain receive admission until their final drop.
 pub struct ReceivedFrame {
     frame: Frame,
     deadline: Instant,
@@ -81,9 +82,9 @@ pub struct FrameReceiver {
     clean_end: bool,
 }
 
-struct ChargedBytes {
+struct ChargedBytes<P = MemoryPermit> {
     bytes: Bytes,
-    _memory: MemoryPermit,
+    _memory: P,
 }
 
 struct LaneOperation {
@@ -98,7 +99,7 @@ impl Drop for LaneOperation {
     }
 }
 
-impl AsRef<[u8]> for ChargedBytes {
+impl<P> AsRef<[u8]> for ChargedBytes<P> {
     fn as_ref(&self) -> &[u8] {
         &self.bytes
     }
@@ -144,10 +145,15 @@ impl FramedStream {
 impl FrameSender {
     /// Enqueue without waiting for a transport ACK, allowing durable-ACK-independent pipelining.
     pub async fn send(&mut self, frame: &Frame, deadline: Instant) -> Result<()> {
+        self.send_owned(frame.clone(), deadline).await
+    }
+
+    /// Transfer ownership so large uniquely owned payloads can be queued without a frame copy.
+    pub async fn send_owned(&mut self, frame: Frame, deadline: Instant) -> Result<()> {
         if !self.usable {
             return Err(Error::Poisoned);
         }
-        self.lease.validate_kind(frame)?;
+        self.lease.validate_kind(&frame)?;
         let state = self.lease.state.clone();
         if frame.traffic_class != i32::from(state.class) {
             return Err(Error::Authorization {
@@ -228,7 +234,7 @@ impl FrameSender {
         }
     }
 
-    async fn enqueue(&mut self, frame: &Frame, deadline: Instant) -> Result<u32> {
+    async fn enqueue(&mut self, frame: Frame, deadline: Instant) -> Result<u32> {
         std::future::poll_fn(|context| self.stream.poll_send_ready(context))
             .await
             .map_err(|source| Error::Stream {
@@ -236,7 +242,7 @@ impl FrameSender {
                 source,
             })?;
         let state = &self.lease.state;
-        let (bytes, length) = encode_charged(
+        let (mut chunks, length) = encode_charged_owned(
             frame,
             if self.lease.purpose == StreamPurpose::Core {
                 FrameAdmission::Core
@@ -247,13 +253,16 @@ impl FrameSender {
             &state.budget,
             deadline,
         )?;
-        self.stream
-            .send(bytes)
-            .await
-            .map_err(|source| Error::Stream {
-                operation: "enqueue frame",
-                source,
-            })?;
+        let [header, payload, trailer] = &mut chunks;
+        let result = if payload.is_empty() && trailer.is_empty() {
+            self.stream.send(std::mem::take(header)).await
+        } else {
+            self.stream.send_vectored(&mut chunks).await
+        };
+        result.map_err(|source| Error::Stream {
+            operation: "enqueue frame",
+            source,
+        })?;
         Ok(length)
     }
 
@@ -582,7 +591,92 @@ pub(super) fn encode_charged(
     budget: &MemoryBudget,
     deadline: Instant,
 ) -> Result<(Bytes, u32)> {
-    let mut frame = frame.clone();
+    let (frame, length) = bound_frame(frame.clone(), deadline)?;
+    let bytes = encode_contiguous(&frame, admission, config, budget, length)?;
+    Ok((bytes, length))
+}
+
+fn encode_charged_owned(
+    frame: Frame,
+    admission: FrameAdmission,
+    config: &TransportConfig,
+    budget: &MemoryBudget,
+    deadline: Instant,
+) -> Result<([Bytes; 3], u32)> {
+    let (mut frame, length) = bound_frame(frame, deadline)?;
+    let shared = shared_charge(&mut frame, length).and_then(|(charge, metadata)| {
+        admission
+            .reserve(budget, charge)
+            .ok()
+            .map(|p| (p, metadata))
+    });
+    let Some((permit, metadata_budget)) = shared else {
+        let bytes = encode_contiguous(&frame, admission, config, budget, length)?;
+        return Ok(([bytes, Bytes::new(), Bytes::new()], length));
+    };
+    let (chunks, metadata_capacity) =
+        encode_frame_parts(frame, &config.protocol).map_err(|source| Error::Protocol { source })?;
+    if metadata_capacity > metadata_budget {
+        return Err(Error::Configuration {
+            reason: "frame metadata allocation exceeds reserved capacity",
+        });
+    }
+    let permit = Arc::new(permit);
+    let chunks = chunks.map(|bytes| {
+        if bytes.is_empty() {
+            bytes
+        } else {
+            Bytes::from_owner(ChargedBytes {
+                bytes,
+                _memory: permit.clone(),
+            })
+        }
+    });
+    Ok((chunks, length))
+}
+
+fn shared_charge(frame: &mut Frame, length: u32) -> Option<(u32, usize)> {
+    if frame.payload.len() < MIN_SHARED_PAYLOAD_BYTES {
+        return None;
+    }
+    let payload = match std::mem::take(&mut frame.payload).try_into_mut() {
+        Ok(payload) => payload,
+        Err(payload) => {
+            frame.payload = payload;
+            return None;
+        }
+    };
+    // Vec recovery exposes the original capacity even when Bytes was a unique offset slice.
+    let payload = Vec::from(payload);
+    let retained = payload.capacity();
+    frame.payload = Bytes::from(payload);
+    let metadata = usize::try_from(length)
+        .ok()?
+        .checked_sub(frame.payload.len())?
+        .checked_mul(2)?;
+    Some((
+        u32::try_from(retained.checked_add(metadata)?).ok()?,
+        metadata,
+    ))
+}
+
+fn encode_contiguous(
+    frame: &Frame,
+    admission: FrameAdmission,
+    config: &TransportConfig,
+    budget: &MemoryBudget,
+    length: u32,
+) -> Result<Bytes> {
+    let permit = admission.reserve(budget, length)?;
+    let bytes =
+        encode_frame(frame, &config.protocol).map_err(|source| Error::Protocol { source })?;
+    Ok(Bytes::from_owner(ChargedBytes {
+        bytes,
+        _memory: permit,
+    }))
+}
+
+fn bound_frame(mut frame: Frame, deadline: Instant) -> Result<(Frame, u32)> {
     let remaining = u64::try_from(
         deadline
             .saturating_duration_since(Instant::now())
@@ -602,14 +696,8 @@ pub(super) fn encode_charged(
         .ok_or(Error::Configuration {
             reason: "encoded frame length overflow",
         })?;
-    let permit = admission.reserve(budget, length)?;
-    let bytes =
-        encode_frame(&frame, &config.protocol).map_err(|source| Error::Protocol { source })?;
-    Ok((
-        Bytes::from_owner(ChargedBytes {
-            bytes,
-            _memory: permit,
-        }),
-        length,
-    ))
+    Ok((frame, length))
 }
+
+#[cfg(test)]
+mod tests;

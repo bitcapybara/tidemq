@@ -58,6 +58,60 @@ pub fn new_frame<M: Message>(
 }
 
 pub fn encode_frame(frame: &Frame, limits: &ProtocolLimits) -> Result<Bytes> {
+    let (length_u32, capacity) = encoded_frame_size(frame, limits)?;
+    let mut output = Vec::new();
+    output.try_reserve_exact(capacity).context(ReserveSnafu)?;
+    output.extend_from_slice(&length_u32.to_be_bytes());
+    frame.encode(&mut output).context(EncodeSnafu)?;
+    Ok(Bytes::from(output))
+}
+
+/// Return exact wire chunks and their metadata allocation capacity without copying the payload.
+/// Callers must account for the payload's entire retained allocation, not only its visible length.
+pub fn encode_frame_parts(
+    mut frame: Frame,
+    limits: &ProtocolLimits,
+) -> Result<([Bytes; 3], usize)> {
+    let (length, capacity) = encoded_frame_size(&frame, limits)?;
+    let payload = std::mem::take(&mut frame.payload);
+    let timeout = std::mem::take(&mut frame.remaining_timeout_ms);
+    let metadata_capacity = capacity.checked_sub(payload.len()).ok_or(Error::Overflow {
+        name: "frame metadata capacity",
+    })?;
+    let mut header = Vec::new();
+    header
+        .try_reserve_exact(metadata_capacity)
+        .context(ReserveSnafu)?;
+    header.extend_from_slice(&length.to_be_bytes());
+    frame.encode(&mut header).context(EncodeSnafu)?;
+    if !payload.is_empty() {
+        // Frame.payload is field 7; keep the generated encoder's field order byte-for-byte.
+        header.push(0x3a);
+        prost::encode_length_delimiter(payload.len(), &mut header).context(EncodeSnafu)?;
+    }
+    let timeout = Frame {
+        remaining_timeout_ms: timeout,
+        ..Frame::default()
+    };
+    let mut trailer = Vec::new();
+    trailer
+        .try_reserve_exact(timeout.encoded_len())
+        .context(ReserveSnafu)?;
+    timeout.encode(&mut trailer).context(EncodeSnafu)?;
+    let retained_metadata =
+        header
+            .capacity()
+            .checked_add(trailer.capacity())
+            .ok_or(Error::Overflow {
+                name: "frame metadata allocation",
+            })?;
+    Ok((
+        [Bytes::from(header), payload, Bytes::from(trailer)],
+        retained_metadata,
+    ))
+}
+
+fn encoded_frame_size(frame: &Frame, limits: &ProtocolLimits) -> Result<(u32, usize)> {
     let class = TrafficClass::try_from(frame.traffic_class).map_err(|_| Error::Invalid {
         reason: "unknown traffic class",
     })?;
@@ -74,11 +128,7 @@ pub fn encode_frame(frame: &Frame, limits: &ProtocolLimits) -> Result<Bytes> {
     let capacity = length.checked_add(4).ok_or(Error::Overflow {
         name: "frame capacity",
     })?;
-    let mut output = Vec::new();
-    output.try_reserve_exact(capacity).context(ReserveSnafu)?;
-    output.extend_from_slice(&length_u32.to_be_bytes());
-    frame.encode(&mut output).context(EncodeSnafu)?;
-    Ok(Bytes::from(output))
+    Ok((length_u32, capacity))
 }
 
 pub fn decode_frame(body: Bytes, expected: TrafficClass, limits: &ProtocolLimits) -> Result<Frame> {
@@ -390,5 +440,97 @@ mod tests {
         let decoded = decode_frame(raw, TrafficClass::Control, &limits).unwrap();
         assert!(decoded.traceparent.is_empty());
         assert_eq!(decoded.operation_id, frame.operation_id);
+    }
+
+    #[test]
+    fn segmented_frames_match_generated_wire_encoding_and_share_payload() {
+        let limits = ProtocolLimits::default();
+        for length in [0, 1, 127, 128, 16_384, 262_144] {
+            for timeout in [1, 127, 128, MAX_TIMEOUT_MS] {
+                let mut frame = test_frame(length, timeout);
+                for traceparent in [
+                    "",
+                    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                ] {
+                    frame.traceparent = traceparent.into();
+                    let expected = encode_frame(&frame, &limits).unwrap();
+                    let payload = frame.payload.clone();
+                    let ([header, shared, trailer], capacity) =
+                        encode_frame_parts(frame.clone(), &limits).unwrap();
+                    assert_eq!(shared.as_ptr(), payload.as_ptr());
+                    let mut wire = header.to_vec();
+                    wire.extend_from_slice(&shared);
+                    wire.extend_from_slice(&trailer);
+                    assert_eq!(wire.as_slice(), expected.as_ref());
+                    assert!(capacity >= header.len() + trailer.len());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_protobuf_bytes_share_the_frame_backing() {
+        let limits = ProtocolLimits::default();
+        let message = crate::public::Message {
+            body: Bytes::from(vec![7; 64 * 1024]),
+            ..Default::default()
+        };
+        let id = Id::random().unwrap();
+        let frame = new_frame(
+            FrameKind::ProduceBatch,
+            TrafficClass::Produce,
+            id,
+            id,
+            &message,
+            1_000,
+            &limits,
+        )
+        .unwrap();
+        let wire = encode_frame(&frame, &limits).unwrap();
+        let decoded = decode_frame(wire.slice(4..), TrafficClass::Produce, &limits).unwrap();
+        let inner = decode_payload::<crate::public::Message>(decoded.payload, &limits).unwrap();
+        let start = wire.as_ptr() as usize;
+        assert!((start..start + wire.len()).contains(&(inner.body.as_ptr() as usize)));
+        assert_eq!(inner.body, message.body);
+    }
+
+    #[test]
+    #[ignore = "Finite codec timing probe; run with --release --ignored --nocapture"]
+    fn segmented_encoder_timing_probe() {
+        let limits = ProtocolLimits::default();
+        for length in [128, 16_384, 262_144] {
+            let frame = test_frame(length, 1_000);
+            let iterations = 4_096;
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                let input = std::hint::black_box(frame.clone());
+                std::hint::black_box(encode_frame(&input, &limits).unwrap());
+            }
+            let contiguous = started.elapsed();
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                let input = std::hint::black_box(frame.clone());
+                std::hint::black_box(encode_frame_parts(input, &limits).unwrap());
+            }
+            println!(
+                "payload_bytes={length} iterations={iterations} contiguous_ns={} segmented_ns={} payload_copy_bytes_removed={}",
+                contiguous.as_nanos(),
+                started.elapsed().as_nanos(),
+                length * iterations
+            );
+        }
+    }
+
+    fn test_frame(length: usize, timeout: u64) -> Frame {
+        Frame {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: Bytes::from_static(&[1; 16]),
+            operation_id: Bytes::from_static(&[2; 16]),
+            traffic_class: TrafficClass::Produce.into(),
+            kind: FrameKind::ProduceBatch.into(),
+            payload: Bytes::from(vec![7; length]),
+            remaining_timeout_ms: timeout,
+            ..Default::default()
+        }
     }
 }

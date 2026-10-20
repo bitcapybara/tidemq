@@ -495,7 +495,7 @@ async fn write_loop(
             continue;
         }
         if sender
-            .send(&outbound.frame, outbound.deadline)
+            .send_owned(outbound.frame, outbound.deadline)
             .await
             .is_err()
         {
@@ -737,7 +737,14 @@ mod tests {
             .await
             .unwrap();
         let first = request();
-        let second = request();
+        let mut second = request();
+        let mut large_payload = second.payload.to_vec();
+        // Unknown field 100 carries padding while preserving a valid ProduceResult payload.
+        large_payload.extend_from_slice(&[0xa2, 0x06]);
+        prost::encode_length_delimiter(64 * 1024, &mut large_payload).unwrap();
+        large_payload.extend_from_slice(&vec![7; 64 * 1024]);
+        second.payload = Bytes::from(large_payload);
+        let second_digest = blake3::hash(&second.payload);
         let first_id = first.request_id.clone();
         let second_id = second.request_id.clone();
         let (a, b) = tokio::join!(
@@ -745,7 +752,12 @@ mod tests {
             rpc.call(second, Instant::now() + Duration::from_secs(2))
         );
         assert_eq!(a.unwrap().frame().request_id, first_id);
-        assert_eq!(b.unwrap().frame().request_id, second_id);
+        let second_response = b.unwrap();
+        assert_eq!(second_response.frame().request_id, second_id);
+        assert_eq!(
+            blake3::hash(&second_response.frame().payload),
+            second_digest
+        );
         assert!(!rpc.is_closed());
         rpc.close(Instant::now() + Duration::from_millis(10)).await;
         task.await.unwrap();
