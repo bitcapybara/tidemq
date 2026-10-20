@@ -152,3 +152,36 @@ test('latency uses the protected fixed schedule and throughput remains unpaced',
   assert.equal(workloadFor(policy, 'latency').warmup_messages, 64);
   assert.throws(() => workloadFor(policy, 'unsupported'));
 });
+
+test('A/A calibration binds both binaries and never promotes its source', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'tidemq-perf-calibrate-'));
+  try {
+    const report = fixture();
+    report.configuration = workloadFor(policy, 'latency');
+    report.identity.service_binary_blake3 = '1'.repeat(64);
+    report.identity.generator_binary_blake3 = '2'.repeat(64);
+    report.warmup.partitions = report.warmup.partitions.map(phase => ({...phase, planned_messages: 64,
+      committed_messages: 64, acknowledged_messages: 64, durable_acknowledged_before: 64,
+      produce_batch: {...phase.produce_batch, samples: 64, histogram_buckets: [[320, 64]]},
+      produce_scheduling_lateness: {...phase.produce_scheduling_lateness, samples: 64, histogram_buckets: [[320, 64]]},
+      offered_to_durable_ack: {...phase.offered_to_durable_ack, samples: 64, histogram_buckets: [[320, 64]]}}));
+    const inputs = [];
+    for (let index = 0; index < 10; index++) {
+      const input = path.join(temporary, `${index}.json`);
+      await writeFile(input, JSON.stringify(report));
+      inputs.push(input);
+    }
+    const output = path.join(temporary, 'calibration.json');
+    const cli = (file) => spawnSync(process.execPath, [new URL('./calibrate.mjs', import.meta.url).pathname,
+      file, ...inputs], {encoding: 'utf8', timeout: 5000});
+    const accepted = cli(output);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const result = JSON.parse(await readFile(output, 'utf8'));
+    assert.equal(result.kind, 'same_binary_scheduled_latency_calibration');
+    assert.equal(result.status, 'passed');
+    assert.ok(!('durable_messages_per_second' in result.metrics));
+    report.identity.generator_binary_blake3 = '3'.repeat(64);
+    await writeFile(inputs[9], JSON.stringify(report));
+    assert.equal(cli(path.join(temporary, 'invalid.json')).status, 1);
+  } finally { await rm(temporary, {recursive: true, force: true}); }
+});
