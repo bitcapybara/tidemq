@@ -4,7 +4,7 @@ use aws_sdk_s3::{
 };
 use tokio::{sync::oneshot, task::JoinHandle, time::Instant};
 
-use super::{Admission, Error, Result, S3Store, Uploaded, error::sdk, operations::metadata};
+use super::{Error, Result, S3Store, Uploaded, error::sdk, operations::metadata};
 use crate::archive::{Descriptor, Pack, format::view};
 
 /// Dropping this handle signals the owned worker, which aborts an unfinished upload.
@@ -74,9 +74,10 @@ impl S3Store {
         let store = self.clone();
         let (sender, receiver) = oneshot::channel();
         let task = tokio::spawn(async move {
-            store
-                .multipart_worker(pack, key, deadline, admission, receiver)
-                .await
+            let result = store.multipart_worker(pack, key, deadline, receiver).await;
+            // Keep admission through abort cleanup, including when the upload handle is dropped.
+            drop(admission);
+            result
         });
         Ok(Upload {
             cancel: Some(sender),
@@ -89,7 +90,6 @@ impl S3Store {
         pack: Pack,
         key: String,
         deadline: Instant,
-        _admission: Admission,
         mut cancel: oneshot::Receiver<()>,
     ) -> Result<Uploaded> {
         let created = tokio::time::timeout_at(
@@ -106,11 +106,11 @@ impl S3Store {
         )
         .await
         .map_err(|_| Error::Unknown)?
-        .map_err(|error| {
-            let error = anyhow::Error::new(sdk("create multipart", error));
+        .map_err(|error| anyhow::Error::new(sdk("create multipart", error)))
+        .inspect_err(|error| {
             tracing::warn!(error = %format_args!("{error:#}"), "S3 multipart creation outcome is unknown");
-            Error::Unknown
-        })?;
+        })
+        .map_err(|_| Error::Unknown)?;
         let upload_id = created
             .upload_id()
             .filter(|id| !id.is_empty() && id.len() <= 2048)
@@ -123,7 +123,6 @@ impl S3Store {
         match result {
             Ok(uploaded) => Ok(uploaded),
             Err(error) => {
-                // Keep admission until cleanup finishes, even after the caller has gone away.
                 self.abort_inner(&key, upload_id).await?;
                 Err(error)
             }

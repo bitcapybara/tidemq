@@ -55,6 +55,7 @@ pub struct ProducerStatus {
 
 pub struct HotRead {
     page: ReadPage,
+    // Charge the page until this handle is dropped, even without accessing the permit.
     _admission: Admission,
 }
 

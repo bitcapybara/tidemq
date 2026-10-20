@@ -132,6 +132,64 @@ async fn charges_received_clones_and_rejects_bad_ranges_before_io() {
 }
 
 #[tokio::test]
+async fn dropped_multipart_retains_admission_until_abort_finishes() {
+    let budget = support::budget();
+    let pack = support::pack(&budget, 100, 2);
+    let before = budget.available_data_bytes();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (aborting, started) = tokio::sync::oneshot::channel();
+    let (release, finish) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let body = b"<InitiateMultipartUploadResult><UploadId>test-upload</UploadId></InitiateMultipartUploadResult>";
+        for response in [
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                std::str::from_utf8(body).unwrap()
+            ),
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 16 * 1024];
+            let mut read = 0;
+            while !request[..read].windows(4).any(|value| value == b"\r\n\r\n") {
+                let count = stream.read(&mut request[read..]).await.unwrap();
+                assert!(count > 0);
+                read += count;
+                assert!(read < request.len());
+            }
+            if request[..read].starts_with(b"DELETE ") {
+                aborting.send(()).unwrap();
+                finish.await.unwrap();
+                stream.write_all(response.as_bytes()).await.unwrap();
+                return;
+            }
+            assert!(request[..read].starts_with(b"POST "));
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+        panic!("The cancelled multipart upload did not request abort cleanup");
+    });
+    let store = support::store(&endpoint, &pack, budget.clone(), Duration::from_secs(3));
+    let upload = store.start_multipart(pack.clone()).await.unwrap();
+    drop(upload);
+    tokio::time::timeout(Duration::from_secs(3), started)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(budget.available_data_bytes() < before);
+    release.send(()).unwrap();
+    server.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while budget.available_data_bytes() != before {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn concurrency_is_bounded_and_configuration_redacts_credentials() {
     let budget = support::budget();
     let pack = support::pack(&budget, 100, 2);
