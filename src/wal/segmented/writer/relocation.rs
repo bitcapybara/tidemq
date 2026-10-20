@@ -116,6 +116,7 @@ impl Writer {
             hash.update(&frame.header);
             hash.update(&frame.payload);
         }
+        file.flush().await.map_err(|e| Error::io(&destination, e))?;
         file.sync_all()
             .await
             .map_err(|e| Error::io(&destination, e))?;
