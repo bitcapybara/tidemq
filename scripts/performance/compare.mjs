@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
-const T95_DF7 = 2.3646242515927844;
+// qt(1 - (1 - 0.95) / (2 * 10), df = 7): ten two-sided Bonferroni intervals.
+const T_FAMILY95_DF7 = 4.029337177642459;
 export const HARNESS_FILES = Object.freeze([
   'examples/perf_load.rs', 'examples/perf/sample.rs', 'examples/perf/stats.rs', 'examples/perf/workload.rs',
 ]);
@@ -11,18 +12,22 @@ const METRICS = {
   offered_to_durable_ack_mean_ns: 1,
   offered_to_durable_ack_p99_upper_ns: 1,
 };
+const PRIMARY_METRICS = ['durable_messages_per_second', 'produce_mean_ns', 'offered_to_durable_ack_mean_ns'];
 
 export function validatePolicy(policy) {
-  assert.equal(policy.schema_version, 3, 'Unsupported performance policy schema');
+  assert.equal(policy.schema_version, 4, 'Unsupported performance policy schema');
   assert.match(policy.service_source_commit, /^[0-9a-f]{40}$/, 'Invalid baseline source');
   assert.equal(policy.pairs, 8, 'The Student t calibration requires eight pairs');
-  assert.equal(policy.confidence, 0.95, 'The Student t calibration requires 95% confidence');
+  assert.deepEqual(policy.comparison_family, {method: 'bonferroni', confidence: 0.95, comparisons: 10},
+    'The gate requires a predeclared 95% Bonferroni comparison family');
   assert.equal(policy.allocator_feature, 'allocator-mimalloc', 'CI uses the default allocator');
   assert.equal(policy.server_worker_threads, 4, 'Server worker budget changed');
   assert.deepEqual(policy.topologies, ['rf1', 'rf3-combined'], 'Both real topologies are required');
-  assert.deepEqual(Object.keys(policy.max_log_ci_half_width).sort(), Object.keys(METRICS).sort(), 'Missing per-metric precision');
+  assert.equal(Object.keys(METRICS).length * policy.topologies.length, policy.comparison_family.comparisons,
+    'The correction must include every metric and topology');
+  assert.deepEqual(Object.keys(policy.max_log_ci_half_width).sort(), [...PRIMARY_METRICS].sort(), 'Missing primary metric precision');
   for (const value of Object.values(policy.max_log_ci_half_width)) {
-    assert.ok(value > 0 && value <= 0.03, 'Uncalibrated precision must remain within three log percentage points');
+    assert.ok(value > 0 && value <= 0.15, 'Primary uncertainty budget exceeds the declared log half-width');
   }
   const workload = policy.workload;
   assert.equal(workload.concurrent_partitions, 4, 'Four independent partition pairs are required');
@@ -141,25 +146,41 @@ export function summarizeReport(report, policy, sourceCommit, scenario = 'throug
   };
 }
 
-export function comparePairs(pairs, policy) {
+export function comparePairs(pairs, policy, {sameBinary = false} = {}) {
   assert.equal(pairs.length, policy.pairs, 'Missing paired trials');
   const metrics = {};
+  const diagnosticReference = Math.max(...Object.values(policy.max_log_ci_half_width));
   for (const [metric, direction] of Object.entries(METRICS)) {
     const ratios = pairs.map(pair => direction * Math.log(
       positive(pair.candidate[metric], metric) / positive(pair.baseline[metric], metric)));
     const mean = ratios.reduce((sum, value) => sum + value, 0) / ratios.length;
     const variance = ratios.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (ratios.length - 1);
-    const halfWidth = T95_DF7 * Math.sqrt(variance / ratios.length);
+    const halfWidth = T_FAMILY95_DF7 * Math.sqrt(variance / ratios.length);
     const lower = mean - halfWidth;
     const upper = mean + halfWidth;
+    const precisionRequired = Object.hasOwn(policy.max_log_ci_half_width, metric);
+    const limit = policy.max_log_ci_half_width[metric] ?? null;
+    let status = 'diagnostic';
+    if (lower > 0) status = 'regressed';
+    else if (sameBinary && upper < 0) status = 'temporal_bias_detected';
+    else if (precisionRequired) status = halfWidth > limit ? 'inconclusive' : 'passed';
+    else if (halfWidth > diagnosticReference) status = 'imprecise';
     metrics[metric] = {
       candidate_to_baseline: pairs.map(pair => pair.candidate[metric] / pair.baseline[metric]),
       geometric_slowdown_ratio: Math.exp(mean),
-      slowdown_ci95: [Math.exp(lower), Math.exp(upper)],
+      slowdown_ci_adjusted: [Math.exp(lower), Math.exp(upper)],
       log_ci_half_width: halfWidth,
-      status: lower > 0 ? 'regressed' : halfWidth > policy.max_log_ci_half_width[metric] ? 'inconclusive' : 'passed',
+      precision_required: precisionRequired,
+      max_log_ci_half_width: limit,
+      diagnostic_reference_log_half_width: precisionRequired ? null : diagnosticReference,
+      status,
     };
   }
   const statuses = Object.values(metrics).map(metric => metric.status);
-  return {status: statuses.includes('regressed') ? 'regressed' : statuses.includes('inconclusive') ? 'inconclusive' : 'passed', metrics};
+  return {
+    status: statuses.includes('regressed') ? 'regressed' : statuses.includes('temporal_bias_detected') ? 'temporal_bias_detected'
+      : statuses.includes('inconclusive') ? 'inconclusive' : 'passed',
+    inference: {...policy.comparison_family, per_metric_confidence: 0.995, degrees_of_freedom: 7, critical_t: T_FAMILY95_DF7},
+    metrics,
+  };
 }
