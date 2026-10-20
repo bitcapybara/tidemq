@@ -126,6 +126,23 @@ test('the measurement command rejects an absent external digest without executin
   } finally { await rm(value.root, {recursive: true, force: true}); }
 });
 
+test('the measurement CLI parses both artifact options and rejects a mismatched digest before execution', async () => {
+  const value = await fixture();
+  try {
+    const settings = {...value.settings, '--manifest-sha256': '0'.repeat(64)};
+    assert.notEqual(settings['--manifest-sha256'], value.settings['--manifest-sha256']);
+    const output = path.join(value.root, 'measurement');
+    const result = spawnSync(process.execPath, [new URL('../performance-gate.mjs', import.meta.url).pathname,
+      'measure', ...Object.entries(settings).flat(), '--output', output], {encoding: 'utf8', timeout: 5000});
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Prepared manifest digest differs from the build job/);
+    await assert.rejects(stat(output), {code: 'ENOENT'});
+    for (const [name, binary] of Object.entries(binaries)) {
+      assert.equal((await stat(path.join(value.prepared, 'builds', name, binary))).mode & 0o777, 0o644);
+    }
+  } finally { await rm(value.root, {recursive: true, force: true}); }
+});
+
 test('a same-source reuse claim requires the actual service and workload identities to match', async () => {
   const value = await fixture(true);
   try {
