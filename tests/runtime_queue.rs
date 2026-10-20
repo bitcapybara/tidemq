@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -638,21 +638,41 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
     )
     .await
     .unwrap();
-    let receiving_until = deadline();
-    for offset in 0..8 {
-        let delivery = tidemq_sdk::RequestContext::with_deadline(receiving_until)
+    // At-least-once recovery can wait one default visibility lease after a lost Read reply.
+    // Keep room for the original Read and final ACK, each with the fixture's 10-second RPC budget.
+    let receiving_until = Instant::now()
+        + Duration::from_millis(tidemq::subscription::Limits::default().ack_timeout_ms)
+        + Duration::from_secs(20);
+    let mut seen = BTreeSet::new();
+    let mut redeliveries = 0;
+    let mut acknowledged_before = 0;
+    while seen.len() < expected_bodies.len() {
+        let Some(delivery) = tidemq_sdk::RequestContext::with_deadline(receiving_until)
             .scope(consumer.recv())
             .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(delivery.offset(), offset);
+            .expect("Parallel delivery must recover every committed identity within its original phase budget")
+        else {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        };
+        let offset = delivery.offset();
+        let expected_body = expected_bodies
+            .get(&offset)
+            .expect("Every delivered identity must match an original committed receipt");
         assert_eq!(delivery.key(), b"key");
-        assert_eq!(delivery.body(), &[*expected_bodies.get(&offset).unwrap()]);
-        tidemq_sdk::RequestContext::with_deadline(receiving_until)
+        assert_eq!(delivery.body(), &[*expected_body]);
+        redeliveries += usize::from(!seen.insert(offset));
+        while seen.contains(&acknowledged_before) {
+            acknowledged_before += 1;
+        }
+        let ack = tidemq_sdk::RequestContext::with_deadline(receiving_until)
             .scope(consumer.ack(&delivery))
             .await
             .unwrap();
+        assert_eq!(ack.acknowledged_before, acknowledged_before);
     }
+    assert_eq!(seen, (0..8).collect());
+    eprintln!("Parallel split-role receive verified all 8 identities; redeliveries={redeliveries}");
     let status = client
         .admin()
         .subscription_status(topic, 0, subscription)
