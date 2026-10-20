@@ -5,15 +5,14 @@ use openraft::{
     BasicNode, EntryPayload, ErrorSubject, ErrorVerb, LogId, OptionalSend, RaftSnapshotBuilder,
     Snapshot, SnapshotMeta, StorageError, StoredMembership,
 };
-use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use crate::observability::metrics::Stage;
-use crate::wal::{self, Error, FRAME_HEADER_BYTES, Result};
+use crate::wal::{self, Error, FRAME_HEADER_BYTES, Result, SnapshotRef};
 
 use super::snapshot::{self, Envelope};
 use super::store::{
-    Applied, FORMAT_VERSION, LogState, SNAPSHOT_FILE, ensure_application_available, storage_error,
+    Applied, FORMAT_VERSION, LogState, ensure_application_available, storage_error,
 };
 use super::{Application, DiskLog, DiskStateMachine, LogEntry, SnapshotFile, TypeConfig};
 
@@ -132,29 +131,30 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
     ) -> std::result::Result<Box<SnapshotFile>, StorageError<u64>> {
         let result = async {
             ensure_application_available(&*self.0.applied.read().await)?;
-            let mut incoming = self.0.incoming.lock().await;
-            if let Some(previous) = incoming.take() {
-                match fs::remove_file(&previous).await {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(Error::io(previous, error)),
-                }
-            }
-            let identity = tidemq_protocol::Id::random().map_err(|error| Error::Writer {
-                reason: error.to_string(),
-            })?;
-            let path = self.0.directory.join(format!(".incoming-{identity}"));
-            let file = SnapshotFile::open(
-                &path,
-                self.0
+            let (name, lease) = {
+                let mut registry = self.0.snapshots.lock().await;
+                registry.cleanup(&self.0.directory).await?;
+                registry.incoming()?
+            };
+            let this = self.clone();
+            tokio::spawn(async move {
+                let path = this.0.directory.join(name);
+                let limit = this
+                    .0
                     .options
                     .max_snapshot_bytes
-                    .saturating_add(FRAME_HEADER_BYTES) as u64,
-                true,
-            )
-            .await?;
-            *incoming = Some(path);
-            Ok(Box::new(file))
+                    .checked_add(FRAME_HEADER_BYTES)
+                    .ok_or(Error::Limit {
+                        name: "incoming snapshot bytes",
+                    })?;
+                let file = SnapshotFile::open(&path, limit as u64, true, Some(lease)).await?;
+                *this.0.incoming.lock().await = Some(path);
+                Ok(Box::new(file))
+            })
+            .await
+            .map_err(|error| Error::Writer {
+                reason: format!("incoming snapshot task failed: {error}"),
+            })?
         }
         .await;
         result.map_err(|error| storage_error(ErrorSubject::Snapshot(None), ErrorVerb::Write, error))
@@ -163,61 +163,20 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMeta<u64, BasicNode>,
-        mut file: Box<SnapshotFile>,
+        file: Box<SnapshotFile>,
     ) -> std::result::Result<(), StorageError<u64>> {
-        let result = async {
-            file.flush()
-                .await
-                .map_err(|error| Error::io("received snapshot", error))?;
-            let bytes = file
-                .read_bytes(
-                    self.0
-                        .options
-                        .max_snapshot_bytes
-                        .saturating_add(FRAME_HEADER_BYTES),
-                )
-                .await?;
-            let identity = self.0.identity.clone();
-            let maximum = self.0.options.max_snapshot_bytes;
-            let envelope = tokio::task::spawn_blocking(move || {
-                let payload = wal::unframe(&bytes, maximum)?;
-                let envelope: Envelope<A> = wal::decode_value(payload)?;
-                snapshot::validate(&envelope, &identity)?;
-                Ok::<_, Error>((envelope, bytes))
-            })
-            .await
-            .map_err(|error| Error::Writer {
-                reason: format!("snapshot decode task failed: {error}"),
-            })??;
-            let (envelope, bytes) = envelope;
-            if envelope.meta != *meta {
-                return Err(Error::Corrupt {
-                    offset: 0,
-                    reason: "snapshot metadata does not match the checksummed state",
-                });
-            }
-            let _serial = self.0.snapshot_serial.lock().await;
-            let mut applied = self.0.applied.write().await;
-            ensure_application_available(&applied)?;
-            if meta.last_log_id < applied.last_applied {
-                return Err(Error::Configuration {
-                    reason: "snapshot would revert applied state",
-                });
-            }
-            wal::write_atomic(&self.0.directory.join(SNAPSHOT_FILE), &bytes).await?;
-            *applied = Applied {
-                application: envelope.application,
-                last_applied: meta.last_log_id,
-                membership: meta.last_membership.clone(),
-                failed: false,
-            };
-            *self.0.snapshot_meta.write().await = Some(meta.clone());
-            tracing::info!(event = "raft_snapshot_installed", node_id = self.0.identity.node_id,
-                group_id = %self.0.identity.group.group_id, snapshot_id = %meta.snapshot_id,
-                "Installed a durable validated snapshot");
-            Ok(())
-        }
-        .await;
+        let serial = self.0.snapshot_serial.clone().lock_owned().await;
+        let this = self.clone();
+        let saved_meta = meta.clone();
+        let result = tokio::spawn(async move {
+            let _serial = serial;
+            this.install_durable_snapshot(saved_meta, file).await
+        })
+        .await
+        .map_err(|error| Error::Writer {
+            reason: format!("snapshot installation task failed: {error}"),
+        })
+        .and_then(std::convert::identity);
         result.map_err(|error| {
             storage_error(
                 ErrorSubject::Snapshot(Some(meta.signature())),
@@ -235,14 +194,30 @@ impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
             .map_err(|error| storage_error(ErrorSubject::StateMachine, ErrorVerb::Read, error))?;
         let meta = self.0.snapshot_meta.read().await.clone();
         match meta {
-            Some(meta) => snapshot::open_snapshot(
-                &self.0.directory.join(SNAPSHOT_FILE),
-                meta,
-                &self.0.options,
-            )
-            .await
-            .map(Some)
-            .map_err(|error| storage_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, error)),
+            Some(meta) => {
+                let result = async {
+                    let reference = self.0.journal.current_snapshot().ok_or(Error::Corrupt {
+                        offset: 0,
+                        reason: "snapshot metadata has no manifest reference",
+                    })?;
+                    let lease = {
+                        let registry = self.0.snapshots.lock().await;
+                        registry.lease(&reference, registry.reserve_reader()?)?
+                    };
+                    snapshot::open_snapshot(
+                        &self.0.directory,
+                        &reference,
+                        meta,
+                        &self.0.options,
+                        lease,
+                    )
+                    .await
+                }
+                .await;
+                result.map(Some).map_err(|error| {
+                    storage_error(ErrorSubject::Snapshot(None), ErrorVerb::Read, error)
+                })
+            }
             None => Ok(None),
         }
     }
@@ -307,7 +282,21 @@ impl<A: Application> RaftSnapshotBuilder<TypeConfig<A>> for DiskStateMachine<A> 
 impl<A: Application> DiskStateMachine<A> {
     #[tracing::instrument(name = "raft_snapshot_build", level = "debug", skip_all, fields(node_id = self.0.identity.node_id, group_id = self.0.identity.group.group_id))]
     async fn build_durable_snapshot(&self) -> Result<Snapshot<TypeConfig<A>>> {
-        let _serial = self.0.snapshot_serial.lock().await;
+        let serial = self.0.snapshot_serial.clone().lock_owned().await;
+        let this = self.clone();
+        // Once publication starts, cancellation must not leave the manifest and memory disagreeing.
+        tokio::spawn(async move {
+            let _serial = serial;
+            this.build_snapshot_owned().await
+        })
+        .await
+        .map_err(|error| Error::Writer {
+            reason: format!("snapshot build task failed: {error}"),
+        })?
+    }
+
+    async fn build_snapshot_owned(&self) -> Result<Snapshot<TypeConfig<A>>> {
+        let reader = self.0.snapshots.lock().await.reserve_reader()?;
         let applied = {
             let applied = self.0.applied.read().await;
             ensure_application_available(&applied)?;
@@ -331,17 +320,119 @@ impl<A: Application> DiskStateMachine<A> {
         let maximum = self.0.options.max_snapshot_bytes;
         let encoded = tokio::task::spawn_blocking(move || {
             let bytes = wal::encode_value(&envelope, maximum)?;
-            wal::codec_frame(&bytes, 0)
+            let bytes = wal::codec_frame(&bytes, 0)?;
+            let checksum = *blake3::hash(&bytes).as_bytes();
+            Ok::<_, Error>((bytes, checksum))
         })
         .await
         .map_err(|error| Error::Writer {
             reason: format!("snapshot encoding task failed: {error}"),
         })??;
-        wal::write_atomic(&self.0.directory.join(SNAPSHOT_FILE), &encoded).await?;
+        let (encoded, checksum) = encoded;
+        let asset = self.publish_snapshot_bytes(encoded, checksum).await?;
         *self.0.snapshot_meta.write().await = Some(meta.clone());
         tracing::info!(event = "raft_snapshot_persisted", node_id = self.0.identity.node_id,
             group_id = %self.0.identity.group.group_id, snapshot_id = %meta.snapshot_id,
             "Persisted a snapshot before consensus log compaction");
-        snapshot::open_snapshot(&self.0.directory.join(SNAPSHOT_FILE), meta, &self.0.options).await
+        let lease = self
+            .0
+            .snapshots
+            .lock()
+            .await
+            .lease(&asset.reference, reader)?;
+        snapshot::open_snapshot(
+            &self.0.directory,
+            &asset.reference,
+            meta,
+            &self.0.options,
+            lease,
+        )
+        .await
+    }
+
+    async fn publish_snapshot_bytes(
+        &self,
+        bytes: Vec<u8>,
+        checksum: [u8; 32],
+    ) -> Result<std::sync::Arc<super::snapshot_registry::SnapshotAsset>> {
+        let id = tidemq_protocol::Id::random().map_err(|error| Error::Writer {
+            reason: error.to_string(),
+        })?;
+        let reference = SnapshotRef {
+            file_name: format!("snapshot-{id}.bin"),
+            byte_len: bytes.len() as u64,
+            checksum,
+        };
+        let asset = {
+            let mut registry = self.0.snapshots.lock().await;
+            registry.cleanup(&self.0.directory).await?;
+            registry.candidate(reference)?
+        };
+        snapshot::persist(&self.0.directory, bytes, asset.clone()).await?;
+        self.0
+            .journal
+            .publish_snapshot(asset.reference.clone())
+            .await?;
+        self.0.snapshots.lock().await.commit(&asset);
+        Ok(asset)
+    }
+
+    async fn install_durable_snapshot(
+        &self,
+        meta: SnapshotMeta<u64, BasicNode>,
+        mut file: Box<SnapshotFile>,
+    ) -> Result<()> {
+        file.flush()
+            .await
+            .map_err(|error| Error::io("received snapshot", error))?;
+        let bytes = file
+            .read_bytes(
+                self.0
+                    .options
+                    .max_snapshot_bytes
+                    .checked_add(FRAME_HEADER_BYTES)
+                    .ok_or(Error::Limit {
+                        name: "incoming snapshot bytes",
+                    })?,
+            )
+            .await?;
+        let identity = self.0.identity.clone();
+        let maximum = self.0.options.max_snapshot_bytes;
+        let (envelope, bytes, checksum) = tokio::task::spawn_blocking(move || {
+            let payload = wal::unframe(&bytes, maximum)?;
+            let envelope: Envelope<A> = wal::decode_value(payload)?;
+            snapshot::validate(&envelope, &identity)?;
+            let checksum = *blake3::hash(&bytes).as_bytes();
+            Ok::<_, Error>((envelope, bytes, checksum))
+        })
+        .await
+        .map_err(|error| Error::Writer {
+            reason: format!("snapshot decode task failed: {error}"),
+        })??;
+        if envelope.meta != meta {
+            return Err(Error::Corrupt {
+                offset: 0,
+                reason: "snapshot metadata does not match the checksummed state",
+            });
+        }
+        let mut applied = self.0.applied.write().await;
+        ensure_application_available(&applied)?;
+        if meta.last_log_id < applied.last_applied {
+            return Err(Error::Configuration {
+                reason: "snapshot would revert applied state",
+            });
+        }
+        self.publish_snapshot_bytes(bytes, checksum).await?;
+        *applied = Applied {
+            application: envelope.application,
+            last_applied: meta.last_log_id,
+            membership: meta.last_membership.clone(),
+            failed: false,
+        };
+        *self.0.snapshot_meta.write().await = Some(meta.clone());
+        tracing::info!(event = "raft_snapshot_installed", node_id = self.0.identity.node_id,
+            group_id = %self.0.identity.group.group_id, snapshot_id = %meta.snapshot_id,
+            "Installed a durable validated snapshot");
+        Ok(())
     }
 }

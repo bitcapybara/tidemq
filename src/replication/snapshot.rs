@@ -1,55 +1,95 @@
-use std::io::{self, SeekFrom};
+use std::future::Future;
+use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::Path;
 use std::pin::Pin;
-use std::task::{Context, Poll};
+use std::sync::Arc;
+use std::task::{Context, Poll, ready};
 
 use openraft::{BasicNode, Snapshot, SnapshotMeta};
 use serde::{Deserialize, Serialize};
-use tokio::fs::{self, File};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, ReadBuf};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt, ReadBuf,
+};
+use tokio::task::JoinHandle;
 
-use crate::wal::{self, Error, FRAME_HEADER_BYTES, Result};
+use crate::wal::{self, Error, FRAME_HEADER_BYTES, Result, SnapshotRef};
 
-use super::store::{Applied, FORMAT_VERSION, SNAPSHOT_FILE};
+use super::snapshot_registry::{SnapshotAsset, SnapshotLease};
+use super::store::{Applied, FORMAT_VERSION};
 use super::{Application, GroupIdentity, StorageIdentity, StorageOptions, TypeConfig};
 
-/// A seekable snapshot file whose reads, writes, and seeks are bounded before IO.
+const IO_BYTES: usize = 64 * 1024;
+type FileOperation = JoinHandle<io::Result<Option<Vec<u8>>>>;
+
+/// A bounded seekable file; each blocking operation retains its reader/incoming ownership.
 #[derive(Debug)]
 pub struct SnapshotFile {
-    file: File,
+    file: Arc<std::fs::File>,
+    runtime: tokio::runtime::Handle,
+    pending: Option<FileOperation>,
+    buffered: Vec<u8>,
+    buffered_at: usize,
     position: u64,
     length: u64,
     limit: u64,
+    lease: Option<Arc<SnapshotLease>>,
 }
 
 impl SnapshotFile {
-    pub(crate) async fn open(path: &Path, limit: u64, create: bool) -> Result<Self> {
-        let file = if create {
-            fs::OpenOptions::new()
-                .create_new(true)
-                .read(true)
-                .write(true)
-                .open(path)
-                .await
-        } else {
-            fs::OpenOptions::new().read(true).open(path).await
-        }
-        .map_err(|error| Error::io(path, error))?;
-        let length = file
-            .metadata()
+    pub(crate) async fn open(
+        path: &Path,
+        limit: u64,
+        create: bool,
+        lease: Option<Arc<SnapshotLease>>,
+    ) -> Result<Self> {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|error| Error::Writer {
+            reason: format!("snapshot IO runtime is unavailable: {error}"),
+        })?;
+        let path = path.to_owned();
+        let operation_lease = lease.clone();
+        let (file, length) = runtime
+            .spawn_blocking(move || {
+                let _lease = operation_lease;
+                if !create {
+                    let metadata = std::fs::symlink_metadata(&path)
+                        .map_err(|error| Error::io(&path, error))?;
+                    if !metadata.is_file() {
+                        return Err(Error::Configuration {
+                            reason: "snapshot must be a regular file without a symbolic link",
+                        });
+                    }
+                }
+                let file = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(create)
+                    .create_new(create)
+                    .open(&path)
+                    .map_err(|error| Error::io(&path, error))?;
+                let length = file
+                    .metadata()
+                    .map_err(|error| Error::io(&path, error))?
+                    .len();
+                if length > limit {
+                    return Err(Error::Limit {
+                        name: "snapshot file",
+                    });
+                }
+                Ok::<_, Error>((Arc::new(file), length))
+            })
             .await
-            .map_err(|error| Error::io(path, error))?
-            .len();
-        if length > limit {
-            return Err(Error::Limit {
-                name: "snapshot file",
-            });
-        }
+            .map_err(|error| Error::Writer {
+                reason: format!("snapshot open worker failed: {error}"),
+            })??;
         Ok(Self {
             file,
+            runtime,
+            pending: None,
+            buffered: Vec::new(),
+            buffered_at: 0,
             position: 0,
             length,
             limit,
+            lease,
         })
     }
 
@@ -59,12 +99,17 @@ impl SnapshotFile {
                 name: "received snapshot",
             });
         }
+        self.flush()
+            .await
+            .map_err(|source| Error::io("snapshot", source))?;
         self.seek(SeekFrom::Start(0))
             .await
             .map_err(|source| Error::io("snapshot", source))?;
         let mut bytes = Vec::new();
         bytes
-            .try_reserve_exact(self.length as usize)
+            .try_reserve_exact(usize::try_from(self.length).map_err(|_| Error::Limit {
+                name: "snapshot read buffer",
+            })?)
             .map_err(|_| Error::Limit {
                 name: "snapshot read buffer",
             })?;
@@ -79,6 +124,32 @@ impl SnapshotFile {
         }
         Ok(bytes)
     }
+
+    fn queue(
+        &mut self,
+        operation: impl FnOnce(&std::fs::File) -> io::Result<Option<Vec<u8>>> + Send + 'static,
+    ) {
+        let file = self.file.clone();
+        let lease = self.lease.clone();
+        self.pending = Some(self.runtime.spawn_blocking(move || {
+            let _lease = lease;
+            operation(&file)
+        }));
+    }
+
+    fn poll_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let Some(pending) = self.pending.as_mut() else {
+            return Poll::Ready(Ok(()));
+        };
+        let result = ready!(Pin::new(pending).poll(cx));
+        self.pending = None;
+        let buffer = result.map_err(io::Error::other)??;
+        if let Some(buffer) = buffer {
+            self.buffered = buffer;
+            self.buffered_at = 0;
+        }
+        Poll::Ready(Ok(()))
+    }
 }
 
 impl AsyncRead for SnapshotFile {
@@ -88,14 +159,47 @@ impl AsyncRead for SnapshotFile {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        let before = buf.filled().len();
-        match Pin::new(&mut this.file).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) => {
-                let read = buf.filled().len().saturating_sub(before);
-                this.position = this.position.saturating_add(read as u64);
-                Poll::Ready(Ok(()))
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            ready!(this.poll_pending(cx))?;
+            let remaining = this
+                .buffered
+                .get(this.buffered_at..)
+                .ok_or_else(|| io::Error::other("Snapshot read buffer position is invalid"))?;
+            if !remaining.is_empty() {
+                let length = remaining.len().min(buf.remaining());
+                let bytes = remaining
+                    .get(..length)
+                    .ok_or_else(|| io::Error::other("Snapshot read buffer is invalid"))?;
+                buf.put_slice(bytes);
+                this.buffered_at = this.buffered_at.saturating_add(length);
+                this.position = this.position.saturating_add(length as u64);
+                return Poll::Ready(Ok(()));
             }
-            other => other,
+            if this.position >= this.length {
+                return Poll::Ready(Ok(()));
+            }
+            let length = buf.remaining().min(IO_BYTES).min(
+                usize::try_from(this.length.saturating_sub(this.position)).unwrap_or(usize::MAX),
+            );
+            let at = this.position;
+            this.queue(move |mut file| {
+                file.seek(SeekFrom::Start(at))?;
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(length).map_err(io::Error::other)?;
+                bytes.resize(length, 0);
+                let length = file.read(&mut bytes)?;
+                if length == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "Snapshot file ended before its recorded length",
+                    ));
+                }
+                bytes.truncate(length);
+                Ok(Some(bytes))
+            });
         }
     }
 }
@@ -107,34 +211,54 @@ impl AsyncWrite for SnapshotFile {
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
+        ready!(this.poll_pending(cx))?;
         if bytes.len() as u64 > this.limit.saturating_sub(this.position) {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Snapshot write exceeds its byte limit",
             )));
         }
-        match Pin::new(&mut this.file).poll_write(cx, bytes) {
-            Poll::Ready(Ok(written)) => {
-                this.position = this.position.saturating_add(written as u64);
-                this.length = this.length.max(this.position);
-                Poll::Ready(Ok(written))
-            }
-            other => other,
+        let length = bytes.len().min(IO_BYTES);
+        if length == 0 {
+            return Poll::Ready(Ok(0));
         }
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(length).map_err(io::Error::other)?;
+        copy.extend_from_slice(
+            bytes
+                .get(..length)
+                .ok_or_else(|| io::Error::other("Snapshot write buffer is invalid"))?,
+        );
+        let at = this.position;
+        this.buffered.clear();
+        this.buffered_at = 0;
+        this.queue(move |mut file| {
+            file.seek(SeekFrom::Start(at))?;
+            file.write_all(&copy)?;
+            Ok(None)
+        });
+        this.position = this.position.saturating_add(length as u64);
+        this.length = this.length.max(this.position);
+        Poll::Ready(Ok(length))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().file).poll_flush(cx)
+        self.get_mut().poll_pending(cx)
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().file).poll_shutdown(cx)
+        self.get_mut().poll_pending(cx)
     }
 }
 
 impl AsyncSeek for SnapshotFile {
     fn start_seek(self: Pin<&mut Self>, position: SeekFrom) -> io::Result<()> {
         let this = self.get_mut();
+        if this.pending.is_some() {
+            return Err(io::Error::other(
+                "A snapshot operation is pending; poll completion before seeking",
+            ));
+        }
         let target = match position {
             SeekFrom::Start(position) => Some(position),
             SeekFrom::Current(delta) => this.position.checked_add_signed(delta),
@@ -147,18 +271,20 @@ impl AsyncSeek for SnapshotFile {
                 "Snapshot seek exceeds its byte limit",
             )
         })?;
-        Pin::new(&mut this.file).start_seek(SeekFrom::Start(target))
+        this.buffered.clear();
+        this.buffered_at = 0;
+        this.queue(move |mut file| {
+            file.seek(SeekFrom::Start(target))?;
+            Ok(None)
+        });
+        this.position = target;
+        Ok(())
     }
 
     fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
         let this = self.get_mut();
-        match Pin::new(&mut this.file).poll_complete(cx) {
-            Poll::Ready(Ok(position)) => {
-                this.position = position;
-                Poll::Ready(Ok(position))
-            }
-            other => other,
-        }
+        ready!(this.poll_pending(cx))?;
+        Poll::Ready(Ok(this.position))
     }
 }
 
@@ -177,7 +303,7 @@ pub(crate) async fn read_single(path: &Path, max_payload_bytes: usize) -> Result
         .ok_or(Error::Limit {
             name: "snapshot file limit",
         })?;
-    let mut file = SnapshotFile::open(path, maximum as u64, false).await?;
+    let mut file = SnapshotFile::open(path, maximum as u64, false, None).await?;
     let bytes = file.read_bytes(maximum).await?;
     Ok(wal::unframe(&bytes, max_payload_bytes)?.to_vec())
 }
@@ -186,27 +312,60 @@ pub(crate) async fn load<A: Application>(
     directory: &Path,
     identity: &StorageIdentity,
     options: &StorageOptions,
+    reference: Option<&SnapshotRef>,
 ) -> Result<(Applied<A>, Option<SnapshotMeta<u64, BasicNode>>)> {
-    let path = directory.join(SNAPSHOT_FILE);
-    if !fs::try_exists(&path)
-        .await
-        .map_err(|e| Error::io(&path, e))?
-    {
+    let Some(reference) = reference else {
         return Ok((Applied::default(), None));
+    };
+    if wal::segmented_file_kind(&reference.file_name) != Some(wal::SegmentedFileKind::Snapshot) {
+        return Err(Error::Corrupt {
+            offset: 0,
+            reason: "manifest snapshot name is invalid",
+        });
     }
-    let bytes = read_single(&path, options.max_snapshot_bytes).await?;
-    let envelope: Envelope<A> = wal::decode_value(&bytes)?;
-    validate(&envelope, identity)?;
-    let meta = envelope.meta;
-    Ok((
-        Applied {
-            failed: false,
-            application: envelope.application,
-            last_applied: meta.last_log_id,
-            membership: meta.last_membership.clone(),
-        },
-        Some(meta),
-    ))
+    let maximum = options
+        .max_snapshot_bytes
+        .checked_add(FRAME_HEADER_BYTES)
+        .ok_or(Error::Limit {
+            name: "snapshot file limit",
+        })?;
+    let mut file = SnapshotFile::open(
+        &directory.join(&reference.file_name),
+        maximum as u64,
+        false,
+        None,
+    )
+    .await?;
+    let bytes = file.read_bytes(maximum).await?;
+    if bytes.len() as u64 != reference.byte_len
+        || *blake3::hash(&bytes).as_bytes() != reference.checksum
+    {
+        return Err(Error::Corrupt {
+            offset: 0,
+            reason: "manifest snapshot length or checksum differs",
+        });
+    }
+    let identity = identity.clone();
+    let maximum = options.max_snapshot_bytes;
+    tokio::task::spawn_blocking(move || {
+        let payload = wal::unframe(&bytes, maximum)?;
+        let envelope: Envelope<A> = wal::decode_value(payload)?;
+        validate(&envelope, &identity)?;
+        let meta = envelope.meta;
+        Ok((
+            Applied {
+                failed: false,
+                application: envelope.application,
+                last_applied: meta.last_log_id,
+                membership: meta.last_membership.clone(),
+            },
+            Some(meta),
+        ))
+    })
+    .await
+    .map_err(|error| Error::Writer {
+        reason: format!("snapshot recovery worker failed: {error}"),
+    })?
 }
 
 pub(crate) fn validate<A: Application>(
@@ -233,20 +392,53 @@ pub(crate) fn validate<A: Application>(
         .map_err(|error| Error::io("snapshot application", error))
 }
 
+pub(crate) async fn persist(
+    directory: &Path,
+    bytes: Vec<u8>,
+    asset: Arc<SnapshotAsset>,
+) -> Result<()> {
+    let directory = directory.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let path = directory.join(&asset.reference.file_name);
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .map_err(|error| Error::io(&path, error))?;
+        file.write_all(&bytes)
+            .map_err(|error| Error::io(&path, error))?;
+        file.sync_all().map_err(|error| Error::io(&path, error))?;
+        std::fs::File::open(&directory)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| Error::io(directory, error))
+    })
+    .await
+    .map_err(|error| Error::Writer {
+        reason: format!("snapshot persistence worker failed: {error}"),
+    })?
+}
+
 pub(crate) async fn open_snapshot<A: Application>(
-    path: &Path,
+    directory: &Path,
+    reference: &SnapshotRef,
     meta: SnapshotMeta<u64, BasicNode>,
     options: &StorageOptions,
+    lease: Arc<SnapshotLease>,
 ) -> Result<Snapshot<TypeConfig<A>>> {
+    let maximum = options
+        .max_snapshot_bytes
+        .checked_add(FRAME_HEADER_BYTES)
+        .ok_or(Error::Limit {
+            name: "snapshot file limit",
+        })?;
     Ok(Snapshot {
         meta,
         snapshot: Box::new(
             SnapshotFile::open(
-                path,
-                options
-                    .max_snapshot_bytes
-                    .saturating_add(FRAME_HEADER_BYTES) as u64,
+                &directory.join(&reference.file_name),
+                maximum as u64,
                 false,
+                Some(lease),
             )
             .await?,
         ),
