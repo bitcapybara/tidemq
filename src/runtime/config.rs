@@ -158,7 +158,7 @@ impl RuntimeConfig {
             || self.groups.is_empty()
             || self.groups.len() > 16
             || self.metadata_group == 0
-            || self.internal_listen == config.listen
+            || config.role.serves_gateway() && self.internal_listen == config.listen
             || self.internal_listen == config.management_listen
         {
             return Err(Error::invalid(

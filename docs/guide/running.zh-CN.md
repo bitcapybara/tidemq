@@ -1,13 +1,13 @@
 # 运行 TideMQ
 
-可执行程序的运行入口是 `tidemq serve --config <配置文件>`。Gateway、Broker、Storage、Metadata 和 Combined 使用同一个程序，通过 `role` 选择职责。所有队列与内部节点通信使用 s2n-quic；AWS SDK 到 S3 的 HTTP 请求属于对象存储接口。
+可执行程序的运行入口是 `tidemq serve --config <配置文件>`。Gateway、Broker、Storage、Metadata 和 Combined 使用同一个程序，通过 `role` 选择职责。生成的每个进程配置只包含其适用的 `[gateway]` / `[storage]` 表，授权、拓扑和进程设置共用；字段位置与旧配置迁移见[配置指南](configuration.zh-CN.md)。所有队列与内部节点通信使用 s2n-quic；AWS SDK 到 S3 的 HTTP 请求属于对象存储接口。
 
 ## 本地 RF1
 
 在仓库根目录执行：
 
 ```sh
-cargo build -p tidemq -j2
+cargo +1.99.1 build -p tidemq -j2
 bash deploy/local/generate.sh rf1 /tmp/tidemq-rf1
 target/debug/tidemq validate-config --config /tmp/tidemq-rf1/node-1.toml
 bash deploy/local/run.sh /tmp/tidemq-rf1 target/debug/tidemq
@@ -39,7 +39,7 @@ bash deploy/local/run.sh /tmp/tidemq-rf3 target/debug/tidemq
 先创建桶，并提供服务端可访问的 S3 endpoint。生成器和本地示例默认分配 192 MiB 应用预算、32 MiB 控制保留以及至少 64 MiB 额外 RSS 水位空间；开启对象存储时验证这些下限，避免临时打包占用和最终对象缓冲永远无法同时准入。修改预算时也必须相应调整 RSS 水位。开发环境可运行经验证的 RustFS 1.0.3；生产 endpoint 使用 HTTPS。为 Storage/Combined 配置添加：
 
 ```toml
-[runtime.objects]
+[storage.objects]
 endpoint = 'http://127.0.0.1:9000'
 region = 'us-east-1'
 bucket = 'tidemq'

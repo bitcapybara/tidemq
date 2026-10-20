@@ -4,11 +4,16 @@ umask 077
 
 mode=${1:-rf1}
 output=${2:-/tmp/tidemq-${mode}}
+layout=${3:-roles}
+if [[ $# -gt 3 || ! $layout =~ ^(roles|legacy)$ ]]; then
+  printf 'Usage: %s [rf1|rf3|rf3-combined] [new-output-directory] [roles|legacy]\n' "$0" >&2
+  exit 2
+fi
 case "$mode" in
   rf1) nodes='1:combined'; voters='[1]'; storage='[1]'; factor=1 ;;
   rf3-combined) nodes='1:combined 2:combined 3:combined'; voters='[1,2,3]'; storage='[1,2,3]'; factor=3 ;;
   rf3) nodes='11:metadata 12:metadata 13:metadata 21:storage 22:storage 23:storage 31:broker 32:broker 41:gateway 42:gateway'; voters='[11,12,13]'; storage='[21,22,23]'; factor=3 ;;
-  *) printf 'Usage: %s [rf1|rf3|rf3-combined] [new-output-directory]\n' "$0" >&2; exit 2 ;;
+  *) printf 'Usage: %s [rf1|rf3|rf3-combined] [new-output-directory] [roles|legacy]\n' "$0" >&2; exit 2 ;;
 esac
 if [[ -e "$output" ]]; then printf 'Output directory already exists: %s\n' "$output" >&2; exit 1; fi
 mkdir -p "$output"
@@ -63,11 +68,15 @@ done
 for entry in $nodes; do
   node=${entry%:*}; role=${entry#*:}
   external=$((7400 + node * 10)); internal=$((external + 1)); management=$((external + 1000))
-  cat > "$output/node-$node.toml" <<EOF
+  if [[ $layout == legacy ]]; then
+    printf "listen = '127.0.0.1:%s'\n" "$external" > "$output/node-$node.toml"
+  else
+    : > "$output/node-$node.toml"
+  fi
+  cat >> "$output/node-$node.toml" <<EOF
 node_id = $node
 cluster_id = '$cluster'
 role = '$role'
-listen = '127.0.0.1:$external'
 management_listen = '127.0.0.1:$management'
 data_dir = '$output/data-$node'
 replication_factor = $factor
@@ -80,14 +89,47 @@ control_reserved_bytes = 33554432
 certificate = '$output/node-$node.pem'
 private_key = '$output/node-$node.key'
 trust_roots = '$output/ca.pem'
+EOF
+  if [[ $layout == roles ]]; then
+    cat >> "$output/node-$node.toml" <<EOF
+[authorization]
+access_file = '$output/access.toml'
+delivery_key_file = '$output/delivery.key'
+EOF
+  case "$role" in
+    combined|gateway)
+      cat >> "$output/node-$node.toml" <<EOF
+
+[gateway]
+listen = '127.0.0.1:$external'
+EOF
+      ;;
+  esac
+  case "$role" in
+    combined|storage)
+      cat >> "$output/node-$node.toml" <<'EOF'
+
+[storage]
+archive_interval_ms = 1000
+EOF
+      ;;
+  esac
+  fi
+  cat >> "$output/node-$node.toml" <<EOF
 
 [runtime]
 internal_listen = '127.0.0.1:$internal'
 metadata_group = 1
 metadata_voters = $voters
+bootstrap = true
+EOF
+  if [[ $layout == legacy ]]; then
+    cat >> "$output/node-$node.toml" <<EOF
 access_file = '$output/access.toml'
 delivery_key_file = '$output/delivery.key'
-bootstrap = true
+EOF
+  fi
+  cat >> "$output/node-$node.toml" <<EOF
 
 [[runtime.groups]]
 group_id = 2
@@ -107,6 +149,6 @@ certificate_der = '$output/node-$peer.der'
 EOF
   done
 done
-printf 'Created %s runtime configuration in %s\n' "$mode" "$output"
+printf 'Created %s runtime configuration with %s layout in %s\n' "$mode" "$layout" "$output"
 printf 'Start each node with: tidemq serve --config %s/node-<id>.toml\n' "$output"
 printf 'Private SDK access token: %s/access.token\n' "$output"

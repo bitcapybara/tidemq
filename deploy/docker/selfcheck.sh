@@ -53,12 +53,25 @@ for mode in rf1 rf3; do
     grep -Fq "data_dir = '/var/lib/tidemq'" "$config" || fail 'Runtime data path differs'
     grep -Fq "private_key = '/run/tidemq/node-$node.key'" "$config" || fail 'Node key path differs'
     role=$(awk -F "'" '$1 == "role = " {print $2; exit}' "$config")
+    grep -Fxq '[authorization]' "$config" || fail 'Shared authorization section is missing'
+    if grep -Eq '^\[runtime\.(objects|retention)\]' "$config"; then
+      fail 'Legacy storage settings entered a role-scoped configuration'
+    fi
+    case "$role" in
+      combined|gateway) grep -Fxq '[gateway]' "$config" || fail 'Gateway settings are missing' ;;
+      *) if grep -Fxq '[gateway]' "$config"; then fail 'Gateway settings entered an inactive role'; fi ;;
+    esac
     case "$role" in
       combined|storage)
+        grep -Fxq '[storage]' "$config" || fail 'Storage settings are missing'
+        grep -Fxq '[storage.objects]' "$config" || fail 'Storage object settings are missing'
         [[ -f $run/objects.toml ]] || fail 'Storage credentials are missing'
         grep -Fq "credentials_file = '/run/tidemq/objects.toml'" "$config" || fail 'Storage credential path differs'
         ;;
-      *) [[ ! -e $run/objects.toml ]] || fail 'Storage credentials entered a non-storage role' ;;
+      *)
+        [[ ! -e $run/objects.toml ]] || fail 'Storage credentials entered a non-storage role'
+        if grep -Fxq '[storage]' "$config"; then fail 'Storage settings entered an inactive role'; fi
+        ;;
     esac
     if [[ -n ${TIDEMQ_BIN:-} ]]; then "$TIDEMQ_BIN" validate-config --config "$config" > /dev/null; fi
   done

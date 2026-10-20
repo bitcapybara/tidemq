@@ -1,7 +1,6 @@
 node_id = 1
 cluster_id = "00000000-0000-4000-8000-000000000001"
 role = "combined"
-listen = "127.0.0.1:7443"
 management_listen = "127.0.0.1:9419"
 data_dir = "data/node-1"
 replication_factor = 1
@@ -32,14 +31,21 @@ certificate = "certs/server.pem"
 private_key = "certs/server-key.pem"
 trust_roots = "certs/ca.pem"
 
+[authorization]
+access_file = "secrets/access.toml"
+delivery_key_file = "secrets/delivery.key"
+
+[gateway]
+listen = "127.0.0.1:7443"
+
+[storage]
+archive_interval_ms = 1000
+
 [runtime]
 internal_listen = "127.0.0.1:7444"
 metadata_group = 1
 metadata_voters = [1]
-access_file = "secrets/access.toml"
-delivery_key_file = "secrets/delivery.key"
 bootstrap = true
-archive_interval_ms = 1000
 
 [[runtime.groups]]
 group_id = 2

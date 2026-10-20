@@ -51,7 +51,7 @@ for source in "$output"/init/node-*.toml; do
       printf "access_key = '%s'\nsecret_key = '%s'\n" "$access" "$secret" > "$run/objects.toml"
       cat >> "$run/node.toml" <<'EOF'
 
-[runtime.objects]
+[storage.objects]
 endpoint = 'http://127.0.0.1:19000'
 region = 'us-east-1'
 bucket = 'tidemq-deploy-validation'

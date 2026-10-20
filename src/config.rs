@@ -9,6 +9,8 @@ use tokio::io::AsyncReadExt;
 use crate::error::{IoSnafu, ParseConfigurationSnafu, ProtocolSnafu};
 use crate::{Error, Result};
 
+mod file;
+
 const MAX_CONFIG_BYTES: u64 = 65_536;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
@@ -23,7 +25,7 @@ pub enum Role {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(try_from = "file::ConfigFile", into = "file::ConfigFile")]
 pub struct Config {
     pub node_id: u64,
     pub cluster_id: String,
@@ -101,7 +103,7 @@ impl Config {
                 reason: "remote management requires a protected deployment proxy",
             });
         }
-        if self.listen == self.management_listen {
+        if self.role.serves_gateway() && self.listen == self.management_listen {
             return Err(Error::Configuration {
                 reason: "business and management addresses must differ",
             });
@@ -240,5 +242,142 @@ mod tests {
     #[test]
     fn unknown_configuration_is_rejected() {
         assert!(toml::from_str::<Config>("unknown_setting = true").is_err());
+    }
+
+    #[test]
+    fn role_sections_round_trip_only_applicable_settings() {
+        for role in [
+            Role::Combined,
+            Role::Gateway,
+            Role::Broker,
+            Role::Storage,
+            Role::Metadata,
+        ] {
+            let mut original = Config {
+                role,
+                ..Config::default()
+            };
+            original.runtime.access_file = "private/access.toml".into();
+            original.runtime.delivery_key_file = "private/delivery.key".into();
+            original.runtime.archive_interval_ms = 2_000;
+            if role.stores_data() {
+                original.runtime.objects = Some(crate::runtime::ObjectConfig {
+                    endpoint: "http://127.0.0.1:9000".into(),
+                    region: "us-east-1".into(),
+                    bucket: "configuration-test".into(),
+                    prefix: "round-trip".into(),
+                    credentials_file: "private/objects.toml".into(),
+                    allow_http_loopback: true,
+                });
+            }
+            let text = toml::to_string(&original).unwrap();
+            let document: toml::Table = toml::from_str(&text).unwrap();
+            assert!(document.contains_key("authorization"));
+            assert_eq!(document.contains_key("gateway"), role.serves_gateway());
+            assert_eq!(document.contains_key("storage"), role.stores_data());
+            assert!(!document.contains_key("listen"));
+            let parsed: Config = toml::from_str(&text).unwrap();
+            assert_eq!(parsed.role, role);
+            assert_eq!(parsed.runtime.access_file, original.runtime.access_file);
+            assert_eq!(
+                parsed.runtime.delivery_key_file,
+                original.runtime.delivery_key_file
+            );
+            if role.stores_data() {
+                assert_eq!(parsed.runtime.archive_interval_ms, 2_000);
+                assert_eq!(
+                    serde_json::to_value(&parsed.runtime.objects).unwrap(),
+                    serde_json::to_value(&original.runtime.objects).unwrap()
+                );
+            }
+            assert_eq!(toml::to_string(&parsed).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn legacy_configuration_preserves_explicit_settings() {
+        let parsed: Config = toml::from_str(
+            r#"
+role = 'combined'
+listen = '127.0.0.1:7810'
+[runtime]
+access_file = 'old/access.toml'
+delivery_key_file = 'old/delivery.key'
+archive_interval_ms = 3000
+[runtime.retention]
+minimum_age_ms = 1234
+max_time_boundaries = 512
+"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.listen.port(), 7810);
+        assert_eq!(parsed.runtime.access_file, PathBuf::from("old/access.toml"));
+        assert_eq!(
+            parsed.runtime.delivery_key_file,
+            PathBuf::from("old/delivery.key")
+        );
+        assert_eq!(parsed.runtime.archive_interval_ms, 3000);
+        assert_eq!(parsed.runtime.retention.minimum_age_ms, 1234);
+        assert_eq!(parsed.runtime.retention.max_time_boundaries, 512);
+        let text = toml::to_string(&parsed).unwrap();
+        assert!(text.contains("[storage.retention]"));
+        assert!(!text.contains("[runtime.retention]"));
+    }
+
+    #[test]
+    fn role_sections_reject_inactive_missing_mixed_and_unknown_settings() {
+        let authorization =
+            "[authorization]\naccess_file = 'access.toml'\ndelivery_key_file = 'delivery.key'\n";
+        for text in [
+            format!("role = 'broker'\n{authorization}[gateway]\nlisten = '127.0.0.1:7443'"),
+            format!("role = 'metadata'\n{authorization}[storage]\n"),
+            format!("role = 'gateway'\n{authorization}"),
+            format!("role = 'storage'\n{authorization}"),
+            format!("role = 'broker'\nlisten = '127.0.0.1:7443'\n{authorization}"),
+            format!("role = 'broker'\n{authorization}[runtime]\naccess_file = 'duplicate.toml'"),
+            format!("role = 'broker'\n{authorization}[runtime]\narchive_interval_ms = 1000"),
+            format!(
+                "role = 'gateway'\n{authorization}[gateway]\nlisten = '127.0.0.1:7443'\nunknown = true"
+            ),
+            format!("role = 'storage'\n{authorization}[storage]\nunknown = true"),
+            "role = 'gateway'\n[gateway]\nlisten = '127.0.0.1:7443'".into(),
+            format!("{authorization}[gateway]\nlisten = '127.0.0.1:7443'\n[storage]"),
+            "role = 'broker'\n[authorization]\naccess_file = ''\ndelivery_key_file = 'key'".into(),
+        ] {
+            assert!(
+                toml::from_str::<Config>(&text).is_err(),
+                "Accepted invalid role configuration: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn inactive_gateway_listener_does_not_reserve_an_address() {
+        let mut config = Config {
+            role: Role::Storage,
+            ..Config::default()
+        };
+        config.runtime.internal_listen = config.listen;
+        config.runtime.metadata_voters = vec![2];
+        config.runtime.peers = [(1, Role::Storage), (2, Role::Metadata), (3, Role::Broker)]
+            .into_iter()
+            .map(|(node, role)| crate::runtime::PeerConfig {
+                node_id: node,
+                role,
+                zone: "local".into(),
+                internal_address: if node == 1 {
+                    config.runtime.internal_listen
+                } else {
+                    SocketAddr::from(([127, 0, 0, 1], 7500 + node as u16))
+                },
+                server_name: format!("node-{node}.local"),
+                certificate_der: PathBuf::from(format!("certs/node-{node}.der")),
+            })
+            .collect();
+        config.runtime.validate(&config).unwrap();
+        config.management_listen = config.listen;
+        config.validate().unwrap();
+        config.role = Role::Gateway;
+        assert!(config.validate().is_err());
     }
 }

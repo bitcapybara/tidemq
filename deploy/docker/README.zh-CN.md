@@ -26,16 +26,16 @@
 
 需要 Linux x86_64、Docker Engine、支持这些 Compose 字段的 Compose（本次使用 5.6.0）、Bash、OpenSSL 和 coreutils。Docker 主机应支持 cgroup v2 和内存、swap、PID 限额。不要向主机安装 Rust 工具链。
 
-`Dockerfile.builder` 只准备 Rust 1.96.0、rustfmt、clippy、CMake、clang、pkg-config、OpenSSL 等构建依赖，不执行 Cargo 编译。`Dockerfile` 只复制预编译的 `bin/tidemq` 和 `bin/deploy_validation`，安装运行时库及 curl/OpenSSL。两者均要求显式传入已验证的基础镜像 digest，没有浮动默认值。
+`Dockerfile.builder` 只准备 Rust 1.99.1、rustfmt、clippy、CMake、clang、pkg-config、OpenSSL 等构建依赖，不执行 Cargo 编译。`Dockerfile` 只复制预编译的 `bin/tidemq` 和 `bin/deploy_validation`，安装运行时库及 curl/OpenSSL。两者均要求显式传入已验证的基础镜像 digest，没有浮动默认值。
 
-以下两个基础镜像已由本次验证操作者在目标机实际拉取并核对：
+下面的 Rust 1.99.1 multiarch index digest 已从 Docker Hub 官方 registry 核对，包含 Linux amd64 和 arm64；目标机实际拉取后仍需记录本地镜像 ID。Debian digest 来自已有部署验证；Rust 1.96.0 的旧镜像和证据只供复核历史结果，不能作为 1.99.1 的部署验证结果。
 
 ```bash
-RUST_IMAGE=rust:1.96.0-bookworm@sha256:5e2214abe154fe26e39f64488952e5c991eeed1d6d6da7cc8381ae83927f0cfc
+RUST_IMAGE=rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
 DEBIAN_IMAGE=debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 REPO=/absolute/clean/checkout
 STAGE=/absolute/new-build-directory
-BUILDER_IMAGE=tidemq-validation-builder:rust-1.96.0
+BUILDER_IMAGE=tidemq-validation-builder:rust-1.99.1
 TIDEMQ_IMAGE=tidemq-validation:source-commit
 mkdir -m 0700 "$STAGE"
 docker build -f "$REPO/deploy/docker/Dockerfile.builder" \
@@ -109,7 +109,7 @@ RustFS 使用官方 1.0.3 的 Linux x86_64 musl 可执行文件，只读 bind �
 
 ## 生成与启动
 
-为每种拓扑创建新的状态目录，不能覆盖已有输出。父目录应预先存在且私有。`prepare.sh` 读取仓库中的 `compose.rf1.yaml` 或 `compose.rf3.yaml`，并调用现有 local generator，保留节点 ID、端口、拓扑和身份；分发文件、改写容器内路径并添加 loopback RustFS 配置。
+为每种拓扑创建新的状态目录，不能覆盖已有输出。父目录应预先存在且私有。`prepare.sh` 读取仓库中的 `compose.rf1.yaml` 或 `compose.rf3.yaml`，并调用现有 local generator，保留节点 ID、端口、拓扑和身份；分发文件、改写容器内路径并添加 loopback RustFS 配置。每个 `node.toml` 只保留所选角色适用的表：Gateway/Combined 有 `[gateway]`，Storage/Combined 有 `[storage]` 和 `[storage.objects]`；所有角色共用 `[authorization]` 与 `[runtime]`。Broker/Metadata 当前没有私有调参项。旧布局可读但不能与新表混合，迁移说明见[配置指南](../../docs/guide/configuration.zh-CN.md)。
 
 ```bash
 STATE=/absolute/new-rf1-state

@@ -197,7 +197,7 @@ if [[ "$scenario" == replay ]]; then
     -X PUT http://127.0.0.1:19000/tidemq-perf > "$output/rustfs/create-bucket.txt"
   cat >> "$config" <<EOF
 
-[runtime.objects]
+[storage.objects]
 endpoint = 'http://127.0.0.1:19000'
 region = 'us-east-1'
 bucket = 'tidemq-perf'
