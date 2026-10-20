@@ -106,7 +106,7 @@ purge 不再重编码所有 retained payload。检查点引用仍存活的物理
 
 这些是可调的正确性基线，不能作为生产吞吐或容量承诺。应用状态本身、snapshot 视图、编码/解码、retained logs 和 writer 缓冲的总内存仍由运行时统一预算；per-record 限额不能冒充总 RSS 上限。
 
-容量观察统计所有规范具名文件的实际长度，包括未引用段、checkpoint、staging 和被 reader 持有的旧 snapshot；不只统计 manifest 中的恢复链。unknown、畸形名称、符号链接、非普通文件、超限目录、缺少 identity/manifest/段或预期 snapshot 都使观察不可用，不能补零继续准入。单副本未来文件预算为 WAL 硬限额，加 `(snapshot 文件上限 + 1) × (snapshot payload 上限 + 88)`，再加 64 KiB identity/control 余量；默认约 448.06 MiB。运行时只把该上界扣除已观察本地文件后的余量列为 `reserved_storage_bytes`，不会把现有文件再扣一次。
+容量观察统计所有规范具名文件的实际长度，包括未引用段、checkpoint、staging 和被 reader 持有的旧 snapshot；不只统计 manifest 中的恢复链。unknown、畸形名称、符号链接、非普通文件、超限目录，以及缺少 identity、manifest、segment 或预期 snapshot 等必需文件种类，都会使观察不可用，不能补零继续准入。采样不解析 manifest 的每个引用，不能替代 `open` / `inspect_segmented` 对完整恢复链的校验。单副本未来文件预算为 WAL 硬限额，加 `(snapshot 文件上限 + 1) × (snapshot payload 上限 + 88)`，再加 64 KiB identity/control 余量；默认约 448.06 MiB。运行时只把该上界扣除已观察本地文件后的余量列为 `reserved_storage_bytes`，不会把现有文件再扣一次。
 
 迁移估算另保守包含源副本的全部实际具名文件、目标完整文件预算、两份实际 framed snapshot 传输量和 64 KiB 控制余量；不沿用两倍单 WAL/快照公式。文件长度不等于已分配块或目录元数据，statvfs `available` 独立采样；部署仍须配置文件系统及并发任务余量。空间样本只决定准入，不授权删除或宣告持久成功。
 
