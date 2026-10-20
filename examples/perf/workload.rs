@@ -493,14 +493,15 @@ async fn open(client: &Client, topic: Id) -> Result<Producer> {
 }
 
 async fn claim(client: &Client, topic: Id, subscription: Id) -> Result<Consumer> {
-    Ok(Consumer::claim(
+    Consumer::claim(
         client.clone(),
         topic,
         0,
         subscription,
         ConsumerConfig::default(),
     )
-    .await?)
+    .await
+    .context("Claim performance consumer assignment")
 }
 
 // Worker inputs belong to one fixed phase and are not retained between runs.
@@ -684,7 +685,8 @@ async fn consume(
     if stats.error.is_none() {
         let status = RequestContext::with_deadline(deadline)
             .scope(client.admin().subscription_status(topic, 0, subscription))
-            .await?;
+            .await
+            .context("Verify final durable subscription frontier")?;
         stats.frontier = status
             .assignment
             .context("Durable subscription assignment is unavailable")?
@@ -716,7 +718,8 @@ async fn consume_loop(
         let begin = Instant::now();
         let delivery = RequestContext::with_deadline(deadline)
             .scope(consumer.recv())
-            .await?;
+            .await
+            .context("Receive performance delivery")?;
         stats.receive.record(nanos(begin.elapsed())?)?;
         let Some(delivery) = delivery else {
             if done.load(Ordering::Acquire) {
@@ -733,7 +736,11 @@ async fn consume_loop(
         batch.try_reserve_exact(args.ack_messages)?;
         batch.push(delivery);
         while batch.len() < args.ack_messages {
-            let Some(delivery) = consumer.next().await? else {
+            let Some(delivery) = consumer
+                .next()
+                .await
+                .context("Read buffered performance delivery")?
+            else {
                 break;
             };
             batch.push(delivery);
@@ -768,7 +775,10 @@ async fn consume_loop(
                     stats.unknown += 1;
                     attempts += 1;
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    return Err(anyhow::Error::new(error)
+                        .context("Commit durable performance consumer ACK"));
+                }
             }
         }
         stats.ack.record(nanos(begin.elapsed())?)?;
