@@ -76,6 +76,8 @@ purge 会实际重写 `raft.wal`，保留 identity、vote、purged、日志尾�
 
 ## 初始资源预算
 
+单文件 purge 的复制/临时空间成本、完整 snapshot 的独立限制及后续物理版本迁移约束见 [WAL 分段与容量管理评估](../research/wal-segments.zh-CN.md)。结论是为生产数据组推进分段，但当前运行格式仍为本文的单 `raft.wal`；分段必须同时更新容量采样、迁移估算和崩溃恢复，不能只替换 writer。
+
 | 项目 | 默认值与口径 |
 | --- | --- |
 | 单 journal payload | 4 MiB，包含实际编码开销 |
