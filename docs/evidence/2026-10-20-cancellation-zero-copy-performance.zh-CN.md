@@ -77,6 +77,8 @@ SDK 和 runtime 的专项检查与 workspace 有重叠，不能相加为不同�
 
 GitHub 当前私有仓库的分支保护 API 返回 403，要求升级套餐或公开仓库；自动性能检查可以失败，但当前不能通过平台设置强制禁止合并。没有变更套餐、仓库可见性或现有权限。
 
+修复测试前提并释放临时 runner 的未使用 Android SDK 后，[Rust CI 39371810742](https://github.com/bitcapybara/tidemq/actions/runs/39371810742) 在 `aaaf23497d2c32905e5084b6be1fe7b24a8e1b8b` 终态 success：Linux/macOS validate、System/mimalloc/jemalloc 三个 allocator、Linux/macOS heap-profile 共七个 job 全部通过。Linux workspace 日志确认 34 个 suite、276 passed、12 ignored、0 failed；释放空间后 `df` 显示 25 GiB 可用。没有降低生产磁盘安全阈值、关闭扩容测试或重试整个执行操作。该工作流不包含尚未接受的性能基线，不能由 Rust CI 通过推导性能门禁通过。
+
 ## 修复合流后的终态本地验证
 
 生产源码冻结于 `3b75d9c301229d8c40652e0ac51957a7b5e3fa54`。随后 `b2dde4b` 只固定校准源码和修改 JavaScript 校准工具，服务、SDK、crates、Cargo.toml 和 Cargo.lock 没有变化。
