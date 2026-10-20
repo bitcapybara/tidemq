@@ -61,6 +61,9 @@ struct Args {
     batch_messages: u32,
     #[arg(long, default_value_t = 4)]
     workers: usize,
+    /// Independent one-partition topics measured concurrently after serial setup.
+    #[arg(long, default_value_t = 1)]
+    concurrent_partitions: usize,
     /// Reused Request streams per active data class; Core and ACK limits stay fixed.
     #[arg(long, default_value_t = 4)]
     request_lanes: usize,
@@ -117,6 +120,10 @@ impl Args {
             "Workers must be in 1..=64"
         );
         ensure!(
+            (1..=4).contains(&self.concurrent_partitions),
+            "Concurrent partitions must be in 1..=4"
+        );
+        ensure!(
             matches!(self.request_lanes, 2 | 4),
             "Request lanes must be either 2 or 4 for the fixed-budget comparison"
         );
@@ -156,6 +163,7 @@ impl Args {
         ensure!(
             batch_bytes
                 .checked_mul(self.workers)
+                .and_then(|bytes| bytes.checked_mul(self.concurrent_partitions))
                 .is_some_and(|bytes| bytes <= 8 * 1024 * 1024),
             "Concurrent production exceeded the fixed 8 MiB generator bound"
         );
@@ -165,7 +173,9 @@ impl Args {
             .checked_mul(u64::try_from(self.message_bytes + 8)?)
             .context("Phase byte count overflow")?;
         ensure!(
-            total_bytes <= 256 * 1024 * 1024,
+            total_bytes
+                .checked_mul(u64::try_from(self.concurrent_partitions)?)
+                .is_some_and(|bytes| bytes <= 256 * 1024 * 1024),
             "One phase exceeded the 256 MiB logical byte limit"
         );
         Ok(())
@@ -180,8 +190,8 @@ struct Report {
     configuration: Args,
     sdk_configuration: serde_json::Value,
     identity: sample::Identity,
-    warmup: Option<workload::PhaseReport>,
-    measured: workload::PhaseReport,
+    warmup: Option<workload::GroupReport>,
+    measured: workload::GroupReport,
     cooldown: Vec<sample::ResourceSample>,
     limitations: [&'static str; 5],
 }
@@ -243,18 +253,15 @@ async fn run(args: &Args) -> Result<Report> {
             node_id: None,
         },
         credential.trim_end_matches(['\r', '\n']).into(),
-        Instant::now()
-            .checked_add(Duration::from_millis(args.request_timeout_ms))
-            .context("Deadline overflow")?,
     )
     .await?;
     let nonce = Id::random()?;
     let warmup = if args.warmup_messages > 0 {
-        Some(workload::phase(&client, args, "warmup", nonce, args.warmup_messages).await?)
+        Some(workload::group(&client, args, "warmup", nonce, args.warmup_messages).await?)
     } else {
         None
     };
-    let measured = workload::phase(&client, args, "measured", nonce, args.messages).await?;
+    let measured = workload::group(&client, args, "measured", nonce, args.messages).await?;
     let mut cooldown = Vec::new();
     cooldown.try_reserve_exact(args.cooldown_secs as usize + 1)?;
     let started = Instant::now();
@@ -264,13 +271,19 @@ async fn run(args: &Args) -> Result<Report> {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
-    client.close(client.deadline()?).await;
-    let passed = measured.terminal_error.is_none()
-        && warmup
-            .as_ref()
-            .is_none_or(|phase| phase.terminal_error.is_none());
+    client.close().await;
+    let passed = measured
+        .partitions
+        .iter()
+        .all(|phase| phase.terminal_error.is_none())
+        && warmup.as_ref().is_none_or(|group| {
+            group
+                .partitions
+                .iter()
+                .all(|phase| phase.terminal_error.is_none())
+        });
     Ok(Report {
-        schema_version: 1,
+        schema_version: 2,
         status: if passed { "passed" } else { "failed" },
         generator_allocator: "std::alloc::System; four Tokio worker threads",
         configuration: args.clone(),
@@ -281,7 +294,7 @@ async fn run(args: &Args) -> Result<Report> {
         cooldown,
         limitations: [
             "Closed-loop finite load; no open-loop saturation or coordinated-omission correction claim",
-            "RF1 local pilot does not prove RF3, three physical availability zones or production SLOs",
+            "Loopback nodes do not prove three physical availability zones or production SLOs",
             "Replay assignment alone is not physical cold I/O; require_cold checks a real server counter delta",
             "P99 requires 1000 samples and P99.9 requires 10000; missing tails are null",
             "Configured observability label must be checked against the captured service config and runtime capabilities",
@@ -396,5 +409,22 @@ mod tests {
             snapshot
         });
         assert_eq!(snapshots.first(), snapshots.last());
+    }
+
+    #[test]
+    fn concurrent_partition_count_shares_the_existing_finite_byte_budget() {
+        let mut args = args();
+        args.concurrent_partitions = 4;
+        args.validate().unwrap();
+        args.concurrent_partitions = 5;
+        assert!(args.validate().is_err());
+        args.concurrent_partitions = 4;
+        args.message_bytes = 262_136;
+        args.batch_messages = 1;
+        args.messages = 256;
+        args.warmup_messages = 0;
+        args.validate().unwrap();
+        args.messages = 257;
+        assert!(args.validate().is_err());
     }
 }

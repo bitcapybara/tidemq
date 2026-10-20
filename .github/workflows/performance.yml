@@ -1,0 +1,103 @@
+name: Performance
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  performance:
+    name: Performance gate (RF1 and RF3)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out protected comparison tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read protected baseline source
+        id: reference
+        run: node trusted/scripts/performance-gate.mjs source --tools trusted >> "$GITHUB_OUTPUT"
+      - name: Check out previous measured service
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.reference.outputs.source_commit }}
+          path: baseline
+          persist-credentials: false
+      - name: Check out proposed service
+        uses: actions/checkout@v4
+        with:
+          path: candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: trusted -> target/performance-gate
+          key: performance-mimalloc-release
+      - name: Validate the trusted comparator
+        run: node --test trusted/scripts/performance/compare.test.mjs
+      - name: Alternate real baseline and candidate trials on this runner
+        env:
+          REQUIRE_UNCHANGED: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || '' }}
+        run: >-
+          node trusted/scripts/performance-gate.mjs run
+          --tools trusted --baseline baseline --candidate candidate
+          --output performance-result $REQUIRE_UNCHANGED
+      - name: Upload reports, metrics and bounded process logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-comparison
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            performance-result/summary.json
+            performance-result/builds/*/identity.json
+            performance-result/builds/*/build.log
+            performance-result/rf*/*/report.json
+            performance-result/rf*/*/execution.json
+            performance-result/rf*/*/*.log
+            performance-result/rf*/*/*-metrics.txt
+            performance-result/rf*/*/*-diagnostics.json
+
+  promote-baseline:
+    name: Record successful main baseline
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: performance
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: performance-comparison
+          path: measured
+      - name: Promote only the validated current main source
+        env:
+          VALIDATED_COMMIT: ${{ github.sha }}
+        run: |
+          if [[ "$(git rev-parse HEAD)" != "$VALIDATED_COMMIT" ]]; then
+            printf 'Main advanced during measurement; its own run will promote the next baseline\n'
+            exit 0
+          fi
+          node scripts/performance-gate.mjs promote --tools . --report measured/summary.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add performance/baseline.json performance/baseline-report.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'chore(perf): record validated main performance baseline'
+          git push origin HEAD:main

@@ -8,7 +8,9 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
-use tidemq_sdk::{Bytes, Client, Consumer, ConsumerConfig, Id, ProduceReceipt, Producer, public};
+use tidemq_sdk::{
+    Bytes, Client, Consumer, ConsumerConfig, Id, ProduceReceipt, Producer, RequestContext, public,
+};
 use tokio::{
     sync::{Mutex, watch},
     task::JoinSet,
@@ -87,28 +89,60 @@ enum Background {
     Control { latency: Histogram, errors: u64 },
 }
 
-pub async fn phase(
+struct Prepared {
+    name: String,
+    topic: Id,
+    subscription: Id,
+    producers: Vec<Producer>,
+    consumer: Option<Consumer>,
+}
+
+#[derive(Serialize)]
+pub struct GroupReport {
+    pub elapsed_ns: u64,
+    pub partitions: Vec<PhaseReport>,
+}
+
+pub async fn group(
     client: &Client,
     args: &Args,
     label: &str,
     run: Id,
     count: u64,
-) -> Result<PhaseReport> {
+) -> Result<GroupReport> {
+    let mut prepared = Vec::new();
+    prepared.try_reserve_exact(args.concurrent_partitions)?;
+    // Serial setup keeps metadata admission outside the measured concurrent workload.
+    for partition in 0..args.concurrent_partitions {
+        let label = format!("{label}-{partition}");
+        prepared.push((label.clone(), prepare(client, args, &label, run).await?));
+    }
+    let started = Instant::now();
+    let mut running = JoinSet::new();
+    for (label, prepared) in prepared {
+        let client = client.clone();
+        let args = args.clone();
+        running.spawn(async move { phase(&client, &args, &label, run, count, prepared).await });
+    }
+    let mut partitions = Vec::new();
+    partitions.try_reserve_exact(args.concurrent_partitions)?;
+    while let Some(result) = running.join_next().await {
+        partitions.push(result??);
+    }
+    partitions.sort_by(|left, right| left.label.cmp(&right.label));
+    Ok(GroupReport {
+        elapsed_ns: nanos(started.elapsed())?,
+        partitions,
+    })
+}
+
+async fn prepare(client: &Client, args: &Args, label: &str, run: Id) -> Result<Prepared> {
     let name = format!("perf-{run}-{label}");
-    let topic = client
-        .admin()
-        .create_topic(&name, 1, client.deadline()?)
-        .await?;
+    let topic = client.admin().create_topic(&name, 1).await?;
     let topic = Id::from_slice(&topic.topic_id)?;
     let subscription = client
         .admin()
-        .create_subscription(
-            topic,
-            "load",
-            0,
-            public::DeliveryMode::Parallel,
-            client.deadline()?,
-        )
+        .create_subscription(topic, "load", 0, public::DeliveryMode::Parallel)
         .await?;
     let subscription = Id::from_slice(&subscription.subscription_id)?;
     let mut producers = Vec::new();
@@ -121,6 +155,30 @@ pub async fn phase(
     } else {
         None
     };
+    Ok(Prepared {
+        name,
+        topic,
+        subscription,
+        producers,
+        consumer,
+    })
+}
+
+async fn phase(
+    client: &Client,
+    args: &Args,
+    label: &str,
+    run: Id,
+    count: u64,
+    prepared: Prepared,
+) -> Result<PhaseReport> {
+    let Prepared {
+        name,
+        topic,
+        subscription,
+        producers,
+        consumer,
+    } = prepared;
     let server_metrics_before = sample::metrics(args.management).await?;
     let cold_before = sample::cold_misses(&server_metrics_before)?;
     let client_metrics_before = client_metrics(client);
@@ -212,8 +270,8 @@ pub async fn phase(
             );
             break;
         }
-        if let Err(error) = producer
-            .retire(client.deadline()?.min(cleanup_deadline))
+        if let Err(error) = RequestContext::with_deadline(cleanup_deadline)
+            .scope(producer.retire())
             .await
         {
             let error = anyhow::Error::new(error);
@@ -324,14 +382,13 @@ async fn produce_all(
     let offsets = Arc::new(Mutex::new(Seen::new(count)?));
     let mut workers = JoinSet::new();
     for (worker, producer) in producers.iter().enumerate() {
-        let client = client.clone();
         let args = args.clone();
         let producer = producer.clone();
         let next = next.clone();
         let offsets = offsets.clone();
         workers.spawn(async move {
             produce(
-                producer, client, &args, worker, next, offsets, started, deadline, count, run,
+                producer, &args, worker, next, offsets, started, deadline, count, run,
             )
             .await
         });
@@ -392,7 +449,7 @@ async fn produce_all(
 
 async fn open(client: &Client, topic: Id) -> Result<Producer> {
     let producer = Id::random()?;
-    match Producer::open(client.clone(), topic, 0, producer, client.deadline()?).await {
+    match Producer::open(client.clone(), topic, 0, producer).await {
         Ok(producer) => Ok(producer),
         Err(tidemq_sdk::Error::RegistrationUnknown {
             producer_id,
@@ -400,15 +457,10 @@ async fn open(client: &Client, topic: Id) -> Result<Producer> {
             ..
         }) => {
             // The original identity is preserved; no new producer is registered after an unknown result.
-            Ok(Producer::open_at(
-                client.clone(),
-                topic,
-                0,
-                producer_id,
-                registration_epoch,
-                client.deadline()?,
+            Ok(
+                Producer::open_at(client.clone(), topic, 0, producer_id, registration_epoch)
+                    .await?,
             )
-            .await?)
         }
         Err(error) => Err(error.into()),
     }
@@ -421,7 +473,6 @@ async fn claim(client: &Client, topic: Id, subscription: Id) -> Result<Consumer>
         0,
         subscription,
         ConsumerConfig::default(),
-        client.deadline()?,
     )
     .await?)
 }
@@ -430,7 +481,6 @@ async fn claim(client: &Client, topic: Id, subscription: Id) -> Result<Consumer>
 #[allow(clippy::too_many_arguments)]
 async fn produce(
     producer: Producer,
-    client: Client,
     args: &Args,
     worker: usize,
     next: Arc<AtomicU64>,
@@ -466,10 +516,10 @@ async fn produce(
                 nanos(started.elapsed())?,
             )?;
             let begin = Instant::now();
-            let result = producer
-                .produce(messages, request_deadline(&client, deadline)?)
+            let result = RequestContext::with_deadline(deadline)
+                .scope(producer.produce(messages))
                 .await;
-            let receipt = recover(&producer, &client, result, deadline, &mut stats).await?;
+            let receipt = recover(&producer, result, deadline, &mut stats).await?;
             stats.latency.record(nanos(begin.elapsed())?)?;
             ensure!(
                 u64::from(receipt.message_count) == size,
@@ -498,7 +548,6 @@ async fn produce(
 
 async fn recover(
     producer: &Producer,
-    client: &Client,
     result: tidemq_sdk::Result<ProduceReceipt>,
     deadline: Instant,
     stats: &mut ProduceStats,
@@ -517,8 +566,8 @@ async fn recover(
                 .context("Original pending batch is unavailable")?;
             let mut last = error;
             for _ in 0..4 {
-                match producer
-                    .retry(batch, request_deadline(client, deadline)?)
+                match RequestContext::with_deadline(deadline)
+                    .scope(producer.retry(batch))
                     .await
                 {
                     Ok(receipt) => {
@@ -562,15 +611,14 @@ async fn consume(
     };
     let consuming_started = Instant::now();
     let result = consume_loop(
-        &consumer, &client, args, started, deadline, count, run, &done, &mut stats,
+        &consumer, args, started, deadline, count, run, &done, &mut stats,
     )
     .await;
     stats.elapsed_ns = nanos(consuming_started.elapsed())?;
     stats.error = result.err().map(|error| format!("{error:#}"));
     if stats.error.is_none() {
-        let status = client
-            .admin()
-            .subscription_status(topic, 0, subscription, request_deadline(&client, deadline)?)
+        let status = RequestContext::with_deadline(deadline)
+            .scope(client.admin().subscription_status(topic, 0, subscription))
             .await?;
         stats.frontier = status
             .assignment
@@ -584,7 +632,6 @@ async fn consume(
 #[allow(clippy::too_many_arguments)]
 async fn consume_loop(
     consumer: &Consumer,
-    client: &Client,
     args: &Args,
     started: Instant,
     deadline: Instant,
@@ -602,7 +649,9 @@ async fn consume_loop(
             "Consumer phase deadline exceeded"
         );
         let begin = Instant::now();
-        let delivery = consumer.recv(request_deadline(client, deadline)?).await?;
+        let delivery = RequestContext::with_deadline(deadline)
+            .scope(consumer.recv())
+            .await?;
         stats.receive.record(nanos(begin.elapsed())?)?;
         let Some(delivery) = delivery else {
             if done.load(Ordering::Acquire) {
@@ -642,8 +691,8 @@ async fn consume_loop(
         let begin = Instant::now();
         let mut attempts = 0;
         loop {
-            match consumer
-                .ack_many(&batch, request_deadline(client, deadline)?)
+            match RequestContext::with_deadline(deadline)
+                .scope(consumer.ack_many(&batch))
                 .await
             {
                 Ok(result) => {
@@ -708,15 +757,11 @@ async fn control(
     while Instant::now() < deadline {
         tokio::select! { _ = stop.changed() => break, _ = ticker.tick() => {} }
         let begin = Instant::now();
-        let result = match request_deadline(&client, deadline) {
-            Ok(deadline) => client.admin().topic(&topic, deadline).await.map(|_| ()),
-            Err(_) => {
-                errors += 1;
-                break;
-            }
-        };
+        let result = RequestContext::with_deadline(deadline)
+            .scope(client.admin().topic(&topic))
+            .await;
         match result {
-            Ok(()) => {
+            Ok(_) => {
                 if nanos(begin.elapsed())
                     .and_then(|value| latency.record(value))
                     .is_err()
@@ -792,10 +837,6 @@ fn decode(body: &[u8], run: Id) -> Result<(u64, u64)> {
     Ok((identity, sent))
 }
 
-fn request_deadline(client: &Client, phase: Instant) -> Result<Instant> {
-    ensure!(Instant::now() < phase, "Phase deadline expired");
-    Ok(client.deadline()?.min(phase))
-}
 fn nanos(duration: Duration) -> Result<u64> {
     Ok(u64::try_from(duration.as_nanos())?)
 }
