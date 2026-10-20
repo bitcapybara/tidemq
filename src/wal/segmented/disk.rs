@@ -92,6 +92,7 @@ pub(super) async fn create_file(path: &Path, bytes: &[u8]) -> Result<File> {
     file.write_all(bytes)
         .await
         .map_err(|e| Error::io(path, e))?;
+    file.flush().await.map_err(|e| Error::io(path, e))?;
     file.sync_all().await.map_err(|e| Error::io(path, e))?;
     Ok(file)
 }
@@ -119,7 +120,11 @@ pub(super) async fn hash_file(path: &Path, expected: u64) -> Result<[u8; 32]> {
     }
     let mut hash = blake3::Hasher::new();
     let mut remaining = expected;
-    let mut buffer = [0u8; 65_536];
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(65_536).map_err(|_| Error::Limit {
+        name: "storage checksum buffer",
+    })?;
+    buffer.resize(65_536, 0);
     while remaining != 0 {
         let count =
             usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| Error::Limit {
@@ -141,10 +146,23 @@ pub(super) async fn validate_snapshot(
     snapshot: &super::SnapshotRef,
     synchronize: bool,
 ) -> Result<()> {
+    if snapshot.byte_len < FRAME_HEADER_BYTES as u64
+        || snapshot.byte_len > u64::from(u32::MAX) + FRAME_HEADER_BYTES as u64
+    {
+        return Err(Error::Limit {
+            name: "snapshot reference bytes",
+        });
+    }
     if segmented_file_kind(&snapshot.file_name) != Some(SegmentedFileKind::Snapshot) {
         return Err(corrupt("Invalid snapshot reference name"));
     }
     let path = directory.join(&snapshot.file_name);
+    let metadata = fs::symlink_metadata(&path)
+        .await
+        .map_err(|error| Error::io(&path, error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(corrupt("Snapshot reference is not a regular file"));
+    }
     if hash_file(&path, snapshot.byte_len).await? != snapshot.checksum {
         return Err(corrupt("Snapshot reference checksum differs"));
     }

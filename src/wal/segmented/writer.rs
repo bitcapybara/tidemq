@@ -325,9 +325,13 @@ impl Writer {
         }
         Ok(frames)
     }
-    async fn sync(&self) -> Result<()> {
+    async fn sync(&mut self) -> Result<()> {
         let start = Instant::now();
         let path = self.directory.join(self.manifest.active.name());
+        self.file
+            .flush()
+            .await
+            .map_err(|error| Error::io(&path, error))?;
         self.file
             .sync_all()
             .await

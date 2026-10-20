@@ -217,6 +217,7 @@ pub(crate) async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         file.write_all(bytes)
             .await
             .map_err(|e| Error::io(&temporary, e))?;
+        file.flush().await.map_err(|e| Error::io(&temporary, e))?;
         file.sync_all()
             .await
             .map_err(|e| Error::io(&temporary, e))?;
