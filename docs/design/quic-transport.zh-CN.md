@@ -40,6 +40,16 @@ accept/read 不等待磁盘或 handler；发送、读取和回执各自有界。
 
 正常帧只入队以维持流水；可信节点的 Stop/Reconnect 控制回复可显式请求 `FrameSender::flush(deadline)`，等待原生 stream 全部在途字节得到对端认证 ACK 后，才执行 `WireService::response_sent` 关闭动作。回调保留原认证上下文、请求与响应，全部受有界回复队列及原总期限约束；普通请求默认不触发 flush。只有响应成功发送和 flush 成功才通知，不能在 handler 刚返回时关闭 endpoint，也不使用固定 sleep。该传输收讫仍不是业务持久成功，Stop 的权限、状态与提交前置由运行时另行检查。
 
+## 编码复制与缓冲区所有权
+
+接收路径使用带准入 owner 的 `Bytes` 解码，Prost 的 bytes 字段继续共享原缓冲区；最后一份 payload 视图释放前不能归还底层额度。`FrameSender::send_owned` 让 RPC writer 移交整个 Frame。payload 至少 16 KiB、具有唯一所有权且完整保留容量能取得额度时，编码拆成 metadata header、原 payload 和 timeout trailer，交给 s2n-quic `send_vectored`，消除第二次整帧 payload 复制。线上字节与原连续编码完全一致。
+
+唯一 offset 切片先恢复原分配容量，按该容量及 metadata 实际容量的保守上界计费；三个片段共享一份许可，native QUIC 或任意一字节 clone 仍持有它时不能提前归还。小消息、共享/未知 owner、保留容量过大或无法取得完整额度时，使用原有有界连续编码。借用式 `send(&Frame)` 保留兼容行为，不据此承诺移交所有权。
+
+该优化仅减少应用层的一次复制，不消除 Protobuf payload 构建、TLS 加密、QUIC 包构造或内核复制。编码探针发现 128 B 分段路径更慢，因此保留小帧路径；实际吞吐与尾延迟以 RF1/RF3 对照为准。rkyv、FlatBuffers、FlexBuffers 的适用位置、校验和格式演进限制见[格式调研](../research/zero-copy-formats.zh-CN.md)，当前不改变 wire/WAL/归档格式。
+
+SDK 的应用操作使用 `RequestContext` 与 `CancellationToken` 管理取消，配置超时和显式绝对期限取较早者；内部每一跳仍通过有限剩余预算执行。取消已发出的调用可能得到 Unknown，不能把 token 取消视为业务回滚。SDK 与底层传输 API 的区别见[SDK 手册](../guide/rust-sdk.zh-CN.md)。
+
 ## TLS 与权限
 
 外部监听要求 native TLS 链验证、正确服务名和 tidemq/1 ALPN；客户端使用独立 trust roots，清空系统默认根，不提供跳过证书验证选项。PEM 输入必须是有界 UTF-8 文本，以 `&str` 交给 s2n provider；该版本 `&[u8]` 重载代表 DER，会触发其不支持 DER 的路径。证书链最大深度为 8。

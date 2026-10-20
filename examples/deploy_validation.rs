@@ -263,24 +263,27 @@ async fn connect(args: &Args, deadline: Instant) -> Result<Client> {
         .context("Token file must be UTF-8")?;
     let mut configuration = ClientConfig::new(args.endpoint.to_string());
     configuration.request_timeout_ms = 10_000;
-    Ok(Client::with_target(
-        configuration,
-        ClientTls {
-            trust_roots: Bytes::from(roots),
-            identity: None,
-            expected_nodes: Vec::new(),
-        },
-        PeerTarget {
-            address: args.endpoint,
-            server_name: args.server_name.clone(),
-            local_role: "sdk".into(),
-            remote_role: "gateway".into(),
-            cluster_id: None,
-            node_id: None,
-        },
-        token.trim_end_matches(['\r', '\n']).into(),
+    Ok(
+        tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+            .scope(Client::with_target(
+                configuration,
+                ClientTls {
+                    trust_roots: Bytes::from(roots),
+                    identity: None,
+                    expected_nodes: Vec::new(),
+                },
+                PeerTarget {
+                    address: args.endpoint,
+                    server_name: args.server_name.clone(),
+                    local_role: "sdk".into(),
+                    remote_role: "gateway".into(),
+                    cluster_id: None,
+                    node_id: None,
+                },
+                token.trim_end_matches(['\r', '\n']).into(),
+            ))
+            .await?,
     )
-    .await?)
 }
 
 fn client_metrics(client: &Client) -> serde_json::Value {

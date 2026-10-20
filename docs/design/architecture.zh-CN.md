@@ -19,6 +19,8 @@
 
 网络重连保留生产者/批次身份；相同身份内容冲突明确拒绝。首版不持久化 SDK outbox，不承诺 SDK 进程重启后的未决批次自动恢复。去重结果窗口过期返回过期/未知，不自动换身份重发。
 
+SDK 公共网络调用默认使用配置超时；`RequestContext` 通过 `CancellationToken` 和绝对期限在多个调用之间共享生命周期。一次调用内的准入、连接、RPC、重试和退避共用原预算，客户端关闭取消在途请求；生产或注册中断保留原 PendingBatch/epoch。明确 Unknown 后继续查询/重试原身份。接口与作用域传播见[SDK 手册](../guide/rust-sdk.zh-CN.md)。
+
 默认消费可并行完成，按 key 模式同 key 串行且失败阻塞，不默认自动跳过或死信后 ACK。外部副作用仍由业务幂等或 fencing 保护。稳定域名后使用 QUIC Gateway；Gateway 故障需要重新握手、鉴权与原身份恢复。
 
 ## 部署与验收
@@ -28,3 +30,9 @@
 `serve` 按本节点配置组装角色，内部只接受带 cluster/node/role/group 证据的 mTLS 请求；对外接受经过 scope 校验的语义请求，不能提交原始 Raft 命令。元数据和数据 leader 无须同机，Gateway/Broker/生命周期/成员迁移通过封闭内部协议访问权威。磁盘应用格式为元数据 version 2、数据 version 2；本开发分支没有历史格式自动迁移器，禁止为启动新版本而自动清空旧目录。
 
 角色与部署见[运行时设计](runtime.zh-CN.md)，对象安全见[生命周期](object-lifecycle.zh-CN.md)，容量口径见[保留与配额](retention-quota.zh-CN.md)，迁移见[弹性设计](scaling.zh-CN.md)。
+
+## 性能优化与回归约束
+
+先减少已确认的应用层重复复制，保留小消息路径和完整内存计费；编码与共享缓冲区所有权见[QUIC 设计](quic-transport.zh-CN.md)。新序列化格式必须先验证读取、写入、校验、保留内存和版本兼容，不能以无校验的字段读取速度替换持久数据格式；候选结论见[格式调研](../research/zero-copy-formats.zh-CN.md)。
+
+性能回归使用真实单节点 RF1 与三个完整角色节点 RF3，对照同一机器上的上次已接受源码；SDK 与服务端均参与构建。消息数、去重与持久 ACK 前沿先过正确性检查，再比较吞吐与尾延迟。有限噪声实验只能报告“未检测到回退”，不证明零差异；详细策略与环境限制见[性能验证](../performance.zh-CN.md)。
