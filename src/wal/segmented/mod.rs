@@ -119,7 +119,7 @@ impl JournalOptions {
     pub fn validate_segmented(&self) -> Result<()> {
         self.validate()?;
         let publication = self.publication_reserve()?;
-        if self.max_segments < 2
+        if self.max_segments < 3
             || self.max_segments > MAX_SEGMENTS
             || self.max_retained_records == 0
             || self.max_retained_records > MAX_REFERENCES
