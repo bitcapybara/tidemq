@@ -1,6 +1,6 @@
 {
   "schema_version": 4,
-  "service_source_commit": "d7c913ebd21a5f1f07840304e9b8f8d9d8a3bfae",
+  "service_source_commit": "693f9bd91a570758f7891f15edb2e95fdcf47864",
   "pairs": 8,
   "comparison_family": {
     "method": "bonferroni",
