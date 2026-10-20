@@ -4,7 +4,7 @@
 
 | 任务 | 已实现与已有行为证据 | 剩余验收边界 |
 | --- | --- | --- |
-| T00 基础与内存 | 四个 package、schema/codec/ID/边界、Snafu 错误、有限日志/指标、配置、应用许可与控制预留；System/mimalloc/jemalloc 实际二进制可识别；同 jemalloc 发布构建可符号化采样；Linux Docker 的 System/cgroup 与 RF1 受控 OOM 恢复已验 | 生产 allocator、Linux 分配栈与长稳待验 |
+| T00 基础与内存 | 四个 package、schema/codec/ID/边界、Snafu 错误、有限日志/指标、配置、应用许可与控制预留；默认 mimalloc，System/jemalloc 为互斥选项，实际二进制可识别；同 jemalloc 发布构建可符号化采样；Linux Docker 的 System/cgroup 与 RF1 受控 OOM 恢复已验 | 默认 mimalloc 的生产性能、Linux 分配栈与长稳待验 |
 | T01 QUIC | 实际 s2n-quic 1.91、TLS/mTLS、有限分类连接池/流/队列、独立读写、单请求取消、原生新包 ACK 活性探测；空闲 sibling 不关闭活跃连接，半帧仍有限组装；原期限内关闭 owned I/O 并释放端口；有限 2/4 lane 同预算对照 | 真实 LB/NAT/CID、混合连接/短流/公平性与完整规模矩阵待验 |
 | T02 持久化 | fsync WAL/vote/log/commit/snapshot、官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 恢复、物理日志压缩与失败关闭 | 真实掉电、跨区故障和长稳待验；同机不代表独立故障域 |
 | T03 控制与所有权 | 独立元数据组、CRUD 容量与永久身份、grant/fence/recover/activate、有限 TTL；真实 Broker 强杀后自动接管、旧身份拒绝及元数据少数派停授权 | 未 Active 的原 grant 目标同时死亡时保守阻塞；三区与长期故障组合待验 |
@@ -28,7 +28,7 @@
 
 RustFS 1.0.3 原生隔离实例已覆盖 PUT/GET/HEAD、206/416、multipart、AWS SDK、原对象恢复、发布/检查点/本地回收和冷读持久 ACK；仅启动脚本基础预检不包含这些后续证据。同机 SIGKILL 不证明宿主掉电安全。分配器实际发布构建证据见[采样记录](evidence/2026-10-19-allocator-release.zh-CN.md)。
 
-阶段 A—E 的本地正确性门禁通过，17 项有限 RF1 [性能报告](evidence/2026-10-20-local-performance.zh-CN.md)已交付；整体计划尚未完成生产验收。该短跑只有四个生产 worker 和一个顺序消费/ACK 的 Consumer；System 小消息生产约 1829 条/秒、消费约 60.30 条/秒，offered→持久 ACK P99 上界约 65.50 秒，包含突发后的排队积压。它不支持高吞吐或低延迟目标已达成，也不能冻结生产分配器。
+阶段 A—E 的本地正确性门禁通过，17 项有限 RF1 [性能报告](evidence/2026-10-20-local-performance.zh-CN.md)已交付；整体计划尚未完成生产验收。该短跑只有四个生产 worker 和一个顺序消费/ACK 的 Consumer；System 小消息生产约 1829 条/秒、消费约 60.30 条/秒，offered→持久 ACK P99 上界约 65.50 秒，包含突发后的排队积压。它不支持高吞吐或低延迟目标已达成，也不是此次将 mimalloc 设为默认的性能证明。默认值调整后 249 项串行测试通过，普通并行 runtime_queue 回归仍有不稳定项，详见[后续验证记录](evidence/2026-10-20-mimalloc-default.zh-CN.md)；串行通过不替代并发压力和生产恢复验收。
 
 原生 Collector/Prometheus/Grafana 已验证实际 RF1 与 Collector 抓取、29 个看板面板、50 条 PromQL 和只读权限；该观测部署验证的四个自有进程正常退出，五个 TCP 和两个 UDP 端口释放。
 

@@ -23,6 +23,6 @@
 
 本地生成配置明确给出 192 MiB 应用预算和 32 MiB 控制预留。开启 S3 时要求至少这些预算，并要求 RSS 高水位至少高于应用预算 64 MiB，保证打包临时缓冲、最终对象和控制工作能同时准入。修改应用预算必须同步检查 RSS、水位与容器限制；原生 QUIC、线程栈、诊断、追踪和 allocator 保留不包含在应用许可里。Linux cgroup v2 另按可见祖先的实际压力做独立门控，无法读取时不能填零。
 
-构建时只能选择一个全局 allocator；默认 System，mimalloc 是候选。替代构建使用 `--no-default-features`；不支持运行中切换。SDK 不安装全局 allocator、subscriber 或 exporter。统计、采样 feature、native 启动设置和运行中实际生效状态分别核对，详见[内存管理](../design/memory-management.zh-CN.md)。
+构建时只能选择一个全局 allocator；默认开启 `allocator-mimalloc`。System 使用 `--no-default-features --features allocator-system`，jemalloc 使用 `--no-default-features --features allocator-jemalloc`；jemalloc 堆采样使用 `--no-default-features --features heap-profiling`。不支持运行中切换，也不能使用 `--all-features`。SDK 不安装全局 allocator、subscriber 或 exporter。统计、采样 feature、native 启动设置和运行中实际生效状态分别核对，详见[内存管理](../design/memory-management.zh-CN.md)与[内存排障](../operations/memory-troubleshooting.zh-CN.md)。
 
 当前数据组与元数据状态格式版本为 2。发现不支持的版本应失败关闭；没有旧实验格式的自动迁移工具。升级前保留一致的 WAL/快照和二进制，不手改序列化内容或复制运行中目录。

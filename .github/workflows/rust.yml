@@ -18,19 +18,20 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --tests --examples --no-deps --locked -- -D warnings
       - run: cargo clippy --workspace --lib --bins --no-deps --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unimplemented -D clippy::todo -D clippy::indexing_slicing
-      - run: cargo test --workspace --locked
+      # Runtime tests share process-wide tracing and launch bounded Raft subprocesses.
+      - run: cargo test --workspace --locked -- --test-threads=1
       - run: cargo test --workspace --doc --locked
       - run: cargo build -p tidemq-protocol --features codegen --locked
       - run: cargo fmt --all
       - run: git diff --exit-code -- crates/tidemq-protocol/src/generated
       - run: cargo run --locked -- validate-config --config config/local.toml
-      - run: cargo run --locked --no-default-features --features allocator-mimalloc -- allocator-probe --blocks 2
+      - run: cargo run --locked -- allocator-probe --blocks 2
 
   allocator:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        backend: [allocator-mimalloc, allocator-jemalloc]
+        backend: [allocator-system, allocator-mimalloc, allocator-jemalloc]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.96.0
@@ -40,7 +41,7 @@ jobs:
         with:
           key: ${{ matrix.backend }}
       - run: cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features ${{ matrix.backend }} -- -D warnings
-      - run: cargo test -p tidemq --locked --no-default-features --features ${{ matrix.backend }}
+      - run: cargo test -p tidemq --locked --no-default-features --features ${{ matrix.backend }} -- --test-threads=1
 
   heap-profile:
     strategy:

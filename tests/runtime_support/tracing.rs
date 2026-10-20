@@ -77,15 +77,24 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     roundtrip(&producer, &consumer, 0).instrument(host).await;
     collector::wait(|| {
         let spans = collector.spans();
-        spans
+        // Independent exporters can deliver a child before its SDK parent.
+        spans.iter().any(|gateway| {
+            gateway.trace_id == trace.to_bytes()
+                && role(gateway, "gateway")
+                && kind(gateway, tidemq_protocol::common::FrameKind::ProduceBatch)
+                && spans.iter().any(|sdk| {
+                    sdk.trace_id == trace.to_bytes()
+                        && sdk.name == "tidemq.sdk.produce"
+                        && sdk.span_id == gateway.parent_span_id
+                })
+                && spans.iter().any(|broker| {
+                    broker.trace_id == trace.to_bytes()
+                        && role(broker, "broker")
+                        && broker.parent_span_id == gateway.span_id
+                })
+        }) && spans
             .iter()
-            .any(|span| span.trace_id == trace.to_bytes() && role(span, "gateway"))
-            && spans
-                .iter()
-                .any(|span| span.trace_id == trace.to_bytes() && role(span, "broker"))
-            && spans
-                .iter()
-                .any(|span| span.trace_id == trace.to_bytes() && span.name == "producer_submission")
+            .any(|span| span.trace_id == trace.to_bytes() && span.name == "producer_submission")
     })
     .await;
     let spans = collector.spans();

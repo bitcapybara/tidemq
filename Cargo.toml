@@ -38,7 +38,7 @@ tidemq-protocol = { path = "crates/tidemq-protocol", version = "0.1.0" }
 tidemq-transport = { path = "crates/tidemq-transport", version = "0.1.0" }
 
 [features]
-default = ["allocator-system"]
+default = ["allocator-mimalloc"]
 allocator-system = []
 allocator-mimalloc = ["dep:mimalloc"]
 allocator-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]

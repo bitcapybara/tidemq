@@ -28,7 +28,7 @@
 
 1. 运行[完整本地正确性回归](../testing-benchmarks.zh-CN.md)，冻结 source/build/config；在目标 Linux 重跑 fmt/Clippy、持久化、实际 QUIC、S3、SDK、allocator 与采样自检。Linux cgroup v2 用独立测试资源组验证可见祖先 headroom；受控 OOM 只杀专用服务进程，随后用原身份目录恢复并校验全部已 ACK 数据。
 2. 启动明确的三 AZ 拓扑，核对每个 voter、角色身份、证书和真实磁盘；等待实际 quorum/readiness。用原 SDK 创建身份、生产、冷读并持久 ACK，先建立正确性台账。
-3. 用[性能工具](../performance.zh-CN.md)的相同持久语义跑固定负载。必要/推荐/详细三档、System/mimalloc/jemalloc 保持相同优化、总内存与线程预算；先校验同 allocator 栈诊断可行性，再选择生产默认与回退构建。采集器、LB、WAL/S3 资源一并计费。
+3. 用[性能工具](../performance.zh-CN.md)的相同持久语义跑固定负载。必要/推荐/详细三档、System/mimalloc/jemalloc 保持相同优化、总内存与线程预算；验证当前默认 mimalloc 的同 allocator 栈诊断、生产性能与回退构建。默认配置不替代验收证据。采集器、LB、WAL/S3 资源一并计费。
 4. 依次注入单 Broker、Gateway、Storage Leader、Metadata Leader 强杀，失去数据/元数据多数派，提交后丢响应，S3 限速/中断，learner/joint 中故障，计划 drain；每例保留原 Client/Producer/Consumer/PendingBatch，恢复后校验原结果、offset、cursor/attempt 和全部持久 ACK。
 5. 使用专用网络隔离边界验证丢包/乱序/MTU/空闲/LB/NAT/CID；验证慢 B 回放、快照和修复时 C/ACK 仍推进。不在共享主机全局修改网络规则。相同总预算比较既有合法 stream 配置；连接隔离保持协议契约。
 6. 真正隔离一个 AZ，记录客户端故障至持久成功的完整时间线，恢复该区并验证副本追赶、全 voter 检查点、原对象清单、冷数据、pin 和 GC。分别统计服务恢复和副本修复，不能把二者混为一个时长。

@@ -85,7 +85,7 @@ cargo test --workspace --locked
 5. 实现 Gateway 与受控扩缩容。
 6. 在对齐持久化和交付语义的前提下，完成三可用区性能对标与故障验证。
 
-实现基线使用 OpenRaft、s2n-quic、Protobuf、同仓库 Rust SDK、aws-sdk-s3 和本地 RustFS；分配器由二进制拥有，mimalloc/jemalloc/System 仍按性能和诊断关卡评估。参见[文档导航](docs/README.zh-CN.md)、[当前设计](docs/design/architecture.zh-CN.md)、[要求覆盖](docs/requirements-coverage.zh-CN.md)和[可复现负载工具](docs/performance.zh-CN.md)。负载数值和生产预算仍需验证；历史草案中的 AutoMQ 数据是外部参考，不是 TideMQ 实测。
+实现基线使用 OpenRaft、s2n-quic、Protobuf、同仓库 Rust SDK、aws-sdk-s3 和本地 RustFS。服务端通过 `allocator-mimalloc` 默认启用 mimalloc；System、jemalloc 为互斥的构建选项，切换时使用 `--no-default-features`。SDK 的分配器由宿主决定。参见[分配器配置与排障](docs/operations/memory-troubleshooting.zh-CN.md)、[文档导航](docs/README.zh-CN.md)、[当前设计](docs/design/architecture.zh-CN.md)、[要求覆盖](docs/requirements-coverage.zh-CN.md)和[可复现负载工具](docs/performance.zh-CN.md)。分配器性能、负载数值和生产预算仍需验证；历史草案中的 AutoMQ 数据是外部参考，不是 TideMQ 实测。
 
 ## 许可证
 

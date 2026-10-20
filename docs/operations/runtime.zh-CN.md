@@ -8,7 +8,7 @@
 
 一次短诊断可在启动时添加 `--trace-seconds 60`，上限 300 秒。运行时生成带 node/role/cluster、request/operation、class、traceparent 的 span 和完成耗时事件，期限后恢复原日志 filter。trace 不生成消息正文的转储，不把 request 或 topic ID 变成指标标签。详细日志会影响负载，应在相同工作负载下分别比较关闭、基础日志和短时 trace。
 
-`/diagnostics` 的 `allocator.backend` 说明服务二进制选择的分配器，`process.process_memory` 为 Mach 或 Linux /proc 取得的 RSS；两者口径不同。mimalloc 默认 native aggregate stats 不包含分配调用栈。需要调用栈时使用 `allocator-jemalloc,heap-profiling` 构建并从进程启动时启用 profiling。`serve --profile-output <0700目录>` 在真实服务内采集五秒、最多 8 MiB 的样本；同时只能有一个 native sampling 操作。样本包含地址等敏感诊断信息，限时保存。具体符号化与分配器构建参数见分配器操作文档。
+`/diagnostics` 的 `allocator.backend` 说明服务二进制选择的分配器，当前默认 mimalloc；`process.process_memory` 为 Mach 或 Linux /proc 取得的 RSS，两者口径不同。mimalloc 的 native aggregate stats 不包含分配调用栈，诊断方式与覆盖限制见[内存排障](memory-troubleshooting.zh-CN.md)。现有内置堆采样使用 `--no-default-features --features heap-profiling` 构建并从进程启动时启用 jemalloc profiling；更换 allocator 后的重现不能冒充原 mimalloc 现场。`serve --profile-output <0700目录>` 在该采样构建内采集五秒、最多 8 MiB 的样本；同时只能有一个 native sampling 操作。样本包含地址等敏感诊断信息，限时保存。
 
 ## 常见阻塞
 
@@ -29,7 +29,7 @@
 ```sh
 cargo fmt --all
 cargo clippy --workspace --tests --no-deps -j2 -- -D warnings
-cargo test -p tidemq --test runtime_queue
+cargo test -p tidemq --test runtime_queue -- --test-threads=1
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test runtime_queue actual_runtime_sdk -- --ignored --nocapture
 ```
 

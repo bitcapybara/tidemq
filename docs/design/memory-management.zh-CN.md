@@ -1,6 +1,6 @@
 # 分配器与内存管理
 
-mimalloc 为首选候选，System 与 TiKV jemalloc 为对照。当前基础构建显式选择 System；这不是生产选型结果。只有服务端二进制声明 global_allocator，SDK/协议 crate 没有 allocator 依赖或全局声明。lib/test harness 的 feature 不证明其已使用服务端入口的分配器，统计探针应运行真实 binary。
+服务端默认启用 `allocator-mimalloc`，System 与 TiKV jemalloc 为互斥的对照或回退构建。默认值按 2026-10-20 用户决策确定，不代表已有负载证明 mimalloc 性能最优。只有服务端二进制声明 global_allocator，SDK/协议 crate 没有 allocator 依赖或全局声明。lib/test harness 的 feature 不证明其已使用服务端入口的分配器，统计探针应运行真实 binary。
 
 | 构建 feature | 实际依赖与当前能力 |
 | --- | --- |
@@ -15,7 +15,7 @@ MemoryBudget 统一计算总量，数据还受单独额度限制。普通控制/
 
 业务逻辑字节与 Vec/String capacity、共享 Bytes/Arc 引用及实际堆占用不同。allocator resident 不是进程 RSS，retained 通常是虚拟地址保留。不能将各口径相加，或将差值/高 RSS 直接称为泄漏。
 
-生产默认定案须有同 allocator 的有效统计和可符号化调用栈/存活增长诊断。静态 mimalloc 不保证普通 heaptrack/LD_PRELOAD 能拦截；其汇总统计不能代替 profiler。诊断构建变更版本/feature/unwinder/布局必须标注，不能据其推断原生产碎片或时延。
+默认选择与生产诊断验收分别记录：mimalloc 已作为默认，同 allocator 的可符号化调用栈/存活增长诊断仍须验证。静态 mimalloc 不保证普通 heaptrack/LD_PRELOAD 能拦截；其汇总统计不能代替 profiler。诊断构建变更版本/feature/unwinder/布局必须标注，不能据其推断原生产碎片或时延。具体构建命令与诊断工具覆盖见[内存排障](../operations/memory-troubleshooting.zh-CN.md)。
 
 jemalloc 探针在 macOS arm64 上已通过：原生版本 5.3.1-0-g81034ce1f1373e37dc865038e1bc8eeecf559ce8，汇总统计可读；启用 libunwind 后，heap_v2 栈可用匹配二进制与 atos 解析到 known_live_profile_allocation，8MiB 持有记录在跨线程释放后消失。对应 release 的源码、构建命令与产物摘要见[实测记录](../evidence/2026-10-19-allocator-release.zh-CN.md)。此证据属于开启 profiling 的构建；不等于普通 jemalloc 构建默认具备历史栈，也不证明 Linux、生产负载停顿或 mimalloc 栈采集已经通过。
 

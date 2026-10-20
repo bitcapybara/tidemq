@@ -91,7 +91,7 @@
 
 | 需求 | 内容 | 任务 | 验收证据要求 | 状态 |
 | --- | --- | --- | --- | --- |
-| NM01 | mimalloc 首选候选，System/jemalloc 同条件比较；二进制单一选择、SDK 宿主所有权、版本/feature/链接身份 | T00,T06,T10,T13 | 目标平台与测试/bench 实际 allocator 可查，互斥构建、宿主无冲突，选择有证据 | 三 backend 构建 S10 与同条件有限 RF1 P01 已验；生产选择、目标平台与长期内存待验 |
+| NM01 | 默认 mimalloc，System/jemalloc 为互斥对照或回退；二进制单一选择、SDK 宿主所有权、版本/feature/链接身份 | T00,T06,T10,T13 | 目标平台与测试/bench 实际 allocator 可查，互斥构建、宿主无冲突，选择有证据 | 三 backend 构建 S10 与同条件有限 RF1 P01 已验；默认值按用户决策确定，生产性能、目标平台与长期内存待验 |
 | NM02 | 应用容量、allocator、RSS/映射/线程、cgroup 和 FFI 覆盖的独立口径 | T00,T01—T11,T12,T13 | 不重复相加/把 unavailable 填零，能解释 churn/存活/保留/碎片/非堆增长 | 独立口径/真实 RSS S10、Linux System 与可见 cgroup 限额/用量 S12 已验；生产 allocator/FFI 栈覆盖待验 |
 | NM03 | 发布统计与同生产 allocator 的可符号化分配栈/存活增长诊断路径，编译/启动/运行开关分清 | T00,T10,T12,T13 | 已知调用栈/持续持有/释放/跨线程样本验证捕获和限制，替代 allocator 构建不冒充原现场 | 本机同 jemalloc release 栈已验 S10；mimalloc 栈/生产平台待验 |
 | NM04 | 安全的 FFI/诊断启停、低频快照、受控 dump、资源预算和不可取消边界 | T00,T09,T10,T12,T13 | 不在分配钩子递归日志、不在 scrape purge；采样/磁盘/超时失败可见，不叠加 native dump | 受控预算/native worker 已验 S10；故障压力待验 |

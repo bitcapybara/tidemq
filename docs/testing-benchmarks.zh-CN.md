@@ -13,11 +13,15 @@
 ```sh
 cargo fmt --all
 cargo clippy --workspace --tests --examples --no-deps --locked -j2 -- -D warnings
-cargo test --workspace --locked -j2
+cargo test --workspace --locked -j2 -- --test-threads=1
 cargo test --workspace --doc --locked
 cargo test -p tidemq-sdk --locked --features metrics
 cargo test -p tidemq-sdk --locked --features 'metrics opentelemetry'
 ```
+
+默认 mimalloc 调整后的 249 项串行测试、显式 System/jemalloc 构建、原始并行失败与 mimalloc-pprof 候选验证见[本次验证记录](evidence/2026-10-20-mimalloc-default.zh-CN.md)。
+
+运行时集成测试共用进程级 tracing subscriber，并启动多个受限 Raft 子进程，普通全量门禁与 CI 使用 `--test-threads=1` 隔离测试，`-j2` 只限制构建并行度。跨进程 exporter 可乱序到达，链路测试等待完整 SDK → Gateway → Broker 父子关系后再断言。测试隔离不构成业务并发吞吐或长稳证明。
 
 不运行 cargo check。生产代码的额外 panic 审计与允许 unwrap 的测试分开：
 
@@ -64,6 +68,8 @@ cargo fmt --all
 git diff --exit-code -- crates/tidemq-protocol/src/generated
 cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features allocator-mimalloc -- -D warnings
 cargo test -p tidemq --locked --no-default-features --features allocator-mimalloc --test allocator_diagnostics
+cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features allocator-system -- -D warnings
+cargo test -p tidemq --locked --no-default-features --features allocator-system --test allocator_diagnostics
 cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features allocator-jemalloc -- -D warnings
 cargo test -p tidemq --locked --no-default-features --features allocator-jemalloc --test allocator_diagnostics
 ```

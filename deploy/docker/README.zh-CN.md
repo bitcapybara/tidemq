@@ -42,7 +42,7 @@ docker build -f "$REPO/deploy/docker/Dockerfile.builder" \
   --build-arg RUST_IMAGE="$RUST_IMAGE" -t "$BUILDER_IMAGE" "$REPO/deploy/docker"
 ```
 
-在受限 builder 容器中编译。只读挂载确定的源码快照，输出写入独立 staging 目录；默认系统分配器与仓库默认构建一致。实际验证应记录源码 SHA、Cargo.lock SHA、镜像 ID 和二进制 SHA，不能把不同快照的结果混用。
+在受限 builder 容器中编译。只读挂载确定的源码快照，输出写入独立 staging 目录；服务二进制跟随仓库默认启用 mimalloc。System 或 jemalloc 对照构建须显式传入 `--no-default-features --features allocator-system` 或 `allocator-jemalloc`，详见[分配器构建与诊断](../../docs/operations/memory-troubleshooting.zh-CN.md)。实际验证应记录源码 SHA、Cargo.lock SHA、镜像 ID 和二进制 SHA，不能把不同快照的结果混用。本文历史 Linux 验证使用 System，不证明当前 mimalloc 镜像已经重新部署验证。
 
 ```bash
 docker run --rm --cpus 4 --memory 8g --memory-swap 8g --pids-limit 512 \

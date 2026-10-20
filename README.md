@@ -85,7 +85,7 @@ The [complete architecture draft in Chinese](docs/architecture.zh-CN.md) preserv
 5. Add Gateways and controlled scaling.
 6. Benchmark and validate failures across three availability zones with matched durability and delivery semantics.
 
-The implemented baseline uses OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The binary owns allocator selection; mimalloc, jemalloc, and System remain under evaluation. See the [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), [requirement coverage](docs/requirements-coverage.zh-CN.md), and [reproducible workload tools](docs/performance.zh-CN.md). Workload values and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
+The implemented baseline uses OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The service binary defaults to mimalloc through `allocator-mimalloc`; System and jemalloc are mutually exclusive build alternatives selected with `--no-default-features`. The SDK leaves allocator ownership to its host. See the [allocator configuration and diagnostics](docs/operations/memory-troubleshooting.zh-CN.md), [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), [requirement coverage](docs/requirements-coverage.zh-CN.md), and [reproducible workload tools](docs/performance.zh-CN.md). Allocator performance, workload values, and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
 
 ## License
 
