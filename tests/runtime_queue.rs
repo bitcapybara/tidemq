@@ -1163,10 +1163,20 @@ async fn exercise_runtime_scaling(automatic: bool) {
         fixture.start_all().await;
         None
     };
-    wait_scaling_diagnostic(&fixture, 24, |value| {
+    let target_capacity = wait_scaling_diagnostic(&fixture, 24, |value| {
         value["placement_capacity_available"] == true
     })
     .await;
+    let available = target_capacity["capacity"]["data_filesystem"]["available_bytes"]
+        .as_u64()
+        .unwrap();
+    let reserved = target_capacity["capacity"]["reserved_storage_bytes"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        available.saturating_sub(reserved) >= 1024 * 1024 * 1024,
+        "The scaling fixture lacks the required disk headroom before copying: available={available}, reserved={reserved}, minimum_extra=1073741824"
+    );
     let client = fixture.client(41).await;
     let (topic, subscription) = create(&client).await;
     let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
@@ -1307,20 +1317,84 @@ async fn wait_scaling_diagnostic(
     fixture: &Fixture,
     node: u64,
     predicate: impl Fn(&serde_json::Value) -> bool,
-) {
+) -> serde_json::Value {
     let until = Instant::now() + Duration::from_secs(30);
+    let mut last = serde_json::Value::Null;
     loop {
-        let address = fixture.running.get(&node).unwrap().management_address;
-        let response = http(address, "/diagnostics").await;
-        let (_, body) = response.split_once("\r\n\r\n").unwrap();
-        let value: serde_json::Value = serde_json::from_str(body).unwrap();
-        if predicate(&value) {
-            return;
+        if let Some(value) = scaling_diagnostic(fixture, node, until).await {
+            if predicate(&value) {
+                return value;
+            }
+            last = value;
         }
-        assert!(
-            Instant::now() < until,
-            "Scaling diagnostic did not satisfy its predicate: {value}"
-        );
+        if Instant::now() >= until {
+            let mut context = BTreeMap::from([(node, scaling_diagnostic_summary(&last))]);
+            let evidence_deadline = Instant::now() + Duration::from_secs(2);
+            for observed in [11, 12, 13, 24] {
+                if observed != node {
+                    let value = scaling_diagnostic(fixture, observed, evidence_deadline)
+                        .await
+                        .unwrap_or_default();
+                    context.insert(observed, scaling_diagnostic_summary(&value));
+                }
+            }
+            panic!("Scaling diagnostic did not satisfy its predicate: {context:?}");
+        }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+async fn scaling_diagnostic(
+    fixture: &Fixture,
+    node: u64,
+    deadline: Instant,
+) -> Option<serde_json::Value> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let address = fixture.running.get(&node)?.management_address;
+    tokio::time::timeout_at(
+        deadline.min(Instant::now() + Duration::from_secs(1)),
+        async {
+            let mut connection = tokio::net::TcpStream::connect(address).await.ok()?;
+            connection
+                .write_all(b"GET /diagnostics HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .await
+                .ok()?;
+            let mut response = String::new();
+            connection
+                .take(128 * 1024)
+                .read_to_string(&mut response)
+                .await
+                .ok()?;
+            let (_, body) = response.split_once("\r\n\r\n")?;
+            serde_json::from_str(body).ok()
+        },
+    )
+    .await
+    .ok()?
+}
+
+fn scaling_diagnostic_summary(value: &serde_json::Value) -> serde_json::Value {
+    let groups: Vec<_> = value["data_groups"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(16)
+        .map(|group| {
+            serde_json::json!({
+                "group": group["group_id"],
+                "leader": group["leader"],
+                "voters": group["voters"],
+                "joint_configs": group["joint_configs"],
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "ready": value["ready"],
+        "placement": value["placement"],
+        "capacity_available": value["placement_capacity_available"],
+        "disk_available_bytes": value["capacity"]["data_filesystem"]["available_bytes"],
+        "reserved_storage_bytes": value["capacity"]["reserved_storage_bytes"],
+        "quota_blocked": value["quota"]["blocked"],
+        "data_groups": groups,
+    })
 }

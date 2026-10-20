@@ -31,17 +31,23 @@ use tokio::{sync::RwLock, time::Instant};
 
 const HEALTHY_GROUP: u64 = 3;
 
-struct Sample(u64, Arc<AtomicBool>);
+struct Sample(u64, Arc<AtomicBool>, Arc<AtomicBool>);
 impl CapacitySource for Sample {
     fn snapshot(&self) -> Option<Capacity> {
         if self.0 == 4 && !self.1.load(Ordering::Acquire) {
             return None;
         }
+        // Replay the exact free/reserved bytes captured from the constrained Linux CI runner.
+        let constrained = self.0 == 4 && self.2.load(Ordering::Acquire);
         Some(Capacity {
             node_id: self.0,
             observed_at: std::time::Instant::now(),
-            free_bytes: 100 * 1024 * 1024 * 1024,
-            reserved_bytes: 0,
+            free_bytes: if constrained {
+                1_352_884_224
+            } else {
+                100 * 1024 * 1024 * 1024
+            },
+            reserved_bytes: if constrained { 402_647_713 } else { 0 },
             bytes_per_second: 0,
             cpu_per_mille: if self.0 == 3 { 800 } else { 1 },
             connections: 0,
@@ -188,6 +194,7 @@ async fn exercise(automatic: bool) {
     data.isolated.write().await.insert(1);
     let router = Arc::new(Router::default());
     let available = Arc::new(AtomicBool::new(!automatic));
+    let constrained = Arc::new(AtomicBool::new(true));
     for id in 1..=4 {
         router
             .data
@@ -238,7 +245,7 @@ async fn exercise(automatic: bool) {
             config,
             replicas,
             client,
-            Arc::new(Sample(id, available.clone())),
+            Arc::new(Sample(id, available.clone(), constrained.clone())),
             RepairBudget::new(RepairLimits::default()).unwrap(),
             Arc::new(ScalingMetrics::register(&mut Registry::default())),
         )
@@ -303,6 +310,28 @@ async fn exercise(automatic: bool) {
                 .is_none()
         );
         available.store(true, Ordering::Release);
+        let constrained_tick = service
+            .tick(&mut placement, &groups, Instant::now() + WAIT)
+            .await;
+        assert!(matches!(
+            constrained_tick,
+            Err(Error::Capacity {
+                reason: BlockReason::FreeCapacity
+            })
+        ));
+        assert_eq!(
+            placement.diagnose().blocked,
+            Some(BlockReason::FreeCapacity)
+        );
+        assert!(
+            meta.node(1)
+                .state
+                .application()
+                .await
+                .membership_change(GROUP)
+                .is_none()
+        );
+        constrained.store(false, Ordering::Release);
         let mut completed = None;
         for _ in 0..3 {
             if let Ok(result) = service
@@ -324,6 +353,41 @@ async fn exercise(automatic: bool) {
         assert_eq!(repeated.blocked, Some(BlockReason::NoStandby));
         drop(service);
     } else {
+        let constrained_attempt = driver.execute(&plan, Instant::now() + WAIT).await;
+        assert!(matches!(
+            constrained_attempt,
+            Err(Error::Capacity {
+                reason: BlockReason::FreeCapacity
+            })
+        ));
+        assert!(
+            meta.node(1)
+                .state
+                .application()
+                .await
+                .membership_change(GROUP)
+                .is_none()
+        );
+        assert_eq!(
+            data.node(leader)
+                .state
+                .try_with_membership(|_, _, membership| {
+                    membership.membership().get_joint_config().clone()
+                })
+                .await
+                .unwrap(),
+            vec![[1, 2, 3].into()],
+            "Insufficient disk headroom must not begin a native membership change"
+        );
+        constrained.store(false, Ordering::Release);
+        assert_eq!(
+            driver
+                .plan(cluster, GROUP, 3, 4, Instant::now() + WAIT)
+                .await
+                .unwrap(),
+            plan,
+            "Restoring capacity must retain the original canonical plan"
+        );
         let first = driver.execute(&plan, Instant::now() + WAIT).await;
         if first.is_err() {
             // Retiring the joint leader requires discovering its successor before final proof.
