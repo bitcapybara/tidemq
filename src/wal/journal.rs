@@ -21,6 +21,11 @@ pub struct JournalOptions {
     pub max_pending_records: usize,
     pub group_commit_bytes: usize,
     pub group_commit_delay: Duration,
+    pub segment_target_bytes: u64,
+    pub max_segments: usize,
+    pub max_checkpoint_bytes: usize,
+    pub max_retained_records: usize,
+    pub control_reserve_bytes: u64,
 }
 
 impl Default for JournalOptions {
@@ -32,6 +37,11 @@ impl Default for JournalOptions {
             max_pending_records: 64,
             group_commit_bytes: 1024 * 1024,
             group_commit_delay: Duration::from_millis(1),
+            segment_target_bytes: 16 * 1024 * 1024,
+            max_segments: 64,
+            max_checkpoint_bytes: 8 * 1024 * 1024,
+            max_retained_records: 65_536,
+            control_reserve_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -75,6 +85,17 @@ pub struct JournalStatistics {
     pub available_pending_bytes: usize,
     pub available_pending_records: usize,
     pub current_file_bytes: u64,
+    pub active_bytes: u64,
+    pub sealed_bytes: u64,
+    pub checkpoint_bytes: u64,
+    pub staging_bytes: u64,
+    pub retired_bytes: u64,
+    pub segment_count: usize,
+    pub retained_records: usize,
+    pub index_bytes: u64,
+    pub rotations: u64,
+    pub reclaimed_bytes: u64,
+    pub gc_failures: u64,
 }
 
 struct Pending {
@@ -312,6 +333,7 @@ impl Journal {
             available_pending_bytes: self.budget.available_permits(),
             available_pending_records: self.record_budget.available_permits(),
             current_file_bytes: self.counters.file_bytes.load(Ordering::Relaxed),
+            ..JournalStatistics::default()
         }
     }
 }

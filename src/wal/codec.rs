@@ -175,7 +175,7 @@ pub(crate) async fn scan(
     Ok((report, records))
 }
 
-fn parse_header(
+pub(crate) fn parse_header(
     header: &[u8; FRAME_HEADER_BYTES],
     offset: u64,
     options: &JournalOptions,
@@ -221,7 +221,11 @@ fn read_u64(bytes: Option<&[u8]>, offset: u64) -> Result<u64> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-fn validate_hash(header: &[u8; FRAME_HEADER_BYTES], payload: &[u8], offset: u64) -> Result<()> {
+pub(crate) fn validate_hash(
+    header: &[u8; FRAME_HEADER_BYTES],
+    payload: &[u8],
+    offset: u64,
+) -> Result<()> {
     let prefix = header.get(..24).ok_or(Error::Corrupt {
         offset,
         reason: "invalid checksum prefix",
