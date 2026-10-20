@@ -376,25 +376,22 @@ impl<A: Application> DiskLog<A> {
         if batch.is_empty() {
             return Ok(None);
         }
-        let encoded = batch
-            .iter()
-            .map(|entry| {
-                wal::encode_value(
-                    &Record::Entry(Cow::Borrowed(entry)),
-                    self.0.options.journal.max_record_bytes,
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let batch_bytes = encoded
-            .iter()
-            .try_fold(0_usize, |total, bytes| total.checked_add(bytes.len()))
-            .ok_or(Error::Limit {
+        let mut encoded = Vec::new();
+        let mut batch_bytes = 0_usize;
+        for entry in &batch {
+            let bytes = wal::encode_value(
+                &Record::Entry(Cow::Borrowed(entry)),
+                self.0.options.journal.max_record_bytes,
+            )?;
+            batch_bytes = batch_bytes.checked_add(bytes.len()).ok_or(Error::Limit {
                 name: "append batch bytes",
             })?;
-        if batch_bytes > self.0.options.journal.max_record_bytes {
-            return Err(Error::Limit {
-                name: "append batch bytes",
-            });
+            if batch_bytes > self.0.options.journal.max_record_bytes {
+                return Err(Error::Limit {
+                    name: "append batch bytes",
+                });
+            }
+            encoded.push(bytes);
         }
         // Validate first, then enqueue and expose the entries before the IO callback can fire.
         let (sizes, bytes) = prepare_entries(&state, &batch, &encoded, &self.0.options)?;
@@ -443,12 +440,17 @@ impl<A: Application> DiskLog<A> {
 
     async fn maybe_checkpoint(&self, state: &LogState<A>, additional: usize) -> Result<()> {
         let options = &self.0.options.journal;
-        let stats = self.0.journal.statistics();
+        let mut stats = self.0.journal.statistics();
+        if stats.retired_bytes > 0 {
+            self.0.journal.cleanup_orphans().await?;
+            stats = self.0.journal.statistics();
+        }
         let trigger = options
             .max_file_bytes
             .saturating_sub(options.control_reserve_bytes)
             .saturating_sub(options.segment_target_bytes);
         if stats.current_file_bytes >= trigger
+            || stats.segment_count >= options.max_segments.saturating_sub(2)
             || stats.retained_records.saturating_add(additional) > options.max_retained_records
         {
             self.checkpoint_locked(state, state.purged).await?;

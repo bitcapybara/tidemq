@@ -557,3 +557,38 @@ pub(crate) fn storage_error(
 ) -> openraft::StorageError<u64> {
     openraft::StorageError::from_io_error(subject, verb, std::io::Error::other(error))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replica_budget_includes_snapshot_generations_and_one_receiver_without_overflow() {
+        let options = StorageOptions::default();
+        options.validate().unwrap();
+        assert_eq!(
+            options.replica_file_limit_bytes().unwrap(),
+            448 * 1024 * 1024 + 5 * FRAME_HEADER_BYTES as u64 + 64 * 1024
+        );
+        let overflow = StorageOptions {
+            max_snapshot_bytes: usize::MAX,
+            ..options.clone()
+        };
+        assert!(overflow.replica_file_limit_bytes().is_err());
+        let insufficient = StorageOptions {
+            max_log_entries: 65_537,
+            ..options
+        };
+        assert!(insufficient.validate().is_err());
+    }
+
+    #[test]
+    fn checkpoint_rejects_forged_collection_size_before_allocating_its_elements() {
+        #[derive(Deserialize)]
+        struct Bounded(#[serde(deserialize_with = "bounded_log_ids")] Vec<LogId<u64>>);
+        let forged = wal::encode_value(&vec![(); 65_537], 16).unwrap();
+        assert!(wal::decode_value::<Bounded>(&forged).is_err());
+        let empty = wal::encode_value(&Vec::<()>::new(), 16).unwrap();
+        assert!(wal::decode_value::<Bounded>(&empty).unwrap().0.is_empty());
+    }
+}
