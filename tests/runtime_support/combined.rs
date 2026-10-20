@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks() {
@@ -49,8 +50,12 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
     for (name, topic, subscription, producer, consumer) in work {
         let client = client.clone();
         running.spawn(async move {
+            let phase_started = Instant::now();
             let context =
                 tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(20)).unwrap();
+            let produced = AtomicU64::new(0);
+            let acknowledged = AtomicU64::new(0);
+            let metadata_reads = AtomicU64::new(0);
             let produce = async {
                 for sequence in 0..64_u64 {
                     let receipt = context
@@ -61,12 +66,28 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
                         .await
                         .unwrap();
                     assert_eq!(receipt.first_offset, sequence);
+                    produced.store(sequence + 1, Ordering::Relaxed);
                 }
             };
             let consume = async {
                 let mut seen = std::collections::BTreeSet::new();
                 while seen.len() < 64 {
-                    let Some(delivery) = context.scope(consumer.recv()).await.unwrap() else {
+                    let receive_started = Instant::now();
+                    let remaining = context.deadline().saturating_duration_since(receive_started);
+                    let delivery = context.scope(consumer.recv()).await.unwrap_or_else(|error| {
+                        let error = anyhow::Error::new(error);
+                        panic!(
+                            "Combined receive failed: topic={name}, phase_elapsed_ms={}, receive_elapsed_ms={}, remaining_before_receive_ms={}, produced={}, acknowledged={}, metadata_reads={}, seen={}: {error:#}",
+                            phase_started.elapsed().as_millis(),
+                            receive_started.elapsed().as_millis(),
+                            remaining.as_millis(),
+                            produced.load(Ordering::Relaxed),
+                            acknowledged.load(Ordering::Relaxed),
+                            metadata_reads.load(Ordering::Relaxed),
+                            seen.len(),
+                        )
+                    });
+                    let Some(delivery) = delivery else {
                         tokio::task::yield_now().await;
                         continue;
                     };
@@ -85,6 +106,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
                         );
                     }
                     context.scope(consumer.ack_many(&deliveries)).await.unwrap();
+                    acknowledged.store(seen.len() as u64, Ordering::Relaxed);
                 }
                 assert_eq!(seen, (0..64).collect());
                 let status = context
@@ -96,10 +118,18 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
             let read_metadata = async {
                 for _ in 0..64 {
                     context.scope(client.admin().topic(&name)).await.unwrap();
+                    metadata_reads.fetch_add(1, Ordering::Relaxed);
                     tokio::task::yield_now().await;
                 }
             };
             tokio::join!(produce, consume, read_metadata);
+            eprintln!(
+                "Combined phase completed: topic={name}, elapsed_ms={}, produced={}, acknowledged={}, metadata_reads={}",
+                phase_started.elapsed().as_millis(),
+                produced.load(Ordering::Relaxed),
+                acknowledged.load(Ordering::Relaxed),
+                metadata_reads.load(Ordering::Relaxed),
+            );
         });
     }
     tokio::time::timeout(Duration::from_secs(25), async {
