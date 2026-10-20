@@ -124,7 +124,7 @@ payload 使用 postcard 1.1.3 二进制编码，写入经过有界 `std::io::Wri
 
 `DiskLog::diagnostics()` 不含正文、凭证或去重明细，提供身份、vote、committed/applied/purged/snapshot、retained 与剩余预算、启动恢复和 writer 统计。查询仅反映本地状态，不证明 leader/授权/quorum。事件包括 `wal_incomplete_tail_repaired`、`wal_writer_failed`、`raft_storage_recovered`、`raft_snapshot_persisted` 和 `raft_snapshot_installed`，完整 IO 错误链保留。
 
-有限诊断 span 包括 `raft_log_append`、`wal_group_commit`、`raft_commit_marker`、`raft_apply` 和 `raft_snapshot_build`。详细 trace 的 `wal_record_durable` 显式关联入队时 span，group commit 不丢失异步队列前的请求关联；不把正文或整个 command 的 Debug 放进 span。trace/debug 的导出与采样开销沿用运行时预算。
+有限诊断 span 包括 `raft_log_append`、`wal_group_commit`、`raft_commit_marker`、`raft_apply` 和 `raft_snapshot_build`。持久化及快照的 owned task 同时保留调用方 span 和 subscriber，调用方取消后仍可追踪实际完成。详细 trace 的 `wal_record_durable` 通过入队 span 的 dispatcher 发送并显式关联该 span，group commit 不丢失异步队列前的请求关联；不把正文或整个 command 的 Debug 放进 span。trace/debug 的导出与采样开销沿用运行时预算。
 
 验证入口见 [存储排障手册](../operations/storage-troubleshooting.zh-CN.md)。已覆盖官方 storage-v2 Suite、真实文件校验/尾部/重开、SIGKILL、RF1/RF3 共识、响应丢失、选举、成员替换及分块快照。完整 QUIC RPC、慢盘/多组争用、三区网络、真实掉电和正式吞吐仍由后续集成/故障/性能关卡验证。
 
