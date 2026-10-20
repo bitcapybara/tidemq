@@ -259,6 +259,7 @@ impl RunningNode {
             budget.clone(),
             producer,
             metrics,
+            dispatch.clone(),
             runtime_metrics,
             ownership,
             quota,
