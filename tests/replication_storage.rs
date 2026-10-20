@@ -150,6 +150,111 @@ async fn uncommitted_tail_is_not_applied_and_can_be_replaced_after_restart() {
 }
 
 #[tokio::test]
+async fn repeated_truncate_and_new_terms_never_resurrect_superseded_entries() {
+    let directory = Directory::new().await;
+    let path = directory.path().join("replica");
+    let identity = identity(Id::random().unwrap(), 1, 1);
+    let mut storage = store(&path, identity.clone()).await;
+    let prefix = vec![
+        entry(1, 0, Command::Fence(9)),
+        entry(
+            1,
+            1,
+            Command::Append {
+                epoch: 9,
+                request: 1,
+                value: 10,
+            },
+        ),
+    ];
+    storage.log.blocking_append(prefix.clone()).await.unwrap();
+    storage.state_machine.apply(prefix).await.unwrap();
+    for term in 2..8 {
+        storage.log.truncate(log_id(term - 1, 2)).await.unwrap();
+        let suffix: Vec<_> = (2..8)
+            .map(|index| {
+                entry(
+                    term,
+                    index,
+                    Command::Append {
+                        epoch: 9,
+                        request: term * 100 + index,
+                        value: term,
+                    },
+                )
+            })
+            .collect();
+        storage.log.blocking_append(suffix).await.unwrap();
+        storage.log.close().await.unwrap();
+        drop(storage);
+        storage = store(&path, identity.clone()).await;
+        let recovered = storage.log.try_get_log_entries(2..8).await.unwrap();
+        assert_eq!(recovered.len(), 6);
+        assert!(
+            recovered
+                .iter()
+                .all(|entry| entry.log_id.leader_id.term == term)
+        );
+        assert_eq!(storage.state_machine.application().await.next_offset, 1);
+        assert_eq!(
+            storage.log.read_committed().await.unwrap(),
+            Some(log_id(1, 1))
+        );
+    }
+    let final_suffix = storage.log.try_get_log_entries(2..8).await.unwrap();
+    storage.state_machine.apply(final_suffix).await.unwrap();
+    storage.state_machine.build_snapshot().await.unwrap();
+    storage.log.purge(log_id(7, 4)).await.unwrap();
+    storage.log.close().await.unwrap();
+    drop(storage);
+    let mut reopened = store(&path, identity).await;
+    let remaining = reopened.log.try_get_log_entries(0..10).await.unwrap();
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|entry| entry.log_id)
+            .collect::<Vec<_>>(),
+        (5..8).map(|index| log_id(7, index)).collect::<Vec<_>>()
+    );
+    let application = reopened.state_machine.application().await;
+    assert_eq!(application.next_offset, 7);
+    assert_eq!(application.results.len(), 7);
+    assert!(
+        application
+            .results
+            .keys()
+            .all(|request| *request == 1 || (702..708).contains(request))
+    );
+    reopened.log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn new_store_publishes_only_the_segmented_layout() {
+    let directory = Directory::new().await;
+    let path = directory.path().join("replica");
+    let storage = store(&path, identity(Id::random().unwrap(), 1, 1)).await;
+    storage.log.close().await.unwrap();
+    drop(storage);
+    assert!(
+        tokio::fs::try_exists(path.join("manifest.bin"))
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        support::matching_files(&path, "segment-", ".wal")
+            .await
+            .len(),
+        1
+    );
+    assert!(!tokio::fs::try_exists(path.join("raft.wal")).await.unwrap());
+    assert!(
+        !tokio::fs::try_exists(path.join("snapshot.bin"))
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn durable_snapshot_covers_purged_logs_and_install_validates_group_and_metadata() {
     let directory = Directory::new().await;
     let cluster = Id::random().unwrap();
@@ -174,15 +279,6 @@ async fn durable_snapshot_covers_purged_logs_and_install_validates_group_and_met
     let snapshot = first.state_machine.build_snapshot().await.unwrap();
     assert_eq!(snapshot.meta.last_log_id, Some(log_id(1, 1)));
     first.log.purge(log_id(1, 1)).await.unwrap();
-    first.log.close().await.unwrap();
-    drop(first);
-    let reopened = store(&path, first_identity).await;
-    assert_eq!(reopened.state_machine.application().await.writer_epoch, 4);
-    assert_eq!(
-        reopened.state_machine.application().await.results.get(&1),
-        Some(&(0, 7))
-    );
-    assert_eq!(reopened.log.diagnostics().await.retained_log_entries, 0);
     let mut follower = store(
         &directory.path().join("follower"),
         identity(cluster, group, 2),
@@ -193,6 +289,15 @@ async fn durable_snapshot_covers_purged_logs_and_install_validates_group_and_met
         .install_snapshot(&snapshot.meta, snapshot.snapshot)
         .await
         .unwrap();
+    first.log.close().await.unwrap();
+    drop(first);
+    let reopened = store(&path, first_identity).await;
+    assert_eq!(reopened.state_machine.application().await.writer_epoch, 4);
+    assert_eq!(
+        reopened.state_machine.application().await.results.get(&1),
+        Some(&(0, 7))
+    );
+    assert_eq!(reopened.log.diagnostics().await.retained_log_entries, 0);
     assert_eq!(
         follower.state_machine.application().await,
         reopened.state_machine.application().await
@@ -229,6 +334,122 @@ async fn durable_snapshot_covers_purged_logs_and_install_validates_group_and_met
     reopened.log.close().await.unwrap();
     follower.log.close().await.unwrap();
     foreign.log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn snapshot_readers_pin_retired_files_and_the_directory_until_they_are_dropped() {
+    let directory = Directory::new().await;
+    let path = directory.path().join("replica");
+    let identity = identity(Id::random().unwrap(), 1, 1);
+    let mut storage = store(&path, identity.clone()).await;
+    let first_entry = entry(1, 0, Command::Fence(2));
+    storage
+        .log
+        .blocking_append([first_entry.clone()])
+        .await
+        .unwrap();
+    storage.state_machine.apply([first_entry]).await.unwrap();
+    let first = storage.state_machine.build_snapshot().await.unwrap();
+    let first_files = support::matching_files(&path, "snapshot-", ".bin").await;
+    assert_eq!(first_files.len(), 1);
+    let first_path = first_files.first().unwrap();
+    let first_bytes = tokio::fs::metadata(first_path).await.unwrap().len();
+    let second_entry = entry(
+        1,
+        1,
+        Command::Append {
+            epoch: 2,
+            request: 1,
+            value: 10,
+        },
+    );
+    storage
+        .log
+        .blocking_append([second_entry.clone()])
+        .await
+        .unwrap();
+    storage.state_machine.apply([second_entry]).await.unwrap();
+    let second = storage.state_machine.build_snapshot().await.unwrap();
+    let diagnostic = storage.log.diagnostics().await;
+    assert_eq!(diagnostic.snapshots.snapshot_files, 2);
+    assert_eq!(diagnostic.snapshots.snapshot_retired_bytes, first_bytes);
+    assert_eq!(diagnostic.snapshots.snapshot_readers, 2);
+    assert!(diagnostic.snapshots.snapshot_file_bytes > first_bytes);
+    assert!(tokio::fs::try_exists(first_path).await.unwrap());
+    drop(first);
+    let third_entry = entry(
+        1,
+        2,
+        Command::Append {
+            epoch: 2,
+            request: 2,
+            value: 11,
+        },
+    );
+    storage
+        .log
+        .blocking_append([third_entry.clone()])
+        .await
+        .unwrap();
+    storage.state_machine.apply([third_entry]).await.unwrap();
+    let third = storage.state_machine.build_snapshot().await.unwrap();
+    assert!(!tokio::fs::try_exists(first_path).await.unwrap());
+    assert_eq!(storage.log.diagnostics().await.snapshots.snapshot_files, 2);
+    storage.log.close().await.unwrap();
+    drop(storage);
+    assert!(
+        DiskStore::<State>::open(&path, identity.clone(), StorageOptions::default(), None)
+            .await
+            .is_err()
+    );
+    drop(second);
+    drop(third);
+    let reopened = store(&path, identity).await;
+    assert_eq!(reopened.state_machine.application().await.next_offset, 2);
+    reopened.log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn snapshot_reader_limit_rejects_new_handles_without_invalidating_existing_readers() {
+    let directory = Directory::new().await;
+    let options = StorageOptions {
+        max_snapshot_readers: 2,
+        ..StorageOptions::default()
+    };
+    let mut storage = DiskStore::<State>::open(
+        directory.path().join("replica"),
+        identity(Id::random().unwrap(), 1, 1),
+        options,
+        None,
+    )
+    .await
+    .unwrap();
+    let entry = entry(1, 0, Command::Fence(1));
+    storage.log.blocking_append([entry.clone()]).await.unwrap();
+    storage.state_machine.apply([entry]).await.unwrap();
+    let first = storage.state_machine.build_snapshot().await.unwrap();
+    let second = storage
+        .state_machine
+        .get_current_snapshot()
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(storage.state_machine.get_current_snapshot().await.is_err());
+    assert_eq!(
+        storage.log.diagnostics().await.snapshots.snapshot_readers,
+        2
+    );
+    drop(second);
+    let recovered = storage
+        .state_machine
+        .get_current_snapshot()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.meta, recovered.meta);
+    drop(first);
+    drop(recovered);
+    storage.log.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -298,9 +519,11 @@ async fn snapshot_corruption_after_compaction_fails_closed() {
     storage.log.purge(log_id(1, 1)).await.unwrap();
     storage.log.close().await.unwrap();
     drop(storage);
+    let snapshots = support::matching_files(&path, "snapshot-", ".bin").await;
+    assert_eq!(snapshots.len(), 1);
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
-        .open(path.join("snapshot.bin"))
+        .open(snapshots.first().unwrap())
         .await
         .unwrap();
     file.seek(std::io::SeekFrom::Start(88)).await.unwrap();
@@ -400,9 +623,16 @@ async fn copied_journal_and_missing_identity_cannot_rebind_another_replica() {
     second.log.close().await.unwrap();
     drop(first);
     drop(second);
-    tokio::fs::copy(first_path.join("raft.wal"), second_path.join("raft.wal"))
-        .await
-        .unwrap();
+    let first_segments = support::matching_files(&first_path, "segment-", ".wal").await;
+    let second_segments = support::matching_files(&second_path, "segment-", ".wal").await;
+    assert_eq!(first_segments.len(), 1);
+    assert_eq!(second_segments.len(), 1);
+    tokio::fs::copy(
+        first_segments.first().unwrap(),
+        second_segments.first().unwrap(),
+    )
+    .await
+    .unwrap();
     assert!(
         DiskStore::<State>::open(
             &second_path,
