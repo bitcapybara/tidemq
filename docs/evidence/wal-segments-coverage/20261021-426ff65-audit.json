@@ -1,0 +1,56 @@
+{
+  "source_commit": "426ff6598c7b6a4337cc07ca79ac70d51d12b413",
+  "status": "passed",
+  "metrics": {
+    "lines": {
+      "candidate": {
+        "count": 37791,
+        "covered": 30273
+      },
+      "baseline": {
+        "count": 35176,
+        "covered": 27907
+      },
+      "exact_cross_product_difference": "10249611",
+      "candidate_percent_display": "80.106375",
+      "baseline_percent_display": "79.335342"
+    },
+    "functions": {
+      "candidate": {
+        "count": 3939,
+        "covered": 2809
+      },
+      "baseline": {
+        "count": 3637,
+        "covered": 2576
+      },
+      "exact_cross_product_difference": "69469",
+      "candidate_percent_display": "71.312516",
+      "baseline_percent_display": "70.827605"
+    },
+    "regions": {
+      "candidate": {
+        "count": 53865,
+        "covered": 41878
+      },
+      "baseline": {
+        "count": 49848,
+        "covered": 38365
+      },
+      "exact_cross_product_difference": "21003819",
+      "candidate_percent_display": "77.746217",
+      "baseline_percent_display": "76.963970"
+    }
+  },
+  "workspace_source_files": 134,
+  "workspace_build_scripts": [
+    "/work/crates/tidemq-protocol/build.rs"
+  ],
+  "sha256": {
+    "llvm_summary": "83e5f51d249604b743b11c876392a0749eeb61f4f590241b0ae9f1883838e349",
+    "llvm_full": "fec2618d88a9e1f776c64ab60b727248d21ba868ada96320835ae1250a980fe2",
+    "original_compare_summary": "db828e18bbe5263d6af24ec85a7b46c74316be0c21694b9d763fbe542e3db8f6",
+    "policy": "ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57",
+    "unchanged_baseline": "638b8e963abe9e8936c7df0f2571093c0244b83946a4a173d5df7c7bf15fb2ee"
+  }
+}

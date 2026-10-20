@@ -1,0 +1,1881 @@
+{
+  "replicas": [
+    {
+      "application": {
+        "actual_metadata_membership": {
+          "log_id": {
+            "index": 0,
+            "leader_id": {
+              "node_id": 0,
+              "term": 0
+            }
+          },
+          "membership": {
+            "configs": [
+              [
+                11,
+                12,
+                13
+              ]
+            ],
+            "nodes": {
+              "11": {
+                "addr": "127.0.0.1:61000"
+              },
+              "12": {
+                "addr": "127.0.0.1:61001"
+              },
+              "13": {
+                "addr": "127.0.0.1:61002"
+              }
+            }
+          }
+        },
+        "applied": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "data_group": {
+          "generation": 1,
+          "group_id": 2,
+          "voters": [
+            21,
+            22,
+            23
+          ]
+        },
+        "migration": {
+          "completed": null,
+          "copy_bytes": 469901775,
+          "plan": {
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "generation": 1,
+            "group_id": 2,
+            "operation_id": "3fc40343-398c-8457-8b58-5151d5270845",
+            "previous": [
+              21,
+              22,
+              23
+            ],
+            "target": [
+              21,
+              22,
+              24
+            ]
+          },
+          "prepared_revision": 18
+        },
+        "revision": 18
+      },
+      "diagnostics": {
+        "application_failed": false,
+        "applied_log": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "committed_log": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "identity": {
+          "group": {
+            "application": "tidemq.metadata",
+            "application_version": 2,
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "group_id": 1
+          },
+          "node_id": 11
+        },
+        "journal_file_limit_bytes": 134217728,
+        "journal_recovery": {
+          "active_segment": "segment-d3efe8df-78bf-43ab-b26a-3d0313d5773e.wal",
+          "file_bytes": 5544,
+          "incomplete_tail_bytes": 0,
+          "records": 42,
+          "sealed_segments": [],
+          "valid_bytes": 5544
+        },
+        "journal_runtime": {
+          "active_bytes": 5544,
+          "available_pending_bytes": 16777216,
+          "available_pending_records": 64,
+          "checkpoint_bytes": 0,
+          "checkpoint_rewrites": 0,
+          "current_file_bytes": 5723,
+          "gc_failures": 0,
+          "index_bytes": 1120,
+          "reclaimed_bytes": 0,
+          "relocated_bytes": 0,
+          "relocation_operations": 0,
+          "retained_records": 20,
+          "retired_bytes": 0,
+          "rotations": 0,
+          "sealed_bytes": 0,
+          "segment_count": 1,
+          "staging_bytes": 0,
+          "sync_operations": 0,
+          "written_bytes": 0,
+          "written_records": 0
+        },
+        "purged_log": null,
+        "remaining_encoded_log_bytes": 67107658,
+        "remaining_log_entries": 65516,
+        "replica_file_limit_bytes": 469828024,
+        "retained_encoded_log_bytes": 1206,
+        "retained_log_entries": 20,
+        "snapshot_log": null,
+        "snapshot_payload_limit_bytes": 67108864,
+        "snapshots": {
+          "snapshot_file_bytes": 0,
+          "snapshot_file_limit": 4,
+          "snapshot_files": 0,
+          "snapshot_gc_failures": 0,
+          "snapshot_incoming_files": 0,
+          "snapshot_publication_pending": false,
+          "snapshot_publication_uncertain": false,
+          "snapshot_reader_limit": 8,
+          "snapshot_readers": 0,
+          "snapshot_retired_bytes": 0
+        },
+        "vote": {
+          "committed": true,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        }
+      },
+      "retained_log_summaries": [
+        {
+          "action_names": [],
+          "expected_revision": null,
+          "log_id": {
+            "index": 0,
+            "leader_id": {
+              "node_id": 0,
+              "term": 0
+            }
+          },
+          "operation_id": null,
+          "payload_kind": "Membership"
+        },
+        {
+          "action_names": [],
+          "expected_revision": null,
+          "log_id": {
+            "index": 1,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": null,
+          "payload_kind": "Blank"
+        },
+        {
+          "action_names": [
+            "Bootstrap"
+          ],
+          "expected_revision": 0,
+          "log_id": {
+            "index": 2,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "4a50b551-80f0-414f-8eac-055adef26320",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 1,
+          "log_id": {
+            "index": 3,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "3aa4bf46-77ae-4710-8d42-8aed209ba7f5",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 2,
+          "log_id": {
+            "index": 4,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "aa213f60-986a-4286-97e1-42b64938e444",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 3,
+          "log_id": {
+            "index": 5,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "b8230db4-46fd-4e50-b892-9fd271f074f6",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 4,
+          "log_id": {
+            "index": 6,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "db6c32a4-8ff4-4c4b-ab22-2a32c7884010",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 5,
+          "log_id": {
+            "index": 7,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "00bc8c58-1c8f-4de5-a066-a756450979ca",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 6,
+          "log_id": {
+            "index": 8,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "cb9067d4-fddf-4593-be3a-04b67fa19ca2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 7,
+          "log_id": {
+            "index": 9,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "c69f1406-1846-4dc0-802c-7742c32acbf2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 8,
+          "log_id": {
+            "index": 10,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "db375aab-94cb-4ef4-aa5a-811e065913fe",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 9,
+          "log_id": {
+            "index": 11,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "4384b414-513f-4a76-acd8-3972d29124f2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "CreateGroup"
+          ],
+          "expected_revision": 10,
+          "log_id": {
+            "index": 12,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "7f6920c0-dd50-41d8-99e9-3db388916fbe",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "CreateTopic"
+          ],
+          "expected_revision": 11,
+          "log_id": {
+            "index": 13,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "a519e16b-2290-4ade-8c26-00d62b1ecc33",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "GrantOwnership"
+          ],
+          "expected_revision": 12,
+          "log_id": {
+            "index": 14,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "7c29bd60-bf95-8877-a647-cb56101d9e21",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ObserveFence"
+          ],
+          "expected_revision": 13,
+          "log_id": {
+            "index": 15,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "b05ed7f7-2937-88e3-ae18-d25a8f68c248",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ObserveRecovery"
+          ],
+          "expected_revision": 14,
+          "log_id": {
+            "index": 16,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "fad33675-daeb-81b8-a0e9-04ef40805269",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ActivateRoute"
+          ],
+          "expected_revision": 15,
+          "log_id": {
+            "index": 17,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "2fc458ac-7e61-8ad2-869b-113d3bfbd4b2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutSubscription"
+          ],
+          "expected_revision": 16,
+          "log_id": {
+            "index": 18,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "9ca7cd2b-7b7f-430f-8ce0-bc5d8a216db1",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PrepareMembership"
+          ],
+          "expected_revision": 17,
+          "log_id": {
+            "index": 19,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "3fc40343-398c-8457-8b58-5151d5270845",
+          "payload_kind": "Normal"
+        }
+      ],
+      "view_kind": "recovered_copy_without_live_quorum_barrier"
+    },
+    {
+      "application": {
+        "actual_metadata_membership": {
+          "log_id": {
+            "index": 0,
+            "leader_id": {
+              "node_id": 0,
+              "term": 0
+            }
+          },
+          "membership": {
+            "configs": [
+              [
+                11,
+                12,
+                13
+              ]
+            ],
+            "nodes": {
+              "11": {
+                "addr": "127.0.0.1:61000"
+              },
+              "12": {
+                "addr": "127.0.0.1:61001"
+              },
+              "13": {
+                "addr": "127.0.0.1:61002"
+              }
+            }
+          }
+        },
+        "applied": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "data_group": {
+          "generation": 1,
+          "group_id": 2,
+          "voters": [
+            21,
+            22,
+            23
+          ]
+        },
+        "migration": {
+          "completed": null,
+          "copy_bytes": 469901775,
+          "plan": {
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "generation": 1,
+            "group_id": 2,
+            "operation_id": "3fc40343-398c-8457-8b58-5151d5270845",
+            "previous": [
+              21,
+              22,
+              23
+            ],
+            "target": [
+              21,
+              22,
+              24
+            ]
+          },
+          "prepared_revision": 18
+        },
+        "revision": 18
+      },
+      "diagnostics": {
+        "application_failed": false,
+        "applied_log": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "committed_log": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "identity": {
+          "group": {
+            "application": "tidemq.metadata",
+            "application_version": 2,
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "group_id": 1
+          },
+          "node_id": 12
+        },
+        "journal_file_limit_bytes": 134217728,
+        "journal_recovery": {
+          "active_segment": "segment-4cceefcc-a9a8-41f7-9459-c9576642e3a9.wal",
+          "file_bytes": 5443,
+          "incomplete_tail_bytes": 0,
+          "records": 41,
+          "sealed_segments": [],
+          "valid_bytes": 5443
+        },
+        "journal_runtime": {
+          "active_bytes": 5443,
+          "available_pending_bytes": 16777216,
+          "available_pending_records": 64,
+          "checkpoint_bytes": 0,
+          "checkpoint_rewrites": 0,
+          "current_file_bytes": 5622,
+          "gc_failures": 0,
+          "index_bytes": 1120,
+          "reclaimed_bytes": 0,
+          "relocated_bytes": 0,
+          "relocation_operations": 0,
+          "retained_records": 20,
+          "retired_bytes": 0,
+          "rotations": 0,
+          "sealed_bytes": 0,
+          "segment_count": 1,
+          "staging_bytes": 0,
+          "sync_operations": 0,
+          "written_bytes": 0,
+          "written_records": 0
+        },
+        "purged_log": null,
+        "remaining_encoded_log_bytes": 67107658,
+        "remaining_log_entries": 65516,
+        "replica_file_limit_bytes": 469828024,
+        "retained_encoded_log_bytes": 1206,
+        "retained_log_entries": 20,
+        "snapshot_log": null,
+        "snapshot_payload_limit_bytes": 67108864,
+        "snapshots": {
+          "snapshot_file_bytes": 0,
+          "snapshot_file_limit": 4,
+          "snapshot_files": 0,
+          "snapshot_gc_failures": 0,
+          "snapshot_incoming_files": 0,
+          "snapshot_publication_pending": false,
+          "snapshot_publication_uncertain": false,
+          "snapshot_reader_limit": 8,
+          "snapshot_readers": 0,
+          "snapshot_retired_bytes": 0
+        },
+        "vote": {
+          "committed": true,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        }
+      },
+      "retained_log_summaries": [
+        {
+          "action_names": [],
+          "expected_revision": null,
+          "log_id": {
+            "index": 0,
+            "leader_id": {
+              "node_id": 0,
+              "term": 0
+            }
+          },
+          "operation_id": null,
+          "payload_kind": "Membership"
+        },
+        {
+          "action_names": [],
+          "expected_revision": null,
+          "log_id": {
+            "index": 1,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": null,
+          "payload_kind": "Blank"
+        },
+        {
+          "action_names": [
+            "Bootstrap"
+          ],
+          "expected_revision": 0,
+          "log_id": {
+            "index": 2,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "4a50b551-80f0-414f-8eac-055adef26320",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 1,
+          "log_id": {
+            "index": 3,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "3aa4bf46-77ae-4710-8d42-8aed209ba7f5",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 2,
+          "log_id": {
+            "index": 4,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "aa213f60-986a-4286-97e1-42b64938e444",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 3,
+          "log_id": {
+            "index": 5,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "b8230db4-46fd-4e50-b892-9fd271f074f6",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 4,
+          "log_id": {
+            "index": 6,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "db6c32a4-8ff4-4c4b-ab22-2a32c7884010",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 5,
+          "log_id": {
+            "index": 7,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "00bc8c58-1c8f-4de5-a066-a756450979ca",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 6,
+          "log_id": {
+            "index": 8,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "cb9067d4-fddf-4593-be3a-04b67fa19ca2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 7,
+          "log_id": {
+            "index": 9,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "c69f1406-1846-4dc0-802c-7742c32acbf2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 8,
+          "log_id": {
+            "index": 10,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "db375aab-94cb-4ef4-aa5a-811e065913fe",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 9,
+          "log_id": {
+            "index": 11,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "4384b414-513f-4a76-acd8-3972d29124f2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "CreateGroup"
+          ],
+          "expected_revision": 10,
+          "log_id": {
+            "index": 12,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "7f6920c0-dd50-41d8-99e9-3db388916fbe",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "CreateTopic"
+          ],
+          "expected_revision": 11,
+          "log_id": {
+            "index": 13,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "a519e16b-2290-4ade-8c26-00d62b1ecc33",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "GrantOwnership"
+          ],
+          "expected_revision": 12,
+          "log_id": {
+            "index": 14,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "7c29bd60-bf95-8877-a647-cb56101d9e21",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ObserveFence"
+          ],
+          "expected_revision": 13,
+          "log_id": {
+            "index": 15,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "b05ed7f7-2937-88e3-ae18-d25a8f68c248",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ObserveRecovery"
+          ],
+          "expected_revision": 14,
+          "log_id": {
+            "index": 16,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "fad33675-daeb-81b8-a0e9-04ef40805269",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ActivateRoute"
+          ],
+          "expected_revision": 15,
+          "log_id": {
+            "index": 17,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "2fc458ac-7e61-8ad2-869b-113d3bfbd4b2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutSubscription"
+          ],
+          "expected_revision": 16,
+          "log_id": {
+            "index": 18,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "9ca7cd2b-7b7f-430f-8ce0-bc5d8a216db1",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PrepareMembership"
+          ],
+          "expected_revision": 17,
+          "log_id": {
+            "index": 19,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "3fc40343-398c-8457-8b58-5151d5270845",
+          "payload_kind": "Normal"
+        }
+      ],
+      "view_kind": "recovered_copy_without_live_quorum_barrier"
+    },
+    {
+      "application": {
+        "actual_metadata_membership": {
+          "log_id": {
+            "index": 0,
+            "leader_id": {
+              "node_id": 0,
+              "term": 0
+            }
+          },
+          "membership": {
+            "configs": [
+              [
+                11,
+                12,
+                13
+              ]
+            ],
+            "nodes": {
+              "11": {
+                "addr": "127.0.0.1:61000"
+              },
+              "12": {
+                "addr": "127.0.0.1:61001"
+              },
+              "13": {
+                "addr": "127.0.0.1:61002"
+              }
+            }
+          }
+        },
+        "applied": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "data_group": {
+          "generation": 1,
+          "group_id": 2,
+          "voters": [
+            21,
+            22,
+            23
+          ]
+        },
+        "migration": {
+          "completed": null,
+          "copy_bytes": 469901775,
+          "plan": {
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "generation": 1,
+            "group_id": 2,
+            "operation_id": "3fc40343-398c-8457-8b58-5151d5270845",
+            "previous": [
+              21,
+              22,
+              23
+            ],
+            "target": [
+              21,
+              22,
+              24
+            ]
+          },
+          "prepared_revision": 18
+        },
+        "revision": 18
+      },
+      "diagnostics": {
+        "application_failed": false,
+        "applied_log": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "committed_log": {
+          "index": 19,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        },
+        "identity": {
+          "group": {
+            "application": "tidemq.metadata",
+            "application_version": 2,
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "group_id": 1
+          },
+          "node_id": 13
+        },
+        "journal_file_limit_bytes": 134217728,
+        "journal_recovery": {
+          "active_segment": "segment-d1eef667-92af-4d7a-998b-f9190ce2e6c5.wal",
+          "file_bytes": 5443,
+          "incomplete_tail_bytes": 0,
+          "records": 41,
+          "sealed_segments": [],
+          "valid_bytes": 5443
+        },
+        "journal_runtime": {
+          "active_bytes": 5443,
+          "available_pending_bytes": 16777216,
+          "available_pending_records": 64,
+          "checkpoint_bytes": 0,
+          "checkpoint_rewrites": 0,
+          "current_file_bytes": 5622,
+          "gc_failures": 0,
+          "index_bytes": 1120,
+          "reclaimed_bytes": 0,
+          "relocated_bytes": 0,
+          "relocation_operations": 0,
+          "retained_records": 20,
+          "retired_bytes": 0,
+          "rotations": 0,
+          "sealed_bytes": 0,
+          "segment_count": 1,
+          "staging_bytes": 0,
+          "sync_operations": 0,
+          "written_bytes": 0,
+          "written_records": 0
+        },
+        "purged_log": null,
+        "remaining_encoded_log_bytes": 67107658,
+        "remaining_log_entries": 65516,
+        "replica_file_limit_bytes": 469828024,
+        "retained_encoded_log_bytes": 1206,
+        "retained_log_entries": 20,
+        "snapshot_log": null,
+        "snapshot_payload_limit_bytes": 67108864,
+        "snapshots": {
+          "snapshot_file_bytes": 0,
+          "snapshot_file_limit": 4,
+          "snapshot_files": 0,
+          "snapshot_gc_failures": 0,
+          "snapshot_incoming_files": 0,
+          "snapshot_publication_pending": false,
+          "snapshot_publication_uncertain": false,
+          "snapshot_reader_limit": 8,
+          "snapshot_readers": 0,
+          "snapshot_retired_bytes": 0
+        },
+        "vote": {
+          "committed": true,
+          "leader_id": {
+            "node_id": 11,
+            "term": 2
+          }
+        }
+      },
+      "retained_log_summaries": [
+        {
+          "action_names": [],
+          "expected_revision": null,
+          "log_id": {
+            "index": 0,
+            "leader_id": {
+              "node_id": 0,
+              "term": 0
+            }
+          },
+          "operation_id": null,
+          "payload_kind": "Membership"
+        },
+        {
+          "action_names": [],
+          "expected_revision": null,
+          "log_id": {
+            "index": 1,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": null,
+          "payload_kind": "Blank"
+        },
+        {
+          "action_names": [
+            "Bootstrap"
+          ],
+          "expected_revision": 0,
+          "log_id": {
+            "index": 2,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "4a50b551-80f0-414f-8eac-055adef26320",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 1,
+          "log_id": {
+            "index": 3,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "3aa4bf46-77ae-4710-8d42-8aed209ba7f5",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 2,
+          "log_id": {
+            "index": 4,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "aa213f60-986a-4286-97e1-42b64938e444",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 3,
+          "log_id": {
+            "index": 5,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "b8230db4-46fd-4e50-b892-9fd271f074f6",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 4,
+          "log_id": {
+            "index": 6,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "db6c32a4-8ff4-4c4b-ab22-2a32c7884010",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 5,
+          "log_id": {
+            "index": 7,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "00bc8c58-1c8f-4de5-a066-a756450979ca",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 6,
+          "log_id": {
+            "index": 8,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "cb9067d4-fddf-4593-be3a-04b67fa19ca2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 7,
+          "log_id": {
+            "index": 9,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "c69f1406-1846-4dc0-802c-7742c32acbf2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 8,
+          "log_id": {
+            "index": 10,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "db375aab-94cb-4ef4-aa5a-811e065913fe",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutNode"
+          ],
+          "expected_revision": 9,
+          "log_id": {
+            "index": 11,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "4384b414-513f-4a76-acd8-3972d29124f2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "CreateGroup"
+          ],
+          "expected_revision": 10,
+          "log_id": {
+            "index": 12,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "7f6920c0-dd50-41d8-99e9-3db388916fbe",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "CreateTopic"
+          ],
+          "expected_revision": 11,
+          "log_id": {
+            "index": 13,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "a519e16b-2290-4ade-8c26-00d62b1ecc33",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "GrantOwnership"
+          ],
+          "expected_revision": 12,
+          "log_id": {
+            "index": 14,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "7c29bd60-bf95-8877-a647-cb56101d9e21",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ObserveFence"
+          ],
+          "expected_revision": 13,
+          "log_id": {
+            "index": 15,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "b05ed7f7-2937-88e3-ae18-d25a8f68c248",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ObserveRecovery"
+          ],
+          "expected_revision": 14,
+          "log_id": {
+            "index": 16,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "fad33675-daeb-81b8-a0e9-04ef40805269",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "ActivateRoute"
+          ],
+          "expected_revision": 15,
+          "log_id": {
+            "index": 17,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "2fc458ac-7e61-8ad2-869b-113d3bfbd4b2",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PutSubscription"
+          ],
+          "expected_revision": 16,
+          "log_id": {
+            "index": 18,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "9ca7cd2b-7b7f-430f-8ce0-bc5d8a216db1",
+          "payload_kind": "Normal"
+        },
+        {
+          "action_names": [
+            "PrepareMembership"
+          ],
+          "expected_revision": 17,
+          "log_id": {
+            "index": 19,
+            "leader_id": {
+              "node_id": 11,
+              "term": 2
+            }
+          },
+          "operation_id": "3fc40343-398c-8457-8b58-5151d5270845",
+          "payload_kind": "Normal"
+        }
+      ],
+      "view_kind": "recovered_copy_without_live_quorum_barrier"
+    },
+    {
+      "application": {
+        "actual_data_membership": {
+          "log_id": {
+            "index": 18,
+            "leader_id": {
+              "node_id": 21,
+              "term": 2
+            }
+          },
+          "membership": {
+            "configs": [
+              [
+                21,
+                22,
+                24
+              ]
+            ],
+            "nodes": {
+              "21": {
+                "addr": "127.0.0.1:61003"
+              },
+              "22": {
+                "addr": "127.0.0.1:61004"
+              },
+              "24": {
+                "addr": "127.0.0.1:61006"
+              }
+            }
+          }
+        },
+        "applied": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "diagnostics": {
+        "application_failed": false,
+        "applied_log": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "committed_log": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "identity": {
+          "group": {
+            "application": "tidemq-data",
+            "application_version": 2,
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "group_id": 2
+          },
+          "node_id": 21
+        },
+        "journal_file_limit_bytes": 134217728,
+        "journal_recovery": {
+          "active_segment": "segment-310de340-11c1-49fb-9c0a-3a5461ffbafe.wal",
+          "file_bytes": 5937,
+          "incomplete_tail_bytes": 0,
+          "records": 40,
+          "sealed_segments": [],
+          "valid_bytes": 5937
+        },
+        "journal_runtime": {
+          "active_bytes": 5937,
+          "available_pending_bytes": 16777216,
+          "available_pending_records": 64,
+          "checkpoint_bytes": 0,
+          "checkpoint_rewrites": 0,
+          "current_file_bytes": 6200,
+          "gc_failures": 0,
+          "index_bytes": 1064,
+          "reclaimed_bytes": 0,
+          "relocated_bytes": 0,
+          "relocation_operations": 0,
+          "retained_records": 19,
+          "retired_bytes": 0,
+          "rotations": 0,
+          "sealed_bytes": 0,
+          "segment_count": 1,
+          "staging_bytes": 0,
+          "sync_operations": 0,
+          "written_bytes": 0,
+          "written_records": 0
+        },
+        "purged_log": null,
+        "remaining_encoded_log_bytes": 67107066,
+        "remaining_log_entries": 65517,
+        "replica_file_limit_bytes": 469828024,
+        "retained_encoded_log_bytes": 1798,
+        "retained_log_entries": 19,
+        "snapshot_log": {
+          "index": 14,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "snapshot_payload_limit_bytes": 67108864,
+        "snapshots": {
+          "snapshot_file_bytes": 905,
+          "snapshot_file_limit": 4,
+          "snapshot_files": 1,
+          "snapshot_gc_failures": 0,
+          "snapshot_incoming_files": 0,
+          "snapshot_publication_pending": false,
+          "snapshot_publication_uncertain": false,
+          "snapshot_reader_limit": 8,
+          "snapshot_readers": 0,
+          "snapshot_retired_bytes": 0
+        },
+        "vote": {
+          "committed": true,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "view_kind": "recovered_copy_without_live_quorum_barrier"
+    },
+    {
+      "application": {
+        "actual_data_membership": {
+          "log_id": {
+            "index": 18,
+            "leader_id": {
+              "node_id": 21,
+              "term": 2
+            }
+          },
+          "membership": {
+            "configs": [
+              [
+                21,
+                22,
+                24
+              ]
+            ],
+            "nodes": {
+              "21": {
+                "addr": "127.0.0.1:61003"
+              },
+              "22": {
+                "addr": "127.0.0.1:61004"
+              },
+              "24": {
+                "addr": "127.0.0.1:61006"
+              }
+            }
+          }
+        },
+        "applied": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "diagnostics": {
+        "application_failed": false,
+        "applied_log": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "committed_log": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "identity": {
+          "group": {
+            "application": "tidemq-data",
+            "application_version": 2,
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "group_id": 2
+          },
+          "node_id": 22
+        },
+        "journal_file_limit_bytes": 134217728,
+        "journal_recovery": {
+          "active_segment": "segment-d4e6c80d-5abb-498f-b79a-3255099ca883.wal",
+          "file_bytes": 5836,
+          "incomplete_tail_bytes": 0,
+          "records": 39,
+          "sealed_segments": [],
+          "valid_bytes": 5836
+        },
+        "journal_runtime": {
+          "active_bytes": 5836,
+          "available_pending_bytes": 16777216,
+          "available_pending_records": 64,
+          "checkpoint_bytes": 0,
+          "checkpoint_rewrites": 0,
+          "current_file_bytes": 6015,
+          "gc_failures": 0,
+          "index_bytes": 1064,
+          "reclaimed_bytes": 0,
+          "relocated_bytes": 0,
+          "relocation_operations": 0,
+          "retained_records": 19,
+          "retired_bytes": 0,
+          "rotations": 0,
+          "sealed_bytes": 0,
+          "segment_count": 1,
+          "staging_bytes": 0,
+          "sync_operations": 0,
+          "written_bytes": 0,
+          "written_records": 0
+        },
+        "purged_log": null,
+        "remaining_encoded_log_bytes": 67107066,
+        "remaining_log_entries": 65517,
+        "replica_file_limit_bytes": 469828024,
+        "retained_encoded_log_bytes": 1798,
+        "retained_log_entries": 19,
+        "snapshot_log": null,
+        "snapshot_payload_limit_bytes": 67108864,
+        "snapshots": {
+          "snapshot_file_bytes": 0,
+          "snapshot_file_limit": 4,
+          "snapshot_files": 0,
+          "snapshot_gc_failures": 0,
+          "snapshot_incoming_files": 0,
+          "snapshot_publication_pending": false,
+          "snapshot_publication_uncertain": false,
+          "snapshot_reader_limit": 8,
+          "snapshot_readers": 0,
+          "snapshot_retired_bytes": 0
+        },
+        "vote": {
+          "committed": true,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "view_kind": "recovered_copy_without_live_quorum_barrier"
+    },
+    {
+      "application": {
+        "actual_data_membership": {
+          "log_id": {
+            "index": 17,
+            "leader_id": {
+              "node_id": 21,
+              "term": 2
+            }
+          },
+          "membership": {
+            "configs": [
+              [
+                21,
+                22,
+                23
+              ],
+              [
+                21,
+                22,
+                24
+              ]
+            ],
+            "nodes": {
+              "21": {
+                "addr": "127.0.0.1:61003"
+              },
+              "22": {
+                "addr": "127.0.0.1:61004"
+              },
+              "23": {
+                "addr": "127.0.0.1:61005"
+              },
+              "24": {
+                "addr": "127.0.0.1:61006"
+              }
+            }
+          }
+        },
+        "applied": {
+          "index": 17,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "diagnostics": {
+        "application_failed": false,
+        "applied_log": {
+          "index": 17,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "committed_log": {
+          "index": 17,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "identity": {
+          "group": {
+            "application": "tidemq-data",
+            "application_version": 2,
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "group_id": 2
+          },
+          "node_id": 23
+        },
+        "journal_file_limit_bytes": 134217728,
+        "journal_recovery": {
+          "active_segment": "segment-861d8b8f-7fe0-4f96-b560-a56c0860cc8b.wal",
+          "file_bytes": 5575,
+          "incomplete_tail_bytes": 0,
+          "records": 37,
+          "sealed_segments": [],
+          "valid_bytes": 5575
+        },
+        "journal_runtime": {
+          "active_bytes": 5575,
+          "available_pending_bytes": 16777216,
+          "available_pending_records": 64,
+          "checkpoint_bytes": 0,
+          "checkpoint_rewrites": 0,
+          "current_file_bytes": 5754,
+          "gc_failures": 0,
+          "index_bytes": 1008,
+          "reclaimed_bytes": 0,
+          "relocated_bytes": 0,
+          "relocation_operations": 0,
+          "retained_records": 18,
+          "retired_bytes": 0,
+          "rotations": 0,
+          "sealed_bytes": 0,
+          "segment_count": 1,
+          "staging_bytes": 0,
+          "sync_operations": 0,
+          "written_bytes": 0,
+          "written_records": 0
+        },
+        "purged_log": null,
+        "remaining_encoded_log_bytes": 67107128,
+        "remaining_log_entries": 65518,
+        "replica_file_limit_bytes": 469828024,
+        "retained_encoded_log_bytes": 1736,
+        "retained_log_entries": 18,
+        "snapshot_log": null,
+        "snapshot_payload_limit_bytes": 67108864,
+        "snapshots": {
+          "snapshot_file_bytes": 0,
+          "snapshot_file_limit": 4,
+          "snapshot_files": 0,
+          "snapshot_gc_failures": 0,
+          "snapshot_incoming_files": 0,
+          "snapshot_publication_pending": false,
+          "snapshot_publication_uncertain": false,
+          "snapshot_reader_limit": 8,
+          "snapshot_readers": 0,
+          "snapshot_retired_bytes": 0
+        },
+        "vote": {
+          "committed": true,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "view_kind": "recovered_copy_without_live_quorum_barrier"
+    },
+    {
+      "application": {
+        "actual_data_membership": {
+          "log_id": {
+            "index": 18,
+            "leader_id": {
+              "node_id": 21,
+              "term": 2
+            }
+          },
+          "membership": {
+            "configs": [
+              [
+                21,
+                22,
+                24
+              ]
+            ],
+            "nodes": {
+              "21": {
+                "addr": "127.0.0.1:61003"
+              },
+              "22": {
+                "addr": "127.0.0.1:61004"
+              },
+              "24": {
+                "addr": "127.0.0.1:61006"
+              }
+            }
+          }
+        },
+        "applied": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "diagnostics": {
+        "application_failed": false,
+        "applied_log": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "committed_log": {
+          "index": 18,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        },
+        "identity": {
+          "group": {
+            "application": "tidemq-data",
+            "application_version": 2,
+            "cluster_id": "a9526f1c-5c47-45f9-8430-bf147df49906",
+            "group_id": 2
+          },
+          "node_id": 24
+        },
+        "journal_file_limit_bytes": 134217728,
+        "journal_recovery": {
+          "active_segment": "segment-92d19927-1f32-4ce6-82fd-651644ab6f16.wal",
+          "file_bytes": 4205,
+          "incomplete_tail_bytes": 0,
+          "records": 23,
+          "sealed_segments": [],
+          "valid_bytes": 4205
+        },
+        "journal_runtime": {
+          "active_bytes": 4205,
+          "available_pending_bytes": 16777216,
+          "available_pending_records": 64,
+          "checkpoint_bytes": 0,
+          "checkpoint_rewrites": 0,
+          "current_file_bytes": 4384,
+          "gc_failures": 0,
+          "index_bytes": 1064,
+          "reclaimed_bytes": 0,
+          "relocated_bytes": 0,
+          "relocation_operations": 0,
+          "retained_records": 19,
+          "retired_bytes": 0,
+          "rotations": 0,
+          "sealed_bytes": 0,
+          "segment_count": 1,
+          "staging_bytes": 0,
+          "sync_operations": 0,
+          "written_bytes": 0,
+          "written_records": 0
+        },
+        "purged_log": null,
+        "remaining_encoded_log_bytes": 67107066,
+        "remaining_log_entries": 65517,
+        "replica_file_limit_bytes": 469828024,
+        "retained_encoded_log_bytes": 1798,
+        "retained_log_entries": 19,
+        "snapshot_log": null,
+        "snapshot_payload_limit_bytes": 67108864,
+        "snapshots": {
+          "snapshot_file_bytes": 0,
+          "snapshot_file_limit": 4,
+          "snapshot_files": 0,
+          "snapshot_gc_failures": 0,
+          "snapshot_incoming_files": 0,
+          "snapshot_publication_pending": false,
+          "snapshot_publication_uncertain": false,
+          "snapshot_reader_limit": 8,
+          "snapshot_readers": 0,
+          "snapshot_retired_bytes": 0
+        },
+        "vote": {
+          "committed": true,
+          "leader_id": {
+            "node_id": 21,
+            "term": 2
+          }
+        }
+      },
+      "view_kind": "recovered_copy_without_live_quorum_barrier"
+    }
+  ],
+  "source_commit": "426ff6598c7b6a4337cc07ca79ac70d51d12b413"
+}
