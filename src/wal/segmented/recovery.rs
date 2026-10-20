@@ -379,11 +379,11 @@ async fn scan_segment(
         }
         hash.update(&frame.header);
         hash.update(&frame.payload);
-        let record = decode_record(frame.payload)?;
-        if segment.reference_only && record.id.is_none() {
+        let retained_id = record_id(&frame.payload)?;
+        if segment.reference_only && retained_id.is_none() {
             return Err(corrupt("Reference-only segment contains a control record"));
         }
-        if let Some(id) = record.id {
+        if let Some(id) = retained_id {
             if segment.reference_only
                 && index.get(&id).is_some_and(|location| {
                     location.segment == segment.id

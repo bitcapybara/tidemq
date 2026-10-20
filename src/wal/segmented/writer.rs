@@ -444,11 +444,21 @@ impl Writer {
             references,
         };
         let encoded = value_frame(&checkpoint, self.options.max_checkpoint_bytes)?;
+        let rotate = self.manifest.active.records != 0;
+        if !rotate
+            && relocation.is_none()
+            && self
+                .manifest
+                .checkpoint
+                .as_ref()
+                .is_some_and(|current| current.checksum == *blake3::hash(&encoded).as_bytes())
+        {
+            return Ok(());
+        }
+        let new_header = if rotate { SEGMENT_HEADER_BYTES } else { 0 };
         let relocation_bytes = relocation.as_ref().map_or(0, |plan| plan.segment.byte_len);
-        let staging = encoded.len() as u64
-            + SEGMENT_HEADER_BYTES
-            + self.options.manifest_reserve()
-            + relocation_bytes;
+        let staging =
+            encoded.len() as u64 + new_header + self.options.manifest_reserve() + relocation_bytes;
         if self
             .physical_bytes
             .checked_add(staging)
@@ -459,8 +469,8 @@ impl Writer {
             });
         }
         self.ensure_file_slots(
-            3 + usize::from(relocation.is_some()),
-            1 + usize::from(relocation.is_some()),
+            2 + usize::from(rotate) + usize::from(relocation.is_some()),
+            usize::from(rotate) + usize::from(relocation.is_some()),
             false,
         )
         .await?;
@@ -488,13 +498,22 @@ impl Writer {
         #[cfg(test)]
         super::fault_tests::boundary("checkpoint_directory_sync");
         self.mutated = true;
-        let (active, file) =
-            create_segment(&self.directory, self.manifest.identity, self.sequence).await?;
+        let new_active = if rotate {
+            Some(create_segment(&self.directory, self.manifest.identity, self.sequence).await?)
+        } else {
+            None
+        };
+        let active = new_active.as_ref().map_or_else(
+            || self.manifest.active.clone(),
+            |(segment, _)| segment.clone(),
+        );
         let needed: BTreeSet<_> = checkpoint.references.iter().map(|r| r.segment).collect();
         let mut sealed = self.manifest.sealed.clone();
         let mut old_active = self.manifest.active.clone();
         old_active.checksum = *self.hash.finalize().as_bytes();
-        sealed.push(old_active);
+        if rotate {
+            sealed.push(old_active);
+        }
         if let Some(segment) = relocated {
             sealed.push(segment);
         }
@@ -515,12 +534,14 @@ impl Writer {
             .physical_bytes
             .saturating_add(encoded.len() as u64)
             .saturating_add(relocation_bytes)
-            .saturating_add(SEGMENT_HEADER_BYTES)
+            .saturating_add(new_header)
             .saturating_add(manifest_bytes)
             .saturating_sub(self.manifest_bytes);
         self.manifest_bytes = manifest_bytes;
         self.manifest = candidate;
-        self.file = file;
+        if let Some((_, file)) = new_active {
+            self.file = file;
+        }
         self.shared.retained_count.fetch_sub(
             self.index.len().saturating_sub(checkpoint.references.len()),
             Ordering::Relaxed,
@@ -539,7 +560,7 @@ impl Writer {
             let mut stats = lock(&self.shared.stats);
             stats.staging_bytes = 0;
             stats.checkpoint_rewrites = stats.checkpoint_rewrites.saturating_add(1);
-            stats.rotations = stats.rotations.saturating_add(1);
+            stats.rotations = stats.rotations.saturating_add(u64::from(rotate));
         }
         self.gc().await;
         drop(gate);

@@ -291,7 +291,7 @@ pub(super) async fn read_frame(
         bytes,
     }))
 }
-pub(super) fn decode_record(payload: Vec<u8>) -> Result<super::RecoveredRecord> {
+pub(super) fn record_id(payload: &[u8]) -> Result<Option<RecordId>> {
     let marker = payload
         .first()
         .copied()
@@ -306,6 +306,10 @@ pub(super) fn decode_record(payload: Vec<u8>) -> Result<super::RecoveredRecord> 
         (1, id) if id != 0 => Some(RecordId(id)),
         _ => return Err(corrupt("Invalid record identity")),
     };
+    Ok(id)
+}
+pub(super) fn decode_record(payload: Vec<u8>) -> Result<super::RecoveredRecord> {
+    let id = record_id(&payload)?;
     let data = payload.into_iter().skip(ENVELOPE_BYTES).collect();
     Ok(super::RecoveredRecord { id, data })
 }

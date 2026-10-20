@@ -430,3 +430,115 @@ async fn snapshot_reference_length_is_rejected_before_opening_its_file() {
         .unwrap();
     journal.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn empty_active_checkpoints_reuse_the_file_and_identical_checkpoints_skip_publication() {
+    let dir = Directory::new();
+    let (journal, _, recovery) = opened(dir.path()).await;
+    drop(recovery);
+    let (id, durable) = journal.append_retained(b"keep".to_vec()).await.unwrap();
+    durable.durable().await.unwrap();
+    journal
+        .checkpoint(b"same".to_vec(), vec![id])
+        .await
+        .unwrap();
+    let before = journal.statistics();
+    let active = inspect_segmented(dir.path(), &options(), [7; 32])
+        .await
+        .unwrap()
+        .active_segment;
+    for _ in 0..12 {
+        journal
+            .checkpoint(b"same".to_vec(), vec![id])
+            .await
+            .unwrap();
+    }
+    assert_eq!(journal.statistics(), before);
+    journal
+        .checkpoint(b"different".to_vec(), vec![id])
+        .await
+        .unwrap();
+    assert_eq!(journal.statistics().segment_count, before.segment_count);
+    assert_eq!(journal.statistics().rotations, before.rotations);
+    assert_eq!(
+        inspect_segmented(dir.path(), &options(), [7; 32])
+            .await
+            .unwrap()
+            .active_segment,
+        active
+    );
+    journal.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn count_pressure_merges_one_mixed_source_with_one_reference_target() {
+    let dir = Directory::new();
+    let small = JournalOptions {
+        max_file_bytes: 96 * 1024,
+        control_reserve_bytes: 60 * 1024,
+        max_segments: 32,
+        max_retained_records: 128,
+        ..options()
+    };
+    let (journal, _, recovery) = SegmentedJournal::open(dir.path(), small.clone(), [7; 32])
+        .await
+        .unwrap();
+    drop(recovery);
+    let mut records = Vec::new();
+    while journal.statistics().current_file_bytes < 32 * 1024 {
+        let (id, durable) = journal
+            .append_retained(vec![records.len() as u8; 900])
+            .await
+            .unwrap();
+        durable.durable().await.unwrap();
+        records.push(id);
+    }
+    let retained = records.iter().step_by(3).copied().collect::<Vec<_>>();
+    journal
+        .checkpoint(b"first".to_vec(), retained.clone())
+        .await
+        .unwrap();
+    let before = journal.statistics().segment_count;
+    assert_eq!(journal.statistics().relocation_operations, 1);
+    journal.close().await.unwrap();
+    drop(journal);
+    let low_pressure = JournalOptions {
+        max_file_bytes: 128 * 1024,
+        max_segments: before + 2,
+        ..small
+    };
+    let (journal, _, mut recovery) =
+        SegmentedJournal::open(dir.path(), low_pressure.clone(), [7; 32])
+            .await
+            .unwrap();
+    while recovery.next().await.unwrap().is_some() {}
+    let active = inspect_segmented(dir.path(), &low_pressure, [7; 32])
+        .await
+        .unwrap()
+        .active_segment;
+    journal
+        .checkpoint(b"coalesced".to_vec(), retained.clone())
+        .await
+        .unwrap();
+    assert_eq!(journal.statistics().relocation_operations, 1);
+    assert_eq!(journal.statistics().segment_count, before - 1);
+    assert!(journal.statistics().relocated_bytes <= low_pressure.segment_target_bytes);
+    assert_eq!(
+        inspect_segmented(dir.path(), &low_pressure, [7; 32])
+            .await
+            .unwrap()
+            .active_segment,
+        active
+    );
+    journal.close().await.unwrap();
+    drop(journal);
+    let (journal, _, mut recovery) = SegmentedJournal::open(dir.path(), low_pressure, [7; 32])
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    while let Some(record) = recovery.next().await.unwrap() {
+        ids.push(record.id.unwrap());
+    }
+    assert_eq!(ids, retained);
+    journal.close().await.unwrap();
+}
