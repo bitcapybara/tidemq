@@ -145,6 +145,31 @@ pub async fn store(directory: &Path, identity: StorageIdentity) -> DiskStore<Sta
         .unwrap()
 }
 
+pub async fn matching_files(directory: &Path, prefix: &str, suffix: &str) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut entries = tokio::fs::read_dir(directory).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        let name = entry.file_name();
+        let name = name.to_str().unwrap();
+        if name.starts_with(prefix) && name.ends_with(suffix) {
+            assert!(entry.file_type().await.unwrap().is_file());
+            files.push(entry.path());
+        }
+    }
+    files.sort();
+    files
+}
+
+pub async fn directory_contents(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut contents = BTreeMap::new();
+    let mut entries = tokio::fs::read_dir(directory).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        assert!(entry.file_type().await.unwrap().is_file());
+        contents.insert(entry.path(), tokio::fs::read(entry.path()).await.unwrap());
+    }
+    contents
+}
+
 impl tidemq::scaling::MembershipApplication for State {
     fn membership_identity(&self) -> Option<(Id, u64)> {
         self.cluster.map(|id| (id, self.group))

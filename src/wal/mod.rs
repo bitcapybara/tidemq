@@ -3,12 +3,18 @@
 mod codec;
 mod error;
 mod journal;
+mod segmented;
 
 pub const FRAME_HEADER_BYTES: usize = 88;
 
 pub use codec::{Inspection, inspect};
 pub use error::{Error, Result};
 pub use journal::{Durability, Journal, JournalOptions, JournalStatistics};
+pub use segmented::{
+    MAX_SEGMENTED_DIRECTORY_ENTRIES, RecordId, RecoveredRecord, Recovery, SEGMENTED_MANIFEST_FILE,
+    SegmentedDurability, SegmentedFileKind, SegmentedInspection, SegmentedJournal,
+    SegmentedStatistics, SnapshotRef, inspect_segmented, segmented_file_kind,
+};
 
 pub(crate) use codec::{decode_value, encode_value, sync_directory, write_atomic};
 pub(crate) use codec::{frame as codec_frame, unframe};
