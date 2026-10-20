@@ -8,7 +8,7 @@
 - `Application` 提供可序列化的完整状态、`Command`、`Response`、格式名称与版本。`apply` 同步且确定性，时钟、随机数、授权证明和其他外部输入必须先进入复制命令；业务拒绝通过 `Response` 返回。
 - 应用自身增量保证有限状态及不变量，不能无限保存历史 command，也不能把唯一状态放到 Broker 内存。生产者原结果/退休边界、fence、订阅代次/attempt/ACK、发布授权/终止状态等均由后续领域应用纳入完整权威状态。
 - `validate` 用于恢复和快照边界的完整校验，不在每个写入批次扫描保留数据。应用必须在 `apply` 内增量限制容量和拒绝非法状态变化。
-- 状态和命令必须支持 postcard 的非自描述 serde 模型，禁止 `serde_json::Value`、untagged 或内部 tagging 等依赖 `deserialize_any` 的模型。变更字段/枚举时按磁盘应用版本迁移，不承诺无条件兼容。
+- 状态和命令必须支持 postcard 的非自描述 serde 模型，禁止 `serde_json::Value`、untagged 或内部 tagging 等依赖 `deserialize_any` 的模型。变更字段/枚举时更新磁盘应用版本；开发阶段不维护旧格式兼容或迁移，旧版本目录明确拒绝。
 - `with_application` 在读锁内执行有限同步查询，避免热读复制整个应用。闭包禁止 IO、长时间扫描或返回整库。权威读取先执行 Raft 读屏障；`application()` 的完整副本仅用于有界诊断和测试。
 - `with_applied` 在同一读锁内提供应用投影和 last applied log id，不能分两次查询后把旧状态贴上新位置。
 
@@ -91,7 +91,7 @@ purge 会实际重写 `raft.wal`，保留 identity、vote、purged、日志尾�
 
 这些是可调的正确性基线，不能作为生产吞吐或容量承诺。应用状态本身、snapshot 视图、编码/解码、retained logs 和 writer 缓冲的总内存仍由运行时统一预算；per-record 限额不能冒充总 RSS 上限。
 
-payload 使用 postcard 1.1.3 二进制编码，写入经过有界 `std::io::Write`，读取显式拒绝未消费尾部字节；`bytes::Bytes` 正文按字节串编码，避免 JSON 数组放大。Record 枚举顺序也是磁盘格式的一部分。若更换 codec、variant 顺序或应用格式，必须升级版本并提供明确迁移方式，不能用“serde 可反序列化”代替兼容承诺。
+payload 使用 postcard 1.1.3 二进制编码，写入经过有界 `std::io::Write`，读取显式拒绝未消费尾部字节；`bytes::Bytes` 正文按字节串编码，避免 JSON 数组放大。Record 枚举顺序也是磁盘格式的一部分。若更换 codec、variant 顺序或应用格式，必须升级版本；开发阶段使用新数据目录并明确拒绝旧版本，不自动迁移、猜测格式或清空已有数据。
 
 ## Raft 与传输接缝
 

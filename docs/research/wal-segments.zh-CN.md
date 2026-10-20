@@ -93,11 +93,11 @@ manifest 唯一指定哪些文件属于当前恢复链，包括布局版本、cl
 - 只有确认 manifest/恢复链有效后才处理未引用文件；缺少 manifest 时不把任意段当作可丢 orphan。删除失败只留待后续重试，不把字节从物理用量提前扣除。
 - 对 reader 和迁移 snapshot 设置有限持有量和期限；取消后实际 IO/reader 没有释放前仍保留空间 charge。记录退休文件占用，避免目录采样低估。
 
-### 旧目录迁移
+### 开发阶段的格式切换
 
-第一版使用显式离线迁移：停止所属 Raft、持有独占锁，以原版本规则验证旧 identity/WAL/snapshot 和 committed 恢复结果；在同文件系统独立临时位置生成并同步新 segments、checkpoint、snapshot 和 manifest；再次恢复校验并核对应用结果、vote、committed、membership、生产者原结果和 ACK。
+按用户确认，项目处于开发阶段，不实现旧格式读取器、双写或离线迁移工具。分段版本使用新的明确物理格式身份和全新数据目录；现有测试与生成器一起更新。旧目录和历史报告保留用于诊断，不把旧文件自动重解释为新格式，也不自动删除已有数据。
 
-最后原子发布能让旧二进制明确拒绝的物理格式身份，作为唯一切换点：例如升级 `identity.bin` 外层 magic/version 并指向已持久的新布局。只放一个旧二进制不认识且会忽略的 `wal-v2/` 目录或 marker 不够，它可能继续打开旧 `raft.wal`。切换前旧格式完整保留；切换后只允许新布局继续写。保留旧文件只用于受控恢复，不能在新版本已确认写入后直接降级到旧副本。禁止自动清空、双写两套互不原子的日志或自动猜格式。
+版本不匹配、旧布局或损坏目录均清晰拒绝启动。新布局的身份初始化和 manifest 发布仍须持久化并遵守单一恢复权威；无需兼容旧版本，不等于可以省略新版本自身的崩溃一致性或误删保护。
 
 ## 实施必须覆盖的调用点
 
@@ -107,8 +107,8 @@ manifest 唯一指定哪些文件属于当前恢复链，包括布局版本、cl
 | `runtime/physical.rs`、`runtime/management.rs` | 不再要求单个 `raft.wal` 或固定 16 项；按新有限布局计量，包含 staging/退休 reader 占用与真实 available；保留 unknown/陈旧样本拒绝准入 |
 | `scaling/remote/data.rs` 与 placement/capacity 调用方 | 迁移估算按段、snapshot、staging、pin、增长与控制 reserve 计算，避免沿用两倍单文件假设 |
 | 生命周期/retention/正文读取 | 保持既有 quorum、checkpoint、floor 与原身份恢复证明；对象 segment 不是 WAL segment，术语和诊断分开 |
-| 配置、Docker 卷、使用/排障文档 | 物理版本、目录布局、总/单段/文件数/整理/迁移预算和离线迁移说明；不暴露客户端任意路径 |
-| 测试 fixtures 与性能 workload | 旧格式 fixture、损坏/轮转/崩溃 fixture、全量恢复、长稳磁盘轨迹和固定 RF1/RF3 对比 |
+| 配置、Docker 卷、使用/排障文档 | 物理版本、目录布局、总/单段/文件数/整理/迁移预算及开发期新目录要求；不暴露客户端任意路径 |
+| 测试 fixtures 与性能 workload | 新布局及旧版本拒绝 fixture、损坏/轮转/崩溃 fixture、全量恢复、长稳磁盘轨迹和固定 RF1/RF3 对比 |
 
 新增指标建议使用现有 metrics/tracing/OTel 接缝：active/sealed/retired/staging bytes、段数、GC eligible/pinned bytes、索引字节、轮转/GC/恢复时间、rewrite bytes、snapshot bytes/time、校验失败与容量拒绝。指标标签只含有限 role/stage/reason，segment id、group id、路径和操作身份放日志/有界 diagnostics；不记录正文。现有 WalAdmission/WalQueue/Append/Sync 和 replica committed/applied/purged/snapshot 诊断继续保留。
 
@@ -121,9 +121,9 @@ manifest 唯一指定哪些文件属于当前恢复链，包括布局版本、cl
 3. 跨段 group commit、单 record 接近上限、vote/commit 跨段、未提交 suffix 多次 truncate/replacement、purge 落在段内部、空尾及全部日志已入快照；运行完整 OpenRaft storage-v2 Suite。
 4. ENOSPC、短写、fsync/rename/delete 失败、日志/索引/段数上限、staging 空间不足、慢 reader 和多个旧 snapshot fd：不虚假 ACK，不无限分配，不误算已回收空间；新生产背压时 ACK/控制/恢复仍可推进。
 5. 同身份 Produce/ACK/Read Unknown 后恢复，retention floor、本地正文 reclaim、RustFS 冷读、成员替换、QUIC 分块 snapshot 以及 RF1/RF3 全路径回归；保留订阅与对象 pin 后再证明可删除。
-6. 旧格式显式迁移前后故障、旧二进制拒绝新目录、已确认新写后禁止旧目录降级；逐一比对应用、membership、原生产结果和持久 ACK。
+6. 旧版本与损坏身份明确拒绝、无自动清空或格式猜测；新目录初始化前后故障，恢复后逐一比对应用、membership、原生产结果和持久 ACK。
 7. 固定 source/binary/allocator/磁盘/负载运行长稳 RF1/RF3：报告写入总量、snapshot/rewrite/GC 字节、文件数、峰值/回落磁盘用量、恢复时间，以及含 checkpoint 周期的吞吐/尾延迟。用受保护基线判定，不丢弃轮转/回收样本，也不靠放宽阈值接受回归。
 
-在这些检查完成前，现有格式继续作为运行格式；不能仅因段文件可创建、单元测试通过或短期吞吐提升就迁移已有数据。磁盘控制器掉电、文件系统和跨区故障模型仍需要相应环境单独验证。
+在这些检查完成前，现有格式继续作为运行格式；不能仅因段文件可创建、单元测试通过或短期吞吐提升就宣布新布局可用。磁盘控制器掉电、文件系统和跨区故障模型仍需要相应环境单独验证。
 
 OpenRaft 的日志连续性、vote/log IO 顺序与 durable callback 契约保持不变，依据 [OpenRaft 0.9.25 storage-v2 源码](https://docs.rs/openraft/0.9.25/src/openraft/storage/v2.rs.html)。现有正确性边界另见 [WAL 与恢复](../design/storage-recovery.zh-CN.md)、[保留与容量](../design/retention-quota.zh-CN.md)、[对象生命周期](../design/object-lifecycle.zh-CN.md)和[存储排障](../operations/storage-troubleshooting.zh-CN.md)。
