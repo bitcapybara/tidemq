@@ -9,7 +9,7 @@
 | 部分 | 实施约束与容量口径 |
 | --- | --- |
 | 恢复权威 | `manifest.bin` 唯一指定具名段、checkpoint 和当前 snapshot；文件名使用 UUID，不根据 mtime 猜链 |
-| 日志回收 | checkpoint 保存有限控制状态和存活位置引用；持久化新恢复链后才删除完整失效段；压力下一次最多搬迁一个 sealed 混合段，不重编码整个 retained tail |
+| 日志回收 | checkpoint 保存有限控制状态和存活位置引用；字节压力下搬迁一个混合段，段数压力下至多将一个 normal 源和一个已有 `ref_only` 目标合并，输出不超过 16 MiB；新链持久后删除旧文件，不重编码整个 retained tail |
 | 默认 WAL | 16 MiB 目标段、64 段、128 MiB 总文件字节；8 MiB checkpoint 与 32 MiB 控制 reserve 纳入总额，普通轮转保留两个段槽位 |
 | 快照生命周期 | 完整 snapshot 仍为 64 MiB payload；4 个具名文件、8 个 reader、另一个 incoming；退休 reader 保留文件名和 owner lock |
 | 物理采样 | 按共享规范名称校验所有实际具名文件，包含 orphan、staging 和退休快照；256 项硬界限代替旧的 16 项与 `raft.wal` 检查 |
@@ -31,7 +31,7 @@
 
 | 路径与关键位置 | 实际行为 |
 | --- | --- |
-| [`wal/journal.rs`](../../src/wal/journal.rs)：`JournalOptions`、`Writer::append_group`、`Writer::rewrite` | 每组单 writer、单文件、有限队列、group commit；rewrite 写新文件后原子替换 |
+| [`wal/journal.rs`（历史版本）](https://github.com/bitcapybara/tidemq/blob/9e80cb76790dec7a9348682bc2108fab4e44f3ce/src/wal/journal.rs)：`JournalOptions`、`Writer::append_group`、`Writer::rewrite` | 每组单 writer、单文件、有限队列、group commit；rewrite 写新文件后原子替换；当前源码已删除该文件 |
 | [`wal/codec.rs`](../../src/wal/codec.rs)：`scan`、`frame`、`write_atomic` | 88 字节头、头部和正文 BLAKE3、连续物理序号、严格恢复、文件和父目录同步 |
 | [`replication/store.rs`](../../src/replication/store.rs)：`DiskStore::open`、`StorageOptions`、`LogState` | `raft.wal`、`snapshot.bin`；启动保留全部原始 record 再解码；retained entries 在有界 BTreeMap 中 |
 | [`replication/log.rs`](../../src/replication/log.rs)：`purge`、`checkpoint`、`truncate` | purge 克隆 log、删除前缀、逐条重编码剩余 entries，再等待整文件替换；truncate 先追加持久标记 |

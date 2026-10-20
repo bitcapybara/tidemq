@@ -60,7 +60,10 @@ async fn local_apply_failure_stops_authority_and_snapshots_then_replays_the_comm
         vec![1]
     );
     let snapshot = disk.state_machine.build_snapshot().await.unwrap();
-    let stable_bytes = tokio::fs::read(path.join("snapshot.bin")).await.unwrap();
+    let snapshots = support::matching_files(&path, "snapshot-", ".bin").await;
+    assert_eq!(snapshots.len(), 1);
+    let stable_path = snapshots.first().unwrap();
+    let stable_bytes = tokio::fs::read(stable_path).await.unwrap();
     disk.log.purge(stable.log_id).await.unwrap();
     let failed = entry(1, 7);
     disk.log.blocking_append([failed.clone()]).await.unwrap();
@@ -93,10 +96,7 @@ async fn local_apply_failure_stops_authority_and_snapshots_then_replays_the_comm
     assert!(disk.state_machine.begin_receiving_snapshot().await.is_err());
     assert!(disk.state_machine.apply([entry(2, 8)]).await.is_err());
     assert_eq!(disk.state_machine.application().await.value, 999);
-    assert_eq!(
-        tokio::fs::read(path.join("snapshot.bin")).await.unwrap(),
-        stable_bytes
-    );
+    assert_eq!(tokio::fs::read(stable_path).await.unwrap(), stable_bytes);
     drop(snapshot);
     disk.log.close().await.unwrap();
     drop(disk);
