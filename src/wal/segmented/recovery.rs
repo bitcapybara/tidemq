@@ -100,7 +100,7 @@ pub(super) async fn load(
     let mut manifest: Manifest = read_value(&manifest_path, MAX_MANIFEST_BYTES).await?;
     validate_manifest(&manifest, options, identity)?;
     if let Some(snapshot) = &manifest.snapshot {
-        validate_snapshot(directory, snapshot).await?;
+        validate_snapshot(directory, snapshot, false).await?;
     }
     let checkpoint = load_checkpoint(directory, &manifest, options).await?;
     let mut index = BTreeMap::new();
