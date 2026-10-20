@@ -106,6 +106,8 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
         if operation != "truncate_queued" {
             storage.state_machine.build_snapshot().await.unwrap();
         }
+        let old_snapshot = (operation == "snapshot_published")
+            .then(|| storage.log.0.journal.current_snapshot().unwrap().file_name);
         if operation == "snapshot_published" {
             storage.log.blocking_append([entry(4)]).await.unwrap();
             storage.state_machine.apply([entry(4)]).await.unwrap();
@@ -142,7 +144,17 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
             let next = storage.state_machine.build_snapshot().await.unwrap();
             assert_eq!(next.meta.last_log_id, Some(log_id(4)));
             drop(next);
-            assert_eq!(storage.log.diagnostics().await.snapshots.snapshot_files, 1);
+            assert!(
+                !tokio::fs::try_exists(path.join(old_snapshot.unwrap()))
+                    .await
+                    .unwrap()
+            );
+            let authoritative = storage.log.0.journal.current_snapshot().unwrap();
+            assert!(
+                tokio::fs::try_exists(path.join(authoritative.file_name))
+                    .await
+                    .unwrap()
+            );
         }
         let expected = if operation == "truncate_queued" {
             vec![log_id(0), log_id(1)]
