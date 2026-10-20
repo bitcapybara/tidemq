@@ -33,22 +33,23 @@ async function main() {
   const metrics = Object.fromEntries(Object.entries(compared.metrics).filter(([metric]) => metric !== 'durable_messages_per_second'));
   const statuses = Object.values(metrics).map(metric => metric.status);
   const biased = Object.values(metrics).some(metric =>
-    metric.slowdown_ci95[0] > 1 || metric.slowdown_ci95[1] < 1);
+    metric.slowdown_ci_adjusted[0] > 1 || metric.slowdown_ci_adjusted[1] < 1);
   const result = {
-    schema_version: 2, kind: 'same_binary_scheduled_latency_calibration', calibration_only: true, scenario: 'latency',
+    schema_version: 3, kind: 'same_binary_scheduled_latency_calibration', calibration_only: true, scenario: 'latency',
     status: biased ? 'temporal_bias_detected' : statuses.includes('inconclusive') ? 'inconclusive' : 'passed',
     service_source_commit: first.build.source_commit,
     service_binary_blake3: first.service_binary_blake3,
     workload_binary_blake3: first.generator_binary_blake3,
     sdk_and_harness_source_commit: null,
     protected_policy_sha256: createHash('sha256').update(policyBytes).digest('hex'),
-    inputs: inputs.map(input => path.resolve(input)), metrics, pairs,
+    inputs: inputs.map(input => path.resolve(input)), inference: compared.inference, metrics, pairs,
     limitations: [
       'Identical service and workload binaries: this calibrates temporal noise and does not compare source changes',
       'Raw load reports contain no SDK or harness source identity; preserve the independent build logs for that provenance',
       'The paced throughput is offered-rate limited; its measurements are recorded but excluded from calibration decisions',
       'The artifact does not advance the baseline or relax any precision requirement',
-      'Reported confidence is per metric; p99 uses the bounded histogram upper bounds',
+      'The full ten-comparison Bonferroni correction is retained even though paced throughput is excluded here',
+      'P99 uses bounded histogram upper bounds and can remain imprecise without blocking primary metric acceptance',
     ],
   };
   await writeFile(output, `${JSON.stringify(result, null, 2)}\n`, {flag: 'wx', mode: 0o600});

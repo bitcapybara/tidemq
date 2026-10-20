@@ -307,7 +307,7 @@ async function runGate(settings) {
   assert.equal(await sourceIdentity(baseline), baselineOverlay.source_commit, 'Baseline source changed during build');
   assert.equal(await sourceIdentity(candidate), candidateOverlay.source_commit, 'Candidate source changed during build');
   const summary = {
-    schema_version: 3, status: 'running', baseline_manifest_sha256: sha256(policyBytes),
+    schema_version: 4, status: 'running', baseline_manifest_sha256: sha256(policyBytes),
     same_source_reused_builds: reused,
     policy, baseline: baselineIdentity, candidate: candidateIdentity,
     workload_binaries: {baseline: baselineLoad, candidate: candidateLoad},
@@ -316,11 +316,15 @@ async function runGate(settings) {
       github_runner_image: process.env.ImageVersion ?? null, same_host_paired_trials: true,
       physical_availability_zone_validation: false},
     limitations: ['Closed-loop finite regression workload; no production saturation or availability-zone claim',
-      'A stable interval containing one means no detected regression, not proof of zero performance difference',
+      'An interval containing one means no detected regression, not proof of zero performance difference',
       'Latency means use every raw message duration, including scheduled-offer lateness and tail stalls',
       'P99 uses all observations merged in log2/32 upper-bound buckets with up to 3.125 percent bucket width',
       'Both sides use the protected workload source overlay; matching sources reuse the exact build artifacts',
-      'Student t intervals assume independent paired log ratios; confidence is per metric, not simultaneous'],
+      'Ten predeclared comparisons use 99.5 percent individual intervals for nominal 95 percent simultaneous Bonferroni coverage',
+      'Student t intervals assume independent paired log ratios and the paired Student t model',
+      'All five metrics veto statistically resolved slowdowns; only throughput and raw latency means require precision',
+      'P99 intervals can remain imprecise in a passing run; this gate does not exclude small tail regressions',
+      'The primary log half-width budget is uncertainty, not a permitted percentage slowdown'],
     topologies: {},
   };
   try {
@@ -344,14 +348,16 @@ async function runGate(settings) {
         summary.topologies[topology] = {status: 'running', pairs};
         await save(path.join(output, 'summary.json'), summary);
       }
-      summary.topologies[topology] = {...comparePairs(pairs, policy), pairs};
+      summary.topologies[topology] = {...comparePairs(pairs, policy, {sameBinary: reused}), pairs};
     }
     const statuses = Object.values(summary.topologies).map(topology => topology.status);
-    summary.status = statuses.every(status => status === 'passed') ? 'passed' : statuses.includes('regressed') ? 'regressed' : 'inconclusive';
+    summary.status = statuses.every(status => status === 'passed') ? 'passed' : statuses.includes('regressed') ? 'regressed'
+      : statuses.includes('temporal_bias_detected') ? 'temporal_bias_detected' : 'inconclusive';
   } catch (error) { summary.status = 'failed'; summary.error = error.message; }
   await save(path.join(output, 'summary.json'), summary);
   console.log(`Performance gate: ${summary.status}; ${path.join(output, 'summary.json')}`);
-  assert.equal(summary.status, 'passed', 'Performance gate failed; inspect the report and optimize or rerun an inconclusive measurement');
+  assert.equal(summary.status, 'passed',
+    'Performance gate failed; retain this cohort and address the regression or measurement conditions before a new declared run');
 }
 
 async function promote(settings) {
@@ -359,7 +365,7 @@ async function promote(settings) {
   const bytes = await fs.readFile(policyPath(tools));
   const policy = validatePolicy(JSON.parse(bytes));
   const report = await json(path.resolve(settings['--report']));
-  assert.equal(report.schema_version, 3, 'Unsupported performance gate report schema');
+  assert.equal(report.schema_version, 4, 'Unsupported performance gate report schema');
   assert.equal(report.status, 'passed', 'Only successful measurements may advance the baseline');
   assert.equal(report.baseline_manifest_sha256, sha256(bytes), 'The previous baseline changed; rerun before promotion');
   assert.equal(report.baseline.source_commit, policy.service_source_commit, 'Previous source does not match');
@@ -367,7 +373,8 @@ async function promote(settings) {
   assert.equal(report.candidate.source_commit, await sourceIdentity(tools),
     'Promotion candidate must match the current clean tools HEAD');
   for (const topology of policy.topologies) {
-    assert.equal(comparePairs(report.topologies[topology].pairs, policy).status, 'passed', 'Recomputed gate did not pass');
+    assert.equal(comparePairs(report.topologies[topology].pairs, policy,
+      {sameBinary: report.baseline.source_commit === report.candidate.source_commit}).status, 'passed', 'Recomputed gate did not pass');
   }
   policy.service_source_commit = report.candidate.source_commit;
   await save(policyPath(tools), policy);

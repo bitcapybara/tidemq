@@ -36,23 +36,68 @@ test('stable improvement and exact equality pass', () => {
   assert.equal(comparePairs(pairs(Array(policy.pairs).fill(1)), policy).status, 'passed');
 });
 
+test('same-binary calibration rejects an apparent improvement as temporal bias', () => {
+  const observations = pairs(Array(policy.pairs).fill(0.99));
+  assert.equal(comparePairs(observations, policy).status, 'passed');
+  assert.equal(comparePairs(observations, policy, {sameBinary: true}).status, 'temporal_bias_detected');
+  assert.equal(comparePairs(pairs(Array(policy.pairs).fill(1)), policy, {sameBinary: true}).status, 'passed');
+});
+
 test('unstable samples are inconclusive and missing or invalid trials fail', () => {
   assert.equal(comparePairs(pairs([0.7, 1.2, 0.9, 1.3, 1, 0.8, 1.4, 0.9]), policy).status, 'inconclusive');
   assert.throws(() => comparePairs(pairs([1, 1]), policy));
   assert.throws(() => comparePairs(pairs([1, 1, 0, 1, 1, 1, 1, 1]), policy));
   assert.throws(() => comparePairs(pairs(Array(5).fill(1)), policy), /Missing paired trials/);
-  assert.throws(() => validatePolicy({...policy, schema_version: 2}), /Unsupported performance policy schema/);
+  assert.throws(() => validatePolicy({...policy, schema_version: 3}), /Unsupported performance policy schema/);
   assert.throws(() => validatePolicy({...policy, pairs: 5}), /requires eight pairs/);
 });
 
-test('eight paired log ratios use the Student t critical value with seven degrees of freedom', () => {
+test('eight pairs correct all ten comparisons for nominal simultaneous 95 percent coverage', () => {
   const values = [0.99, 1, 1.01, 1.02, 0.98, 1, 1.01, 0.99];
   const ratios = values.map(Math.log);
   const mean = ratios.reduce((sum, value) => sum + value, 0) / values.length;
   const deviation = Math.sqrt(ratios.reduce((sum, value) => sum + (value - mean) ** 2, 0) / 7);
   const result = comparePairs(pairs(values), policy);
   assert.equal(Object.keys(result.metrics).length, 5);
-  assert.ok(Math.abs(result.metrics.produce_mean_ns.log_ci_half_width - 2.3646242515927844 * deviation / Math.sqrt(8)) < 1e-14);
+  assert.deepEqual(result.inference, {method: 'bonferroni', confidence: 0.95, comparisons: 10,
+    per_metric_confidence: 0.995, degrees_of_freedom: 7, critical_t: 4.029337177642459});
+  assert.ok(Math.abs(result.metrics.produce_mean_ns.log_ci_half_width - 4.029337177642459 * deviation / Math.sqrt(8)) < 1e-14);
+  assert.ok(!('slowdown_ci95' in result.metrics.produce_mean_ns));
+  assert.throws(() => validatePolicy({...policy, comparison_family: {...policy.comparison_family, comparisons: 6}}));
+  assert.throws(() => validatePolicy({...policy, comparison_family: {...policy.comparison_family, confidence: 0.9}}));
+});
+
+test('imprecise p99 remains visible without blocking precise primary metrics', () => {
+  const observations = pairs(Array(policy.pairs).fill(1));
+  const values = [0.5, 1.8, 0.8, 1.3, 0.6, 1.7, 0.9, 1.4];
+  for (const [index, pair] of observations.entries()) {
+    for (const metric of ['produce_p99_upper_ns', 'offered_to_durable_ack_p99_upper_ns']) pair.candidate[metric] *= values[index];
+  }
+  const result = comparePairs(observations, policy);
+  assert.equal(result.status, 'passed');
+  for (const metric of ['produce_p99_upper_ns', 'offered_to_durable_ack_p99_upper_ns']) {
+    const tail = result.metrics[metric];
+    assert.equal(tail.status, 'imprecise');
+    assert.equal(tail.precision_required, false);
+    assert.equal(tail.max_log_ci_half_width, null);
+    assert.equal(tail.diagnostic_reference_log_half_width, 0.15);
+    assert.ok(tail.slowdown_ci_adjusted[0] < 1 && tail.slowdown_ci_adjusted[1] > 1);
+  }
+});
+
+test('an imprecise primary metric blocks acceptance independently of the p99 diagnostics', () => {
+  const values = [0.7, 1.2, 0.9, 1.3, 1, 0.8, 1.4, 0.9];
+  for (const metric of Object.keys(policy.max_log_ci_half_width)) {
+    const observations = pairs(Array(policy.pairs).fill(1));
+    for (const [index, pair] of observations.entries()) pair.candidate[metric] *= values[index];
+    const result = comparePairs(observations, policy);
+    assert.equal(result.status, 'inconclusive', metric);
+    assert.equal(result.metrics[metric].status, 'inconclusive');
+    assert.equal(result.metrics[metric].precision_required, true);
+    assert.equal(result.metrics[metric].max_log_ci_half_width, 0.15);
+  }
+  assert.throws(() => validatePolicy({...policy,
+    max_log_ci_half_width: {...policy.max_log_ci_half_width, produce_mean_ns: 0.16}}));
 });
 
 test('raw latency means weight unequal partition samples and retain rare long durations', () => {
@@ -165,13 +210,13 @@ test('promotion rejects a stale report or dirty source and accepts only the clea
     git('add', 'source.txt');
     commit();
     const current = git('rev-parse', 'HEAD');
-    const report = {schema_version: 3, status: 'passed', baseline_manifest_sha256: createHash('sha256').update(original).digest('hex'),
+    const report = {schema_version: 4, status: 'passed', baseline_manifest_sha256: createHash('sha256').update(original).digest('hex'),
       baseline: {source_commit: policy.service_source_commit}, candidate: {source_commit: stale},
       topologies: Object.fromEntries(policy.topologies.map(topology => [topology, {pairs: pairs(Array(policy.pairs).fill(0.98))}]))};
     const reportPath = path.join(temporary, 'report.json');
     const promote = () => spawnSync(process.execPath, [new URL('../performance-gate.mjs', import.meta.url).pathname,
       'promote', '--tools', temporary, '--report', reportPath], {encoding: 'utf8', timeout: 5000});
-    await writeFile(reportPath, JSON.stringify({...report, schema_version: 2}));
+    await writeFile(reportPath, JSON.stringify({...report, schema_version: 3}));
     const previousSchema = promote();
     assert.equal(previousSchema.status, 1);
     assert.match(previousSchema.stderr, /Unsupported performance gate report schema/);
@@ -186,6 +231,14 @@ test('promotion rejects a stale report or dirty source and accepts only the clea
     assert.equal(promote().status, 1);
     assert.equal(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8'), original);
     await writeFile(path.join(temporary, 'source.txt'), 'current\n');
+    for (const pair of report.topologies.rf1.pairs) pair.candidate.produce_p99_upper_ns = pair.baseline.produce_p99_upper_ns * 1.01;
+    await writeFile(reportPath, JSON.stringify(report));
+    const rejectedTail = promote();
+    assert.equal(rejectedTail.status, 1);
+    assert.match(rejectedTail.stderr, /Recomputed gate did not pass/);
+    assert.equal(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8'), original);
+    report.topologies.rf1.pairs = pairs(Array(policy.pairs).fill(0.98));
+    await writeFile(reportPath, JSON.stringify(report));
     const accepted = promote();
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.equal(JSON.parse(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8')).service_source_commit, current);
@@ -221,7 +274,7 @@ test('A/A calibration binds both binaries and never promotes its source', async 
     assert.equal(accepted.status, 0, accepted.stderr);
     const result = JSON.parse(await readFile(output, 'utf8'));
     assert.equal(result.kind, 'same_binary_scheduled_latency_calibration');
-    assert.equal(result.schema_version, 2);
+    assert.equal(result.schema_version, 3);
     assert.equal(result.status, 'passed');
     assert.ok(!('durable_messages_per_second' in result.metrics));
     assert.equal(Object.keys(result.metrics).length, 4);
