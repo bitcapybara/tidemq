@@ -20,6 +20,8 @@ pub struct Distribution {
     pub p99_upper_ns: Option<u64>,
     pub p999_upper_ns: Option<u64>,
     pub maximum_ns: u64,
+    /// Nonzero fixed histogram buckets permit exact aggregation across partitions.
+    pub histogram_buckets: Vec<(usize, u64)>,
     pub quantile_method: &'static str,
     pub p99_minimum_samples: u64,
     pub p999_minimum_samples: u64,
@@ -87,6 +89,13 @@ impl Histogram {
                 .then(|| self.quantile(999, 1_000))
                 .flatten(),
             maximum_ns: self.maximum_ns,
+            histogram_buckets: self
+                .buckets
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, count)| *count > 0)
+                .collect(),
             quantile_method: "all_samples_log2_32_subbuckets_upper_bound_max_relative_width_3.125_percent",
             p99_minimum_samples: 1_000,
             p999_minimum_samples: 10_000,
@@ -193,6 +202,14 @@ mod tests {
         first.merge(&second).unwrap();
         let report = first.report();
         assert_eq!(report.samples, 10_000);
+        assert_eq!(
+            report
+                .histogram_buckets
+                .iter()
+                .map(|(_, count)| count)
+                .sum::<u64>(),
+            report.samples
+        );
         assert!((5_000..=5_156).contains(&report.p50_upper_ns.unwrap()));
         assert!((9_900..=10_000).contains(&report.p99_upper_ns.unwrap()));
         assert!((9_990..=10_000).contains(&report.p999_upper_ns.unwrap()));

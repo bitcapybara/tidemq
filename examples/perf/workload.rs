@@ -87,13 +87,54 @@ enum Background {
     Control { latency: Histogram, errors: u64 },
 }
 
-pub async fn phase(
+struct Prepared {
+    name: String,
+    topic: Id,
+    subscription: Id,
+    producers: Vec<Producer>,
+    consumer: Option<Consumer>,
+}
+
+#[derive(Serialize)]
+pub struct GroupReport {
+    pub elapsed_ns: u64,
+    pub partitions: Vec<PhaseReport>,
+}
+
+pub async fn group(
     client: &Client,
     args: &Args,
     label: &str,
     run: Id,
     count: u64,
-) -> Result<PhaseReport> {
+) -> Result<GroupReport> {
+    let mut prepared = Vec::new();
+    prepared.try_reserve_exact(args.concurrent_partitions)?;
+    // Serial setup keeps metadata admission outside the measured concurrent workload.
+    for partition in 0..args.concurrent_partitions {
+        let label = format!("{label}-{partition}");
+        prepared.push((label.clone(), prepare(client, args, &label, run).await?));
+    }
+    let started = Instant::now();
+    let mut running = JoinSet::new();
+    for (label, prepared) in prepared {
+        let client = client.clone();
+        let args = args.clone();
+        running.spawn(async move { phase(&client, &args, &label, run, count, prepared).await });
+    }
+    let mut partitions = Vec::new();
+    partitions.try_reserve_exact(args.concurrent_partitions)?;
+    while let Some(result) = running.join_next().await {
+        partitions.push(result??);
+    }
+    partitions.sort_by(|left, right| left.label.cmp(&right.label));
+    Ok(GroupReport {
+        elapsed_ns: nanos(started.elapsed())?,
+        partitions,
+    })
+}
+
+async fn prepare(client: &Client, args: &Args, label: &str, run: Id) -> Result<Prepared> {
     let name = format!("perf-{run}-{label}");
     let topic = client
         .admin()
@@ -121,6 +162,30 @@ pub async fn phase(
     } else {
         None
     };
+    Ok(Prepared {
+        name,
+        topic,
+        subscription,
+        producers,
+        consumer,
+    })
+}
+
+async fn phase(
+    client: &Client,
+    args: &Args,
+    label: &str,
+    run: Id,
+    count: u64,
+    prepared: Prepared,
+) -> Result<PhaseReport> {
+    let Prepared {
+        name,
+        topic,
+        subscription,
+        producers,
+        consumer,
+    } = prepared;
     let server_metrics_before = sample::metrics(args.management).await?;
     let cold_before = sample::cold_misses(&server_metrics_before)?;
     let client_metrics_before = client_metrics(client);

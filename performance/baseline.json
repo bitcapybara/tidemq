@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "service_source_commit": "9fe9c952276d2a2b7b27a41ca1021926aaa3c283",
+  "pairs": 5,
+  "confidence": 0.95,
+  "max_log_ci_half_width": 0.03,
+  "allocator_feature": "allocator-mimalloc",
+  "server_worker_threads": 4,
+  "workload": {
+    "messages": 512,
+    "warmup_messages": 64,
+    "message_bytes": 128,
+    "batch_messages": 1,
+    "workers": 1,
+    "concurrent_partitions": 4,
+    "request_lanes": 4,
+    "ack_messages": 32,
+    "phase_timeout_secs": 60,
+    "request_timeout_ms": 10000,
+    "cooldown_secs": 0
+  },
+  "topologies": ["rf1", "rf3-combined"]
+}

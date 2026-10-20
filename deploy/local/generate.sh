@@ -6,8 +6,9 @@ mode=${1:-rf1}
 output=${2:-/tmp/tidemq-${mode}}
 case "$mode" in
   rf1) nodes='1:combined'; voters='[1]'; storage='[1]'; factor=1 ;;
+  rf3-combined) nodes='1:combined 2:combined 3:combined'; voters='[1,2,3]'; storage='[1,2,3]'; factor=3 ;;
   rf3) nodes='11:metadata 12:metadata 13:metadata 21:storage 22:storage 23:storage 31:broker 32:broker 41:gateway 42:gateway'; voters='[11,12,13]'; storage='[21,22,23]'; factor=3 ;;
-  *) printf 'Usage: %s [rf1|rf3] [new-output-directory]\n' "$0" >&2; exit 2 ;;
+  *) printf 'Usage: %s [rf1|rf3|rf3-combined] [new-output-directory]\n' "$0" >&2; exit 2 ;;
 esac
 if [[ -e "$output" ]]; then printf 'Output directory already exists: %s\n' "$output" >&2; exit 1; fi
 mkdir -p "$output"
