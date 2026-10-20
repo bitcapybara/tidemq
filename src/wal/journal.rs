@@ -41,7 +41,7 @@ impl Default for JournalOptions {
             max_segments: 64,
             max_checkpoint_bytes: 8 * 1024 * 1024,
             max_retained_records: 65_536,
-            control_reserve_bytes: 16 * 1024 * 1024,
+            control_reserve_bytes: 32 * 1024 * 1024,
         }
     }
 }
@@ -96,6 +96,8 @@ pub struct JournalStatistics {
     pub rotations: u64,
     pub reclaimed_bytes: u64,
     pub gc_failures: u64,
+    pub relocation_operations: u64,
+    pub relocated_bytes: u64,
 }
 
 struct Pending {

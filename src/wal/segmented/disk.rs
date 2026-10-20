@@ -160,6 +160,7 @@ pub(super) fn segment_header(identity: [u8; 32], segment: &Segment) -> Result<Ve
     bytes.extend_from_slice(&identity);
     bytes.extend_from_slice(&segment.id);
     bytes.extend_from_slice(&segment.first_sequence.to_le_bytes());
+    bytes.push(u8::from(segment.reference_only));
     frame(&bytes, 0)
 }
 pub(super) async fn validate_segment_header(
@@ -187,6 +188,7 @@ pub(super) async fn create_segment(
     let segment = Segment {
         id: new_id()?,
         first_sequence: sequence,
+        reference_only: false,
         records: 0,
         byte_len: SEGMENT_HEADER_BYTES,
         checksum: [0; 32],
@@ -205,6 +207,7 @@ pub(super) async fn create_segment(
 }
 
 pub(super) struct ReadFrame {
+    pub header: [u8; FRAME_HEADER_BYTES],
     pub sequence: u64,
     pub payload: Vec<u8>,
     pub bytes: u64,
@@ -258,6 +261,7 @@ pub(super) async fn read_frame(
         .map_err(|e| Error::io(path, e))?;
     validate_hash(&header, &payload, offset)?;
     Ok(Some(ReadFrame {
+        header,
         sequence,
         payload,
         bytes,

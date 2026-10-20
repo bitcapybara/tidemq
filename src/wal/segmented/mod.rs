@@ -14,7 +14,7 @@ use crate::wal::{Error, JournalOptions, JournalStatistics, Result};
 use disk::*;
 use format::*;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -66,6 +66,7 @@ struct Pending {
     _request: OwnedSemaphorePermit,
     admitted_at: Instant,
     span: tracing::Span,
+    retained_slots: Option<RetainedSlots>,
 }
 enum Request {
     Append(Pending),
@@ -84,6 +85,7 @@ struct Shared {
     stats: Mutex<SegmentedStatistics>,
     snapshot: Mutex<Option<SnapshotRef>>,
     next_record_id: AtomicU64,
+    retained_count: Arc<AtomicUsize>,
     recovery_gate: Arc<Semaphore>,
 }
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -92,6 +94,16 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         Err(poisoned) => poisoned.into_inner(),
     }
 }
+struct RetainedSlots {
+    counter: Arc<AtomicUsize>,
+    count: usize,
+}
+impl Drop for RetainedSlots {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(self.count, Ordering::Relaxed);
+    }
+}
+
 #[derive(Clone)]
 pub struct SegmentedJournal {
     sender: mpsc::Sender<Request>,
@@ -107,7 +119,7 @@ impl JournalOptions {
     pub fn validate_segmented(&self) -> Result<()> {
         self.validate()?;
         let publication = self.publication_reserve()?;
-        if self.max_segments < 2
+        if self.max_segments < 3
             || self.max_segments > MAX_SEGMENTS
             || self.max_retained_records == 0
             || self.max_retained_records > MAX_REFERENCES
@@ -151,6 +163,7 @@ impl SegmentedJournal {
         tokio::fs::create_dir_all(directory)
             .await
             .map_err(|e| Error::io(directory, e))?;
+        directory_files(directory).await?;
         let path = directory.join(".writer-lock");
         let owner = tokio::task::spawn_blocking(move || {
             let file = std::fs::OpenOptions::new()
@@ -223,6 +236,7 @@ impl SegmentedJournal {
             stats: Mutex::new(SegmentedStatistics::default()),
             snapshot: Mutex::new(loaded.manifest.snapshot.clone()),
             next_record_id: AtomicU64::new(loaded.next_record_id),
+            retained_count: Arc::new(AtomicUsize::new(loaded.index.len())),
             recovery_gate,
         });
         let bytes = Arc::new(Semaphore::new(options.max_pending_bytes as usize));
@@ -311,6 +325,23 @@ impl SegmentedJournal {
                 name: "append batch bytes",
             });
         }
+        let retained_slots = if retained {
+            self.shared
+                .retained_count
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    n.checked_add(data.len())
+                        .filter(|next| *next <= self.options.max_retained_records)
+                })
+                .map_err(|_| Error::Limit {
+                    name: "retained record index admission",
+                })?;
+            Some(RetainedSlots {
+                counter: self.shared.retained_count.clone(),
+                count: data.len(),
+            })
+        } else {
+            None
+        };
         let bytes = self
             .bytes
             .clone()
@@ -371,6 +402,7 @@ impl SegmentedJournal {
             _request: request,
             admitted_at: Instant::now(),
             span: tracing::Span::current(),
+            retained_slots,
         }))
         .await?;
         if let Some(metrics) = &self.metrics {
