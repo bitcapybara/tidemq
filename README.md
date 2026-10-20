@@ -64,6 +64,8 @@ target/debug/tidemq serve --config /tmp/tidemq-demo/node-1.toml
 
 The generator requires a new directory and OpenSSL. It creates short-lived development identities; retain the private token file locally. See [running TideMQ](docs/guide/running.zh-CN.md) and the [Rust SDK](sdk/rust/README.md) for topic creation, production, consumption, durable ACKs, and RF3 deployment. Management endpoints expose the running process on loopback; the separate `diagnose` command describes its own short-lived process.
 
+Docker deployment assets are versioned under [deploy/docker](deploy/docker/README.zh-CN.md): the [builder Dockerfile](deploy/docker/Dockerfile.builder), [runtime Dockerfile](deploy/docker/Dockerfile), complete [RF1 Compose](deploy/docker/compose.rf1.yaml) and [RF3 Compose](deploy/docker/compose.rf3.yaml) configurations, and [deployment preparation script](deploy/docker/prepare.sh). Generate a private state directory before starting Compose; see the deployment guide for build, startup, validation, and cleanup commands.
+
 For local validation:
 
 ```sh

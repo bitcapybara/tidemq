@@ -20,8 +20,11 @@ for mode in rf1 rf3; do
   rustfs_memory=512m
   if [[ $mode == rf3 ]]; then expected=10; rustfs_memory=1g; fi
   state="$task_dir/$mode"
-  bash "$script_dir/prepare.sh" "$mode" "$state" "$rustfs_memory" > /dev/null
+  TIDEMQ_RUSTFS_MEMORY=16g bash "$script_dir/prepare.sh" "$mode" "$state" "$rustfs_memory" > /dev/null
   state=$(cd "$state" && pwd -P)
+  if grep -Fq '${TIDEMQ_RUSTFS_MEMORY' "$state/compose.yaml"; then
+    fail 'RustFS memory was not frozen in the prepared Compose file'
+  fi
   if bash "$script_dir/prepare.sh" "$mode" "$state" > /dev/null 2>&1; then
     fail 'Existing state was accepted'
   fi
@@ -33,9 +36,11 @@ for mode in rf1 rf3; do
   [[ $(count_files "$state/rustfs" '*') == 2 ]] || fail 'RustFS directory contains additional files'
 
   found=0
+  expected_services=(network rustfs bucket validator)
   for config in "$state"/run/node-*/node.toml; do
     run=$(dirname "$config")
     node=${run##*/node-}
+    expected_services+=("node-$node")
     found=$((found + 1))
     [[ $(count_files "$run" '*.key') == 2 ]] || fail 'Unexpected node private key'
     [[ $(count_files "$run" '*.pem') == 2 ]] || fail 'Unexpected node certificate'
@@ -69,7 +74,24 @@ for mode in rf1 rf3; do
   ' > "$task_dir/$mode.rendered.yaml"
   rendered="$task_dir/$mode.rendered.yaml"
   service_count=$((expected + 4))
-  [[ $(compose "${args[@]}" config --services | awk 'END {print NR+0}') == "$service_count" ]] || fail 'Service count differs'
+  compose "${args[@]}" config --services > "$task_dir/$mode.services"
+  [[ $(awk 'END {print NR+0}' "$task_dir/$mode.services") == "$service_count" ]] || fail 'Service count differs'
+  for service in "${expected_services[@]}"; do
+    grep -Fxq "$service" "$task_dir/$mode.services" || fail 'Compose service does not match the generated topology'
+  done
+  for config in "$state"/run/node-*/node.toml; do
+    run=$(dirname "$config")
+    node=${run##*/node-}
+    block="$task_dir/$mode.node-$node.yaml"
+    awk -v service="node-$node" '
+      $0 == "  " service ":" {inside = 1; next}
+      inside && /^  [^[:space:]]/ {exit}
+      inside {print}
+    ' "$rendered" > "$block"
+    grep -Fxq "        source: $run" "$block" || fail 'Node configuration mount differs'
+    grep -Fxq "        source: data-$node" "$block" || fail 'Node data volume differs'
+    grep -Fq "http://127.0.0.1:$((8400 + node * 10))/readyz" "$block" || fail 'Node health port differs'
+  done
   [[ $(compose "${args[@]}" config --volumes | awk 'END {print NR+0}') == $((expected + 2)) ]] || fail 'Data volume count differs'
   [[ $(grep -c 'network_mode: service:network' "$rendered") == $((service_count - 1)) ]] || fail 'Namespace sharing differs'
   [[ $(grep -Ec 'user: "?10001:10001"?$' "$rendered") == "$service_count" ]] || fail 'Runtime UID differs'

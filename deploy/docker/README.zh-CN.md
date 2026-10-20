@@ -6,6 +6,22 @@
 
 这套拓扑验证容器进程故障、持久目录和真实 QUIC/S3 链路；共享 namespace、内核和主机，不能证明跨 AZ 或独立节点网络故障域。RF3 配置中的 zone 名称只用于逻辑拓扑。开发证书由原 `deploy/local/generate.sh` 签发，有效期 7 天。
 
+## 仓库文件
+
+| 文件 | 用途 |
+| --- | --- |
+| [Dockerfile.builder](Dockerfile.builder) | 固定工具链和构建依赖 |
+| [Dockerfile](Dockerfile) | 服务及 SDK 验证程序的运行镜像 |
+| [compose.rf1.yaml](compose.rf1.yaml) | RF1 完整 Compose 配置 |
+| [compose.rf3.yaml](compose.rf3.yaml) | 十角色 RF3 完整 Compose 配置 |
+| [prepare.sh](prepare.sh) | 读取所选 Compose 文件，生成独立项目、私有身份和运行配置 |
+| [init-bucket.sh](init-bucket.sh) | 有界 RustFS 桶初始化 |
+| [selfcheck.sh](selfcheck.sh) | 配置、权限和隔离边界静态自检 |
+| [docker-validate.sh](../../scripts/docker-validate.sh) | 真实 SDK 收发、回放与故障验证 |
+| [docker-validate-selftest.sh](../../scripts/docker-validate-selftest.sh) | 验证脚本自身的边界测试 |
+
+两个 Compose 文件均已纳入版本管理，包含服务、私有网络、数据卷、健康检查和资源限制。相对挂载路径以 `prepare.sh` 生成的状态目录为准，应先按下面的步骤生成状态，再使用其中的 `compose.yaml` 启动。脚本将 `TIDEMQ_RUSTFS_MEMORY` 占位值冻结为显式参数允许的 `512m` 或 `1g`，随后运行 Compose 不会受同名宿主环境变量影响。生成的状态目录含随机凭据，应放在仓库忽略的 `target/` 或外部私有目录。
+
 ## 构建契约
 
 需要 Linux x86_64、Docker Engine、支持这些 Compose 字段的 Compose（本次使用 5.6.0）、Bash、OpenSSL 和 coreutils。Docker 主机应支持 cgroup v2 和内存、swap、PID 限额。不要向主机安装 Rust 工具链。
@@ -93,7 +109,7 @@ RustFS 使用官方 1.0.3 的 Linux x86_64 musl 可执行文件，只读 bind �
 
 ## 生成与启动
 
-为每种拓扑创建新的状态目录，不能覆盖已有输出。父目录应预先存在且私有。`prepare.sh` 调用现有 local generator，保留节点 ID、端口、拓扑和身份；只分发文件、改写容器内路径并添加 loopback RustFS 配置。
+为每种拓扑创建新的状态目录，不能覆盖已有输出。父目录应预先存在且私有。`prepare.sh` 读取仓库中的 `compose.rf1.yaml` 或 `compose.rf3.yaml`，并调用现有 local generator，保留节点 ID、端口、拓扑和身份；分发文件、改写容器内路径并添加 loopback RustFS 配置。
 
 ```bash
 STATE=/absolute/new-rf1-state
