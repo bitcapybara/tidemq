@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::Deserialize;
 use tidemq_protocol::common::{ErrorCode, FrameKind, Outcome};
@@ -11,13 +12,13 @@ use crate::transport::{Authorization, TokenGrant};
 
 #[derive(Clone)]
 pub(crate) struct Access {
-    pub principal: String,
-    pub scope: String,
+    pub principal: Arc<str>,
+    pub scope: Arc<str>,
 }
 
 #[derive(Clone)]
 pub(crate) struct AccessTable {
-    principals: BTreeMap<(String, String), Vec<FrameKind>>,
+    principals: BTreeMap<Arc<str>, BTreeMap<Arc<str>, Vec<FrameKind>>>,
     tokens: Vec<TokenGrant>,
 }
 
@@ -48,7 +49,8 @@ impl AccessTable {
                 "Access configuration must contain a bounded nonempty token table",
             ));
         }
-        let mut principals = BTreeMap::new();
+        let mut principals: BTreeMap<Arc<str>, BTreeMap<Arc<str>, Vec<FrameKind>>> =
+            BTreeMap::new();
         let mut tokens = Vec::new();
         for token in file.tokens {
             if !valid_scope(&token.scope)
@@ -70,10 +72,11 @@ impl AccessTable {
                         })
                 })
                 .collect::<Result<_>>()?;
-            if let Some(previous) = principals.insert(
-                (token.principal.clone(), token.scope.clone()),
-                kinds.clone(),
-            ) && previous != kinds
+            if let Some(previous) = principals
+                .entry(Arc::from(token.principal.as_str()))
+                .or_default()
+                .insert(Arc::from(token.scope.as_str()), kinds.clone())
+                && previous != kinds
             {
                 return Err(Error::invalid(
                     "A principal scope has conflicting operation grants",
@@ -106,20 +109,24 @@ impl AccessTable {
         Ok(access)
     }
     pub fn delegated(&self, principal: &str, scope: &str, kind: FrameKind) -> Result<Access> {
-        self.principals
-            .get(&(principal.to_owned(), scope.to_owned()))
-            .filter(|kinds| kinds.contains(&kind))
+        let (principal, scopes) = self
+            .principals
+            .get_key_value(principal)
+            .ok_or_else(forbidden)?;
+        let (scope, _) = scopes
+            .get_key_value(scope)
+            .filter(|(_, kinds)| kinds.contains(&kind))
             .ok_or_else(forbidden)?;
         Ok(Access {
-            principal: principal.to_owned(),
-            scope: scope.to_owned(),
+            principal: Arc::clone(principal),
+            scope: Arc::clone(scope),
         })
     }
 }
 
 impl Access {
     pub fn authorize_topic(&self, name: &str) -> Result<()> {
-        if self.scope == "*" || self.scope.strip_prefix("topic:") == Some(name) {
+        if self.scope.as_ref() == "*" || self.scope.strip_prefix("topic:") == Some(name) {
             Ok(())
         } else {
             Err(forbidden())
@@ -162,4 +169,84 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
             | FrameKind::Cancel
             | FrameKind::Diagnose
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table() -> AccessTable {
+        AccessTable {
+            principals: BTreeMap::from([
+                (
+                    Arc::from("reader"),
+                    BTreeMap::from([
+                        (Arc::from("topic:orders"), vec![FrameKind::Read]),
+                        (Arc::from("topic:invoices"), vec![FrameKind::Read]),
+                    ]),
+                ),
+                (
+                    Arc::from("writer"),
+                    BTreeMap::from([(Arc::from("*"), vec![FrameKind::ProduceBatch])]),
+                ),
+            ]),
+            tokens: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn delegated_access_reuses_validated_identity_storage() {
+        let table = table();
+        let first = table
+            .delegated("reader", "topic:orders", FrameKind::Read)
+            .unwrap();
+        let second = table
+            .delegated("reader", "topic:orders", FrameKind::Read)
+            .unwrap();
+        assert!(Arc::ptr_eq(&first.principal, &second.principal));
+        assert!(Arc::ptr_eq(&first.scope, &second.scope));
+        let cloned = first.clone();
+        assert!(Arc::ptr_eq(&first.principal, &cloned.principal));
+        assert!(Arc::ptr_eq(&first.scope, &cloned.scope));
+        assert!(first.authorize_topic("orders").is_ok());
+        assert!(first.authorize_topic("invoices").is_err());
+        assert!(
+            table
+                .delegated("writer", "*", FrameKind::ProduceBatch)
+                .unwrap()
+                .authorize_topic("orders")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn authorization_keeps_principal_scope_and_connection_grants_separate() {
+        let table = table();
+        for (principal, scope, kind) in [
+            ("unknown", "topic:orders", FrameKind::Read),
+            ("reader", "*", FrameKind::Read),
+            ("writer", "topic:orders", FrameKind::ProduceBatch),
+            ("reader", "topic:orders", FrameKind::ProduceBatch),
+        ] {
+            assert!(table.delegated(principal, scope, kind).is_err());
+        }
+        let peer = Authorization::External {
+            principal: "reader".to_owned(),
+            scope: "topic:orders".to_owned(),
+            allowed_kinds: vec![FrameKind::Read],
+        };
+        assert!(table.external(&peer, FrameKind::Read).is_ok());
+        assert!(table.external(&peer, FrameKind::ProduceBatch).is_err());
+        let limited_peer = Authorization::External {
+            principal: "reader".to_owned(),
+            scope: "topic:orders".to_owned(),
+            allowed_kinds: vec![FrameKind::Cancel],
+        };
+        assert!(table.external(&limited_peer, FrameKind::Read).is_err());
+        assert!(
+            table
+                .external(&Authorization::Server, FrameKind::Read)
+                .is_err()
+        );
+    }
 }

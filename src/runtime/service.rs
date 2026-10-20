@@ -33,7 +33,7 @@ pub(crate) struct CachedRoute {
     pub topic_name: String,
     pub expires: Instant,
 }
-type CancelKey = (String, String, Id);
+type CancelKey = (Arc<str>, Arc<str>, Id);
 type LeaseSlot = Arc<Mutex<Option<Arc<crate::ownership::ControlLease>>>>;
 
 pub(crate) struct Service {
@@ -501,9 +501,7 @@ impl Service {
                 .await;
         }
         let group = route.group_id;
-        let result = self
-            .data_public(access, &forwarded, route, deadline, order)
-            .await;
+        let result = self.data_public(&forwarded, route, deadline, order).await;
         if let Err(error) = &result {
             self.invalidate_forward(&forwarded, group, error.failure().code)
                 .await;
@@ -532,8 +530,8 @@ impl Service {
             kind: wire::FORWARD,
             body: encode_payload(frame, frame_limit(class, &self.config.protocol))
                 .map_err(|source| Error::operation("encode delegated public frame", source))?,
-            principal: access.principal,
-            scope: access.scope,
+            principal: access.principal.to_string(),
+            scope: access.scope.to_string(),
             hops,
         };
         let affinity = super::data::affinity(frame, &self.config.protocol)?;

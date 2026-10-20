@@ -10,7 +10,6 @@ use tidemq_protocol::{Id, ProtocolLimits};
 use tokio::time::Instant;
 
 use crate::broker::{self, DataCommand, DataRejection, DataResponse, RequestContext, WriterFence};
-use crate::gateway::Access;
 use crate::lifecycle::{GuardedPage, VerifiedColdDelivery};
 use crate::metadata::{PartitionKey, Route};
 use crate::ownership::remote::{Query, Value};
@@ -236,7 +235,6 @@ impl Service {
 
     pub async fn data_public(
         &self,
-        access: Access,
         frame: &Frame,
         route: Route,
         deadline: Instant,
@@ -386,7 +384,7 @@ impl Service {
             }
             _ => {
                 drop(order);
-                self.subscription_public(access, frame, route, &lease, deadline)
+                self.subscription_public(frame, route, &lease, deadline)
                     .await
             }
         }
@@ -545,7 +543,6 @@ impl Service {
 
     async fn subscription_public(
         &self,
-        _access: Access,
         frame: &Frame,
         route: Route,
         lease: &ControlLease,

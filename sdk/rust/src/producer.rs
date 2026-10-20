@@ -305,7 +305,7 @@ impl Producer {
             .await
             .map_err(Error::from);
         drop(state);
-        let result = self.finish(batch.clone(), guard, response, deadline).await;
+        let result = self.finish(batch.clone(), guard, response).await;
         self.retry_rejected(&batch, result, deadline).await
     }
 
@@ -540,7 +540,7 @@ impl Producer {
             Err(error) => Err(error),
         };
         drop(state);
-        self.finish(batch.clone(), guard, response, deadline).await
+        self.finish(batch.clone(), guard, response).await
     }
 
     pub async fn retire(&self) -> Result<()> {
@@ -587,7 +587,6 @@ impl Producer {
         batch: PendingBatch,
         mut guard: Attempt,
         response: Result<tidemq_transport::rpc::RpcResponse>,
-        _deadline: Instant,
     ) -> Result<ProduceReceipt> {
         self.client.inner.metrics.record_request();
         let response = match response {
