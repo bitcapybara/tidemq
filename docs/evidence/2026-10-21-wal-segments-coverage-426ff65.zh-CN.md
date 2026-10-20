@@ -65,4 +65,14 @@
 
 归档保留整轮 JUnit、日志、LLVM full／summary、LCOV、HTML、原 compare、512 个正式 raw profiles 与 merged profdata、源码／容器身份、阶段握手和连续资源采样。原 fixture 的凭据、私钥与 WAL 不在交付归档中。远端根为 `/root/tidemq-validation/wal-coverage-20261020.fwMOj3b7`；归档已下载至 test worktree 的 ignored `target/wal-coverage-20261020/` 并复核 SHA。
 
-后续修复须保留原失败，使用同一原 30 秒总预算与原 canonical／persisted plan，只恢复 API 明确允许的 retryable Unknown；永久拒绝必须立即失败。新的源码或测试修改需要独立冻结及完整 cohort，不能将本轮数值比较重新标成全门禁 green。
+## 调用者恢复契约的定向回归
+
+测试提交 `b8ece31` 只调整 fixture 与回归：先冻结该全新 fixture 的 generation1 canonical plan，所有恢复调用均使用原同一 30 秒绝对 deadline，并检查返回计划的完整相等性。只有来源链中明确的 retryable Unknown 或 typed scaling Unknown 才可恢复；永久拒绝、不可重试 Unknown、结果明确被拒绝以及未分类错误均直接返回。外层 timeout 仍使用原 deadline，没有新增产品重试策略、预算或配置。
+
+先保留“只调用一次”的 test-helper 对照实现，回归在 nested `Operation → Remote → Rejected Unknown` 首次结果处失败；此人为对照用于验证 helper，不能代替前述真实 426 失败。随后同 deadline 的恢复逻辑通过回归，另验证五类永久／未分类错误只能调用一次，以及已到期 deadline 不开始新调用。
+
+确定性 seam 复用 production `Coordinator`、`Service` 与封闭 Query／Reply codec，以及现有 proof-drop fixture。在保留实际 data leader 的新场景中，真实 Raft 已返回稳定目标配置的 proof；只丢弃一次该 proof 回复，使首次 execute 返回合法 Unknown。此时检查 metadata 仍保存原 pending plan、data 的实际目标成员已稳定且 applied 覆盖 membership；随后发现并恢复完整相同计划，继续使用同一个原 12 秒 `WAIT` deadline。原数据、成员、SDK 与 ACK 断言均保留。
+
+该 seam 的 **Raft 复制使用真实 QUIC，scaling 语义 RPC 使用测试拥有的 codec loopback**，不是 scaling 端到端 mTLS／QUIC 故障注入，也没有新生产测试开关。它验证失败／恢复契约，不定位原现场唯一源错误。
+
+Rust 1.99.1／macOS ARM64 下，fmt 与严格 package tests Clippy 均退出 0；nextest 0.9.148 的原 ci profile、retries 0 定向执行 7／7 通过，10.508 秒，其中原 runtime explicit 场景 3.499 秒、新 proof-loss 场景 1.395 秒。保留[工具、source tree、red／green 与日志 SHA](wal-segments-coverage/20261021-b8ece31-fixture-contract.json)。这是定向契约证据；后续聚合源码／测试仍需要独立冻结与完整 Linux cohort，不能将本轮数值比较重新标成全门禁 green。
