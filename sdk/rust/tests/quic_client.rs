@@ -67,6 +67,9 @@ struct PeerState {
     hot_reads: usize,
     hot_offset: Option<u64>,
     barriers: Vec<u64>,
+    barrier_requests: Vec<(Bytes, Bytes, public::ReceiveBarrier)>,
+    barrier_unknowns: u32,
+    commit_unknown_barrier: bool,
     acknowledgements: Vec<usize>,
     acknowledged_tokens: BTreeSet<Bytes>,
     seek_count: u64,
@@ -527,6 +530,11 @@ fn handle(
         FrameKind::ReceiveBarrier => {
             let barrier: public::ReceiveBarrier =
                 decode_payload(request.payload.clone(), &limits).unwrap();
+            state.barrier_requests.push((
+                request.operation_id.clone(),
+                request.request_id.clone(),
+                barrier.clone(),
+            ));
             let assignment = state.assignment.as_mut().unwrap();
             if state.unassigned
                 || barrier.cursor_generation != assignment.cursor_generation
@@ -536,8 +544,25 @@ fn handle(
                 return Some(fenced(request));
             }
             assert!(barrier.received_before <= assignment.issued_before);
-            state.barriers.push(barrier.received_before);
-            assignment.received_before = assignment.received_before.max(barrier.received_before);
+            let unknown = state.barrier_unknowns > 0;
+            if !unknown || state.commit_unknown_barrier {
+                state.barriers.push(barrier.received_before);
+                assignment.received_before =
+                    assignment.received_before.max(barrier.received_before);
+            }
+            if unknown {
+                state.barrier_unknowns -= 1;
+                return Some(response(
+                    request,
+                    FrameKind::Error,
+                    &tidemq_protocol::common::ErrorReply {
+                        code: tidemq_protocol::common::ErrorCode::Unavailable.into(),
+                        outcome: tidemq_protocol::common::Outcome::Unknown.into(),
+                        retryable: true,
+                        ..Default::default()
+                    },
+                ));
+            }
             response(request, FrameKind::AssignmentResult, assignment)
         }
         FrameKind::AckBatch => {
@@ -1680,6 +1705,73 @@ async fn gaps_do_not_cross_bulk_barrier_and_failed_keys_remain_blocked() {
             .iter()
             .all(|session| *session == peer.client.session_id())
     );
+}
+
+#[tokio::test]
+async fn receive_barrier_recovers_the_same_progress_after_an_unknown_result() {
+    for committed in [false, true] {
+        let peer = peer(false, true).await;
+        let consumer = Consumer::claim(
+            peer.client.clone(),
+            id(1),
+            0,
+            id(2),
+            ConsumerConfig::default(),
+        )
+        .await
+        .unwrap();
+        {
+            let mut state = peer.state.lock().unwrap();
+            state.barrier_unknowns = 1;
+            state.commit_unknown_barrier = committed;
+            assert_eq!(state.hot_reads, 0);
+        }
+        consumer
+            .fill()
+            .await
+            .expect("An unknown monotonic barrier must be resolved before reading hot data");
+        {
+            let state = peer.state.lock().unwrap();
+            assert_eq!(state.barrier_requests.len(), 2);
+            let first = &state.barrier_requests[0];
+            let retry = &state.barrier_requests[1];
+            assert_eq!(first.0, retry.0);
+            assert_ne!(first.1, retry.1);
+            assert_eq!(first.2, retry.2);
+            assert_eq!(first.2.received_before, 2);
+            assert_eq!(state.hot_reads, 0);
+            assert!(state.acknowledgements.is_empty());
+        }
+        consumer.fill().await.unwrap();
+        assert_eq!(peer.state.lock().unwrap().hot_reads, 1);
+    }
+}
+
+#[tokio::test]
+async fn receive_barrier_preserves_unknown_when_the_retry_budget_is_exhausted() {
+    let peer = peer(false, true).await;
+    let consumer = Consumer::claim(
+        peer.client.clone(),
+        id(1),
+        0,
+        id(2),
+        ConsumerConfig::default(),
+    )
+    .await
+    .unwrap();
+    peer.state.lock().unwrap().barrier_unknowns = u32::MAX;
+    let result = consumer.fill().await;
+    assert!(matches!(
+        result,
+        Err(Error::Remote {
+            outcome: tidemq_protocol::common::Outcome::Unknown,
+            ..
+        })
+    ));
+    let state = peer.state.lock().unwrap();
+    assert_eq!(state.barrier_requests.len(), 3);
+    assert_eq!(state.hot_reads, 0);
+    assert!(state.acknowledgements.is_empty());
 }
 
 #[tokio::test]
