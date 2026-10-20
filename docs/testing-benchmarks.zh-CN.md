@@ -2,6 +2,24 @@
 
 验收先检查持久正确性，再做性能。每类测试说明实际边界；参考模型、真实 QUIC/磁盘、RustFS 和独立 CLI 进程分别报告。本地通过项和外部待验条件见[实施状态](implementation-status.zh-CN.md)，不能由测试文件存在推断已经通过。
 
+## CI 门禁与覆盖率基线
+
+[Rust 工作流](../.github/workflows/rust.yml) 固定 Rust 1.99.1，仅 main push、PR 和手动 dispatch 触发，避免同时推送 feature/main 时重复构建。Linux/macOS 均先执行 fmt，再对 workspace 的 `--all-targets` 执行严格 Clippy，覆盖 lib、bin、单元测试、集成测试、example、benchmark 和构建脚本；同时启用 SDK 的 metrics、OpenTelemetry 与协议 codegen。Linux 另验 SDK 未启用可选 instrumentation 的代码路径。生产 lib/bin 另保留 panic、unwrap、expect、todo、unimplemented、unreachable 和越界索引审计。默认验证/覆盖率使用 mimalloc，另有 System/jemalloc 矩阵，heap-profiling 在 Linux/macOS 另验，不对这些互斥 feature 使用 `--all-features`。
+
+普通测试使用固定 cargo-nextest 0.9.148，配置见 [nextest.toml](../.config/nextest.toml)。`ci` profile 不重试失败项，逐测试进程执行，保留 JUnit；测试并发为 1，避免同时启动多个 Raft fixture 争用宿主资源，测试内部原有业务并发不变。稳定 Rust 的 doctest 另外用 `cargo test --doc` 运行；nextest 不运行 doctest，稳定 LLVM 覆盖率也不把这些 doctest 纳入分母。依赖 RustFS/官方 Collector 的 ignored 场景仍需按下文显式运行，不能由默认 CI 通过推断其结果。
+
+Linux 覆盖率 job 使用固定 cargo-llvm-cov 0.9.1 与匹配工具链的 LLVM tools，调用受保护的 [coverage-run.sh](../scripts/coverage-run.sh)，对相同 workspace 全部目标和 SDK 可选 feature 运行 instrumented nextest，生成 LLVM JSON、LCOV 和 HTML，连同原始 JUnit 保留 30 天。[policy.json](../coverage/policy.json) 固定范围和工具版本；仅保留 cargo-llvm-cov 默认源码排除，没有为提高数字额外排除测试、example 或生成代码。该指标表示 LLVM 能报告的 workspace 源码覆盖情况，不宣称覆盖未构建的互斥 allocator、ignored 外部环境或稳定 doctest。
+
+[coverage/baseline.json](../coverage/baseline.json) 维护上一份接受报告的 lines、functions、regions 原始 `covered/count`。比较使用 BigInt 交叉相乘，`next.covered × old.count >= old.covered × next.count` 三项都成立才通过；没有小数四舍五入、容差或“低于几个百分点才失败”。[边界测试](../scripts/coverage/gate.test.mjs) 验证微小下降、大整数、缺失/伪造数据、来源/策略/制品摘要变更及双门禁晋升前的原子检查。
+
+PR 从 base commit 读取比较器、测试范围、nextest 配置与既有基线，候选不能替换自己的覆盖率基线。首次引入时，基线明确标记 `uninitialized`，没有伪造零值：PR 和普通 feature 不能据此通过；只有 main 显式 `--allow-initialize` 的真实非零测量可以等待首次晋升。已有数值基线时，该参数不能跳过回退比较。
+
+性能与覆盖率统一在 [Performance 的晋升 job](../.github/workflows/performance.yml) 中更新，避免一个工作流提前推进 main 令另一个固定 cohort 失去源码身份。晋升要求当前 main 未前进、同提交最新 push Rust 工作流成功，下载该 run 的覆盖率制品，再独立重算 LLVM 原始计数、策略/旧基线/制品摘要、Rust run ID 以及 RF1/RF3 全部成对性能结果。任一不通过，两套基线都不写入；通过后只产生一次包含两套基线的提交。首次部署这一流水线时必须先完成这次 main cohort，不能将 `uninitialized` 当作已建立数值基线。
+
+构建缓存使用 Swatinem/rust-cache：相同 OS/工具链的普通 debug job 共享 key 前缀，再按默认、System/jemalloc 与 heap-profiling 分开 variant key，避免 GitHub 不可变缓存只保留最早写入的后端子集。LLVM instrumentation 使用独立 key 和 target，release 性能构建另用独立 key。保留依赖指纹和锁文件校验，不把覆盖率对象链接进普通二进制，也不把过期 workspace 二进制当作命中。所有编译缓存允许失败时保存，nextest/llvm-cov 下载固定预构建版本；性能测量使用全新 runner，既不编译，也不恢复构建缓存。
+
+当前 GitHub 私有仓库套餐不能设置 required checks；工作流会失败，但有合并权限的人仍可绕过。具备平台条件后，应将稳定名称 `Rust gate` 和 `Performance gate (RF1 and RF3)` 都设为必需检查。
+
 2026-10-20 合流后的实际命令、246 项普通测试、九项真实后端 ignored、默认 credit 下 512 条 Read 与空闲 sibling lane 的红绿回归、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。冻结 `1398353` 的 17 项短 RF1 负载、全部持久 ACK、三分配器/日志档位/2 与 4 lane/OTLP 对照见[本地性能报告](evidence/2026-10-20-local-performance.zh-CN.md)，小消息消费约 60 条/秒，不能作为生产性能目标已达成的结论。
 
 同日 `ssh dev` 的最新 [Docker 故障矩阵](evidence/2026-10-20-docker-077004e.zh-CN.md)冻结 `077004e`：RF1 三项、RF3 七项全部通过，十个独立 case 合计 736 条完整唯一交付和持久 ACK，六项故障均核对原 Pending 与最终连续前沿。新项目容器和网络已移除，原有 29 个容器与旧镜像身份前后一致。[旧版 Linux Docker 实测](evidence/2026-10-20-linux-docker.zh-CN.md)单独保留，不与新版计数相加。只读源码、RustFS fixture 的可写 `target` 和 Rustdoc 可执行临时目录要求见 [Docker 使用文档](../deploy/docker/README.zh-CN.md)。
@@ -14,16 +32,16 @@
 
 ```sh
 cargo fmt --all
-cargo clippy --workspace --tests --examples --no-deps --locked -j2 -- -D warnings
-cargo test --workspace --locked -j2 -- --test-threads=1
-cargo test --workspace --doc --locked
-cargo test -p tidemq-sdk --locked --features metrics
-cargo test -p tidemq-sdk --locked --features 'metrics opentelemetry'
+cargo clippy --workspace --all-targets --no-deps --locked -j2 --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen -- -D warnings
+CARGO_BUILD_JOBS=2 cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen --profile ci
+cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
+# Linux only, from committed clean sources; the first main CI cohort initializes the baseline.
+bash scripts/coverage-run.sh . /absolute/path/to/new/coverage-result
 ```
 
 默认 mimalloc 调整后的 249 项串行测试、显式 System/jemalloc 构建、原始并行失败与 mimalloc-pprof 候选验证见[本次验证记录](evidence/2026-10-20-mimalloc-default.zh-CN.md)。
 
-运行时集成测试共用进程级 tracing subscriber，并启动多个受限 Raft 子进程，普通全量门禁与 CI 使用 `--test-threads=1` 隔离测试，`-j2` 只限制构建并行度。跨进程 exporter 可乱序到达，链路测试等待完整 SDK → Gateway → Broker 父子关系后再断言。测试隔离不构成业务并发吞吐或长稳证明。
+运行时集成测试共用进程级 tracing subscriber，并启动多个受限 Raft 子进程，历史 cargo test 使用 `--test-threads=1`；当前 nextest `ci` profile 保留逐项隔离。`CARGO_BUILD_JOBS=2` 限制构建并行度；nextest 的 `-j` 是测试线程数，不能混为构建限制。跨进程 exporter 可乱序到达，链路测试等待完整 SDK → Gateway → Broker 父子关系后再断言。测试隔离不构成业务并发吞吐或长稳证明。
 
 不运行 cargo check。生产代码的额外 panic 审计与允许 unwrap 的测试分开：
 

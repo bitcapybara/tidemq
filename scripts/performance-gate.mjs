@@ -10,6 +10,7 @@ import path from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {fileURLToPath} from 'node:url';
 import {comparePairs, summarizeReport, validatePolicy, workloadFor, HARNESS_FILES} from './performance/compare.mjs';
+import {configurationEvidence, normalizeConfiguration} from './performance/configuration.mjs';
 
 const DEFAULT_TOOLS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOG_LIMIT = 32 * 1024 * 1024;
@@ -166,7 +167,7 @@ async function build(source, directory, target, policy, loadOverlay) {
     cargo_lock_sha256: sha256(await fs.readFile(path.join(source, 'Cargo.lock'))),
     service_binary_sha256: sha256(await fs.readFile(path.join(directory, name))),
     allocator_feature: policy.allocator_feature,
-    rustc: await command('rustc', ['--version']), host: `${os.platform()} ${os.arch()} ${os.release()}`,
+    rustc: await command('rustc', ['--version'], {cwd: source}), host: `${os.platform()} ${os.arch()} ${os.release()}`,
     profile: 'release', tracked_source_clean: true,
   };
   await save(path.join(directory, 'identity.json'), identity);
@@ -255,26 +256,44 @@ async function stop(services) {
   }));
 }
 
-async function trial(tools, serviceBuild, loadBinary, output, topology, policy, scenarios = ['throughput', 'latency']) {
+async function configurationGenerator(source) {
+  const sourceCommit = await sourceIdentity(source);
+  const script = path.join(source, 'deploy/local/generate.sh');
+  return {script, source_commit: sourceCommit, script_sha256: sha256(await regularFile(script))};
+}
+
+async function trial(generator, serviceBuild, loadBinary, output, topology, policy,
+  scenarios = ['throughput', 'latency'], expectedConfigurations = new Map()) {
   assert.ok(policy.topologies.includes(topology), 'Unknown performance topology');
   for (const scenario of scenarios) workloadFor(policy, scenario);
   await fs.mkdir(output, {mode: 0o700});
-  const cluster = path.join(output, 'cluster');
-  await command('bash', [path.join(tools, 'deploy/local/generate.sh'), topology, cluster]);
+  let cluster = path.join(output, 'cluster');
+  assert.equal(sha256(await regularFile(generator.script)), generator.script_sha256, 'Fixed configuration generator changed');
+  await command('bash', [generator.script, topology, cluster]);
+  cluster = await fs.realpath(cluster);
   const nodes = topology === 'rf1' ? [1] : [1, 2, 3];
+  const configFiles = (await fs.readdir(cluster)).filter(name => /^node-\d+\.toml$/.test(name)).sort();
+  assert.deepEqual(configFiles, nodes.map(node => `node-${node}.toml`), 'Generated node count changed');
   const binary = path.join(serviceBuild, 'tidemq');
   const identity = await json(path.join(serviceBuild, 'identity.json'));
   assert.equal(sha256(await fs.readFile(binary)), identity.service_binary_sha256, 'Fixed service binary changed');
   const services = [];
   const summaries = {};
+  const configurations = [];
+  let clusterIdentity;
   let failure;
   try {
     for (const node of nodes) {
       const config = path.join(cluster, `node-${node}.toml`);
-      const text = await fs.readFile(config, 'utf8');
-      assert.match(text, /role = 'combined'/, 'Each CI node must host all roles');
-      assert.match(text, new RegExp(`replication_factor = ${nodes.length}\\n`), 'Replication factor mismatch');
       await command(binary, ['validate-config', '--config', config], {log: path.join(output, `node-${node}-validated.json`)});
+      const diagnosed = JSON.parse(await command(binary, ['diagnose', '--config', config], {timeoutMs: 10000})).configuration;
+      clusterIdentity ??= diagnosed?.cluster_id;
+      assert.equal(diagnosed?.cluster_id, clusterIdentity, 'Nodes do not share the same cluster identity');
+      const normalized = normalizeConfiguration(diagnosed, cluster, node, nodes);
+      const key = `${topology}:${node}`;
+      if (!expectedConfigurations.has(key)) expectedConfigurations.set(key, normalized);
+      assert.deepEqual(normalized, expectedConfigurations.get(key), 'Effective baseline/candidate configuration changed');
+      configurations.push(configurationEvidence(normalized));
       services.push(launch(binary, ['serve', '--config', config], path.join(output, `node-${node}.log`), policy.server_worker_threads));
     }
     await readiness(services, nodes);
@@ -299,12 +318,14 @@ async function trial(tools, serviceBuild, loadBinary, output, topology, policy, 
   const exits = await stop(services);
   await save(path.join(output, 'execution.json'), {topology, node_count: nodes.length,
     replication_factor: nodes.length, service_worker_threads: policy.server_worker_threads, scenarios, exits,
+    configuration_generator: {source_commit: generator.source_commit, script_sha256: generator.script_sha256},
+    effective_configurations: configurations,
     failure: failure?.message ?? null});
   if (failure) throw failure;
   assert.ok(exits.every(exit => exit.code === 0 && !exit.forced && !exit.output_error), 'An owned node did not drain cleanly');
   // Successful WAL directories are disposable; failed trials retain them for diagnosis.
   for (const node of nodes) await fs.rm(path.join(cluster, `data-${node}`), {recursive: true, force: true});
-  return summaries;
+  return {...summaries, effective_configurations: configurations};
 }
 
 async function prepareGate(settings) {
@@ -400,7 +421,7 @@ export async function verifyPreparedBuilds(settings) {
 }
 
 async function measureGate(settings, combined = false) {
-  const {tools, policy, prepared, manifest} = await verifyPreparedBuilds(settings);
+  const {tools, baseline, policy, prepared, manifest} = await verifyPreparedBuilds(settings);
   const output = path.resolve(settings['--output']);
   if (!combined) await fs.mkdir(output, {mode: 0o700});
   const builds = path.join(prepared, 'builds');
@@ -412,12 +433,16 @@ async function measureGate(settings, combined = false) {
     await fs.copyFile(path.join(prepared, 'manifest.json'), path.join(output, 'build-manifest.json'));
   }
   const reused = manifest.same_source_reused_builds;
+  const generators = {baseline: await configurationGenerator(baseline), candidate: await configurationGenerator(tools)};
+  const expectedConfigurations = new Map();
   const summary = {
     schema_version: 4, status: 'running', baseline_manifest_sha256: manifest.baseline_manifest_sha256,
     prepared_manifest_sha256: settings['--manifest-sha256'], trusted_tools_commit: manifest.trusted_tools_commit,
     same_source_reused_builds: reused,
     policy, baseline: manifest.builds.baseline, candidate: manifest.builds.candidate,
     workload_binaries: {baseline: manifest.builds['baseline-load'], candidate: manifest.builds['candidate-load']},
+    configuration_generators: Object.fromEntries(Object.entries(generators).map(([side, generator]) => [side,
+      {source_commit: generator.source_commit, script_sha256: generator.script_sha256}])),
     build_environment: manifest.build_environment,
     environment: {...environment(), same_host_paired_trials: true, physical_availability_zone_validation: false,
       compilation_performed_in_measurement_phase: false, fixed_sync_before_trials: true},
@@ -442,8 +467,8 @@ async function measureGate(settings, combined = false) {
         const values = {};
         const order = pair % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
         for (const side of order) {
-          const workloads = await trial(tools, path.join(builds, side), path.join(builds, `${side}-load/perf_load`),
-            path.join(output, topology, `${pair}-${side}`), topology, policy);
+          const workloads = await trial(generators[side], path.join(builds, side), path.join(builds, `${side}-load/perf_load`),
+            path.join(output, topology, `${pair}-${side}`), topology, policy, ['throughput', 'latency'], expectedConfigurations);
           values[side] = {durable_messages_per_second: workloads.throughput.durable_messages_per_second,
             produce_mean_ns: workloads.latency.produce_mean_ns,
             produce_p99_upper_ns: workloads.latency.produce_p99_upper_ns,
@@ -472,7 +497,7 @@ async function runGate(settings) {
   await measureGate({...settings, '--prepared': settings['--output'], '--manifest-sha256': digest}, true);
 }
 
-async function promote(settings) {
+export async function validatePromotion(settings) {
   const tools = path.resolve(settings['--tools'] ?? DEFAULT_TOOLS);
   const bytes = await fs.readFile(policyPath(tools));
   const policy = validatePolicy(JSON.parse(bytes));
@@ -489,6 +514,11 @@ async function promote(settings) {
     assert.equal(comparePairs(report.topologies[topology].pairs, policy, {sameBinary}).status, 'passed', 'Recomputed gate did not pass');
   }
   policy.service_source_commit = report.candidate.source_commit;
+  return {tools, policy, report};
+}
+
+async function promote(settings) {
+  const {tools, policy, report} = await validatePromotion(settings);
   await save(policyPath(tools), policy);
   await save(path.join(tools, 'performance/baseline-report.json'), report);
   console.log(`Advanced the measured baseline to ${policy.service_source_commit}`);
@@ -509,7 +539,8 @@ async function main() {
   else if (action === 'trial') {
     const tools = path.resolve(settings['--tools'] ?? DEFAULT_TOOLS);
     const build = path.resolve(settings['--build']);
-    console.log(JSON.stringify(await trial(tools, build, path.resolve(settings['--load'] ?? path.join(build, 'perf_load')),
+    const generator = await configurationGenerator(path.resolve(settings['--generator-source'] ?? tools));
+    console.log(JSON.stringify(await trial(generator, build, path.resolve(settings['--load'] ?? path.join(build, 'perf_load')),
       path.resolve(settings['--output']), settings['--topology'] ?? 'rf1', validatePolicy(await json(policyPath(tools))),
       settings['--scenario'] ? [settings['--scenario']] : ['throughput', 'latency']), null, 2));
   } else throw new Error('Usage: performance-gate.mjs source|prepare|measure|run|trial|promote --tools directory [named paths]');

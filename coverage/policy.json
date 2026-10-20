@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "platform": "linux",
+  "arch": "x64",
+  "rust_version": "1.99.1",
+  "nextest_version": "0.9.148",
+  "llvm_cov_version": "0.9.1",
+  "llvm_export_version": "3.1.0",
+  "include_build_script": true,
+  "features": [
+    "tidemq-sdk/metrics",
+    "tidemq-sdk/opentelemetry",
+    "tidemq-protocol/codegen"
+  ],
+  "metrics": ["lines", "functions", "regions"],
+  "scope": "workspace all-targets and workspace build scripts, default mimalloc, cargo-llvm-cov default source exclusions; stable doctests run separately"
+}
