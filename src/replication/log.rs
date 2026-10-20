@@ -426,7 +426,7 @@ impl<A: Application> DiskLog<A> {
         {
             return Ok(());
         }
-        validate_record(&state, &record)?;
+        validate_record(state, &record)?;
         self.maybe_checkpoint(state, 0).await?;
         let encoded = wal::encode_value(&record, self.0.options.journal.max_record_bytes)?;
         let durability = self.0.journal.append(encoded).await?;
