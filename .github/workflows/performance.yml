@@ -25,6 +25,10 @@ jobs:
           path: trusted
           fetch-depth: 0
           persist-credentials: false
+      - name: Free unused Android SDK space for release builds and durable workloads
+        run: |
+          sudo rm -rf -- /usr/local/lib/android
+          df -h .
       - name: Read protected baseline source
         id: reference
         run: node trusted/scripts/performance-gate.mjs source --tools trusted >> "$GITHUB_OUTPUT"

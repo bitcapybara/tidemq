@@ -11,6 +11,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - name: Free unused Android SDK space for WAL and replica-copy headroom
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf -- /usr/local/lib/android
+          df -h .
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
@@ -34,6 +39,10 @@ jobs:
         backend: [allocator-system, allocator-mimalloc, allocator-jemalloc]
     steps:
       - uses: actions/checkout@v4
+      - name: Free unused Android SDK space for WAL and replica-copy headroom
+        run: |
+          sudo rm -rf -- /usr/local/lib/android
+          df -h .
       - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
