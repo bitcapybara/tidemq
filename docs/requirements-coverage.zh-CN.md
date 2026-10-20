@@ -1,6 +1,6 @@
 # 要求覆盖与验收状态
 
-来源为用户于 2026-10-19 批准的开发计划和历史架构文档。下表逐条保留原 76 项要求，加后续 NC01—NC03，共 79 项。S01—S12、M01、P01 对应[测试证据索引](testing-benchmarks.zh-CN.md)中的实际源码、测试与复现命令。“本地已验”限于该行注明范围；包含三区、真实入口、规模、性能或长稳的完整要求仍保留待验边界。编译、纯模型或部分链路不能作为完整验收。
+来源为用户于 2026-10-19 批准的开发计划和历史架构文档。下表逐条保留原 76 项要求，加后续 NC01—NC08，共 84 项。S01—S12、M01、P01 对应[测试证据索引](testing-benchmarks.zh-CN.md)中的实际源码、测试与复现命令。“本地已验”限于该行注明范围；包含三区、真实入口、规模、性能或长稳的完整要求仍保留待验边界。编译、纯模型或部分链路不能作为完整验收。
 
 ## 架构要求
 
@@ -105,5 +105,10 @@
 | NC01 | 零复制等技术优化编解码，评估 rkyv/FlatBuffers/FlexBuffers | T01,T06,T07,T13 | 字节一致、完整所有权/容量计费、真实 QUIC 与分配/耗时对照 | 大块唯一所有 payload 分段发送与末引用许可已验；格式[研究](research/zero-copy-formats.zh-CN.md)已完成，未迁移现有格式；codec 探针不替代服务性能 |
 | NC02 | 使用 Tokio CancellationToken 约束异步调用，消除反复传递 client.deadline() | T06,T10 | 默认总预算、最早父期限、取消传播/隔离、关闭清理、发送后 Unknown 与身份保留 | SDK 全 feature 真实网络与文档测试通过，调用方/示例/部署工具已迁移；新 Tokio task 显式传 scope |
 | NC03 | CI RF1/RF3 性能测试、仓库基线与 PR 回退门禁 | T12,T13,T14 | 真持久语义、配对比较、受保护策略、回退/噪声失败、main 才晋升 | P02；隔离构建/测量的 `d7c913e` 完整 32 试次及固定统计策略通过，`e16c79d` 已入库真实数值基线；旧 inconclusive 保留。四项 p99 仍 imprecise，不能保证小幅尾退化检出；GitHub 套餐限制无法设 required status |
+| NC04 | 最新 stable、全 Rust target Clippy、nextest、llvm-cov 三格式报告与不得下降的覆盖率基线、复用缓存 | T00,T12,T13,T14 | 固定工具版本、精确计数比较、真实 Linux main 报告、测试与性能均成功才联合晋升 | Rust 1.99.1；本地 `267226d` 为 309 passed／12 skipped，另有 4 项文档测试；严格 Clippy 和生产审计通过。新 Linux CI 与数值覆盖率基线待本轮实际验收 |
+| NC05 | 清理无效参数，错误日志放 inspect_err，减少重复字符串分配 | T00,T01,T06,T07,T10 | 调用方同步、许可活到 owned worker／abort 完成、授权与取消匹配不变 | 复用 `Arc<str>` 而不新增 FastStr 依赖；授权共享及阻塞 abort 许可回归通过，见[代码质量证据](evidence/2026-10-20-code-quality.zh-CN.md)；实际 RAII guard 保留 |
+| NC06 | 复用指标／日志生态，优先 OpenTelemetry，SDK 由宿主初始化 | T00,T06,T10,T14 | 固定 series、宿主设施共存、终态释放计数准确、导出预算由宿主管理 | SDK 可选 OpenTelemetry feature 新增十个固定无标签 instrument；39 项 SDK 测试及 Collector 配置校验通过；未新增本轮远端 OTLP 导出验证 |
+| NC07 | 按角色分离 TOML；开发阶段不兼容旧版本 | T10,T12,T14 | 当前生成器／本地／Docker 配置同构，拒绝旧字段、混合或无效角色段 | 仅接受公共段、runtime、authorization 和适用的 gateway／storage 段；旧字段及生成器第三参数均拒绝。配置和真实 RF1／分角色 RF3 CLI 回归通过；历史性能基线源码仅在对照工具中生成自身配置 |
+| NC08 | 分析 segment WAL 是否必要及容量管理边界 | T02,T09,T13,T14 | 核对当前上限／重写成本、磁盘双份与读者占用、恢复与清理屏障 | [分析完成](research/wal-segments.zh-CN.md)，建议生产实现 segment 并同步物理采样／迁移模型；本轮仅分析，无新存储格式实现或故障测试。开发阶段采用新目录并明确拒绝旧格式，不做迁移兼容层 |
 
-每个任务交付代码、正确性/故障证据、使用/设计文档、指标/事件/span、诊断/看板/告警和限制说明。具体进展见[实施状态](implementation-status.zh-CN.md)；本表按完整需求验收后更新，包含 54 项架构、8 项 QUIC、8 项观测、6 项内存与上述 3 项追加要求。
+每个任务交付代码、正确性/故障证据、使用/设计文档、指标/事件/span、诊断/看板/告警和限制说明。具体进展见[实施状态](implementation-status.zh-CN.md)；本表按完整需求验收后更新，包含 54 项架构、8 项 QUIC、8 项观测、6 项内存与上述 8 项追加要求。

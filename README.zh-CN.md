@@ -66,13 +66,16 @@ target/debug/tidemq serve --config /tmp/tidemq-demo/node-1.toml
 
 Docker 部署文件均在 [deploy/docker](deploy/docker/README.zh-CN.md) 中版本管理，包括[构建 Dockerfile](deploy/docker/Dockerfile.builder)、[运行 Dockerfile](deploy/docker/Dockerfile)、完整 [RF1 Compose](deploy/docker/compose.rf1.yaml)、[RF3 Compose](deploy/docker/compose.rf3.yaml) 和[部署准备脚本](deploy/docker/prepare.sh)。先生成私有状态目录，再使用其中的 Compose 配置；构建、启动、验证和清理命令见部署文档。
 
-本地验证命令：
+安装 cargo-nextest 0.9.148 后，按 CI 的 target 范围执行本地验证：
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --tests --no-deps
-cargo test --workspace --locked -- --test-threads=1
+cargo clippy --workspace --all-targets --no-deps --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen -- -D warnings
+cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen --profile ci
+cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 ```
+
+固定的覆盖率工具、JSON／LCOV／HTML 报告及覆盖率、性能基线门禁见[测试指南](docs/testing-benchmarks.zh-CN.md)。
 
 SDK 默认使用配置超时，通过 `RequestContext` 与 `CancellationToken` 在多次调用间共享总期限和取消；大块唯一所有权 payload 使用有界分段发送。接口见[SDK 手册](docs/guide/rust-sdk.zh-CN.md)，格式候选见[rkyv / FlatBuffers / FlexBuffers 调研](docs/research/zero-copy-formats.zh-CN.md)。
 

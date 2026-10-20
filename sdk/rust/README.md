@@ -71,8 +71,9 @@ This feature also records ten fixed, unlabelled instruments through the host's g
 Run from the repository root:
 
 ```bash
-cargo test -p tidemq-sdk --all-features
-cargo clippy -p tidemq-sdk --all-features --all-targets --no-deps
+cargo clippy -p tidemq-sdk --all-features --all-targets --no-deps --locked -- -D warnings
+cargo nextest run -p tidemq-sdk --all-features --all-targets --locked --profile ci
+cargo test -p tidemq-sdk --all-features --doc --locked
 cargo run -p tidemq-sdk --example host_observability --features metrics
 ```
 

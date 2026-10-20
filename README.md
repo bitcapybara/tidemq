@@ -66,13 +66,16 @@ The generator requires a new directory and OpenSSL. It creates short-lived devel
 
 Docker deployment assets are versioned under [deploy/docker](deploy/docker/README.zh-CN.md): the [builder Dockerfile](deploy/docker/Dockerfile.builder), [runtime Dockerfile](deploy/docker/Dockerfile), complete [RF1 Compose](deploy/docker/compose.rf1.yaml) and [RF3 Compose](deploy/docker/compose.rf3.yaml) configurations, and [deployment preparation script](deploy/docker/prepare.sh). Generate a private state directory before starting Compose; see the deployment guide for build, startup, validation, and cleanup commands.
 
-For local validation:
+Install cargo-nextest 0.9.148, then run the same target scope as CI:
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --tests --no-deps
-cargo test --workspace --locked -- --test-threads=1
+cargo clippy --workspace --all-targets --no-deps --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen -- -D warnings
+cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen --profile ci
+cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 ```
+
+See the [testing guide](docs/testing-benchmarks.zh-CN.md) for the pinned coverage tools, JSON/LCOV/HTML reports, and coverage and performance baseline gates.
 
 The SDK uses configured timeouts by default; `RequestContext` and `CancellationToken` share cancellation and a total deadline across calls. Large uniquely owned frame payloads can use bounded vectored sending. See the [SDK guide](docs/guide/rust-sdk.zh-CN.md) and [zero-copy format evaluation](docs/research/zero-copy-formats.zh-CN.md).
 
