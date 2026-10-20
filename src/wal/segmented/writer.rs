@@ -154,7 +154,10 @@ impl Writer {
             };
             if let Err(error) = result
                 && (self.mutated
-                    || !matches!(error, Error::Limit { .. } | Error::Configuration { .. }))
+                    || !matches!(
+                        error,
+                        Error::Limit { .. } | Error::Configuration { .. } | Error::Encode { .. }
+                    ))
             {
                 let error = anyhow::Error::new(error);
                 tracing::error!(
