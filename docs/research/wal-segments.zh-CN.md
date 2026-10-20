@@ -31,7 +31,7 @@
 
 | 路径与关键位置 | 实际行为 |
 | --- | --- |
-| [`wal/journal.rs`](../../src/wal/journal.rs)：`JournalOptions`、`Writer::append_group`、`Writer::rewrite` | 每组单 writer、单文件、有限队列、group commit；rewrite 写新文件后原子替换 |
+| [`wal/journal.rs`（历史版本）](https://github.com/bitcapybara/tidemq/blob/9e80cb76790dec7a9348682bc2108fab4e44f3ce/src/wal/journal.rs)：`JournalOptions`、`Writer::append_group`、`Writer::rewrite` | 每组单 writer、单文件、有限队列、group commit；rewrite 写新文件后原子替换；当前源码已删除该文件 |
 | [`wal/codec.rs`](../../src/wal/codec.rs)：`scan`、`frame`、`write_atomic` | 88 字节头、头部和正文 BLAKE3、连续物理序号、严格恢复、文件和父目录同步 |
 | [`replication/store.rs`](../../src/replication/store.rs)：`DiskStore::open`、`StorageOptions`、`LogState` | `raft.wal`、`snapshot.bin`；启动保留全部原始 record 再解码；retained entries 在有界 BTreeMap 中 |
 | [`replication/log.rs`](../../src/replication/log.rs)：`purge`、`checkpoint`、`truncate` | purge 克隆 log、删除前缀、逐条重编码剩余 entries，再等待整文件替换；truncate 先追加持久标记 |
