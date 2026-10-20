@@ -1417,7 +1417,12 @@ fn broker_error(error: broker::Error) -> Error {
         broker::Error::Capacity | broker::Error::Memory { .. } => {
             Error::reject(ErrorCode::QuotaExceeded, Outcome::Rejected, true)
         }
-        broker::Error::Unknown { .. } | broker::Error::Commit { .. } => Error::unknown(),
+        error @ broker::Error::Unknown { .. } => {
+            Error::operation("observe broker post-handoff result", error)
+        }
+        error @ broker::Error::Commit { .. } => {
+            Error::operation("commit authoritative broker operation", error)
+        }
         broker::Error::Lease { .. } | broker::Error::GrantMismatch => {
             Error::reject(ErrorCode::Fenced, Outcome::Rejected, true)
         }
@@ -1472,6 +1477,44 @@ fn subscription_error(reason: subscription::Rejection) -> Error {
         _ => ErrorCode::InvalidRequest,
     };
     Error::reject(code, Outcome::Rejected, code == ErrorCode::QuotaExceeded)
+}
+
+#[cfg(test)]
+mod broker_error_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_broker_error_frames_keep_the_original_wire_fields() {
+        let request = Frame {
+            protocol_version: 1,
+            request_id: Bytes::from_static(b"1111111111111111"),
+            operation_id: Bytes::from_static(b"2222222222222222"),
+            traffic_class: i32::from(TrafficClass::Produce),
+            kind: i32::from(FrameKind::ProduceBatch),
+            remaining_timeout_ms: 10_000,
+            ..Frame::default()
+        };
+        let operation_id = wire::id(&request.operation_id).unwrap();
+        let request_id = wire::id(&request.request_id).unwrap();
+        let limits = ProtocolLimits::default();
+        let previous = wire::error_response(&request, &Error::unknown(), &limits).unwrap();
+        for error in [
+            broker::Error::Unknown {
+                operation_id,
+                request_id,
+            },
+            broker::Error::Commit {
+                operation_id,
+                request_id,
+                source: Box::new(openraft::error::RaftError::Fatal(
+                    openraft::error::Fatal::Stopped,
+                )),
+            },
+        ] {
+            let current = wire::error_response(&request, &broker_error(error), &limits).unwrap();
+            assert_eq!(current, previous);
+        }
+    }
 }
 
 #[cfg(test)]

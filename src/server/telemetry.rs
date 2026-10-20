@@ -46,7 +46,7 @@ impl DispatchMetrics {
         );
     }
 
-    pub(super) fn may_log(&self, now: Instant) -> bool {
+    pub(crate) fn may_log(&self, now: Instant) -> bool {
         let Ok(mut last) = self.last_error_log.lock() else {
             self.suppressed_logs.inc();
             return false;

@@ -49,6 +49,7 @@ pub(crate) struct Service {
     pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
     pub metrics: Metrics,
+    pub dispatch_metrics: Arc<crate::server::DispatchMetrics>,
     pub runtime_metrics: super::telemetry::RuntimeMetrics,
     pub ownership_metrics: crate::ownership::OwnershipMetrics,
     pub(super) failover_metrics: super::failover::Metrics,
@@ -88,6 +89,7 @@ impl Service {
         budget: MemoryBudget,
         producer: ProducerMetrics,
         mut metrics: Metrics,
+        dispatch_metrics: Arc<crate::server::DispatchMetrics>,
         runtime_metrics: super::telemetry::RuntimeMetrics,
         ownership_metrics: crate::ownership::OwnershipMetrics,
         quota: crate::quota::Quota,
@@ -145,6 +147,7 @@ impl Service {
             delivery_key,
             budget,
             metrics,
+            dispatch_metrics,
             runtime_metrics,
             ownership_metrics,
             failover_metrics,
@@ -933,7 +936,10 @@ impl WireService for Service {
         }
         match result {
             Ok(frame) => Ok(Some(frame)),
-            Err(error) => wire::error_response(frame, &error, &self.config.protocol).map(Some),
+            Err(error) => {
+                super::telemetry::log_unknown_error(frame, &error, &self.dispatch_metrics);
+                wire::error_response(frame, &error, &self.config.protocol).map(Some)
+            }
         }
         }, span, deadline.into_std()).await
     }

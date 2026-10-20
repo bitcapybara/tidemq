@@ -9,6 +9,73 @@ use prometheus_client::{
     },
 };
 use serde::Serialize;
+use tidemq_protocol::common::{Frame, FrameKind, Outcome};
+
+use crate::server::DispatchMetrics;
+
+pub(super) fn log_unknown_error(frame: &Frame, error: &super::Error, health: &DispatchMetrics) {
+    let Some(diagnostic) = unknown_diagnostic(error, health, std::time::Instant::now()) else {
+        return;
+    };
+    let command_kind = FrameKind::try_from(frame.kind)
+        .map(|kind| kind.as_str_name())
+        .unwrap_or("UNSPECIFIED");
+    let request_id = tidemq_protocol::Id::from_slice(&frame.request_id)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|_| "invalid".into());
+    let operation_id = tidemq_protocol::Id::from_slice(&frame.operation_id)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|_| "invalid".into());
+    tracing::warn!(
+        event_code = "runtime_request_unknown",
+        stage = "runtime_error",
+        command_kind,
+        request_id,
+        operation_id,
+        error_kind = diagnostic.error_kind,
+        operation = diagnostic.operation,
+        code = diagnostic.code,
+        outcome = "Unknown",
+        "Runtime returned an unknown operation result"
+    );
+}
+
+struct UnknownDiagnostic {
+    error_kind: &'static str,
+    operation: &'static str,
+    code: i32,
+}
+
+fn unknown_diagnostic(
+    error: &super::Error,
+    health: &DispatchMetrics,
+    now: std::time::Instant,
+) -> Option<UnknownDiagnostic> {
+    let failure = error.failure();
+    if failure.outcome != i32::from(Outcome::Unknown) || !health.may_log(now) {
+        return None;
+    }
+    let (error_kind, operation) = match error {
+        super::Error::Operation { operation, source } => {
+            let error_kind = match source
+                .get_ref()
+                .and_then(|source| source.downcast_ref::<crate::broker::Error>())
+            {
+                Some(crate::broker::Error::Unknown { .. }) => "broker_post_handoff_unknown",
+                Some(crate::broker::Error::Commit { .. }) => "broker_commit",
+                _ => "runtime_operation_unknown",
+            };
+            (error_kind, *operation)
+        }
+        super::Error::Rejected { .. } => ("runtime_rejected_unknown", "none"),
+        super::Error::Invalid { .. } => return None,
+    };
+    Some(UnknownDiagnostic {
+        error_kind,
+        operation,
+        code: failure.code,
+    })
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RuntimeMetrics(pub Arc<Mutex<Snapshot>>, Counter);
@@ -219,6 +286,78 @@ impl Drop for OwnershipTimer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_diagnostics_classify_typed_causes_without_error_text() {
+        let identity = tidemq_protocol::Id::from_slice(&[1; 16]).unwrap();
+        for (error, expected) in [
+            (super::super::Error::unknown(), "runtime_rejected_unknown"),
+            (
+                super::super::Error::operation(
+                    "inspect runtime state",
+                    std::io::Error::other("test"),
+                ),
+                "runtime_operation_unknown",
+            ),
+            (
+                super::super::Error::operation(
+                    "observe broker post-handoff result",
+                    crate::broker::Error::Unknown {
+                        operation_id: identity,
+                        request_id: identity,
+                    },
+                ),
+                "broker_post_handoff_unknown",
+            ),
+            (
+                super::super::Error::operation(
+                    "commit authoritative broker operation",
+                    crate::broker::Error::Commit {
+                        operation_id: identity,
+                        request_id: identity,
+                        source: Box::new(openraft::error::RaftError::Fatal(
+                            openraft::error::Fatal::Stopped,
+                        )),
+                    },
+                ),
+                "broker_commit",
+            ),
+        ] {
+            let diagnostic = unknown_diagnostic(
+                &error,
+                &DispatchMetrics::default(),
+                std::time::Instant::now(),
+            )
+            .unwrap();
+            assert_eq!(diagnostic.error_kind, expected);
+            assert_eq!(
+                diagnostic.code,
+                i32::from(tidemq_protocol::common::ErrorCode::Unavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn only_unknown_errors_use_the_shared_dispatch_log_budget() {
+        let health = Arc::new(DispatchMetrics::default());
+        let now = std::time::Instant::now();
+        for error in [
+            super::super::Error::invalid("test invalid request"),
+            super::super::Error::unavailable(),
+        ] {
+            assert!(unknown_diagnostic(&error, &health, now).is_none());
+        }
+        let error = super::super::Error::unknown();
+        let diagnostic = unknown_diagnostic(&error, &health, now).unwrap();
+        assert_eq!(diagnostic.operation, "none");
+        let dispatcher = health.clone();
+        assert!(!dispatcher.may_log(now));
+        assert!(unknown_diagnostic(&error, &dispatcher, now).is_none());
+        assert!(
+            unknown_diagnostic(&error, &dispatcher, now + std::time::Duration::from_secs(1))
+                .is_some()
+        );
+    }
 
     #[test]
     fn cancelled_local_operations_record_unknown_and_total_once() {
