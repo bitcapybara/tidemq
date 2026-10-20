@@ -76,10 +76,11 @@ docker run --rm --user 10001:10001 --cpus 4 --memory 8g --memory-swap 8g \
    cargo test --workspace --release --locked -j2 -- --test-threads=1
    cargo test -p tidemq --example deploy_validation --release --locked -j2
    cargo test -p tidemq --test s3_rustfs --test lifecycle_compaction --test lifecycle_persistence --release --locked -j2 -- --ignored --test-threads=1
-   cargo test -p tidemq --test runtime_queue actual_runtime_sdk --release --locked -j2 -- --ignored --test-threads=1'
+   cargo test -p tidemq --test runtime_queue actual_runtime_sdk --release --locked -j2 -- --ignored --test-threads=1
+   cargo test -p tidemq --lib runtime::data::reclaim_tests --release --locked -j2 -- --include-ignored --test-threads=1'
 ```
 
-先设置下面说明的 `RUSTFS_BINARY`。新测试输出没有 Cargo 缓存，首次执行需要下载依赖；已有专用缓存可以单独挂载并设置 `CARGO_HOME`，但不能把宿主的其他项目缓存或凭据整体带入容器。上面的普通测试不自动运行 ignored，后两条只运行真实 RustFS 的对应测试；需要官方 Collector 的 ignored 另按[测试方法](../../docs/testing-benchmarks.zh-CN.md)执行。每条命令须保存真实退出码和日志；fixture 准备失败或临时目录执行失败不能算业务验证通过。
+先设置下面说明的 `RUSTFS_BINARY`。新测试输出没有 Cargo 缓存，首次执行需要下载依赖；已有专用缓存可以单独挂载并设置 `CARGO_HOME`，但不能把宿主的其他项目缓存或凭据整体带入容器。上面的普通测试不自动运行 ignored，末三条显式覆盖既有八项和新增两项真实 RustFS 测试；最后一条还重复验证逻辑过期与 Unknown 两个普通边界，计数不能与 workspace 相加。需要官方 Collector 的 ignored 另按[测试方法](../../docs/testing-benchmarks.zh-CN.md)执行。每条命令须保存真实退出码和日志；fixture 准备失败或临时目录执行失败不能算业务验证通过。
 
 RustFS 使用官方 1.0.3 的 Linux x86_64 musl 可执行文件，只读 bind 到同一个 runtime 镜像，不依赖未经核实的 RustFS 镜像。此次操作者已验证的发布物为：
 
@@ -227,6 +228,12 @@ dc --profile tools down --timeout 6 --volumes --remove-orphans
 ```
 
 这些命令只作用于生成的随机项目；不要使用全局 prune、按模糊容器名 kill、清理其他项目卷或重启 Docker daemon。源码、镜像、状态目录及构建缓存的清理分别按记录的精确路径/ID 操作。
+
+## Linux 实测与保留状态
+
+2026-10-20 在 `ssh dev` 实际构建并冻结 `a3f8f4e` 后，RF1 三项、RF3 七项全部通过，十个独立 case 合计 736 条完整唯一交付和持久 ACK。镜像/二进制身份、故障目标、原 Pending、真实 OOM、回收竞态红绿、Linux Rust 门禁及历史失败见[实测记录](../../docs/evidence/2026-10-20-linux-docker.zh-CN.md)。
+
+RF1 已停，RF3 十角色、RustFS 和 holder 保留运行；数据卷、私有状态目录和证据保留，没有自动清理任务。所有构建容器已退出，部署及门禁前后既有 17 个业务容器的 ID、运行状态、启动时间和重启次数一致。继续使用原 `STATE`、新镜像身份和原凭据，结束时按上面的精确项目清理命令操作。该验证未放行真实三区、生产 LB、长稳、生产 allocator 或吞吐/延迟目标。
 
 ## 本地静态自检
 
