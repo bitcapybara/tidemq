@@ -12,6 +12,7 @@
 | `tidemq_capacity_used_bytes{kind}` / `blocked{kind}` | LogicalBacklog、PhysicalStorage、SharedReclaimLag、ProcessMemory，四种独立口径，不相加。低水位迟滞与样本年龄共同决定新工作准入 |
 | `tidemq_capacity_container_blocked` / `container_observation_available` | 独立 cgroup headroom 与字段可用性；字段可用不表示样本永远新鲜。实际年龄、明确无限/不支持/读取失败见诊断 |
 | `tidemq_runtime_ready` / `process_rss_bytes` / `cgroup_current_bytes` / `cgroup_limit_bytes` | 角色就绪与真实 OS/容器用量；不可用字段不导出为 0。RSS 包含原生页与 allocator 驻留，不再重复相加 |
+| `tidemq_runtime_read_hot_reclaim_conflicts_total` | 热正文取得后、持久签发前被本地回收，且重新确认逻辑范围仍保留的已知 NoEffect 冲突次数；无标签、进程累计，不随周期资源快照覆写。不表示逻辑过期、Unknown 或最终业务失败；结合冷读与持久 ACK 进展判断 |
 | `tidemq_runtime_log_dropped_events_total` / `log_sink_errors_total` / `log_oversized_events_total` | 队列、writer 与事件大小造成的证据损失；与业务成功独立 |
 | `tidemq_s3_*` | 实际 AWS SDK attempt/retry/HTTP error、准入、headers/body/operation、decode queue/decode、cache hit/miss；不以 HTTP 成功代替 manifest 发布 |
 | `tidemq_lifecycle_*` | register/upload/publish/cancel/delete、reclaimed bytes、retry/failure、活跃工作；Uploaded、Published 与 Reclaimed 分别观测 |

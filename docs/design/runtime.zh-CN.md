@@ -27,6 +27,8 @@ Read 的消息数和字节数都是上限。首条正文和冷页准备完成、
 
 已有明确持久交付前缀时，超过工作片或需要另一冷页便停止新投递，并经原 session、代次、ACK ranges 和冷页检查后返回部分批次。每个 token 仍须等待对应 `RecordDelivery` 持久成功；已开始写入的 Unknown 或错误仍使整个 Read 返回错误，不能伪装成部分成功。首条准备阶段受原期限约束；没有可用预算时返回不可用或期限错误，不反复返回空批。冷页正常返回后显式释放 pin，异常路径仍由既有 TTL/reaper 回收；接收屏障与 ACK 前沿语义保持一致。
 
+热正文取得后，本地副本可能在 `RecordDelivery` 校验前被后台回收。状态机仍严格拒绝没有正文证据的签发；运行时只识别这一发生在投递状态变更前的 typed Producer `OffsetExpired`，并重新核对逻辑 `retained_floor`。消息仍在保留范围内时，已有持久前缀可经原尾部检查返回；首条则沿用同一 offset、attempt、operation、原 deadline 和只缩短的工作片，至多重取一次，通过既有 S3 冷页证明完成签发。真正的逻辑过期仍为终态 `OffsetExpired`，Unknown 仍使整个 Read 失败。该冲突用固定无标签的 `tidemq_runtime_read_hot_reclaim_conflicts_total` 记录，不逐条输出正文或 token。
+
 ## 后台对象与容量
 
 后台先分页核对 Catalog 原对象 ID 和本地 pending 索引，再构造新归档。Published 的本地完成状态和 checkpoint 分开对账，checkpoint 失败不会误当成可回收。逻辑保留 floor 在数据组里同序提交，使用同锁的 revision、时间边界和所有有效订阅的保护下界；对象 manifest 退休必须从数据 quorum 读真实 floor，并取得当前全部 voter 的持久快照证据。

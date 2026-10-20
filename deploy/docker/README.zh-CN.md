@@ -8,7 +8,7 @@
 
 ## 构建契约
 
-需要 Linux x86_64、Docker Engine、支持这些 Compose 字段的 Compose（本次静态验证使用 5.6.0）、Bash、OpenSSL 和 coreutils。Docker 主机应支持 cgroup v2 和内存、swap、PID 限额。不要向主机安装 Rust 工具链。
+需要 Linux x86_64、Docker Engine、支持这些 Compose 字段的 Compose（本次使用 5.6.0）、Bash、OpenSSL 和 coreutils。Docker 主机应支持 cgroup v2 和内存、swap、PID 限额。不要向主机安装 Rust 工具链。
 
 `Dockerfile.builder` 只准备 Rust 1.96.0、rustfmt、clippy、CMake、clang、pkg-config、OpenSSL 等构建依赖，不执行 Cargo 编译。`Dockerfile` 只复制预编译的 `bin/tidemq` 和 `bin/deploy_validation`，安装运行时库及 curl/OpenSSL。两者均要求显式传入已验证的基础镜像 digest，没有浮动默认值。
 
@@ -85,7 +85,7 @@ RustFS 使用官方 1.0.3 的 Linux x86_64 musl 可执行文件，只读 bind �
 
 | 对象 | SHA-256 |
 | --- | --- |
-| `linux-x86_64-musl-v1.0.3.zip`，101926479 字节 | `29a083f156fe1a246f0336afe16ff77fffe587628e97339448d8f4fba38dba54` |
+| `rustfs-linux-x86_64-musl-v1.0.3.zip`，101926479 字节 | `29a083f156fe1a246f0336afe16ff77fffe587628e97339448d8f4fba38dba54` |
 | 解压后的 `rustfs` | `c14fd1216f99efba9cac4bb469a5fa31ea9e461b82b79a28b69280e057613c93` |
 
 从[官方 1.0.3 release](https://github.com/rustfs/rustfs/releases/tag/1.0.3)核对下载资产和校验来源。传入可执行文件的绝对路径；`--version` 的实际输出为多行，首行为 `rustfs 1.0.3`，不要要求整个 stdout 只有一行。
