@@ -53,6 +53,7 @@
 | legacy layout / manifest 缺失或版本不符 | 当前开发版本使用全新数据目录；保留旧目录与匹配旧二进制，不修改身份、不猜测格式、不自动清空 |
 | sealed 段、checkpoint 引用或 manifest 校验错误 | fail closed，保留整个恢复链证据；不能移除某一段后用剩余文件“尽量恢复” |
 | snapshot reader/file、segment/index/control reserve 超限 | 停止新增对应工作，检查真实持有者与正常回收进度；不扩大无限队列或取消 pin 保护 |
+| `snapshot_publication_uncertain=true` 或长期 `snapshot_publication_pending=true` | 保留旧/current 与新/candidate 文件；目录同步错误或运行时中断不能证明 rename 未发生，受控重启后按 manifest 完整核验，不能手动删除 candidate |
 | `wal_writer_failed` / storage fatal | 查看完整 IO 链和容量；该 writer 后续 mutation 都失败。修复原因并走受控恢复，不仅重试接口 |
 | snapshot metadata/校验/格式错误 | 保留失败证据，拒绝安装；不能用请求 metadata 覆盖文件内 metadata |
 | snapshot 会回退 applied | 检查旧 leader/旧任务/迟到 snapshot；拒绝旧状态，不能降低本地 applied |

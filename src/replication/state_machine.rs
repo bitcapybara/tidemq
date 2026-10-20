@@ -369,6 +369,8 @@ impl<A: Application> DiskStateMachine<A> {
             registry.candidate(reference)?
         };
         snapshot::persist(&self.0.directory, bytes, asset.clone()).await?;
+        // Keep both possible authorities protected if the runtime interrupts the owned task.
+        self.0.snapshots.lock().await.begin_publication(&asset);
         if let Err(error) = self
             .0
             .journal
