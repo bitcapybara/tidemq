@@ -444,3 +444,180 @@ pub(crate) async fn open_snapshot<A: Application>(
         ),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::snapshot_registry::SnapshotRegistry;
+    use super::*;
+
+    async fn fixture() -> (
+        std::path::PathBuf,
+        Arc<std::fs::File>,
+        SnapshotRef,
+        SnapshotRegistry,
+    ) {
+        let directory = std::env::temp_dir().join(format!(
+            "tidemq-snapshot-io-{}",
+            tidemq_protocol::Id::random().unwrap()
+        ));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        for name in ["identity.bin", "manifest.bin"] {
+            tokio::fs::write(directory.join(name), [1; 7])
+                .await
+                .unwrap();
+        }
+        let segment = format!("segment-{}.wal", tidemq_protocol::Id::random().unwrap());
+        tokio::fs::write(directory.join(segment), [2; 11])
+            .await
+            .unwrap();
+        let owner = Arc::new(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(directory.join(".writer-lock"))
+                .unwrap(),
+        );
+        owner.try_lock().unwrap();
+        let reference = reference(&[3; 32]);
+        tokio::fs::write(directory.join(&reference.file_name), [3; 32])
+            .await
+            .unwrap();
+        let options = StorageOptions {
+            max_snapshot_files: 2,
+            max_snapshot_readers: 1,
+            ..StorageOptions::default()
+        };
+        let registry = SnapshotRegistry::new(Some(reference.clone()), &options, owner.clone());
+        (directory, owner, reference, registry)
+    }
+
+    fn reference(bytes: &[u8]) -> SnapshotRef {
+        SnapshotRef {
+            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::random().unwrap()),
+            byte_len: bytes.len() as u64,
+            checksum: *blake3::hash(bytes).as_bytes(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_reader_io_keeps_retired_file_and_capacity_charge_until_completion() {
+        let (directory, owner, first, mut registry) = fixture().await;
+        let lease = registry
+            .lease(&first, registry.reserve_reader().unwrap())
+            .unwrap();
+        let mut file =
+            SnapshotFile::open(&directory.join(&first.file_name), 1024, false, Some(lease))
+                .await
+                .unwrap();
+        let second = reference(&[4; 64]);
+        let candidate = registry.candidate(second).unwrap();
+        persist(&directory, vec![4; 64], candidate.clone())
+            .await
+            .unwrap();
+        registry.commit(&candidate);
+        drop(candidate);
+        let before = crate::runtime::physical::replica_bytes(&directory, true).unwrap();
+        let (started, reached) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        file.queue(move |_| {
+            started.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok(None)
+        });
+        let pending = file.pending.take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), reached)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(file);
+        registry.cleanup(&directory).await.unwrap();
+        assert_eq!(registry.diagnostics().snapshot_readers, 1);
+        assert!(registry.reserve_reader().is_err());
+        assert!(registry.candidate(reference(&[5; 8])).is_err());
+        assert!(
+            tokio::fs::try_exists(directory.join(&first.file_name))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            crate::runtime::physical::replica_bytes(&directory, true).unwrap(),
+            before
+        );
+        release.send(()).unwrap();
+        pending.await.unwrap().unwrap();
+        registry.cleanup(&directory).await.unwrap();
+        assert_eq!(registry.diagnostics().snapshot_readers, 0);
+        assert!(
+            !tokio::fs::try_exists(directory.join(&first.file_name))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            crate::runtime::physical::replica_bytes(&directory, true).unwrap(),
+            before - first.byte_len
+        );
+        drop((registry, owner));
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_io_owns_the_directory_lock_after_file_and_registry_are_dropped() {
+        let (directory, owner, first, registry) = fixture().await;
+        let lease = registry
+            .lease(&first, registry.reserve_reader().unwrap())
+            .unwrap();
+        let mut file =
+            SnapshotFile::open(&directory.join(first.file_name), 1024, false, Some(lease))
+                .await
+                .unwrap();
+        let (started, reached) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        file.queue(move |_| {
+            started.send(()).unwrap();
+            blocked.recv().unwrap();
+            Ok(None)
+        });
+        let pending = file.pending.take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), reached)
+            .await
+            .unwrap()
+            .unwrap();
+        drop((file, registry, owner));
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.join(".writer-lock"))
+            .unwrap();
+        assert!(contender.try_lock().is_err());
+        release.send(()).unwrap();
+        pending.await.unwrap().unwrap();
+        contender.try_lock().unwrap();
+        drop(contender);
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn buffered_snapshot_io_preserves_seek_and_write_boundaries() {
+        let directory = std::env::temp_dir().join(format!(
+            "tidemq-snapshot-seek-{}",
+            tidemq_protocol::Id::random().unwrap()
+        ));
+        tokio::fs::create_dir(&directory).await.unwrap();
+        let mut file = SnapshotFile::open(&directory.join("file.bin"), 4, true, None)
+            .await
+            .unwrap();
+        file.write_all(b"abc").await.unwrap();
+        file.seek(SeekFrom::Start(1)).await.unwrap();
+        let mut bytes = [0; 2];
+        file.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"bc");
+        file.seek(SeekFrom::Current(-1)).await.unwrap();
+        file.write_all(b"Z").await.unwrap();
+        assert_eq!(file.read_bytes(4).await.unwrap(), b"abZ");
+        assert!(file.seek(SeekFrom::Start(5)).await.is_err());
+        assert!(file.write_all(b"large").await.is_err());
+        drop(file);
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
+}
