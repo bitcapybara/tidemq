@@ -48,6 +48,7 @@ struct HotDeliveryHook {
 enum HookPoint {
     BeforeHotDelivery,
     AfterDurableDelivery,
+    RejectHotRead,
 }
 
 struct InstalledHook(Arc<HotDeliveryHook>);
@@ -100,6 +101,10 @@ pub(super) async fn pause_hot_delivery(partition: PartitionKey, offset: u64, dea
 
 pub(super) fn lose_delivery_reply(partition: PartitionKey, offset: u64) -> bool {
     take_hook(partition, offset, HookPoint::AfterDurableDelivery).is_some()
+}
+
+pub(super) fn reject_hot_read(partition: PartitionKey, offset: u64) -> bool {
+    take_hook(partition, offset, HookPoint::RejectHotRead).is_some()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -215,6 +220,115 @@ async fn an_unknown_delivery_after_a_durable_prefix_cannot_become_partial_succes
     assert_eq!(later_offset, 2);
     assert_eq!(later_ack.acknowledged_before, 0);
     assert_eq!(retries, vec![0, 1]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_later_hot_read_rejection_cannot_hide_a_durable_delivery_prefix() {
+    let _serial = SERIAL.lock().await;
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let partition = PartitionKey {
+        topic_id: topic,
+        partition: 0,
+    };
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+        .await
+        .unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+    )
+    .await
+    .unwrap();
+    producer
+        .produce(vec![
+            public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"later-read-rejection"),
+            };
+            3
+        ])
+        .await
+        .unwrap();
+    let _hook = InstalledHook::new(partition, 1, HookPoint::RejectHotRead);
+    let result = consumer.fill().await;
+    assert!(
+        matches!(
+            result,
+            Err(tidemq_sdk::Error::Remote {
+                code: ErrorCode::Unavailable,
+                outcome: Outcome::Unknown,
+                ..
+            })
+        ),
+        "A failed later read cannot hide already durable deliveries: {result:?}"
+    );
+    assert!(consumer.next().await.unwrap().is_none());
+    let assignment = client
+        .admin()
+        .subscription_status(topic, 0, subscription)
+        .await
+        .unwrap()
+        .assignment
+        .unwrap();
+    let mut later = Vec::new();
+    for _ in 0..2 {
+        let delivery = consumer.recv().await.unwrap().unwrap();
+        assert_eq!(delivery.body(), b"later-read-rejection");
+        later.push(delivery);
+    }
+    let later_offsets = later
+        .iter()
+        .map(|delivery| delivery.offset())
+        .collect::<std::collections::BTreeSet<_>>();
+    let ack = consumer.ack_many(&later).await.unwrap();
+    let (due_now, due_after_lease) = fixture
+        .running
+        .get(&1)
+        .unwrap()
+        .service
+        .data
+        .get(&2)
+        .unwrap()
+        .state
+        .with_application(|state| {
+            let subscriptions = state.subscriptions(partition).unwrap();
+            assert_eq!(subscriptions.protected_before(), Some(0));
+            let now = unix_millis().unwrap();
+            (
+                subscriptions.due_retries(subscription, now, 3).unwrap(),
+                subscriptions
+                    .due_retries(
+                        subscription,
+                        now + subscription::Limits::default().ack_timeout_ms,
+                        3,
+                    )
+                    .unwrap()
+                    .into_iter()
+                    .map(|retry| retry.offset)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await;
+    client.close().await;
+    drop(later);
+    drop(consumer);
+    drop(producer);
+    drop(client);
+    fixture.close().await;
+    assert_eq!(assignment.next_delivery_offset, 1);
+    assert_eq!(assignment.issued_before, 1);
+    assert_eq!(assignment.acknowledged_before, 0);
+    assert_eq!(assignment.cold_before, 0);
+    assert_eq!(later_offsets, (1..3).collect());
+    assert_eq!(ack.acknowledged_before, 0);
+    assert!(due_now.is_empty());
+    assert_eq!(due_after_lease, vec![0]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

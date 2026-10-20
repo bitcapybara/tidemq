@@ -1045,270 +1045,298 @@ impl Service {
             .brokers
             .get(&(group, route.owner_node))
             .ok_or_else(Error::unavailable)?;
-        let mut deliveries = Vec::new();
-        let mut cold_page: Option<crate::lifecycle::GuardedPage> = None;
-        let mut read_budget: Option<ReadBudget> = None;
-        let mut bytes = 0usize;
-        let mut candidates = candidates.into_iter();
-        let mut retry_candidate = None;
-        let mut retried_hot = false;
-        while let Some((offset, attempt)) = retry_candidate.take().or_else(|| candidates.next()) {
-            if read_budget
-                .as_ref()
-                .is_some_and(|budget| !budget.admits(Instant::now()))
+        let mut recorded_delivery = false;
+        let result = async {
+            let mut deliveries = Vec::new();
+            let mut cold_page: Option<crate::lifecycle::GuardedPage> = None;
+            let mut read_budget: Option<ReadBudget> = None;
+            let mut bytes = 0usize;
+            let mut candidates = candidates.into_iter();
+            let mut retry_candidate = None;
+            let mut retried_hot = false;
+            while let Some((offset, attempt)) = retry_candidate.take().or_else(|| candidates.next())
             {
-                if deliveries.is_empty() {
-                    return Err(Error::unavailable());
+                if read_budget
+                    .as_ref()
+                    .is_some_and(|budget| !budget.admits(Instant::now()))
+                {
+                    if deliveries.is_empty() {
+                        return Err(Error::unavailable());
+                    }
+                    break;
                 }
-                break;
-            }
-            let read = broker
-                .hot_read(
-                    lease,
-                    RequestContext {
-                        operation_id: wire::id(&frame.operation_id)?,
-                        request_id: wire::id(&frame.request_id)?,
-                        attempt: 1,
-                        deadline: deadline.into_std(),
-                    },
-                    partition,
-                    offset,
-                    1,
-                    request.max_bytes,
-                )
-                .await;
-            let (message, proof, prepared_page) = match read {
-                Ok(read) => {
-                    let Some(message) = read.page().messages.first().cloned() else {
-                        break;
-                    };
-                    (message, None, None)
+                let read = broker
+                    .hot_read(
+                        lease,
+                        RequestContext {
+                            operation_id: wire::id(&frame.operation_id)?,
+                            request_id: wire::id(&frame.request_id)?,
+                            attempt: 1,
+                            deadline: deadline.into_std(),
+                        },
+                        partition,
+                        offset,
+                        1,
+                        request.max_bytes,
+                    )
+                    .await;
+                #[cfg(test)]
+                let read = if read.is_ok() && reclaim_tests::reject_hot_read(partition, offset) {
+                    Err(broker::Error::Draining)
+                } else {
+                    read
+                };
+                let (message, proof, prepared_page) = match read {
+                    Ok(read) => {
+                        let Some(message) = read.page().messages.first().cloned() else {
+                            break;
+                        };
+                        (message, None, None)
+                    }
+                    Err(broker::Error::Rejected {
+                        reason:
+                            DataRejection::Producer(crate::producer::Rejection::OffsetExpired {
+                                ..
+                            }),
+                    }) => {
+                        self.require_retained_offset(group, partition, offset, deadline)
+                            .await?;
+                        let cached = cold_page
+                            .as_ref()
+                            .map(|page| cold_message(page, offset))
+                            .transpose()?
+                            .flatten();
+                        if let Some((message, proof)) = cached {
+                            (message, Some(proof), None)
+                        } else {
+                            if !deliveries.is_empty() {
+                                break;
+                            }
+                            if let Some(page) = cold_page.take() {
+                                page.check().map_err(|_| Error::unknown())?;
+                                page.release(deadline.into_std())
+                                    .await
+                                    .map_err(|_| Error::unknown())?;
+                            }
+                            let coordinator =
+                                self.objects.get(&group).ok_or_else(Error::unavailable)?;
+                            let page = coordinator
+                                .read(
+                                    partition,
+                                    offset,
+                                    request.max_messages as usize,
+                                    u64::from(request.max_bytes),
+                                    deadline.into_std(),
+                                )
+                                .await
+                                .map_err(|source| {
+                                    Error::operation("read published cold object", source)
+                                })?;
+                            let (message, proof) =
+                                cold_message(&page, offset)?.ok_or_else(|| {
+                                    Error::invalid(
+                                        "Cold object omitted the requested message offset",
+                                    )
+                                })?;
+                            (message, Some(proof), Some(page))
+                        }
+                    }
+                    Err(broker::Error::Rejected {
+                        reason:
+                            DataRejection::Producer(crate::producer::Rejection::OffsetNotCommitted {
+                                ..
+                            }),
+                    }) => break,
+                    Err(error) if recorded_delivery => {
+                        return Err(Error::operation("hot_read_failed_after_delivery", error));
+                    }
+                    Err(error) => return Err(broker_error(error)),
+                };
+                let logical = message
+                    .logical_bytes()
+                    .and_then(|bytes| u32::try_from(bytes).ok())
+                    .ok_or_else(|| Error::invalid("Delivery message length overflow"))?;
+                let next_bytes = bytes
+                    .checked_add(logical as usize)
+                    .and_then(|value| value.checked_add(160))
+                    .ok_or_else(|| Error::invalid("Delivery response length overflow"))?;
+                if next_bytes > request.max_bytes as usize {
+                    break;
                 }
-                Err(broker::Error::Rejected {
-                    reason:
-                        DataRejection::Producer(crate::producer::Rejection::OffsetExpired { .. }),
-                }) => {
-                    self.require_retained_offset(group, partition, offset, deadline)
-                        .await?;
-                    let cached = cold_page
-                        .as_ref()
-                        .map(|page| cold_message(page, offset))
-                        .transpose()?
-                        .flatten();
-                    if let Some((message, proof)) = cached {
-                        (message, Some(proof), None)
-                    } else {
+                if let Some(page) = prepared_page {
+                    cold_page = Some(page);
+                }
+                let mut hard_deadline = deadline.min(Instant::from_std(lease.expires_at()));
+                if let Some(page) = &cold_page {
+                    hard_deadline = hard_deadline.min(Instant::from_std(
+                        page.valid_until().map_err(|_| Error::unknown())?,
+                    ));
+                }
+                // Preparation may include S3 I/O; only the first mutation starts this fixed work slice.
+                let budget = read_budget
+                    .get_or_insert_with(|| ReadBudget::new(Instant::now(), hard_deadline));
+                budget.tighten(hard_deadline);
+                if !budget.admits(Instant::now()) {
+                    if deliveries.is_empty() {
+                        return Err(Error::unavailable());
+                    }
+                    break;
+                }
+                let operation = delivery_operation(wire::id(&frame.operation_id)?, offset)?;
+                let hot = proof.is_none();
+                #[cfg(test)]
+                if hot {
+                    reclaim_tests::pause_hot_delivery(partition, offset, deadline).await;
+                }
+                let outcome = self
+                    .subscription_commit(
+                        group,
+                        partition,
+                        lease,
+                        subscription::Command::RecordDelivery {
+                            subscription_id: subscription,
+                            generations,
+                            session_id: session,
+                            operation_id: operation,
+                            offset,
+                            expected_attempt: attempt,
+                            body_bytes: logical,
+                            now_ms: now,
+                            lane,
+                        },
+                        deadline,
+                        false,
+                        proof,
+                    )
+                    .await;
+                #[cfg(test)]
+                let outcome = if matches!(
+                    outcome,
+                    Ok(DataResponse::Subscription(subscription::Outcome::Delivery(
+                        _
+                    )))
+                ) && reclaim_tests::lose_delivery_reply(partition, offset)
+                {
+                    Err(Error::unknown())
+                } else {
+                    outcome
+                };
+                match outcome {
+                    Ok(DataResponse::Subscription(subscription::Outcome::Delivery(receipt))) => {
+                        recorded_delivery = true;
+                        deliveries.push(public::Delivery {
+                            offset,
+                            key: message.key.clone(),
+                            body: message.body.clone(),
+                            delivery_token: Bytes::copy_from_slice(receipt.token.as_bytes()),
+                        })
+                    }
+                    Ok(DataResponse::Subscription(
+                        subscription::Outcome::DeliveryAlreadyAcknowledged { .. },
+                    )) => {}
+                    Ok(DataResponse::Rejected(DataRejection::Producer(
+                        crate::producer::Rejection::OffsetExpired { .. },
+                    ))) if hot => {
+                        self.require_retained_offset(group, partition, offset, deadline)
+                            .await?;
+                        self.runtime_metrics.hot_delivery_reclaimed();
+                        // Reclamation changed no delivery state. Keep the original identity and slice.
                         if !deliveries.is_empty() {
                             break;
                         }
-                        if let Some(page) = cold_page.take() {
-                            page.check().map_err(|_| Error::unknown())?;
-                            page.release(deadline.into_std())
-                                .await
-                                .map_err(|_| Error::unknown())?;
+                        if retried_hot {
+                            return Err(Error::unavailable());
                         }
-                        let coordinator =
-                            self.objects.get(&group).ok_or_else(Error::unavailable)?;
-                        let page = coordinator
-                            .read(
-                                partition,
-                                offset,
-                                request.max_messages as usize,
-                                u64::from(request.max_bytes),
-                                deadline.into_std(),
-                            )
-                            .await
-                            .map_err(|source| {
-                                Error::operation("read published cold object", source)
-                            })?;
-                        let (message, proof) = cold_message(&page, offset)?.ok_or_else(|| {
-                            Error::invalid("Cold object omitted the requested message offset")
-                        })?;
-                        (message, Some(proof), Some(page))
+                        retried_hot = true;
+                        retry_candidate = Some((offset, attempt));
+                        continue;
                     }
+                    Ok(DataResponse::Rejected(reason)) => {
+                        let error = data_rejection(reason);
+                        if error.failure().code == i32::from(ErrorCode::QuotaExceeded) {
+                            break;
+                        }
+                        return Err(error);
+                    }
+                    Err(Error::Rejected { failure })
+                        if failure.code == i32::from(ErrorCode::QuotaExceeded) =>
+                    {
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                    _ => return Err(Error::invalid("Unexpected durable delivery outcome")),
                 }
-                Err(broker::Error::Rejected {
-                    reason:
-                        DataRejection::Producer(crate::producer::Rejection::OffsetNotCommitted {
-                            ..
-                        }),
-                }) => break,
-                Err(error) => return Err(broker_error(error)),
-            };
-            let logical = message
-                .logical_bytes()
-                .and_then(|bytes| u32::try_from(bytes).ok())
-                .ok_or_else(|| Error::invalid("Delivery message length overflow"))?;
-            let next_bytes = bytes
-                .checked_add(logical as usize)
-                .and_then(|value| value.checked_add(160))
-                .ok_or_else(|| Error::invalid("Delivery response length overflow"))?;
-            if next_bytes > request.max_bytes as usize {
-                break;
+                bytes = next_bytes;
             }
-            if let Some(page) = prepared_page {
-                cold_page = Some(page);
-            }
-            let mut hard_deadline = deadline.min(Instant::from_std(lease.expires_at()));
-            if let Some(page) = &cold_page {
-                hard_deadline = hard_deadline.min(Instant::from_std(
-                    page.valid_until().map_err(|_| Error::unknown())?,
-                ));
-            }
-            // Preparation may include S3 I/O; only the first mutation starts this fixed work slice.
-            let budget =
-                read_budget.get_or_insert_with(|| ReadBudget::new(Instant::now(), hard_deadline));
-            budget.tighten(hard_deadline);
-            if !budget.admits(Instant::now()) {
-                if deliveries.is_empty() {
-                    return Err(Error::unavailable());
-                }
-                break;
-            }
-            let operation = delivery_operation(wire::id(&frame.operation_id)?, offset)?;
-            let hot = proof.is_none();
-            #[cfg(test)]
-            if hot {
-                reclaim_tests::pause_hot_delivery(partition, offset, deadline).await;
-            }
-            let outcome = self
-                .subscription_commit(
+            let assignment = self
+                .check_session(
                     group,
                     partition,
-                    lease,
-                    subscription::Command::RecordDelivery {
-                        subscription_id: subscription,
-                        generations,
-                        session_id: session,
-                        operation_id: operation,
-                        offset,
-                        expected_attempt: attempt,
-                        body_bytes: logical,
-                        now_ms: now,
-                        lane,
-                    },
+                    subscription,
+                    generations,
+                    session,
                     deadline,
-                    false,
-                    proof,
                 )
-                .await;
-            #[cfg(test)]
-            let outcome = if matches!(
-                outcome,
-                Ok(DataResponse::Subscription(subscription::Outcome::Delivery(
-                    _
-                )))
-            ) && reclaim_tests::lose_delivery_reply(partition, offset)
-            {
-                Err(Error::unknown())
-            } else {
-                outcome
-            };
-            match outcome {
-                Ok(DataResponse::Subscription(subscription::Outcome::Delivery(receipt))) => {
-                    deliveries.push(public::Delivery {
-                        offset,
-                        key: message.key.clone(),
-                        body: message.body.clone(),
-                        delivery_token: Bytes::copy_from_slice(receipt.token.as_bytes()),
-                    })
-                }
-                Ok(DataResponse::Subscription(
-                    subscription::Outcome::DeliveryAlreadyAcknowledged { .. },
-                )) => {}
-                Ok(DataResponse::Rejected(DataRejection::Producer(
-                    crate::producer::Rejection::OffsetExpired { .. },
-                ))) if hot => {
-                    self.require_retained_offset(group, partition, offset, deadline)
-                        .await?;
-                    self.runtime_metrics.hot_delivery_reclaimed();
-                    // Reclamation changed no delivery state. Keep the original identity and slice.
-                    if !deliveries.is_empty() {
-                        break;
-                    }
-                    if retried_hot {
-                        return Err(Error::unavailable());
-                    }
-                    retried_hot = true;
-                    retry_candidate = Some((offset, attempt));
-                    continue;
-                }
-                Ok(DataResponse::Rejected(reason)) => {
-                    let error = data_rejection(reason);
-                    if error.failure().code == i32::from(ErrorCode::QuotaExceeded) {
-                        break;
-                    }
-                    return Err(error);
-                }
-                Err(Error::Rejected { failure })
-                    if failure.code == i32::from(ErrorCode::QuotaExceeded) =>
-                {
-                    break;
-                }
-                Err(error) => return Err(error),
-                _ => return Err(Error::invalid("Unexpected durable delivery outcome")),
-            }
-            bytes = next_bytes;
-        }
-        let assignment = self
-            .check_session(
-                group,
-                partition,
-                subscription,
-                generations,
-                session,
-                deadline,
-            )
-            .await?;
-        let ranges = replica
-            .state
-            .try_with_application(|state| {
-                state
-                    .subscriptions(partition)
-                    .ok_or_else(not_found)?
-                    .acknowledged_ranges(
-                        subscription,
-                        generations,
-                        assignment.acknowledged_before,
-                        assignment.issued_before,
-                        256,
-                    )
-                    .map_err(subscription_error)
-            })
-            .await
-            .map_err(|source| Error::operation("read bounded acknowledged holes", source))??;
-        let response = wire::response(
-            frame,
-            FrameKind::DeliveryBatch,
-            &public::DeliveryBatch {
-                deliveries,
-                next_offset: assignment.next_delivery_offset,
-                topic_id: bytes_id(partition.topic_id),
-                partition_id: partition.partition,
-                subscription_id: bytes_id(subscription),
-                cursor_generation: generations.cursor,
-                assignment_generation: generations.assignment,
-                delivery_generation: generations.delivery(),
-                session_id: bytes_id(session),
-                cold_before: assignment.cold_before,
-                issued_before: assignment.issued_before,
-                acknowledged_ranges: ranges
-                    .into_iter()
-                    .map(|range| public::AcknowledgedRange {
-                        start: range.start,
-                        end: range.end,
-                    })
-                    .collect(),
-            },
-            &self.config.protocol,
-        )?;
-        if let Some(page) = cold_page {
-            page.check().map_err(|_| Error::unknown())?;
-            page.release(deadline.into_std())
+                .await?;
+            let ranges = replica
+                .state
+                .try_with_application(|state| {
+                    state
+                        .subscriptions(partition)
+                        .ok_or_else(not_found)?
+                        .acknowledged_ranges(
+                            subscription,
+                            generations,
+                            assignment.acknowledged_before,
+                            assignment.issued_before,
+                            256,
+                        )
+                        .map_err(subscription_error)
+                })
                 .await
-                .map_err(|_| Error::unknown())?;
+                .map_err(|source| Error::operation("read bounded acknowledged holes", source))??;
+            let response = wire::response(
+                frame,
+                FrameKind::DeliveryBatch,
+                &public::DeliveryBatch {
+                    deliveries,
+                    next_offset: assignment.next_delivery_offset,
+                    topic_id: bytes_id(partition.topic_id),
+                    partition_id: partition.partition,
+                    subscription_id: bytes_id(subscription),
+                    cursor_generation: generations.cursor,
+                    assignment_generation: generations.assignment,
+                    delivery_generation: generations.delivery(),
+                    session_id: bytes_id(session),
+                    cold_before: assignment.cold_before,
+                    issued_before: assignment.issued_before,
+                    acknowledged_ranges: ranges
+                        .into_iter()
+                        .map(|range| public::AcknowledgedRange {
+                            start: range.start,
+                            end: range.end,
+                        })
+                        .collect(),
+                },
+                &self.config.protocol,
+            )?;
+            if let Some(page) = cold_page {
+                page.check().map_err(|_| Error::unknown())?;
+                page.release(deadline.into_std())
+                    .await
+                    .map_err(|_| Error::unknown())?;
+            }
+            Ok(response)
         }
-        Ok(response)
+        .await;
+        result.map_err(|error| {
+            // A later rejection cannot undo leases created by an earlier durable delivery.
+            if recorded_delivery && error.failure().outcome == i32::from(Outcome::Rejected) {
+                Error::operation("read_rejected_after_delivery", error)
+            } else {
+                error
+            }
+        })
     }
 }
 
