@@ -103,40 +103,33 @@ async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() 
     let mut process = start_process(&fixture, 1).await;
     let client = fixture.client(1).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     let message = || public::Message {
         key: Bytes::from_static(b"process-key"),
         body: Bytes::from_static(b"process-body"),
     };
-    producer.produce(vec![message()], deadline()).await.unwrap();
+    producer.produce(vec![message()]).await.unwrap();
     let consumer = Consumer::claim(
         client.clone(),
         topic,
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let first = consumer.next().await.unwrap().unwrap();
-    assert_eq!(
-        consumer
-            .ack(&first, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
-        1
-    );
+    assert_eq!(consumer.ack(&first).await.unwrap().acknowledged_before, 1);
     process.kill().await.unwrap();
     assert!(!process.wait().await.unwrap().success());
-    let failure = producer
-        .produce(vec![message()], Instant::now() + Duration::from_millis(200))
-        .await
-        .unwrap_err();
+    let failure =
+        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_millis(200))
+            .scope(producer.produce(vec![message()]))
+            .await
+            .unwrap_err();
     assert!(failure.outcome_unknown());
     let batches = producer.pending_batches().await.unwrap();
     assert_eq!(batches.len(), 1);
@@ -149,7 +142,7 @@ async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() 
     );
     let started = Instant::now();
     let mut process = start_process(&fixture, 1).await;
-    let receipt = producer.retry(batch, deadline()).await.unwrap();
+    let receipt = producer.retry(batch).await.unwrap();
     assert_eq!(receipt.first_offset, 1);
     assert_eq!(
         identity,
@@ -161,22 +154,15 @@ async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() 
         )
     );
     assert!(producer.pending_batches().await.unwrap().is_empty());
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let second = consumer.next().await.unwrap().unwrap();
     assert_eq!(second.offset(), 1);
-    assert_eq!(
-        consumer
-            .ack(&second, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
-        2
-    );
+    assert_eq!(consumer.ack(&second).await.unwrap().acknowledged_before, 2);
     eprintln!(
         "Original SDK producer and consumer recovered after process restart in {:?}",
         started.elapsed()
     );
-    client.close(deadline()).await;
+    client.close().await;
     process.kill().await.unwrap();
     let _ = process.wait().await.unwrap();
     fixture.close().await;
@@ -184,15 +170,13 @@ async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() 
 
 async fn durable_produce(producer: &Producer, body: &'static [u8]) -> u64 {
     let until = Instant::now() + Duration::from_secs(20);
-    if let Ok(receipt) = producer
-        .produce(
-            vec![public::Message {
+    if let Ok(receipt) =
+        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(2))
+            .scope(producer.produce(vec![public::Message {
                 key: Bytes::new(),
                 body: Bytes::from_static(body),
-            }],
-            Instant::now() + Duration::from_secs(2),
-        )
-        .await
+            }]))
+            .await
     {
         return receipt.first_offset;
     }
@@ -214,9 +198,11 @@ async fn durable_retry(
         batch.digest().to_vec(),
     );
     loop {
-        let result = producer
-            .retry(batch, until.min(Instant::now() + Duration::from_secs(2)))
-            .await;
+        let result = tidemq_sdk::RequestContext::with_deadline(
+            until.min(Instant::now() + Duration::from_secs(2)),
+        )
+        .scope(producer.retry(batch))
+        .await;
         if let Ok(receipt) = result {
             assert_eq!(
                 identity,
@@ -241,9 +227,11 @@ async fn durable_consume(consumer: &Consumer, offset: u64) {
     let until = Instant::now() + Duration::from_secs(20);
     let mut previous = String::new();
     let delivery = loop {
-        let result = consumer
-            .recv(until.min(Instant::now() + Duration::from_secs(2)))
-            .await;
+        let result = tidemq_sdk::RequestContext::with_deadline(
+            until.min(Instant::now() + Duration::from_secs(2)),
+        )
+        .scope(consumer.recv())
+        .await;
         if let Ok(Some(delivery)) = result {
             break delivery;
         }
@@ -260,8 +248,8 @@ async fn durable_consume(consumer: &Consumer, offset: u64) {
     };
     assert_eq!(delivery.offset(), offset);
     assert_eq!(
-        consumer
-            .ack(&delivery, until)
+        tidemq_sdk::RequestContext::with_deadline(until)
+            .scope(consumer.ack(&delivery))
             .await
             .unwrap()
             .acknowledged_before,
@@ -294,7 +282,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     }
     let client = fixture.client(41).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     for offset in 0..4 {
@@ -309,7 +297,6 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
@@ -350,14 +337,11 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         .find(|node| *node != leader)
         .unwrap();
     processes.get_mut(&second).unwrap().kill().await.unwrap();
-    let result = producer
-        .produce(
-            vec![public::Message {
-                key: Bytes::new(),
-                body: Bytes::from_static(b"minority-unknown"),
-            }],
-            Instant::now() + Duration::from_secs(1),
-        )
+    let result = tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(1))
+        .scope(producer.produce(vec![public::Message {
+            key: Bytes::new(),
+            body: Bytes::from_static(b"minority-unknown"),
+        }]))
         .await;
     assert!(
         result.is_err(),
@@ -380,15 +364,11 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     }
     let until = deadline();
     let status = loop {
-        let status = client
-            .admin()
-            .subscription_status(
-                topic,
-                0,
-                subscription,
-                until.min(Instant::now() + Duration::from_secs(2)),
-            )
-            .await;
+        let status = tidemq_sdk::RequestContext::with_deadline(
+            until.min(Instant::now() + Duration::from_secs(2)),
+        )
+        .scope(client.admin().subscription_status(topic, 0, subscription))
+        .await;
         if let Ok(status) = status {
             break status;
         }
@@ -405,12 +385,11 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
             Instant::now() < retry_deadline,
             "Original pending batch did not recover within its original deadline"
         );
-        match producer
-            .retry(
-                original,
-                retry_deadline.min(Instant::now() + Duration::from_secs(2)),
-            )
-            .await
+        match tidemq_sdk::RequestContext::with_deadline(
+            retry_deadline.min(Instant::now() + Duration::from_secs(2)),
+        )
+        .scope(producer.retry(original))
+        .await
         {
             Ok(receipt) => break receipt,
             Err(error) => {
@@ -454,7 +433,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         )
     );
     durable_consume(&consumer, 5).await;
-    client.close(deadline()).await;
+    client.close().await;
     for process in processes.values_mut() {
         process.kill().await.unwrap();
         let _ = process.wait().await.unwrap();
@@ -468,17 +447,14 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     let receipt = producer
-        .produce(
-            vec![public::Message {
-                key: Bytes::from_static(b"key"),
-                body: Bytes::from_static(b"durable-body"),
-            }],
-            deadline(),
-        )
+        .produce(vec![public::Message {
+            key: Bytes::from_static(b"key"),
+            body: Bytes::from_static(b"durable-body"),
+        }])
         .await
         .unwrap();
     assert_eq!(receipt.first_offset, 0);
@@ -488,19 +464,14 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let delivery = consumer.next().await.unwrap().unwrap();
     assert_eq!(delivery.body(), b"durable-body");
     assert_eq!(
-        consumer
-            .ack(&delivery, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
+        consumer.ack(&delivery).await.unwrap().acknowledged_before,
         1
     );
     let metrics = http(
@@ -589,7 +560,7 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     )
     .await;
     assert!(invalid.starts_with("HTTP/1.1 400"));
-    client.close(deadline()).await;
+    client.close().await;
     drop(consumer);
     drop(producer);
     drop(client);
@@ -598,11 +569,11 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     let client = fixture.client(1).await;
     let status = client
         .admin()
-        .subscription_status(topic, 0, subscription, deadline())
+        .subscription_status(topic, 0, subscription)
         .await
         .unwrap();
     assert_eq!(status.assignment.unwrap().acknowledged_before, 1);
-    client.close(deadline()).await;
+    client.close().await;
     drop(client);
     fixture.close().await;
 }
@@ -625,7 +596,7 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
     fixture.start_all().await;
     let client = fixture.client(41).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     let mut work = tokio::task::JoinSet::new();
@@ -633,13 +604,10 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         let producer = producer.clone();
         work.spawn(async move {
             let receipt = producer
-                .produce(
-                    vec![public::Message {
-                        key: Bytes::from_static(b"key"),
-                        body: Bytes::from(vec![value]),
-                    }],
-                    deadline(),
-                )
+                .produce(vec![public::Message {
+                    key: Bytes::from_static(b"key"),
+                    body: Bytes::from(vec![value]),
+                }])
                 .await
                 .unwrap();
             (value, receipt)
@@ -665,21 +633,27 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
     let receiving_until = deadline();
     for offset in 0..8 {
-        let delivery = consumer.recv(receiving_until).await.unwrap().unwrap();
+        let delivery = tidemq_sdk::RequestContext::with_deadline(receiving_until)
+            .scope(consumer.recv())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(delivery.offset(), offset);
         assert_eq!(delivery.key(), b"key");
         assert_eq!(delivery.body(), &[*expected_bodies.get(&offset).unwrap()]);
-        consumer.ack(&delivery, receiving_until).await.unwrap();
+        tidemq_sdk::RequestContext::with_deadline(receiving_until)
+            .scope(consumer.ack(&delivery))
+            .await
+            .unwrap();
     }
     let status = client
         .admin()
-        .subscription_status(topic, 0, subscription, deadline())
+        .subscription_status(topic, 0, subscription)
         .await
         .unwrap();
     assert_eq!(status.assignment.unwrap().acknowledged_before, 8);
@@ -713,27 +687,20 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
     assert_eq!(moved.epoch, previous.epoch + 1);
     assert_eq!(
         producer
-            .produce(
-                vec![public::Message {
-                    key: Bytes::new(),
-                    body: Bytes::from_static(b"after-handoff")
-                }],
-                deadline()
-            )
+            .produce(vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"after-handoff")
+            }])
             .await
             .unwrap()
             .first_offset,
         8
     );
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let delivery = consumer.next().await.unwrap().unwrap();
     assert_eq!(delivery.offset(), 8);
     assert_eq!(
-        consumer
-            .ack(&delivery, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
+        consumer.ack(&delivery).await.unwrap().acknowledged_before,
         9
     );
     let blockers = control.drain_node(12, &[], deadline()).await.unwrap();
@@ -747,8 +714,8 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         .unwrap()
         .wait_for_shutdown_request()
         .await;
-    second_client.close(deadline()).await;
-    client.close(deadline()).await;
+    second_client.close().await;
+    client.close().await;
     drop(consumer);
     drop(producer);
     drop(second_client);
@@ -808,12 +775,11 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
             node_id: None,
         },
         TOKEN.into(),
-        deadline(),
     )
     .await
     .unwrap();
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     for offset in 0..3 {
@@ -825,7 +791,6 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
@@ -838,15 +803,13 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
     proxy.switch();
     proxy.set_mtu(1199);
     let started = Instant::now();
-    let blocked = producer
-        .produce(
-            vec![public::Message {
+    let blocked =
+        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(4))
+            .scope(producer.produce(vec![public::Message {
                 key: Bytes::new(),
                 body: Bytes::from_static(b"after-gateway-crash"),
-            }],
-            Instant::now() + Duration::from_secs(4),
-        )
-        .await;
+            }]))
+            .await;
     assert!(
         blocked.is_err(),
         "The MTU blackhole must not issue a successful receipt"
@@ -879,7 +842,7 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
         "Stable UDP endpoint recovered original SDK after Gateway SIGKILL in {:?}; actual datagram faults: {observed:?}",
         started.elapsed()
     );
-    client.close(deadline()).await;
+    client.close().await;
     drop(consumer);
     drop(producer);
     drop(client);
@@ -950,7 +913,7 @@ async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_recl
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     assert_eq!(durable_produce(&producer, b"expired-prefix").await, 0);
@@ -982,26 +945,21 @@ async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_recl
             max_buffered_messages: 1,
             ..ConsumerConfig::default()
         },
-        deadline(),
     )
     .await
     .unwrap();
     durable_consume(&consumer, 0).await;
     wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_compacted_total ").await;
     wait_runtime_counter(&fixture, 1, "tidemq_lifecycle_deleted_total ").await;
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let retained = consumer.next().await.unwrap().unwrap();
     assert_eq!(retained.offset(), 1);
     assert_eq!(retained.body(), b"retained-suffix");
     assert_eq!(
-        consumer
-            .ack(&retained, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
+        consumer.ack(&retained).await.unwrap().acknowledged_before,
         2
     );
-    client.close(deadline()).await;
+    client.close().await;
     drop(retained);
     drop(consumer);
     drop(producer);
@@ -1031,20 +989,17 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     fixture.start_all().await;
     let client = fixture.client(gateway).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     producer
-        .produce(
-            vec![
-                public::Message {
-                    key: Bytes::from_static(b"cold-key"),
-                    body: Bytes::from_static(b"cold-body"),
-                };
-                33
-            ],
-            deadline(),
-        )
+        .produce(vec![
+            public::Message {
+                key: Bytes::from_static(b"cold-key"),
+                body: Bytes::from_static(b"cold-body"),
+            };
+            33
+        ])
         .await
         .unwrap();
     let until = deadline();
@@ -1092,20 +1047,15 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
     for offset in 0..33 {
-        let delivery = consumer.recv(deadline()).await.unwrap().unwrap();
+        let delivery = consumer.recv().await.unwrap().unwrap();
         assert_eq!(delivery.offset(), offset);
         assert_eq!(delivery.body(), b"cold-body");
         assert_eq!(
-            consumer
-                .ack(&delivery, deadline())
-                .await
-                .unwrap()
-                .acknowledged_before,
+            consumer.ack(&delivery).await.unwrap().acknowledged_before,
             offset + 1
         );
     }
@@ -1151,7 +1101,7 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
             .unwrap_or(0);
     }
     assert_eq!(published, 1);
-    client.close(deadline()).await;
+    client.close().await;
     drop(consumer);
     drop(producer);
     drop(client);
@@ -1217,37 +1167,26 @@ async fn exercise_runtime_scaling(automatic: bool) {
     .await;
     let client = fixture.client(41).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     let message = || public::Message {
         key: Bytes::from_static(b"scaling-key"),
         body: Bytes::from_static(b"scaling-body"),
     };
-    producer
-        .produce(vec![message(), message()], deadline())
-        .await
-        .unwrap();
+    producer.produce(vec![message(), message()]).await.unwrap();
     let consumer = Consumer::claim(
         client.clone(),
         topic,
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 2);
+    assert_eq!(consumer.fill().await.unwrap(), 2);
     let first = consumer.next().await.unwrap().unwrap();
-    assert_eq!(
-        consumer
-            .ack(&first, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
-        1
-    );
+    assert_eq!(consumer.ack(&first).await.unwrap().acknowledged_before, 1);
     let held = consumer.next().await.unwrap().unwrap();
     assert_eq!(held.offset(), 1);
     if let Some(child) = storage_process.as_mut() {
@@ -1271,9 +1210,9 @@ async fn exercise_runtime_scaling(automatic: bool) {
         }
     };
     let traffic = async {
-        let ack = consumer.ack(&held, deadline()).await;
-        let produced = producer.produce(vec![message()], deadline()).await;
-        let read = consumer.fill(deadline()).await;
+        let ack = consumer.ack(&held).await;
+        let produced = producer.produce(vec![message()]).await;
+        let read = consumer.fill().await;
         (ack, produced, read)
     };
     let (plan, (ack, produced, read)) = tokio::join!(migration, traffic);
@@ -1295,7 +1234,7 @@ async fn exercise_runtime_scaling(automatic: bool) {
     wait_scaling_diagnostic(&fixture, 21, scaling_group_is_replaced).await;
     let ack = match ack {
         Ok(ack) => ack,
-        Err(_) => consumer.ack(&held, deadline()).await.unwrap(),
+        Err(_) => consumer.ack(&held).await.unwrap(),
     };
     assert_eq!(ack.acknowledged_before, 2);
     let receipt = match produced {
@@ -1310,7 +1249,7 @@ async fn exercise_runtime_scaling(automatic: bool) {
                 batch.first_sequence(),
                 batch.digest().to_vec(),
             );
-            let receipt = producer.retry(batch, deadline()).await.unwrap();
+            let receipt = producer.retry(batch).await.unwrap();
             assert_eq!(
                 identity,
                 (
@@ -1322,25 +1261,21 @@ async fn exercise_runtime_scaling(automatic: bool) {
             );
             receipt
         }
-        Err(_) => producer.produce(vec![message()], deadline()).await.unwrap(),
+        Err(_) => producer.produce(vec![message()]).await.unwrap(),
     };
     assert_eq!(receipt.first_offset, 2);
     assert!(producer.pending_batches().await.unwrap().is_empty());
     let during = read.unwrap_or(0);
-    assert_eq!(during + consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(during + consumer.fill().await.unwrap(), 1);
     let delivered = consumer.next().await.unwrap().unwrap();
     assert_eq!(delivered.offset(), 2);
     assert_eq!(delivered.body(), b"scaling-body");
     assert_eq!(
-        consumer
-            .ack(&delivered, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
+        consumer.ack(&delivered).await.unwrap().acknowledged_before,
         3
     );
     assert!(consumer.next().await.unwrap().is_none());
-    client.close(deadline()).await;
+    client.close().await;
     drop(consumer);
     drop(producer);
     drop(client);

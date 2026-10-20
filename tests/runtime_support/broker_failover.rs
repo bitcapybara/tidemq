@@ -300,7 +300,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     assert_eq!(durable_produce(&producer, b"before-broker-crash").await, 0);
@@ -310,7 +310,6 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
@@ -320,14 +319,11 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     processes.get_mut(&31).unwrap().kill().await.unwrap();
     let fault = Instant::now();
     assert!(
-        producer
-            .produce(
-                vec![public::Message {
-                    key: Bytes::new(),
-                    body: Bytes::from_static(b"after-broker-crash")
-                }],
-                Instant::now() + Duration::from_millis(50)
-            )
+        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_millis(50))
+            .scope(producer.produce(vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"after-broker-crash")
+            }]))
             .await
             .is_err()
     );
@@ -355,14 +351,11 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         processes.get_mut(&node).unwrap().kill().await.unwrap();
     }
     assert!(
-        producer
-            .produce(
-                vec![public::Message {
-                    key: Bytes::new(),
-                    body: Bytes::from_static(b"metadata-minority")
-                }],
-                Instant::now() + Duration::from_secs(1)
-            )
+        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(1))
+            .scope(producer.produce(vec![public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"metadata-minority")
+            }]))
             .await
             .is_err()
     );
@@ -379,8 +372,8 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     // Expire the original control TTL before requiring refusal of all new work.
     tokio::time::sleep_until(metadata_lost + tidemq::ownership::ControlPolicy::default().ttl).await;
     assert!(
-        producer
-            .retry(original, Instant::now() + Duration::from_secs(1))
+        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(1))
+            .scope(producer.retry(original))
             .await
             .is_err(),
         "A metadata minority cannot refresh an expired producer authority"
@@ -398,12 +391,12 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     assert_eq!(restored.generation, after.generation + 1);
     let status = client
         .admin()
-        .subscription_status(topic, 0, subscription, deadline())
+        .subscription_status(topic, 0, subscription)
         .await
         .unwrap();
     assert_eq!(status.assignment.unwrap().acknowledged_before, 4);
     observer.close().await;
-    client.close(deadline()).await;
+    client.close().await;
     for process in processes.values_mut() {
         if process.try_wait().unwrap().is_none() {
             process.kill().await.unwrap();

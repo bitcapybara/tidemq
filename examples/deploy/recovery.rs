@@ -145,8 +145,8 @@ impl Batch {
         evidence: &mut BatchEvidence,
         deadline: Instant,
     ) -> Result<Self> {
-        match producer
-            .produce(messages, request_deadline(deadline)?)
+        match tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+            .scope(producer.produce(messages))
             .await
         {
             Ok(receipt) => Ok(Self {
@@ -206,7 +206,10 @@ impl Batch {
                 .retry_attempts
                 .checked_add(1)
                 .context("Retry counter overflow")?;
-            match producer.retry(batch, request_deadline(until)?).await {
+            match tidemq_sdk::RequestContext::with_deadline(request_deadline(until)?)
+                .scope(producer.retry(batch))
+                .await
+            {
                 Ok(receipt) => {
                     evidence.check_pending(batch)?;
                     self.receipt = Some(evidence.receipt(receipt)?);
@@ -282,6 +285,8 @@ fn error_kind(error: &Error) -> &'static str {
         Error::Rpc { .. } => "rpc",
         Error::Resolve { .. } => "resolve",
         Error::Deadline => "deadline",
+        Error::Cancelled => "cancelled",
+        Error::RequestUnknown { .. } => "request_unknown",
         Error::Admission => "admission",
         Error::Remote { .. } => "remote",
         Error::ResponseMismatch => "response_mismatch",
