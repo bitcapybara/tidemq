@@ -10,7 +10,7 @@ use quic::{Cluster, GROUP, WAIT};
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -27,7 +27,10 @@ use tidemq::{
     transport::NodeGrant,
 };
 use tidemq_protocol::{Id, common::TrafficClass};
-use tokio::{sync::RwLock, time::Instant};
+use tokio::{
+    sync::{Notify, RwLock},
+    time::Instant,
+};
 
 const HEALTHY_GROUP: u64 = 3;
 
@@ -59,10 +62,25 @@ impl CapacitySource for Sample {
 type TestService = Service<Client, Sample, State>;
 
 #[derive(Default)]
+enum GroupFault {
+    #[default]
+    None,
+    Advanced,
+    TargetMismatch,
+    Retired,
+}
+
+#[derive(Default)]
 struct Router {
     nodes: RwLock<BTreeMap<u64, Arc<TestService>>>,
     data: RwLock<BTreeMap<u64, Raft<State>>>,
     metadata: RwLock<BTreeMap<u64, Raft<MetadataState>>>,
+    hold_view: AtomicBool,
+    view_entered: Notify,
+    resume_view: Notify,
+    drop_proof_reply: AtomicBool,
+    advance_after_proof: AtomicBool,
+    group_fault: StdMutex<GroupFault>,
 }
 struct Client {
     router: Arc<Router>,
@@ -119,6 +137,14 @@ impl Rpc for Client {
                 .cloned()
                 .ok_or(Error::Authority)?;
             let query = remote::decode_query(&remote::encode_query(&query)?)?;
+            if matches!(query, Query::View { .. })
+                && self.router.hold_view.swap(false, Ordering::AcqRel)
+            {
+                self.router.view_entered.notify_one();
+                tokio::time::timeout_at(deadline, self.router.resume_view.notified())
+                    .await
+                    .map_err(|_| Error::Unknown)?;
+            }
             let peer = NodeGrant {
                 certificate_pin: [1; 32],
                 certificate_name: format!("node-{}.local", self.sender),
@@ -133,10 +159,34 @@ impl Rpc for Client {
                 allowed_groups: vec![77, GROUP, HEALTHY_GROUP],
                 allowed_classes: vec![TrafficClass::Control],
             };
-            let response =
+            let mut response =
                 tokio::time::timeout_at(deadline, service.handle(&peer, query, deadline))
                     .await
                     .map_err(|_| Error::Unknown)??;
+            match &mut response {
+                Reply::Group { group, migration } => {
+                    let fault = std::mem::take(&mut *self.router.group_fault.lock().unwrap());
+                    match fault {
+                        GroupFault::None => {}
+                        GroupFault::Advanced => group.generation += 1,
+                        GroupFault::TargetMismatch => group.voters = [1, 2, 3].into(),
+                        GroupFault::Retired => *migration = None,
+                    }
+                }
+                Reply::Stable(_) => {
+                    if self.router.drop_proof_reply.swap(false, Ordering::AcqRel) {
+                        return Err(Error::Unknown);
+                    }
+                    if self
+                        .router
+                        .advance_after_proof
+                        .swap(false, Ordering::AcqRel)
+                    {
+                        *self.router.group_fault.lock().unwrap() = GroupFault::Advanced;
+                    }
+                }
+                _ => {}
+            }
             remote::decode_reply(&remote::encode_reply(&response)?)
         });
         result
@@ -419,6 +469,91 @@ async fn exercise(automatic: bool) {
             .values
             .get(&0),
         Some(&7)
+    );
+    let original_group = meta
+        .node(1)
+        .state
+        .application()
+        .await
+        .group(GROUP)
+        .unwrap()
+        .clone();
+    let original_revision = meta.node(1).state.application().await.revision();
+    let membership_log = data
+        .node(new_leader)
+        .state
+        .try_with_membership(|_, _, membership| *membership.log_id())
+        .await
+        .unwrap();
+    for fault in [
+        GroupFault::Advanced,
+        GroupFault::TargetMismatch,
+        GroupFault::Retired,
+    ] {
+        *router.group_fault.lock().unwrap() = fault;
+        assert!(
+            driver.execute(&plan, Instant::now() + WAIT).await.is_err(),
+            "A mismatched or retired completed record cannot authorize replay"
+        );
+    }
+    router.advance_after_proof.store(true, Ordering::Release);
+    assert!(
+        driver.execute(&plan, Instant::now() + WAIT).await.is_err(),
+        "Metadata must still confirm the original completed generation after the data proof"
+    );
+    router.drop_proof_reply.store(true, Ordering::Release);
+    assert!(
+        matches!(
+            driver.execute(&plan, Instant::now() + WAIT).await,
+            Err(Error::Unknown)
+        ),
+        "Losing the actual stable proof must remain unknown"
+    );
+    let recovered = driver
+        .plan(cluster, GROUP, 3, 4, Instant::now() + WAIT)
+        .await
+        .unwrap();
+    assert_eq!(
+        recovered, plan,
+        "A lost completed proof must retain the exact original canonical identity"
+    );
+    driver
+        .execute(&recovered, Instant::now() + WAIT)
+        .await
+        .unwrap();
+    router.hold_view.store(true, Ordering::Release);
+    let in_progress = client.call(
+        new_leader,
+        Query::Change { plan: plan.clone() },
+        Instant::now() + WAIT,
+    );
+    let repeated = async {
+        tokio::time::timeout(WAIT, router.view_entered.notified())
+            .await
+            .unwrap();
+        let result = driver.execute(&plan, Instant::now() + WAIT).await;
+        router.resume_view.notify_one();
+        result
+    };
+    let (in_progress, repeated) = tokio::join!(in_progress, repeated);
+    assert!(matches!(in_progress.unwrap(), Reply::Done));
+    repeated.expect("A completed plan replay verifies stable membership while another executor holds its mutation slot");
+    assert_eq!(
+        meta.node(1).state.application().await.revision(),
+        original_revision
+    );
+    assert_eq!(
+        meta.node(1).state.application().await.group(GROUP),
+        Some(&original_group)
+    );
+    assert_eq!(
+        data.node(new_leader)
+            .state
+            .try_with_membership(|_, _, membership| *membership.log_id())
+            .await
+            .unwrap(),
+        membership_log,
+        "Completed verification must not submit another membership change"
     );
     data.node(1).raft.shutdown().await.unwrap();
     assert!(matches!(

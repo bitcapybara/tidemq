@@ -13,6 +13,8 @@
 
 metadata/data leader 不必相同；每个 `remote::Service` 仅持有本节点实际托管的 replica。`Rpc` 使用配置证书绑定的确切目标、独立 request/operation 相关性和原 deadline，调用各组当时的真实 leader。封闭 Query 仅包含 Group、View、Estimate、Capacity、Prepare、Change、ObserveStable、Complete、Finish，编码上限 16 KiB，不开放通用 `metadata::Command` 或 `DataCommand`。读写受 mTLS role/group/class 校验；metadata leader 的 Complete 自己向当前 data leader 取新鲜实际 stable 观测，经 cluster/group/plan/voter/位置核验后才构造私有证明，调用者不能提交自报证明。每节点控制、只读、源快照采样及迁移工作都有有限准入，忙时拒绝以保护原生共识控制。
 
+已经持久 complete 的原计划重放走只读确认：metadata 的新鲜 Group 必须仍保存同一 canonical plan、原 generation+1 和 target；随后向当前 data leader 请求真实 quorum 与同 applied 锁的 ObserveStable，再次取得 metadata Group 确认原 complete 未被替代。证明仍从 data 请求开始计三秒，包含最后一次 metadata 确认时间，不刷新有效期。该路径不重新进入 Prepare、Change、Complete，不取得组的变更锁，不写 membership log 或 metadata revision；现有 repair lease 仍通过受限 Finish 对账释放。原记录退休、代次前移、目标不符、joint、实际证明无效或回复丢失均保守拒绝/Unknown。pending 继续原三阶段，不做整段自动重试。
+
 若 leader 变化或 quorum 不可达，返回阻塞/未知并恢复同一计划；新控制器通过 Group 查询返回原 pending 计划，不能盲建替代操作。完成后 Finish 对旧、新节点进行有限清理；未清理的 lease 由同一计划重试对账释放。joint 或声明/实际成员不一致时，新生产与控制能力保持保守暂停。元数据应用快照版本为 2；旧版目录显式拒绝，不隐式把没有复制预留的旧记录当作新版。
 
 元数据历史 fence/recovery 的 LogId 可能由已移出的 leader 产生。已提交冻结证据的快照校验核对 cluster/group、合法位置和永久注册的 Storage 身份；新证据仍须满足当前 voter 校验。已注册 Storage 身份及 zone 保留，退出节点设置 `schedulable=false`，不能删除角色或把旧身份改到另一区。这样不会因成员替换使原先成功的 fence/ACK 恢复记录变为非法。

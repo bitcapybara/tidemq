@@ -17,11 +17,11 @@ use tokio::{
 };
 
 use super::{
-    Capacity, Error, MembershipApplication, MembershipPlan, RepairBudget, RepairLease, Result,
-    ScalingMetrics,
+    Capacity, Error, MembershipApplication, MembershipPlan, MigrationRecord, RepairBudget,
+    RepairLease, Result, ScalingMetrics, StableMembership,
 };
 use crate::{
-    metadata::{DeploymentMode, MetadataState},
+    metadata::{DataGroup, DeploymentMode, MetadataState},
     replication::{DiskLog, DiskStateMachine, Raft},
     transport::NodeGrant,
 };
@@ -311,20 +311,7 @@ impl<R: Rpc> Coordinator<R> {
         added: u64,
         deadline: Instant,
     ) -> Result<MembershipPlan> {
-        let node = self.rpc.leader(self.metadata_group, deadline).await?;
-        let Reply::Group {
-            group: current,
-            migration,
-        } = self
-            .rpc
-            .call(node, Query::Group { group }, deadline)
-            .await?
-        else {
-            return Err(Error::Authority);
-        };
-        if current.group_id != group {
-            return Err(Error::Authority);
-        }
+        let (current, migration) = self.group(group, deadline).await?;
         if let Some(record) = migration {
             let same = record.plan.cluster_id == cluster
                 && record
@@ -363,18 +350,35 @@ impl<R: Rpc> Coordinator<R> {
     }
 
     pub async fn execute(&self, plan: &MembershipPlan, deadline: Instant) -> Result<()> {
-        for query in [
-            Query::Prepare {
-                plan: plan.clone(),
-                copy_bytes: 0,
-            },
-            Query::Change { plan: plan.clone() },
-            Query::Complete { plan: plan.clone() },
-        ] {
-            let group = query.group_id(self.metadata_group);
-            let node = self.rpc.leader(group, deadline).await?;
-            if !matches!(self.rpc.call(node, query, deadline).await?, Reply::Done) {
-                return Err(Error::Authority);
+        plan.validate()
+            .map_err(|reason| Error::Rejected { reason })?;
+        if !self.verify_completed(plan, deadline).await? {
+            for (phase, query) in [
+                (
+                    "prepare membership",
+                    Query::Prepare {
+                        plan: plan.clone(),
+                        copy_bytes: 0,
+                    },
+                ),
+                ("change membership", Query::Change { plan: plan.clone() }),
+                ("complete metadata", Query::Complete { plan: plan.clone() }),
+            ] {
+                let group = query.group_id(self.metadata_group);
+                let node = self
+                    .rpc
+                    .leader(group, deadline)
+                    .await
+                    .map_err(|error| phase_failure(phase, error))?;
+                if !matches!(
+                    self.rpc
+                        .call(node, query, deadline)
+                        .await
+                        .map_err(|error| phase_failure(phase, error))?,
+                    Reply::Done
+                ) {
+                    return Err(Error::Authority);
+                }
             }
         }
         // Old leaders may retain their node-local repair lease after an unknown response.
@@ -391,5 +395,144 @@ impl<R: Rpc> Coordinator<R> {
                 .await;
         }
         Ok(())
+    }
+
+    async fn group(
+        &self,
+        group: u64,
+        deadline: Instant,
+    ) -> Result<(DataGroup, Option<MigrationRecord>)> {
+        let node = self
+            .rpc
+            .leader(self.metadata_group, deadline)
+            .await
+            .map_err(|error| phase_failure("discover metadata leader", error))?;
+        let Reply::Group {
+            group: current,
+            migration,
+        } = self
+            .rpc
+            .call(node, Query::Group { group }, deadline)
+            .await
+            .map_err(|error| phase_failure("read canonical metadata group", error))?
+        else {
+            return Err(Error::Authority);
+        };
+        if current.group_id != group {
+            return Err(Error::Authority);
+        }
+        Ok((current, migration.map(|record| *record)))
+    }
+
+    async fn verify_completed(&self, plan: &MembershipPlan, deadline: Instant) -> Result<bool> {
+        let (group, record) = self.group(plan.group_id, deadline).await?;
+        if !completed_record(plan, &group, record.as_ref())? {
+            return Ok(false);
+        }
+        // Completed replays verify fresh authority without acquiring a mutation slot.
+        let started = Instant::now();
+        let node = self
+            .rpc
+            .leader(plan.group_id, deadline)
+            .await
+            .map_err(|error| phase_failure("discover completed data leader", error))?;
+        let Reply::Stable(observation) = self
+            .rpc
+            .call(node, Query::ObserveStable { plan: plan.clone() }, deadline)
+            .await
+            .map_err(|error| phase_failure("verify completed stable membership", error))?
+        else {
+            return Err(Error::Authority);
+        };
+        observation.validate_for(plan, node)?;
+        let (latest, record) = self.group(plan.group_id, deadline).await?;
+        if !completed_record(plan, &latest, record.as_ref())? {
+            return Err(Error::Authority);
+        }
+        drop(StableMembership::from_remote(
+            observation.evidence,
+            started,
+            deadline,
+        )?);
+        Ok(true)
+    }
+}
+
+fn completed_record(
+    plan: &MembershipPlan,
+    group: &DataGroup,
+    record: Option<&MigrationRecord>,
+) -> Result<bool> {
+    if let Some(record) = record
+        && record.plan == *plan
+        && record.is_complete()
+    {
+        if group.generation != plan.generation.checked_add(1).ok_or(Error::Configuration)?
+            || group.voters != plan.target
+        {
+            return Err(Error::Authority);
+        }
+        return Ok(true);
+    }
+    if group.generation > plan.generation {
+        return Err(Error::Rejected {
+            reason: crate::metadata::Rejection::Superseded,
+        });
+    }
+    if group.generation != plan.generation
+        || group.voters != plan.previous
+        || record.is_some_and(|record| !record.is_complete() && record.plan != *plan)
+    {
+        return Err(Error::Authority);
+    }
+    Ok(false)
+}
+
+#[derive(Debug, snafu::Snafu)]
+#[snafu(display("Scaling RPC failed during {phase}"))]
+struct PhaseFailure {
+    phase: &'static str,
+    source: Box<dyn std::error::Error + Send + Sync>,
+}
+
+fn phase_failure(phase: &'static str, error: Error) -> Error {
+    match error {
+        Error::Remote { source } => Error::Remote {
+            source: Box::new(PhaseFailure { phase, source }),
+        },
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rpc_phase_context_preserves_the_original_typed_source_and_unknown_policy() {
+        let original = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        let error = phase_failure(
+            "verify completed stable membership",
+            Error::Remote {
+                source: Box::new(original),
+            },
+        );
+        let Error::Remote { source } = error else {
+            panic!("The remote error class must be preserved");
+        };
+        let phase = source.downcast_ref::<PhaseFailure>().unwrap();
+        assert_eq!(phase.phase, "verify completed stable membership");
+        assert_eq!(
+            phase
+                .source
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::ConnectionReset
+        );
+        assert!(matches!(
+            phase_failure("prepare membership", Error::Unknown),
+            Error::Unknown
+        ));
     }
 }

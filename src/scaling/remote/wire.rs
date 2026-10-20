@@ -178,6 +178,29 @@ pub struct Observation {
     pub(super) evidence: MembershipEvidence,
 }
 
+impl Observation {
+    pub(super) fn validate_for(&self, plan: &MembershipPlan, source: u64) -> Result<()> {
+        let membership = self.evidence.membership_log;
+        let applied = self.evidence.applied_log;
+        if self.source != source
+            || !plan.target.contains(&source)
+            || self.voters != plan.target
+            || self.evidence.plan != *plan
+            || applied.index < membership.index
+            || applied.leader_id.term < membership.leader_id.term
+            || membership.leader_id.term == 0
+            || membership.leader_id.node_id == 0
+            || !plan
+                .previous
+                .union(&plan.target)
+                .any(|node| *node == membership.leader_id.node_id)
+        {
+            return Err(Error::Authority);
+        }
+        Ok(())
+    }
+}
+
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let result = postcard::to_stdvec(value).map_err(|_| Error::Configuration)?;
     if result.len() > MAX_WIRE_BYTES {

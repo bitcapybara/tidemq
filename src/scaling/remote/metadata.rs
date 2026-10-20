@@ -226,14 +226,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         let Reply::Stable(observation) = reply else {
             return Err(Error::Authority);
         };
-        if observation.source != node
-            || !plan.target.contains(&node)
-            || observation.voters != plan.target
-            || observation.evidence.plan != *plan
-            || observation.evidence.applied_log.index < observation.evidence.membership_log.index
-        {
-            return Err(Error::Authority);
-        }
+        observation.validate_for(plan, node)?;
         let proof = StableMembership::from_remote(observation.evidence, started, deadline)?;
         let latest = self.view(plan, deadline).await?;
         self.validate_view(plan, self.config.node_id, &latest)?;

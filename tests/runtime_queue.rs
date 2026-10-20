@@ -1261,13 +1261,27 @@ async fn exercise_runtime_scaling(automatic: bool) {
     if let Some(plan) = plan {
         assert_eq!(plan.previous(), &[21, 22, 23].into());
         assert_eq!(plan.target(), &[21, 22, 24].into());
-        let repeated = fixture
+        let repeated = match fixture
             .running
             .get(&11)
             .unwrap()
             .replace_replica(2, 23, 24, deadline())
             .await
-            .unwrap();
+        {
+            Ok(repeated) => repeated,
+            Err(error) => {
+                let evidence_deadline = Instant::now() + Duration::from_secs(2);
+                let source = scaling_diagnostic(&fixture, 21, evidence_deadline)
+                    .await
+                    .unwrap_or_default();
+                let context =
+                    scaling_diagnostic_context(&fixture, 21, &source, evidence_deadline).await;
+                let error = anyhow::Error::new(error);
+                panic!(
+                    "Completed replica replacement replay failed: plan={plan:?}, error={error:#}, context={context:?}"
+                );
+            }
+        };
         assert_eq!(
             repeated, plan,
             "A completion retry must retain its original plan identity"
@@ -1358,20 +1372,35 @@ async fn wait_scaling_diagnostic(
             last = value;
         }
         if Instant::now() >= until {
-            let mut context = BTreeMap::from([(node, scaling_diagnostic_summary(&last))]);
-            let evidence_deadline = Instant::now() + Duration::from_secs(2);
-            for observed in [11, 12, 13, 24] {
-                if observed != node {
-                    let value = scaling_diagnostic(fixture, observed, evidence_deadline)
-                        .await
-                        .unwrap_or_default();
-                    context.insert(observed, scaling_diagnostic_summary(&value));
-                }
-            }
+            let context = scaling_diagnostic_context(
+                fixture,
+                node,
+                &last,
+                Instant::now() + Duration::from_secs(2),
+            )
+            .await;
             panic!("Scaling diagnostic did not satisfy its predicate: {context:?}");
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+async fn scaling_diagnostic_context(
+    fixture: &Fixture,
+    node: u64,
+    value: &serde_json::Value,
+    deadline: Instant,
+) -> BTreeMap<u64, serde_json::Value> {
+    let mut context = BTreeMap::from([(node, scaling_diagnostic_summary(value))]);
+    for observed in [11, 12, 13, 21, 24] {
+        if observed != node {
+            let value = scaling_diagnostic(fixture, observed, deadline)
+                .await
+                .unwrap_or_default();
+            context.insert(observed, scaling_diagnostic_summary(&value));
+        }
+    }
+    context
 }
 
 async fn scaling_diagnostic(
@@ -1425,6 +1454,10 @@ fn scaling_diagnostic_summary(value: &serde_json::Value) -> serde_json::Value {
         "disk_available_bytes": value["capacity"]["data_filesystem"]["available_bytes"],
         "reserved_storage_bytes": value["capacity"]["reserved_storage_bytes"],
         "quota_blocked": value["quota"]["blocked"],
+        "quota_sample_age_ms": value["quota"]["sample_age_ms"],
+        "metadata_revision": value["metadata"]["revision"],
+        "metadata_applied": value["metadata_storage"]["applied_log"],
+        "metadata_vote": value["metadata_storage"]["vote"],
         "data_groups": groups,
     })
 }
