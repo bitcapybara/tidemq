@@ -385,11 +385,11 @@ async fn scan_segment(
         }
         if let Some(id) = record.id {
             if segment.reference_only
-                && index.get(&id).is_none_or(|location| {
-                    location.segment != segment.id
-                        || location.offset != offset
-                        || location.sequence != frame.sequence
-                        || location.frame_bytes != frame.bytes
+                && index.get(&id).is_some_and(|location| {
+                    location.segment == segment.id
+                        && (location.offset != offset
+                            || location.sequence != frame.sequence
+                            || location.frame_bytes != frame.bytes)
                 })
             {
                 return Err(corrupt(

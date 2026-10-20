@@ -222,3 +222,93 @@ fn maximum_reference_checkpoint_and_large_control_state_fit_default_bound() {
         disk::value_frame(&checkpoint, JournalOptions::default().max_checkpoint_bytes).unwrap();
     assert!(encoded.len() < JournalOptions::default().max_checkpoint_bytes);
 }
+
+#[tokio::test]
+async fn partial_purge_of_reference_only_segment_does_not_revive_or_reject_dead_frames() {
+    let dir = Directory::new();
+    let small = JournalOptions {
+        max_file_bytes: 96 * 1024,
+        control_reserve_bytes: 60 * 1024,
+        max_segments: 32,
+        max_retained_records: 128,
+        ..options()
+    };
+    let (journal, _, recovery) = SegmentedJournal::open(dir.path(), small.clone(), [7; 32])
+        .await
+        .unwrap();
+    drop(recovery);
+    let mut records = Vec::new();
+    while journal.statistics().current_file_bytes < 32 * 1024 {
+        let value = records.len() as u8;
+        let (id, durable) = journal.append_retained(vec![value; 900]).await.unwrap();
+        durable.durable().await.unwrap();
+        records.push((id, value));
+    }
+    let retained = records
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| position % 3 != 2)
+        .map(|(_, record)| record.0)
+        .collect::<Vec<_>>();
+    journal
+        .checkpoint(b"first".to_vec(), retained.clone())
+        .await
+        .unwrap();
+    assert_eq!(journal.statistics().relocation_operations, 1);
+    let manifest: format::Manifest = disk::read_value(
+        &dir.path().join(SEGMENTED_MANIFEST_FILE),
+        format::MAX_MANIFEST_BYTES,
+    )
+    .await
+    .unwrap();
+    let relocated = manifest.sealed.iter().find(|s| s.reference_only).unwrap();
+    let checkpoint: format::Checkpoint = disk::read_value(
+        &dir.path()
+            .join(format::checkpoint_name(manifest.checkpoint.unwrap().id)),
+        small.max_checkpoint_bytes,
+    )
+    .await
+    .unwrap();
+    let copied = checkpoint
+        .references
+        .iter()
+        .filter(|r| r.segment == relocated.id)
+        .map(|r| r.id)
+        .collect::<Vec<_>>();
+    assert!(copied.len() >= 2);
+    let dropped = *copied.first().unwrap();
+    journal.close().await.unwrap();
+    drop(journal);
+    let low_pressure = JournalOptions {
+        max_file_bytes: 128 * 1024,
+        ..small
+    };
+    let (journal, _, mut recovery) =
+        SegmentedJournal::open(dir.path(), low_pressure.clone(), [7; 32])
+            .await
+            .unwrap();
+    while recovery.next().await.unwrap().is_some() {}
+    let retained = retained
+        .into_iter()
+        .filter(|id| *id != dropped)
+        .collect::<Vec<_>>();
+    journal
+        .checkpoint(b"second".to_vec(), retained.clone())
+        .await
+        .unwrap();
+    assert_eq!(journal.statistics().relocation_operations, 0);
+    assert!(dir.path().join(relocated.name()).exists());
+    journal.close().await.unwrap();
+    drop(journal);
+    let (journal, _, mut recovery) = SegmentedJournal::open(dir.path(), low_pressure, [7; 32])
+        .await
+        .unwrap();
+    assert_eq!(recovery.checkpoint(), b"second");
+    let mut seen = Vec::new();
+    while let Some(record) = recovery.next().await.unwrap() {
+        seen.push(record.id.unwrap());
+    }
+    assert_eq!(seen, retained);
+    assert!(!seen.contains(&dropped));
+    journal.close().await.unwrap();
+}

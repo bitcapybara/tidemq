@@ -116,7 +116,9 @@ pub struct SegmentedJournal {
     metrics: Option<Arc<OperationMetrics>>,
 }
 impl JournalOptions {
-    pub fn validate(&self) -> Result<()> { self.validate_segmented() }
+    pub fn validate(&self) -> Result<()> {
+        self.validate_segmented()
+    }
     pub fn validate_segmented(&self) -> Result<()> {
         self.validate_basic()?;
         let publication = self.publication_reserve()?;

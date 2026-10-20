@@ -1,8 +1,8 @@
-use std::time::Duration;
-use serde::Serialize;
-use tokio::sync::Semaphore;
 use super::codec::HEADER_BYTES;
-use super::{Error,Result};
+use super::{Error, Result};
+use serde::Serialize;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 
 #[derive(Clone, Debug)]
 pub struct JournalOptions {
@@ -58,7 +58,6 @@ impl JournalOptions {
     }
 }
 
-
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct JournalStatistics {
     pub written_records: u64,
@@ -82,4 +81,3 @@ pub struct JournalStatistics {
     pub relocation_operations: u64,
     pub relocated_bytes: u64,
 }
-
