@@ -1,12 +1,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "opentelemetry")]
+mod otel;
+
 #[derive(Debug)]
 pub struct Metrics {
-    pub(crate) requests: AtomicU64,
-    pub(crate) retries: AtomicU64,
-    pub(crate) unknown: AtomicU64,
-    pub(crate) deliveries: AtomicU64,
-    pub(crate) acknowledged: AtomicU64,
+    requests: AtomicU64,
+    retries: AtomicU64,
+    unknown: AtomicU64,
+    deliveries: AtomicU64,
+    acknowledged: AtomicU64,
     request_duration_ns: AtomicU64,
     admission_wait_ns: AtomicU64,
     admitted_bytes: AtomicU64,
@@ -14,6 +17,8 @@ pub struct Metrics {
     active_deliveries: AtomicU64,
     #[cfg(feature = "metrics")]
     latency: prometheus_client::metrics::histogram::Histogram,
+    #[cfg(feature = "opentelemetry")]
+    telemetry: otel::Instruments,
 }
 
 impl Default for Metrics {
@@ -33,6 +38,8 @@ impl Default for Metrics {
             latency: prometheus_client::metrics::histogram::Histogram::new([
                 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 30.0, 300.0,
             ]),
+            #[cfg(feature = "opentelemetry")]
+            telemetry: otel::Instruments::new(&opentelemetry::global::meter("tidemq-sdk")),
         }
     }
 }
@@ -52,6 +59,36 @@ pub struct MetricsSnapshot {
 }
 
 impl Metrics {
+    pub(crate) fn record_request(&self) {
+        increment(&self.requests, 1);
+        #[cfg(feature = "opentelemetry")]
+        self.telemetry.requests.add(1, &[]);
+    }
+
+    pub(crate) fn record_retry(&self) {
+        increment(&self.retries, 1);
+        #[cfg(feature = "opentelemetry")]
+        self.telemetry.retries.add(1, &[]);
+    }
+
+    pub(crate) fn record_unknown(&self) {
+        increment(&self.unknown, 1);
+        #[cfg(feature = "opentelemetry")]
+        self.telemetry.unknown.add(1, &[]);
+    }
+
+    pub(crate) fn record_deliveries(&self, count: u64) {
+        increment(&self.deliveries, count);
+        #[cfg(feature = "opentelemetry")]
+        self.telemetry.deliveries.add(count, &[]);
+    }
+
+    pub(crate) fn record_acknowledged(&self, count: u64) {
+        increment(&self.acknowledged, count);
+        #[cfg(feature = "opentelemetry")]
+        self.telemetry.acknowledged.add(count, &[]);
+    }
+
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             requests: self.requests.load(Ordering::Relaxed),
@@ -92,6 +129,8 @@ impl Metrics {
             },
             1,
         );
+        #[cfg(feature = "opentelemetry")]
+        self.telemetry.charge(bytes, delivery, true);
         Charge {
             metrics: self.clone(),
             bytes,
@@ -121,6 +160,10 @@ impl Drop for Charge {
         let _ = count.try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
             Some(old.saturating_sub(1))
         });
+        #[cfg(feature = "opentelemetry")]
+        self.metrics
+            .telemetry
+            .charge(self.bytes, self.delivery, false);
     }
 }
 
@@ -137,6 +180,11 @@ impl Drop for Timer {
                 &self.metrics.admission_wait_ns,
                 u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
             );
+            #[cfg(feature = "opentelemetry")]
+            self.metrics
+                .telemetry
+                .admission_wait
+                .record(elapsed.as_secs_f64(), &[]);
             return;
         }
         increment(
@@ -145,10 +193,15 @@ impl Drop for Timer {
         );
         #[cfg(feature = "metrics")]
         self.metrics.latency.observe(elapsed.as_secs_f64());
+        #[cfg(feature = "opentelemetry")]
+        self.metrics
+            .telemetry
+            .operation_duration
+            .record(elapsed.as_secs_f64(), &[]);
     }
 }
 
-pub(crate) fn increment(counter: &AtomicU64, count: u64) {
+fn increment(counter: &AtomicU64, count: u64) {
     let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
         Some(old.saturating_add(count))
     });

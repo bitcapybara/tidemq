@@ -2020,6 +2020,7 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -3412,6 +3413,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "opentelemetry",
+ "opentelemetry_sdk",
  "prometheus-client",
  "prost",
  "rcgen",

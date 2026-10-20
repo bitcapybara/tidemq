@@ -1,6 +1,6 @@
 # 观测与诊断契约
 
-服务入口拥有全局 tracing subscriber、有限日志队列和统一 prometheus-client Registry。可选 OTLP 默认关闭，由入口拥有官方 OpenTelemetry SDK/exporter 和单个有界 Tokio worker；SDK 的可选桥接只读取宿主上下文。基础标签仅使用有限 operation/stage/outcome，request/tenant/topic/partition/object ID 留在受控事件或诊断。白名单、采样、字段/字节/退出预算和 Collector 故障行为见[追踪手册](../operations/tracing.zh-CN.md)。
+服务入口拥有全局 tracing subscriber、有限日志队列和统一 prometheus-client Registry。可选 OTLP 默认关闭，由入口拥有官方 OpenTelemetry SDK/exporter 和单个有界 Tokio worker。SDK 的可选桥接读取宿主 trace 上下文，并通过宿主 MeterProvider 记录固定十个无动态标签的指标；不安装自己的全局设施、exporter 或 reader。SDK 同义的 Prometheus/OTel 观测不得重复求和。基础标签仅使用有限 operation/stage/outcome，request/tenant/topic/partition/object ID 留在受控事件或诊断。白名单、采样、字段/字节/退出预算和 Collector 故障行为见[追踪手册](../operations/tracing.zh-CN.md)。
 
 逻辑 operation_id 与每次 request_id/attempt 分开，跨 Gateway、异步任务和重试传递有界请求级 traceparent。trace 不参与去重、fence 或持久状态，也不绑定整个长连接；无效或未采集上下文不改变业务事实。临时详细过滤最多 300 秒后恢复；未采集历史不能事后补齐。错误计数和限速摘要独立于日志输出。
 

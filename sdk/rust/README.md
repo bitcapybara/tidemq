@@ -66,6 +66,8 @@ Use `scope_traceparent(valid_w3c_context, sdk_operation).await` to propagate a h
 
 The optional `opentelemetry` feature reads the current host tracing span through OpenTelemetry 0.33 and tracing-opentelemetry 0.34. The host supplies its subscriber and bridge layer, including the `tidemq_trace` target. SDK spans skip all arguments; an explicit `scope_traceparent` takes precedence. The feature installs no provider, exporter, subscriber, global propagator or HTTP listener. See [bounded service trace export](../../docs/operations/tracing.zh-CN.md) for the independent server-side policy.
 
+This feature also records ten fixed, unlabelled instruments through the host's global `MeterProvider`, under scope `tidemq-sdk`. Install that provider before creating clients. Request/retry/unknown/delivery/ACK counters aggregate across clients; operation and admission durations are second-based histograms. UpDownCounters track admitted bytes and retained batch/delivery objects until their final release. Client destruction does not reset cumulative event counters. The SDK creates no metric exporter or background reader; the host owns export budgets, flush and shutdown. The existing Prometheus registry API remains independently available; do not add both representations of the same measurement together. See [the SDK guide](../../docs/guide/rust-sdk.zh-CN.md) for instrument names and ownership.
+
 Run from the repository root:
 
 ```bash

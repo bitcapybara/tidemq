@@ -53,7 +53,7 @@ Candidate recovery targets are typically within 1 second for planned migration, 
 
 ## Getting started
 
-The repository pins Rust 1.96.0 with rustfmt and Clippy. Create private local certificates, credentials, and a fresh RF1 configuration, then start the service:
+The repository pins Rust 1.99.1 with rustfmt, Clippy, and matching LLVM coverage tools. Create private local certificates, credentials, and a fresh RF1 configuration, then start the service:
 
 ```sh
 cargo build --locked

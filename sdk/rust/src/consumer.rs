@@ -16,7 +16,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-use crate::{Client, Error, Result, admin::bytes, metrics::increment};
+use crate::{Client, Error, Result, admin::bytes};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeliveryOrdering {
@@ -546,10 +546,10 @@ impl Consumer {
             )?;
         }
         state.assignment.issued_before = batch.issued_before;
-        increment(
-            &self.client.inner.metrics.deliveries,
-            u64::try_from(count).unwrap_or(u64::MAX),
-        );
+        self.client
+            .inner
+            .metrics
+            .record_deliveries(u64::try_from(count).unwrap_or(u64::MAX));
         Ok(count)
     }
 
@@ -622,7 +622,7 @@ impl Consumer {
                     {
                         return Err(error);
                     }
-                    increment(&self.client.inner.metrics.retries, 1);
+                    self.client.inner.metrics.record_retry();
                 }
                 result => return result,
             }
@@ -817,10 +817,10 @@ impl Consumer {
             response.acknowledged_before,
             self.config.max_buffered_messages,
         )?;
-        increment(
-            &self.client.inner.metrics.acknowledged,
-            deliveries.len() as u64,
-        );
+        self.client
+            .inner
+            .metrics
+            .record_acknowledged(deliveries.len() as u64);
         Ok(())
     }
 

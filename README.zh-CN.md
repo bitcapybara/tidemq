@@ -53,7 +53,7 @@ TideMQ 面向数据采集与流处理，将消息服务、复制式预写日志�
 
 ## 开始使用
 
-仓库固定 Rust 1.96.0 及 rustfmt/Clippy。生成本地私有证书、令牌和全新 RF1 配置后启动服务：
+仓库固定 Rust 1.99.1 及 rustfmt、Clippy、匹配的 LLVM 覆盖率工具。生成本地私有证书、令牌和全新 RF1 配置后启动服务：
 
 ```sh
 cargo build --locked

@@ -17,7 +17,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-use crate::{Client, Error, Result, admin::bytes, metrics::increment};
+use crate::{Client, Error, Result, admin::bytes};
 
 struct Batch {
     payload: public::ProduceBatch,
@@ -438,7 +438,7 @@ impl Producer {
 
     fn record_unknown(&self, result: &Result<ProduceReceipt>) {
         if result.as_ref().is_err_and(Error::outcome_unknown) {
-            increment(&self.client.inner.metrics.unknown, 1);
+            self.client.inner.metrics.record_unknown();
         }
     }
 
@@ -468,7 +468,7 @@ impl Producer {
             {
                 break;
             }
-            increment(&self.client.inner.metrics.retries, 1);
+            self.client.inner.metrics.record_retry();
             result = self.retry_once(batch, deadline).await;
         }
         result
@@ -589,7 +589,7 @@ impl Producer {
         response: Result<tidemq_transport::rpc::RpcResponse>,
         _deadline: Instant,
     ) -> Result<ProduceReceipt> {
-        increment(&self.client.inner.metrics.requests, 1);
+        self.client.inner.metrics.record_request();
         let response = match response {
             Ok(response) => response.receive().await.map_err(Error::from),
             Err(error) => Err(error),

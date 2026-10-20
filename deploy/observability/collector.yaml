@@ -1,4 +1,4 @@
-# OpenTelemetry Collector core 0.162.0. The default sink discards traces after reception.
+# OpenTelemetry Collector core 0.162.0. The default sink discards received telemetry.
 receivers:
   otlp:
     protocols:
@@ -46,6 +46,10 @@ service:
                 without_units: false
   pipelines:
     traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [nop]
+    metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [nop]

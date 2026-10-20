@@ -24,7 +24,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{Admin, Error, Metrics, Result, metrics::increment};
+use crate::{Admin, Error, Metrics, Result};
 
 /// Queues, reconnects and native transport all have finite application-owned bounds.
 #[derive(Clone, Debug)]
@@ -471,7 +471,7 @@ impl Client {
         let _timer = self.inner.metrics.timer();
         for attempt in 0..self.inner.config.max_reconnect_attempts {
             let frame = self.frame(kind, class, Id::random()?, operation, payload, deadline)?;
-            increment(&self.inner.metrics.requests, 1);
+            self.inner.metrics.record_request();
             let response = if kind == FrameKind::AckBatch {
                 self.ack_attempt(frame, deadline).await
             } else {
@@ -495,7 +495,7 @@ impl Client {
                     if (error.retry_transport() || error.retry_rejected())
                         && attempt + 1 < self.inner.config.max_reconnect_attempts =>
                 {
-                    increment(&self.inner.metrics.retries, 1);
+                    self.inner.metrics.record_retry();
                     if self.backoff(operation, attempt, deadline).await.is_err() {
                         return Err(error);
                     }

@@ -10,7 +10,7 @@ docker compose -f deploy/observability/compose.yaml --profile observability ps
 
 示例固定 OpenTelemetry Collector core 0.162.0、Prometheus 3.15.0、Grafana OSS 13.2.4，首次执行 up 会拉取这些镜像。配置使用 host networking，让容器通过 `127.0.0.1:8410` 抓取已有管理面，不需要将管理监听改为公网地址。需要 Linux Docker Engine，或显式启用 host networking 的 Docker Desktop 4.34 及以上版本，具体限制见[Docker 官方说明](https://docs.docker.com/engine/network/drivers/host/)。host 模式没有独立网络命名空间；不要增加公网监听或假定 ports 映射会隔离它。
 
-TideMQ 默认关闭 OTLP。需要验证导出时，按[追踪手册](../../docs/operations/tracing.zh-CN.md)在节点配置中开启 `[tracing]`，发送至 `http://127.0.0.1:4318/v1/traces`。Collector 使用[官方 core 镜像](https://opentelemetry.io/docs/collector/install/docker/)；仓库配置默认 `nop`，接收后丢弃，不提供 trace 搜索或持久存储。接后端前须另行设置认证、有限队列/重试和存储保留。
+TideMQ 默认关闭 OTLP。需要验证导出时，按[追踪手册](../../docs/operations/tracing.zh-CN.md)在节点配置中开启 `[tracing]`，发送至 `http://127.0.0.1:4318/v1/traces`。SDK 宿主启用 OpenTelemetry 指标时，可以把自己的有限 OTLP exporter 指向同一端口的 `/v1/metrics`；服务不会因此自动导出第二套指标。Collector 使用[官方 core 镜像](https://opentelemetry.io/docs/collector/install/docker/)；trace 与 metrics pipeline 均默认 `nop`，接收后丢弃，不提供搜索或持久存储。接后端前须另行设置认证、有限队列/重试和存储保留。
 
 | 组件 | 本地入口与行为 | 独立资源限额 |
 | --- | --- | --- |

@@ -105,6 +105,10 @@ SDK 从不安装全局 subscriber/exporter/HTTP 服务或 global allocator。`tr
 
 可选 `opentelemetry` feature 使用 OpenTelemetry 0.33 与 tracing-opentelemetry 0.34，从宿主当前 span 获取 W3C 父上下文；显式 `scope_traceparent` 优先。宿主负责兼容的 layer、provider、采样和有界 exporter，SDK 不创建或替换全局设施。服务端可选导出的配置、隐私白名单及故障边界见[链路追踪](../operations/tracing.zh-CN.md)。
 
+同一 feature 也将 SDK 指标记录到宿主全局 `MeterProvider`，scope 为 `tidemq-sdk`。必须在创建 Client 之前安装 provider；未安装时为 no-op，事后安装不能追溯先前观测。固定十个无动态标签的 instrument：`tidemq.sdk.requests/retries/unknown/deliveries/acknowledged` 为累计 counter，`tidemq.sdk.operation.duration` 与 `tidemq.sdk.admission.wait` 为秒级 histogram，`tidemq.sdk.admitted.bytes/retained.batches/active.deliveries` 为按资源取得/释放更新的 UpDownCounter。共用宿主 meter 的多个 Client 合并计数，释放 Client 不会重置累计 counter；最终对象释放才归还相应资源量。
+
+SDK 只取得 instrument，不安装 recorder、provider、exporter 或后台导出线程。宿主负责 OTLP 目标、有限队列、导出周期、force-flush 和 shutdown；这些成本不计作 SDK 的独立设施。OpenTelemetry 路径与下面的 Prometheus 路径可分别启用，二者的同义指标不能重复求和。此处复用已有 OTel 依赖，没有为同一批事件再叠加 `metrics` 全局 facade。服务端保留现有固定类型 Prometheus 指标与 tracing 日志，指标可以继续由 Collector/Prometheus 采集，不增加第二套进程级 recorder。
+
 启用 `metrics` feature 后，调用 `client.metrics().register(registry.sub_registry_with_prefix("my_client"))` 复用宿主 registry。指标只有固定系列：请求/重试/未知结果、交付与持久 ACK 计数、操作时延直方图、准入等待累计时间，以及保留字节、批次、Delivery 的逻辑 gauge。completed 后仍被宿主持有的 `PendingBatch`/`Delivery` 也计费，不能把 gauge 直接解释为未提交消息数。
 
 ```bash

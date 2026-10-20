@@ -27,6 +27,7 @@ metrics = ["dep:prometheus-client"]
 opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 
 [dev-dependencies]
+opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["metrics", "testing"] }
 rcgen = { version = "=0.14.10", default-features = false, features = ["pem", "aws_lc_rs"] }
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 

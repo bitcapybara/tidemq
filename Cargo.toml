@@ -32,7 +32,7 @@ snafu = "=0.9.2"
 tokio = { version = "=1.53.3", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = { version = "=0.7.20", features = ["rt"] }
 tracing = "=0.1.44"
-opentelemetry = { version = "=0.33.1", default-features = false, features = ["trace"] }
+opentelemetry = { version = "=0.33.1", default-features = false, features = ["trace", "metrics"] }
 tracing-opentelemetry = { version = "=0.34.0", default-features = false }
 uuid = { version = "=1.28.0", features = ["serde"] }
 tidemq-protocol = { path = "crates/tidemq-protocol", version = "0.1.0" }
