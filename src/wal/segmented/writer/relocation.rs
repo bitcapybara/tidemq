@@ -14,13 +14,22 @@ impl Writer {
             .max_file_bytes
             .saturating_sub(self.options.control_reserve_bytes)
             .saturating_sub(self.options.segment_target_bytes);
-        if self.physical_bytes < threshold {
+        let segments = self.manifest.sealed.len().saturating_add(1).saturating_add(
+            self.retired
+                .iter()
+                .filter(|file| file.kind == SegmentedFileKind::Segment)
+                .count(),
+        );
+        if self.physical_bytes < threshold && segments < self.options.max_segments.saturating_sub(2)
+        {
             return Ok(None);
         }
+        // The ordered checkpoint barrier seals the old active before any source frame is copied.
         let candidate = self
             .manifest
             .sealed
             .iter()
+            .chain(std::iter::once(&self.manifest.active))
             .filter_map(|segment| {
                 let live = references
                     .iter()
@@ -115,6 +124,8 @@ impl Writer {
         sync_directory(&self.directory).await?;
         #[cfg(test)]
         super::super::fault_tests::boundary("segment_directory_sync");
+        #[cfg(test)]
+        super::super::fault_tests::boundary("relocation_copy_sync");
         let mut segment = plan.segment.clone();
         segment.checksum = *hash.finalize().as_bytes();
         if let Some(metrics) = &self.metrics {
