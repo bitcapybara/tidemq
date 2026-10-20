@@ -138,3 +138,7 @@ RF3 的 `4-baseline` 测量阶段有 7200 个 Produce/Sync 样本，没有超过
 ## 下一轮固定策略
 
 `f86bae0` 将 policy/summary 升级到 schema 4，固定八对、十项比较的 Bonferroni 区间、三个主指标 0.15 log 半宽预算；p99 继续参与显著回退否决，但不作窄精度放行证明。十九项 Node 测试通过，包括同二进制显著改善的时序偏差拒绝、宽 p99 的明确诊断状态和主指标噪声拒绝。详细检测边界见[性能手册](../performance.zh-CN.md)。这项工具验证没有把旧报告晋升为新基线，新八对 cohort 必须完整重新执行。
+
+`5a7db0f35632457dd0d62f0efbec039b3f3d9ba4` 已推送 main，启动 [Performance 39373827288](https://github.com/bitcapybara/tidemq/actions/runs/39373827288) 及新 [Rust 39373827309](https://github.com/bitcapybara/tidemq/actions/runs/39373827309)。虽然该提交与此前七项 CI 全绿的 `aaaf234` 之间没有 Rust 源码变化，新一轮 mimalloc job 仍失败：combined 用例的 `recv` 返回 Deadline，分角色 RF3 用例首先收到 offset 5 而断言期待 0。两项均需独立定位，不能归为之前的磁盘容量问题，也不能把先前通过写成当前全部 CI 通过。
+
+当前性能和开发服务器的 `corrected-aa-2` 八对 cohort 保持原输入完整执行，不挑选试次。此文档提交会使 main 前进；已有晋升步骤的 exact-HEAD 检查因此跳过 `5a7db0f`，避免独立 Rust 工作流失败时自动晋升。该跳过不代表数值基线已经更新。后续晋升需要同一提交的 main Rust 工作流成功，并保留失败 runtime 进程日志制品。
