@@ -155,7 +155,37 @@ async fn an_unknown_delivery_after_a_durable_prefix_cannot_become_partial_succes
         .unwrap()
         .assignment
         .unwrap();
+    let later = consumer.recv().await.unwrap().unwrap();
+    let later_offset = later.offset();
+    assert!(later.key().is_empty());
+    assert_eq!(later.body(), b"unknown-delivery");
+    let later_ack = consumer.ack(&later).await.unwrap();
+    let retries = fixture
+        .running
+        .get(&1)
+        .unwrap()
+        .service
+        .data
+        .get(&2)
+        .unwrap()
+        .state
+        .with_application(|state| {
+            let subscriptions = state.subscriptions(partition).unwrap();
+            assert_eq!(subscriptions.protected_before(), Some(0));
+            subscriptions
+                .due_retries(
+                    subscription,
+                    unix_millis().unwrap() + subscription::Limits::default().ack_timeout_ms,
+                    3,
+                )
+                .unwrap()
+                .into_iter()
+                .map(|retry| retry.offset)
+                .collect::<Vec<_>>()
+        })
+        .await;
     client.close().await;
+    drop(later);
     drop(consumer);
     drop(producer);
     drop(client);
@@ -179,6 +209,9 @@ async fn an_unknown_delivery_after_a_durable_prefix_cannot_become_partial_succes
     assert_eq!(assignment.issued_before, 2);
     assert_eq!(assignment.acknowledged_before, 0);
     assert_eq!(assignment.cold_before, 0);
+    assert_eq!(later_offset, 2);
+    assert_eq!(later_ack.acknowledged_before, 0);
+    assert_eq!(retries, vec![0, 1]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
