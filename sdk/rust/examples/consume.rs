@@ -1,5 +1,7 @@
 use std::{env, error::Error, time::Duration};
-use tidemq_sdk::{Client, ClientConfig, Consumer, ConsumerConfig, DeliveryOrdering, Id};
+use tidemq_sdk::{
+    Client, ClientConfig, Consumer, ConsumerConfig, DeliveryOrdering, Id, RequestContext,
+};
 use tokio::{task::JoinSet, time::Instant};
 
 #[tokio::main]
@@ -27,16 +29,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             ordering,
             ..ConsumerConfig::default()
         },
-        client.deadline()?,
     )
     .await?;
-    let stop = client.deadline()?;
+    let context = RequestContext::with_timeout(Duration::from_secs(30))?;
+    let stop = context.deadline();
     let mut handlers = JoinSet::new();
     while Instant::now() < stop {
         if handlers.len() < 8
-            && let Some(delivery) = consumer.recv(stop).await?
+            && let Some(delivery) = context.scope(consumer.recv()).await?
         {
             let consumer = consumer.clone();
+            let context = context.clone();
             handlers.spawn(async move {
                 // Replace this action with the application's idempotent business operation.
                 println!(
@@ -44,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     delivery.offset(),
                     delivery.body().len()
                 );
-                consumer.ack(&delivery, stop).await.map(|_| ())
+                context.scope(consumer.ack(&delivery)).await.map(|_| ())
             });
         }
         if handlers.len() >= 8 {
@@ -68,6 +71,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while let Some(result) = handlers.join_next().await {
         result??;
     }
-    client.close(client.deadline()?).await;
+    client.close().await;
     Ok(())
 }

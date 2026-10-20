@@ -13,22 +13,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .await?;
     let topic: Id = env::var("TIDEMQ_TOPIC_ID")?.parse()?;
     let producer_id = Id::random()?;
-    let producer =
-        Producer::open(client.clone(), topic, 0, producer_id, client.deadline()?).await?;
+    let producer = Producer::open(client.clone(), topic, 0, producer_id).await?;
     let result = producer
-        .produce(
-            vec![Message {
-                key: Bytes::from_static(b"example-key"),
-                body: Bytes::from_static(b"example-message"),
-            }],
-            client.deadline()?,
-        )
+        .produce(vec![Message {
+            key: Bytes::from_static(b"example-key"),
+            body: Bytes::from_static(b"example-message"),
+        }])
         .await;
     match result {
         Ok(receipt) => println!("Committed offset {}", receipt.first_offset),
         Err(error) if error.outcome_unknown() => {
             for batch in producer.pending_batches().await? {
-                let receipt = producer.retry(&batch, client.deadline()?).await?;
+                let receipt = producer.retry(&batch).await?;
                 println!(
                     "Recovered offset {}, duplicate={}",
                     receipt.first_offset, receipt.duplicate
@@ -37,7 +33,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         Err(error) => return Err(error.into()),
     }
-    producer.retire(client.deadline()?).await?;
-    client.close(client.deadline()?).await;
+    producer.retire().await?;
+    client.close().await;
     Ok(())
 }

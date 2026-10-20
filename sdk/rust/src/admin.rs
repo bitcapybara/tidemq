@@ -14,7 +14,13 @@ pub struct Admin {
 }
 
 impl Admin {
-    pub async fn create_topic(
+    pub async fn create_topic(&self, name: &str, partitions: u32) -> Result<public::TopicResult> {
+        self.client
+            .operation(|deadline| self.create_topic_inner(name, partitions, deadline))
+            .await
+    }
+
+    async fn create_topic_inner(
         &self,
         name: &str,
         partitions: u32,
@@ -41,7 +47,13 @@ impl Admin {
             .await
     }
 
-    pub async fn topic(&self, name: &str, deadline: Instant) -> Result<public::TopicResult> {
+    pub async fn topic(&self, name: &str) -> Result<public::TopicResult> {
+        self.client
+            .operation(|deadline| self.topic_inner(name, deadline))
+            .await
+    }
+
+    async fn topic_inner(&self, name: &str, deadline: Instant) -> Result<public::TopicResult> {
         validate_name(name)?;
         self.client
             .request(
@@ -56,6 +68,20 @@ impl Admin {
     }
 
     pub async fn create_subscription(
+        &self,
+        topic: Id,
+        name: &str,
+        start_offset: u64,
+        mode: public::DeliveryMode,
+    ) -> Result<public::SubscriptionResult> {
+        self.client
+            .operation(|deadline| {
+                self.create_subscription_inner(topic, name, start_offset, mode, deadline)
+            })
+            .await
+    }
+
+    async fn create_subscription_inner(
         &self,
         topic: Id,
         name: &str,
@@ -86,7 +112,13 @@ impl Admin {
             .await
     }
 
-    pub async fn subscription(
+    pub async fn subscription(&self, topic: Id, name: &str) -> Result<public::SubscriptionResult> {
+        self.client
+            .operation(|deadline| self.subscription_inner(topic, name, deadline))
+            .await
+    }
+
+    async fn subscription_inner(
         &self,
         topic: Id,
         name: &str,
@@ -110,6 +142,16 @@ impl Admin {
 
     /// Explicit partition deletion preserves protection until the server commits the operation.
     pub async fn delete_subscription(
+        &self,
+        request: public::DeleteSubscription,
+        operation: Id,
+    ) -> Result<public::SubscriptionDeleted> {
+        self.client
+            .operation(|deadline| self.delete_subscription_inner(request, operation, deadline))
+            .await
+    }
+
+    async fn delete_subscription_inner(
         &self,
         request: public::DeleteSubscription,
         operation: Id,
@@ -138,6 +180,20 @@ impl Admin {
         partition: u32,
         producer: Id,
         epoch: u64,
+    ) -> Result<public::ProducerStatusResult> {
+        self.client
+            .operation(|deadline| {
+                self.producer_status_inner(topic, partition, producer, epoch, deadline)
+            })
+            .await
+    }
+
+    async fn producer_status_inner(
+        &self,
+        topic: Id,
+        partition: u32,
+        producer: Id,
+        epoch: u64,
         deadline: Instant,
     ) -> Result<public::ProducerStatusResult> {
         self.client
@@ -159,6 +215,19 @@ impl Admin {
 
     /// Query the current session before making an explicit takeover decision.
     pub async fn subscription_status(
+        &self,
+        topic: Id,
+        partition: u32,
+        subscription: Id,
+    ) -> Result<public::SubscriptionStatusResult> {
+        self.client
+            .operation(|deadline| {
+                self.subscription_status_inner(topic, partition, subscription, deadline)
+            })
+            .await
+    }
+
+    async fn subscription_status_inner(
         &self,
         topic: Id,
         partition: u32,

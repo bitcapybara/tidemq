@@ -128,6 +128,27 @@ impl Consumer {
         partition: u32,
         subscription: Id,
         config: ConsumerConfig,
+    ) -> Result<Self> {
+        client
+            .operation(|deadline| {
+                Self::claim_inner(
+                    client.clone(),
+                    topic,
+                    partition,
+                    subscription,
+                    config,
+                    deadline,
+                )
+            })
+            .await
+    }
+
+    async fn claim_inner(
+        client: Client,
+        topic: Id,
+        partition: u32,
+        subscription: Id,
+        config: ConsumerConfig,
         deadline: Instant,
     ) -> Result<Self> {
         if config.max_buffered_messages == 0
@@ -145,7 +166,7 @@ impl Consumer {
         let failure_budget = reserve_failures(&client, &config, &byte_budget)?;
         let status = client
             .admin()
-            .subscription_status(topic, partition, subscription, deadline)
+            .subscription_status(topic, partition, subscription)
             .await?;
         let previous = status.assignment.ok_or(Error::ResponseMismatch)?;
         if status.assigned
@@ -222,7 +243,13 @@ impl Consumer {
     }
 
     /// Fetches into the bounded queue; it never acknowledges business completion.
-    pub async fn fill(&self, deadline: Instant) -> Result<usize> {
+    pub async fn fill(&self) -> Result<usize> {
+        self.client
+            .operation(|deadline| self.fill_inner(deadline))
+            .await
+    }
+
+    async fn fill_inner(&self, deadline: Instant) -> Result<usize> {
         let mut last = Error::StaleDelivery;
         for attempt in 0..self.client.inner.config.max_reconnect_attempts {
             match self.fill_once(deadline).await {
@@ -575,6 +602,10 @@ impl Consumer {
 
     /// Returns queued work. KeySerial keeps a key blocked until explicit ACK or retry.
     pub async fn next(&self) -> Result<Option<Delivery>> {
+        self.client.operation(|_| self.next_inner()).await
+    }
+
+    async fn next_inner(&self) -> Result<Option<Delivery>> {
         let mut state = self.state.lock().await;
         if !state.valid {
             return Err(Error::StaleDelivery);
@@ -599,23 +630,41 @@ impl Consumer {
         Ok(Some(delivery))
     }
 
-    pub async fn recv(&self, deadline: Instant) -> Result<Option<Delivery>> {
+    pub async fn recv(&self) -> Result<Option<Delivery>> {
+        self.client
+            .operation(|deadline| self.recv_inner(deadline))
+            .await
+    }
+
+    async fn recv_inner(&self, deadline: Instant) -> Result<Option<Delivery>> {
         match self.next().await {
             Ok(Some(delivery)) => return Ok(Some(delivery)),
             Ok(None) | Err(Error::StaleDelivery) => {}
             Err(error) => return Err(error),
         }
-        self.fill(deadline).await?;
+        self.fill_inner(deadline).await?;
         self.next().await
     }
 
-    pub async fn ack(&self, delivery: &Delivery, deadline: Instant) -> Result<public::AckResult> {
-        self.ack_many(std::slice::from_ref(delivery), deadline)
+    pub async fn ack(&self, delivery: &Delivery) -> Result<public::AckResult> {
+        self.client
+            .operation(|deadline| self.ack_inner(delivery, deadline))
+            .await
+    }
+
+    async fn ack_inner(&self, delivery: &Delivery, deadline: Instant) -> Result<public::AckResult> {
+        self.ack_many_inner(std::slice::from_ref(delivery), deadline)
             .await
     }
 
     /// Splits ACKs using both token count and the encoded control-frame byte limit.
-    pub async fn ack_many(
+    pub async fn ack_many(&self, deliveries: &[Delivery]) -> Result<public::AckResult> {
+        self.client
+            .operation(|deadline| self.ack_many_inner(deliveries, deadline))
+            .await
+    }
+
+    async fn ack_many_inner(
         &self,
         deliveries: &[Delivery],
         deadline: Instant,
@@ -747,6 +796,10 @@ impl Consumer {
 
     /// Failure never sends an ACK. KeySerial deliberately leaves this key blocked.
     pub async fn fail(&self, delivery: Delivery) -> Result<()> {
+        self.client.operation(|_| self.fail_inner(delivery)).await
+    }
+
+    async fn fail_inner(&self, delivery: Delivery) -> Result<()> {
         let mut state = self.state.lock().await;
         if delivery.inner.generation != state.generation || !state.valid {
             return Err(Error::StaleDelivery);
@@ -769,6 +822,12 @@ impl Consumer {
     }
 
     pub async fn retry_failed(&self, offset: u64) -> Result<()> {
+        self.client
+            .operation(|_| self.retry_failed_inner(offset))
+            .await
+    }
+
+    async fn retry_failed_inner(&self, offset: u64) -> Result<()> {
         let mut state = self.state.lock().await;
         let delivery = state.failed.remove(&offset);
         let marked = state.failed_offsets.remove(&offset);
@@ -791,7 +850,13 @@ impl Consumer {
     }
 
     /// Seek invalidates all older tokens, queued deliveries and receive-barrier evidence.
-    pub async fn seek(&self, offset: u64, operation: Id, deadline: Instant) -> Result<()> {
+    pub async fn seek(&self, offset: u64, operation: Id) -> Result<()> {
+        self.client
+            .operation(|deadline| self.seek_inner(offset, operation, deadline))
+            .await
+    }
+
+    async fn seek_inner(&self, offset: u64, operation: Id, deadline: Instant) -> Result<()> {
         let mut state = timeout_at(deadline, self.state.lock())
             .await
             .map_err(|_| Error::Deadline)?;
@@ -879,7 +944,13 @@ impl Consumer {
     }
 
     /// Revalidates ownership after a fence. Other sessions require explicit takeover consent.
-    pub async fn reclaim(&self, deadline: Instant) -> Result<()> {
+    pub async fn reclaim(&self) -> Result<()> {
+        self.client
+            .operation(|deadline| self.reclaim_inner(deadline))
+            .await
+    }
+
+    async fn reclaim_inner(&self, deadline: Instant) -> Result<()> {
         let mut state = timeout_at(deadline, self.state.lock())
             .await
             .map_err(|_| Error::Deadline)?;
@@ -901,7 +972,6 @@ impl Consumer {
                 generation.topic,
                 generation.partition,
                 generation.subscription,
-                deadline,
             )
             .await?;
         let previous = status.assignment.ok_or(Error::ResponseMismatch)?;
