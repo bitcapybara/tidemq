@@ -10,6 +10,8 @@
 
 仓库 [baseline.json](../performance/baseline.json) 固定上次接受的服务源码、负载和统计策略，实际数值、构建身份与原始试次由 `baseline-report.json` 保存。PR 使用 base commit 的工具和策略，不接受候选提交降低门槛或替换基线。基线与候选在同一 job、同一机器上各测八次，顺序交替为 A/B、B/A，各占四对；不拿不同 GitHub runner 的绝对吞吐直接比较。每次从新目录启动并预热，服务使用 mimalloc 与四个 Tokio worker。两个拓扑共 32 次完整 trial，CI 总预算为 90 分钟。
 
+main 只有 Markdown 或 LICENSE 变动时跳过重复性能测量，PR 检查仍运行。首次接受真实数值报告之前，清单中的源码仅是经过正确性验证的比较起点，不能因文件存在就称已有数值基线。
+
 两个场景都使用 128 B 正文、单条生产批次、有界持久 ACK 批次、四条 request lanes。吞吐场景有四个独立分区队列，各有独立 Producer/Consumer，每分区 32 条预热、256 条无节奏限制的测量。延迟场景使用一个分区、一对 Producer/Consumer，256 条预热、1024 条测量，每 40 ms 计划一条，固定 25 条/秒。单分区避免每轮随机身份映射到 request lanes 时出现不同的碰撞组合；四分区压力仍由吞吐场景验证。生产和端到端延迟从计划发送时刻计时，调度延误与 SDK 背压不会从样本中消失；另报调度延误分布。延迟场景的固定速率不能当作服务吞吐能力。
 
 每个场景均先验证所有预期身份、唯一交付、offset、生产回执、消费持久 ACK 与最终持久前沿，再取无节奏限制场景的完整阶段吞吐，以及固定速率场景的生产持久回执、offered-to-durable-ACK 均值和 p99。均值按每个分区原始累计耗时导出的 `mean_ns × samples` 加权汇总，不使用直方图桶估算，也不使用固定速率下近乎恒定的阶段时长/消息数；迟发和少量长耗时始终计入均值。p99 合并所有分区直方图，不平均各分区的 p99。任意失败、超时、遗漏、强制退出或不完整报告均失败，不能少做工作后声称提速。原始报告分别保存为 `report-throughput.json` 和 `report-latency.json`。
@@ -40,7 +42,7 @@ node scripts/performance-gate.mjs run \
   --target /absolute/path/to/cargo-cache
 ```
 
-完整成功的 main 运行才会晋升基线，同时提交真实报告；晋升前重新比较全部五项指标，校验受保护策略摘要、报告 schema、基线身份和当前干净 HEAD。main 已前进时旧运行不覆盖新基线。policy/summary 使用 schema 4，原始 Rust 报告仍为 schema 3；旧五对或旧统计 schema 的报告不能复用。失败保留 `summary.json`、原始报告、每节点指标/诊断、有限进程日志与失败 WAL；成功时在检查所有节点并正常排空后清理试次数据目录。CI artifact 保留 30 天，仓库基线报告长期跟随 Git 历史。
+完整成功的 main 运行才会晋升基线，同时提交真实报告；晋升前重新比较全部五项指标，校验受保护策略摘要、报告 schema、基线身份和当前干净 HEAD，并要求同一 main 提交最新的 Rust 工作流已完成且成功。正确性检查失败、仍在运行或不存在时均不晋升；main 已前进时旧运行直接跳过，跳过不代表基线更新。policy/summary 使用 schema 4，原始 Rust 报告仍为 schema 3；旧五对或旧统计 schema 的报告不能复用。失败保留 `summary.json`、原始报告、每节点指标/诊断、有限进程日志与失败 WAL；成功时在检查所有节点并正常排空后清理试次数据目录。CI artifact 保留 30 天，仓库基线报告长期跟随 Git 历史。Rust 工作流另在失败时上传临时目录中的 `process-*.log`，保留 7 天，不上传配置、token 和证书文件。
 
 GitHub 的 `Performance gate (RF1 and RF3)` 检查失败会阻止该检查通过。当前私有仓库套餐的分支保护 API 返回 403，无法设为平台强制的 required status check；具有合并权限的人仍可能绕过失败检查。升级套餐或调整仓库可见性后，应将该名称设为 main 的必需检查并保留原有规则。
 

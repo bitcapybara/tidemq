@@ -80,8 +80,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: performance
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,10 +96,16 @@ jobs:
       - name: Promote only the validated current main source
         env:
           VALIDATED_COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ "$(git rev-parse HEAD)" != "$VALIDATED_COMMIT" ]]; then
             printf 'Main advanced during measurement; its own run will promote the next baseline\n'
             exit 0
+          fi
+          rust_run_success="$(gh run list --workflow rust.yml --branch main --commit "$VALIDATED_COMMIT" --limit 1 --json status,conclusion --jq '.[0] | .status == "completed" and .conclusion == "success"')"
+          if [[ "$rust_run_success" != "true" ]]; then
+            printf 'Rust validation for %s must complete successfully before baseline promotion\n' "$VALIDATED_COMMIT" >&2
+            exit 1
           fi
           node scripts/performance-gate.mjs promote --tools . --report measured/summary.json
           git config user.name 'github-actions[bot]'

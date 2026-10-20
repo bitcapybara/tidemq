@@ -31,6 +31,18 @@ jobs:
       - run: git diff --exit-code -- crates/tidemq-protocol/src/generated
       - run: cargo run --locked -- validate-config --config config/local.toml
       - run: cargo run --locked -- allocator-probe --blocks 2
+      - name: Locate failed runtime logs
+        if: failure()
+        id: runtime-logs
+        run: printf 'root=%s\n' "$(node -p 'require("node:os").tmpdir()')" >> "$GITHUB_OUTPUT"
+      - name: Preserve failed runtime process logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-process-logs-${{ matrix.os }}
+          path: ${{ steps.runtime-logs.outputs.root }}/tidemq-runtime-*/process-*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   allocator:
     runs-on: ubuntu-latest
@@ -51,6 +63,18 @@ jobs:
           key: ${{ matrix.backend }}
       - run: cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --features ${{ matrix.backend }} -- -D warnings
       - run: cargo test -p tidemq --locked --no-default-features --features ${{ matrix.backend }} -- --test-threads=1
+      - name: Locate failed runtime logs
+        if: failure()
+        id: runtime-logs
+        run: printf 'root=%s\n' "$(node -p 'require("node:os").tmpdir()')" >> "$GITHUB_OUTPUT"
+      - name: Preserve failed runtime process logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-process-logs-${{ matrix.backend }}
+          path: ${{ steps.runtime-logs.outputs.root }}/tidemq-runtime-*/process-*.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   heap-profile:
     strategy:

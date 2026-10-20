@@ -66,7 +66,7 @@ cancellation.cancel();
 
 `Consumer::claim(client, topic, partition, subscription, config)` 先查询当前代次，再 CAS 取得分配。默认不抢占其他逻辑 session。确需接管时，先用 `Admin::subscription_status` 核对旧 session，再显式提供 `ConsumerConfig::replace_session_id`。同一 Client 的同一订阅分区只能建立一份消费状态；用 `Consumer::clone` 共享。已经创建过的 handle 被全部丢弃后，需要新 Client 和明确接管决定，避免复用丢失内存队列的旧代次。
 
-`fill` 将消息放入有界队列；`next` 取出已排好顺序的可执行工作，`recv` 在队列为空时 fetch。`Delivery` 的 key、body 和 token 不出现在 Debug；payload/token 在最后一个 clone 释放前一直计入逻辑预算。队列满、宿主长期持有 Delivery 或未决批次时，会得到背压，不无限缓存。保留消息超过服务端 attempt 期限后，ACK 可能报告旧 token；它不会确认新的 attempt。
+`fill` 将消息放入有界队列；`next` 从当前缓冲区选择可执行工作，`recv` 在队列为空时 fetch。`Parallel` 只对当前已缓冲的 offset 排序，不等待尚未收到的更低 offset；读取回复丢失后，后续消息可以先交付，较低 offset 在原 attempt 租约到期后重投。连续接收和持久 ACK 前沿仍不能跨过空洞，业务不能用“首次收到较高 offset”判断前缀已经确认或丢失。`Delivery` 的 key、body 和 token 不出现在 Debug；payload/token 在最后一个 clone 释放前一直计入逻辑预算。队列满、宿主长期持有 Delivery 或未决批次时，会得到背压，不无限缓存。保留消息超过服务端 attempt 期限后，ACK 可能报告旧 token；它不会确认新的 attempt。
 
 1. 分配冻结排他边界 H。B 只接收 H 之前的数据，D 只接收 H 及之后的数据。持续消费 D 后，持久 ACK 前沿可超过 H；H 不随 ACK 推进，后续接收屏障与 owner 恢复仍接受这种合法状态。
 2. SDK 只合并实际成功入队的 offset 和服务端给出的持久 ACK 区间。缺少 offset 时不取最大值推进；最早块缺失时保留有限预取和头部容量。
@@ -75,7 +75,7 @@ cancellation.cancel();
 
 `ack`/`ack_many` 必须在业务成功之后调用；同时绑定 topic、partition、subscription、session、cursor/assignment/delivery generation。ACK 使用 C connection 的短 Ack streams，并按条数与真实编码帧大小切批，保留 Core 控制流。重复旧 token 不会确认新 attempt。一次 `ack_many` 的早期切片可能已提交而后续切片失败；重试原 Delivery 切片是幂等操作。
 
-默认 `DeliveryOrdering::Parallel` 允许业务完成乱序。显式 `KeySerial` 对同 key 同时只给一个 handler，其他 key 可并行；`fail(delivery)` 保留失败决定并阻塞该 key，`retry_failed(offset)` 明确重试。发生 owner fence 后只保留有上限的失败 offset 标记，释放 SDK 队列中的旧正文/token，等待新分配重新交付，仍不会偷偷解锁失败 key。新交付的连续接收证据建立后，其他 key 可以继续；显式 retry、持久 ACK 证据或显式 seek 才解除对应失败决定。不会把失败转换成自动 ACK、跳过或 DLQ。业务副作用仍须幂等或有业务 fence，SDK 不提供外部 exactly-once。
+默认 `DeliveryOrdering::Parallel` 允许消息交付和业务完成乱序。显式 `KeySerial` 还要求连续接收覆盖，并对同 key 同时只给一个 handler，已满足覆盖的其他 key 可并行；`fail(delivery)` 保留失败决定并阻塞该 key，`retry_failed(offset)` 明确重试。发生 owner fence 后只保留有上限的失败 offset 标记，释放 SDK 队列中的旧正文/token，等待新分配重新交付，仍不会偷偷解锁失败 key。新交付的连续接收证据建立后，其他 key 可以继续；显式 retry、持久 ACK 证据或显式 seek 才解除对应失败决定。不会把失败转换成自动 ACK、跳过或 DLQ。业务副作用仍须幂等或有业务 fence，SDK 不提供外部 exactly-once。
 
 KeySerial 按配置的最多缓冲条数，为失败 offset 元数据在 consumer/client 字节准入中额外固定预留每条 40 B；此保守逻辑额度不等于 allocator 或 RSS。收到新一代对应消息后复用已有 key 调度表，不在每次 `next` 上扫描所有失败 key。宿主持有的旧 Delivery clone 仍按原字节额度计费，SDK 无法替宿主释放它。
 
