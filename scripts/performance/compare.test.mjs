@@ -7,8 +7,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {comparePairs, summarizeReport, validatePolicy, workloadFor} from './compare.mjs';
-import {management} from '../performance-gate.mjs';
+import {comparePairs, summarizeReport, validatePolicy, workloadFor, HARNESS_FILES} from './compare.mjs';
+import {management, canReuseBuilds, reuseBuild} from '../performance-gate.mjs';
 
 const policy = validatePolicy(JSON.parse(readFileSync(new URL('../../performance/baseline.json', import.meta.url))));
 const summary = multiplier => ({
@@ -193,4 +193,36 @@ test('latency validates its own single-partition counts and all 1024 observation
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit, 'throughput'));
   report.measured.partitions.push(structuredClone(report.measured.partitions[0]));
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit, 'latency'));
+});
+
+test('build reuse requires the same source and every protected harness hash', () => {
+  const baseline = {source_commit: '1'.repeat(40),
+    harness_files_sha256: Object.fromEntries(HARNESS_FILES.map(file => [file, '2'.repeat(64)]))};
+  assert.equal(canReuseBuilds(baseline, structuredClone(baseline)), true);
+  assert.equal(canReuseBuilds(baseline, {...baseline, source_commit: '3'.repeat(40)}), false);
+  const changed = structuredClone(baseline);
+  changed.harness_files_sha256[HARNESS_FILES[0]] = '4'.repeat(64);
+  assert.equal(canReuseBuilds(baseline, changed), false);
+  assert.equal(canReuseBuilds(baseline, {source_commit: baseline.source_commit}), false);
+});
+
+test('same-source reuse copies actual service and load binaries with their original identities', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'tidemq-perf-reuse-'));
+  try {
+    for (const binary of ['tidemq', 'perf_load']) {
+      const source = path.join(temporary, `baseline-${binary}`);
+      const destination = path.join(temporary, `candidate-${binary}`);
+      await mkdir(source);
+      const bytes = Buffer.from(`Exact ${binary} fixture binary\n`);
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      const identity = {source_commit: '1'.repeat(40), [binary === 'tidemq' ? 'service_binary_sha256' : 'binary_sha256']: hash};
+      await writeFile(path.join(source, binary), bytes);
+      await writeFile(path.join(source, 'identity.json'), JSON.stringify(identity));
+      assert.deepEqual(await reuseBuild(source, destination, binary, identity), identity);
+      assert.deepEqual(await readFile(path.join(destination, binary)), bytes);
+      assert.deepEqual(JSON.parse(await readFile(path.join(destination, 'identity.json'), 'utf8')), identity);
+      await writeFile(path.join(source, binary), 'Changed fixture');
+      await assert.rejects(reuseBuild(source, path.join(temporary, `invalid-${binary}`), binary, identity), /Reusable build binary changed/);
+    }
+  } finally { await rm(temporary, {recursive: true, force: true}); }
 });
