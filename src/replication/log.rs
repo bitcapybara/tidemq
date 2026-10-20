@@ -337,6 +337,8 @@ impl<A: Application> RaftLogStorage<TypeConfig<A>> for DiskLog<A> {
             }
             // OpenRaft authorizes purge after snapshot coverage; recovery rechecks that contract.
             store.checkpoint_locked(&state, Some(log_id)).await?;
+            #[cfg(test)]
+            super::cancellation_tests::boundary(&store.0.directory, "purge_published").await;
             state.entries.retain(|index, _| *index > log_id.index);
             state.entry_bytes.retain(|index, _| *index > log_id.index);
             state.record_refs.retain(|index, _| *index > log_id.index);
@@ -430,7 +432,12 @@ impl<A: Application> DiskLog<A> {
         validate_record(&state, &record)?;
         self.maybe_checkpoint(state, 0).await?;
         let encoded = wal::encode_value(&record, self.0.options.journal.max_record_bytes)?;
-        self.0.journal.append(encoded).await?.durable().await?;
+        let durability = self.0.journal.append(encoded).await?;
+        #[cfg(test)]
+        if matches!(record, Record::Truncate(_)) {
+            super::cancellation_tests::boundary(&self.0.directory, "truncate_queued").await;
+        }
+        durability.durable().await?;
         replay(state, record, None, &[], &self.0.options)
     }
 
