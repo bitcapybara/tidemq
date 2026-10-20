@@ -46,13 +46,17 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
         .unwrap();
         work.push((name, topic, subscription, producer, consumer));
     }
+    // A lost durable Read reply can hold messages for the default delivery lease.
+    // Also allow one final Read and ACK at the fixture's unchanged 10-second RPC limit.
+    let phase_budget =
+        Duration::from_millis(tidemq::subscription::Limits::default().ack_timeout_ms)
+            + Duration::from_secs(10) * 2;
     let mut running = tokio::task::JoinSet::new();
     for (name, topic, subscription, producer, consumer) in work {
         let client = client.clone();
         running.spawn(async move {
             let phase_started = Instant::now();
-            let context =
-                tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(20)).unwrap();
+            let context = tidemq_sdk::RequestContext::with_timeout(phase_budget).unwrap();
             let produced = AtomicU64::new(0);
             let acknowledged = AtomicU64::new(0);
             let metadata_reads = AtomicU64::new(0);
@@ -132,7 +136,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
             );
         });
     }
-    tokio::time::timeout(Duration::from_secs(25), async {
+    tokio::time::timeout(phase_budget + Duration::from_secs(5), async {
         while let Some(result) = running.join_next().await {
             result.unwrap();
         }
