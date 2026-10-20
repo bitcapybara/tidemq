@@ -55,7 +55,7 @@ pub(crate) struct Pki {
 }
 
 impl Pki {
-    fn new(ids: &[u64]) -> Self {
+    pub(crate) fn new(ids: &[u64]) -> Self {
         let key = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -82,7 +82,10 @@ impl Pki {
             .collect();
         Self { ca, leaves }
     }
-    fn identity(&self, id: u64) -> TlsIdentity {
+    pub(crate) fn roots(&self) -> Bytes {
+        Bytes::from(self.ca.pem())
+    }
+    pub(crate) fn identity(&self, id: u64) -> TlsIdentity {
         let leaf = self.leaves.get(&id).unwrap();
         TlsIdentity::new(
             Bytes::from(leaf.cert.pem()),
@@ -90,7 +93,7 @@ impl Pki {
         )
         .unwrap()
     }
-    fn grants(&self, cluster: Id, group: u64, role: &str) -> Vec<NodeGrant> {
+    pub(crate) fn grants(&self, cluster: Id, group: u64, role: &str) -> Vec<NodeGrant> {
         self.leaves
             .iter()
             .map(|(id, leaf)| NodeGrant {

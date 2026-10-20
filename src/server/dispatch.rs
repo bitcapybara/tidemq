@@ -111,7 +111,7 @@ impl ClassQueue {
 }
 
 impl Dispatcher {
-    fn submit(
+    async fn submit(
         &self,
         peer: Authorization,
         purpose: StreamPurpose,
@@ -131,8 +131,17 @@ impl Dispatcher {
             StreamPurpose::Ack => &self.ack,
             StreamPurpose::Request => &self.data,
         };
-        let Ok(slot) = queue.slots.clone().try_acquire_owned() else {
-            return Err(Box::new(frame));
+        let slot = if raft_control {
+            // The reader retains one transport-charged frame while existing Raft work completes.
+            match timeout_at(frame.deadline(), queue.slots.clone().acquire_owned()).await {
+                Ok(Ok(slot)) => slot,
+                _ => return Err(Box::new(frame)),
+            }
+        } else {
+            match queue.slots.clone().try_acquire_owned() {
+                Ok(slot) => slot,
+                Err(_) => return Err(Box::new(frame)),
+            }
         };
         let Ok(class) = TrafficClass::try_from(frame.frame().traffic_class) else {
             return Err(Box::new(frame));
@@ -379,26 +388,29 @@ async fn serve_session<S: WireService>(
 ) {
     let mut streams = JoinSet::new();
     let peer = session.connection().authorization().clone();
+    let (stream_stop, stream_shutdown) = watch::channel(false);
     for stream in session.take_initial_streams().await {
         streams.spawn(serve_stream(
             stream,
             service.clone(),
             peer.clone(),
             dispatcher.clone(),
-            shutdown.clone(),
+            stream_shutdown.clone(),
         ));
     }
-    loop {
+    while !*shutdown.borrow() {
         while streams.try_join_next().is_some() {}
         tokio::select! {
             _ = shutdown.changed() => break,
             _ = streams.join_next(), if !streams.is_empty() => {},
             stream = session.accept() => match stream {
-                Some(stream) => { streams.spawn(serve_stream(stream, service.clone(), peer.clone(), dispatcher.clone(), shutdown.clone())); },
+                Some(stream) => { streams.spawn(serve_stream(stream, service.clone(), peer.clone(), dispatcher.clone(), stream_shutdown.clone())); },
                 None => break,
             }
         }
     }
+    // Native connection closure must release reader-owned admission waiters before handler drain.
+    let _ = stream_stop.send(true);
     if let Some(deadline) = Instant::now().checked_add(dispatcher.config.drain_timeout) {
         while !streams.is_empty() {
             if timeout_at(deadline, streams.join_next()).await.is_err() {
@@ -455,8 +467,11 @@ async fn serve_stream<S: WireService>(
             } else {
                 None
             };
-            if let Err(frame) =
-                dispatcher.submit(peer.clone(), purpose, frame, replies.clone(), order)
+            let submitted = tokio::select! {
+                submitted = dispatcher.submit(peer.clone(), purpose, frame, replies.clone(), order) => submitted,
+                _ = shutdown.changed() => { drop(replies); return true },
+            };
+            if let Err(frame) = submitted
                 && let Some(response) = overload(
                     frame.frame(),
                     &dispatcher.config.protocol,
