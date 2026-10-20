@@ -1,0 +1,135 @@
+{
+  "source_sha": "4f79a5012bbc5e4edd18663e84db1764bac99b15",
+  "evidence_archive": "linux-docker-4f79a50-evidence.tar.gz",
+  "evidence_archive_sha256": "1061ef905d2be1d725e1e3d792a2237b1c3a72caaf87c1cf9dfc400568b08540",
+  "raw_artifacts": [
+    {
+      "source_archive_member": "source-4f79a50-metadata.json",
+      "repository_artifact": "20261021-4f79a50-source.json",
+      "sha256": "95231dcb9357b123ceec6c9b6575f7ffc6a58db62ba75da317679d39c243a49c"
+    },
+    {
+      "source_archive_member": "runtime-image-4f79a50-metadata.json",
+      "repository_artifact": "20261021-4f79a50-image.json",
+      "sha256": "6ed0a1985ed8929557c14ba54bca856b0f5fb90511ca445c0941b2345e78d804"
+    },
+    {
+      "source_archive_member": "docker-matrix/summary.json",
+      "repository_artifact": "20261021-4f79a50-docker.json",
+      "sha256": "d2eae826ad191ac9bb4e32253c472e27648952a2d0047559f0c9da884f267ea8"
+    },
+    {
+      "source_archive_member": "original-resource-comparison-4f79-complete.json",
+      "repository_artifact": "20261021-4f79a50-resource-isolation.json",
+      "sha256": "1ec16142d6f9cd8c657cc11ed1b2ed588155b4657b12c06eb2a1536af6c62bfb"
+    }
+  ],
+  "runs": [
+    {
+      "stage": "normal-v3",
+      "step_exit": {
+        "allocator-probe": 0,
+        "clear-workspace": 0,
+        "clippy": 0,
+        "doctests": 0,
+        "fmt": 0,
+        "format-generated": 0,
+        "generated-diff": 0,
+        "nextest": 0,
+        "production-audit": 0,
+        "rustfs": 100,
+        "sdk-clippy": 0,
+        "sdk-nextest": 0,
+        "trust-boundaries": 0,
+        "validate-config": 0,
+        "versions": 0
+      },
+      "terminal_container": {
+        "Id": "27076a6bb90d1eb24084470a41e6ca69b18076924b31a5e7b0904f8c0e402244",
+        "Name": "/tidemq-wal-gates-4f79a50-xnfbxhby-v3-run",
+        "Image": "sha256:86fd5dd1673b5f458ceeec96cd228e2580402e92edae806605fc13d7864ee291",
+        "State": {
+          "Status": "exited",
+          "Running": false,
+          "Paused": false,
+          "Restarting": false,
+          "OOMKilled": false,
+          "Dead": false,
+          "Pid": 0,
+          "ExitCode": 100,
+          "Error": "",
+          "StartedAt": "2026-10-20T17:12:34.985853493Z",
+          "FinishedAt": "2026-10-20T17:32:56.009386153Z"
+        },
+        "RestartCount": 0,
+        "limits": {
+          "Memory": 8589934592,
+          "MemorySwap": 8589934592,
+          "NanoCpus": 4000000000,
+          "PidsLimit": 512
+        },
+        "processed_cache_phases": [
+          "nextest.NUrHSTT0",
+          "nextest.SNjsh3W7",
+          "nextest.l92CX4IR"
+        ]
+      }
+    },
+    {
+      "stage": "normal-v4",
+      "step_exit": {
+        "release": 0,
+        "rustfs": 0
+      },
+      "terminal_container": {
+        "Id": "51bfea37596e7566879d9e4610203fd447eec745486b8dd238918484fa6ffd2e",
+        "Name": "/tidemq-wal-gates-4f79a50-xnfbxhby-v4",
+        "Image": "sha256:86fd5dd1673b5f458ceeec96cd228e2580402e92edae806605fc13d7864ee291",
+        "State": {
+          "Status": "exited",
+          "Running": false,
+          "Paused": false,
+          "Restarting": false,
+          "OOMKilled": false,
+          "Dead": false,
+          "Pid": 0,
+          "ExitCode": 0,
+          "Error": "",
+          "StartedAt": "2026-10-20T17:35:29.616037449Z",
+          "FinishedAt": "2026-10-20T17:47:43.710434694Z"
+        },
+        "RestartCount": 0,
+        "limits": {
+          "Memory": 8589934592,
+          "MemorySwap": 8589934592,
+          "NanoCpus": 4000000000,
+          "PidsLimit": 512
+        },
+        "processed_cache_phases": [
+          "nextest.HoCFzUSc"
+        ]
+      }
+    }
+  ],
+  "workspace_nextest": {
+    "run": 347,
+    "passed": 347,
+    "skipped": 13,
+    "seconds": 165.912
+  },
+  "doctests_passed": 4,
+  "sdk_feature_off_nextest": {
+    "run": 37,
+    "passed": 37,
+    "skipped": 0,
+    "seconds": 10.269
+  },
+  "rustfs_corrected_selector": {
+    "run": 10,
+    "passed": 10,
+    "seconds": 38.271,
+    "skipped": 141
+  },
+  "node_trust_boundary_tests_passed": 44,
+  "run_scope_note": "normal-v3 exits 100 at an incorrectly selected parent-only crash child; ten actual RustFS tests passed there. normal-v4 explicitly excludes that child, runs all ten actual RustFS tests, and completes release. No single untouched full private harness run is claimed."
+}

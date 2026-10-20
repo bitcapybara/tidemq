@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+real=${TIDEMQ_REAL_NEXTEST:-/real-nextest/cargo-nextest}
+if [[ ${1:-} == nextest && ${2:-} == run || ${1:-} == run ]]; then
+  for argument in "$@"; do
+    if [[ $argument == --no-run ]]; then exec "$real" "$@"; fi
+  done
+  build=(); inserted=false
+  for argument in "$@"; do
+    if [[ $argument == -- && $inserted == false ]]; then
+      build+=(--no-run); inserted=true
+    fi
+    build+=("$argument")
+  done
+  if [[ $inserted == false ]]; then build+=(--no-run); fi
+  "$real" "${build[@]}"
+  control=${TIDEMQ_NEXTEST_HANDSHAKE:?A private phase-handshake directory is required}
+  [[ $control == /* && -d $control && ! -L $control ]]
+  phase=$(mktemp -d "$control/nextest.XXXXXXXX")
+  printf '%s\0' "$@" > "$phase/original-argv.nul"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$phase/build-finished-at"
+  printf 'ready\n' > "$phase/build-complete"
+  printf 'Private nextest build complete; awaiting cache-phase acknowledgement: %s\n' "$phase" >&2
+  deadline=$((SECONDS + 240))
+  until [[ -f $phase/allow-run ]]; do
+    if [[ -f $phase/deny-run || $SECONDS -ge $deadline ]]; then
+      printf 'Private nextest cache-phase handshake failed or timed out\n' >&2
+      exit 124
+    fi
+    sleep 0.1
+  done
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$phase/test-started-at"
+fi
+exec "$real" "$@"

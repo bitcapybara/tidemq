@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-10-20T18:15:32.357414+00:00",
+  "reason": "Coordinator paused new release and Docker pending coverage replacement-boundary diagnosis",
+  "scope": "Private running harness only; all pre-release commands unchanged; frozen repository remains read-only",
+  "before_sha256": "1ef93dbab4b5aa8776544ddb89779e8bb788969e2d70afccdd796592d2dc2711",
+  "after_sha256": "cdf89c4d2bd7d54c10e9bf5c0cd8e2ce6a3f1a65b0fb45c8abc9a6ff7499b9d1",
+  "old_line": "step release cargo build -p tidemq --release --locked --bin tidemq --example deploy_validation",
+  "new_line": "printf 'All pre-release gates completed; release paused by coordinator\\n'; exit 0",
+  "same_byte_length": true,
+  "release_status": "not executed"
+}
