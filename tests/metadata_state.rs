@@ -93,15 +93,19 @@ fn rejected(response: Response, reason: Rejection) {
 fn operation_retries_return_original_decision_and_changed_content_conflicts() {
     let mut fixture = Fixture::local();
     let operation = fixture.operation();
+    let expected_revision = fixture.state.revision();
     let command = Command::create_topic(
         operation,
-        fixture.state.revision(),
+        expected_revision,
         id(3),
         "orders".into(),
         vec![2, 2],
     );
     let response = fixture.state.apply(command.clone());
     assert!(response.is_applied());
+    assert!(matches!(&response, Response::Applied { revision, .. }
+        if revision.checked_sub(1) == Some(expected_revision)));
+    assert_eq!(fixture.state.revision(), expected_revision + 1);
     assert_eq!(fixture.state.apply(command), response);
     rejected(
         fixture.state.apply(Command::create_topic(
