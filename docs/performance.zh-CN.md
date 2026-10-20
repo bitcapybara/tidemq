@@ -78,7 +78,7 @@ node scripts/performance-gate.mjs measure \
 
 自动晋升要求完整成功的 main 运行，同时提交真实报告；晋升前重新比较全部五项指标，校验受保护策略摘要、报告 schema、基线身份和当前干净 HEAD，并要求同一 main 提交最新 push Rust 工作流已完成且成功。晋升 job 下载该 Rust run 的覆盖率原始 JSON 与摘要，重算 lines/functions/regions 的精确分数，校验策略、旧基线、原始制品与 run ID；只有两套门禁都通过才一次性提交性能报告和两套基线，避免独立机器人提交令另一个 cohort 的 main 身份失效。正确性/覆盖率失败、仍在运行或不存在时均不晋升；main 已前进时旧运行直接跳过，跳过不代表基线更新。首次覆盖率初始化与 PR 的受保护范围见[测试手册](testing-benchmarks.zh-CN.md#ci-门禁与覆盖率基线)。policy/summary 使用 schema 4，原始 Rust 报告仍为 schema 3；旧五对或旧统计 schema 的报告不能复用。失败保留 `summary.json`、原始报告、每节点指标/诊断、有限进程日志与失败 WAL；成功时在检查所有节点并正常排空后清理试次数据目录。CI artifact 保留 30 天，仓库基线报告长期跟随 Git 历史。Rust 工作流另在失败时上传临时目录中的 `process-*.log`，保留 7 天，不上传配置、token 和证书文件。
 
-GitHub 的 `Performance gate (RF1 and RF3)` 检查失败会阻止该检查通过。当前私有仓库套餐的分支保护 API 返回 403，无法设为平台强制的 required status check；具有合并权限的人仍可能绕过失败检查。升级套餐或调整仓库可见性后，应将该名称设为 main 的必需检查并保留原有规则。
+GitHub 的 `Performance gate (RF1 and RF3)` 检查失败会阻止该检查通过。历史私有套餐的分支保护 API 返回 403；2026-10-21 已按用户要求把仓库设为 Public，并重跑 main `addf6d9` 的 Rust／Performance。Rust 重跑已实际执行并失败，性能重跑的终态另行记录。公开后实际查询 main 的 `protected=false`，尚未设置 required status checks，失败检查仍不是平台强制的合并屏障；待设置名称为该性能检查和 `Rust gate`。
 
 这组有限回归负载不覆盖冷回放、大消息饱和吞吐、跨可用区网络、所有 allocator 或长期资源漂移；下面的手动矩阵保留这些独立测量入口。新格式评估见 [rkyv / FlatBuffers / FlexBuffers](research/zero-copy-formats.zh-CN.md)，格式迁移前必须实测校验、编码和保留内存成本。
 

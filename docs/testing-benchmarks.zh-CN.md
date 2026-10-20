@@ -20,7 +20,9 @@ PR 从 base commit 读取比较器、测试范围、nextest 配置与既有基�
 
 构建缓存使用 Swatinem/rust-cache：相同 OS/工具链的普通 debug job 共享 key 前缀，再按默认、System/jemalloc 与 heap-profiling 分开 variant key，避免 GitHub 不可变缓存只保留最早写入的后端子集。LLVM instrumentation 使用独立 key 和 target，release 性能构建另用独立 key。保留依赖指纹和锁文件校验，不把覆盖率对象链接进普通二进制，也不把过期 workspace 二进制当作命中。所有编译缓存允许失败时保存，nextest/llvm-cov 下载固定预构建版本；性能测量使用全新 runner，既不编译，也不恢复构建缓存。
 
-当前 GitHub 私有仓库套餐不能设置 required checks；工作流会失败，但有合并权限的人仍可绕过。具备平台条件后，应将稳定名称 `Rust gate` 和 `Performance gate (RF1 and RF3)` 都设为必需检查。
+2026-10-21 已按用户要求把仓库设为 Public，并重新触发远端 main `addf6d9` 的 Rust／Performance。Rust 已实际运行并失败：Linux 默认与 jemalloc 的超大 HELLO 断言失败，插桩测试 310／310 通过但 lines／functions／regions 精确计数均下降；原门禁未放宽。这次重跑与历史付款阻塞分别记录。公开后实际查询 main 的 `protected=false`，尚未配置平台强制的 required checks；待设置的稳定名称为 `Rust gate` 和 `Performance gate (RF1 and RF3)`。
+
+分段 WAL 的 [Linux 覆盖率记录](evidence/2026-10-21-wal-segments-coverage.zh-CN.md)保留源码、工具、原始整数、失败 cohort 和 cache-phase 因果对照。`4f79a5` 的通过报告只对应该版；`426ff65` 普通两平台各 351 passed／13 skipped，而其插桩流程的迁移 Unknown 失败单独保留，不能用普通回归替代。测试与性能全部通过前不晋升基线。
 
 2026-10-20 合流后的实际命令、246 项普通测试、九项真实后端 ignored、默认 credit 下 512 条 Read 与空闲 sibling lane 的红绿回归、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。冻结 `1398353` 的 17 项短 RF1 负载、全部持久 ACK、三分配器/日志档位/2 与 4 lane/OTLP 对照见[本地性能报告](evidence/2026-10-20-local-performance.zh-CN.md)，小消息消费约 60 条/秒，不能作为生产性能目标已达成的结论。
 
@@ -68,7 +70,7 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 | 代号与入口 | 实际验证内容 | 范围限制 |
 | --- | --- | --- |
 | S01 [真实 QUIC](../tests/quic_transport.rs)、[分派](../tests/server_dispatch.rs)、SDK 的网络测试 | TLS/mTLS 与伪造身份拒绝、有限分类连接/流、取消隔离、control/ACK 推进、RPC 结果匹配；四 lane 单 affinity 持续请求不因 sibling 空闲断连，半帧仍 poison；原期限内关闭 owned native I/O 并重绑端口；新 1-RTT 包 ACK 探测能淘汰失联旧连接，慢业务有网络进展时不误杀 | 本机 UDP；真实 LB/NAT/CID 和同预算性能对照另验 |
-| S02 [WAL](../tests/wal_journal.rs)、[存储](../tests/replication_storage.rs)、[Raft QUIC](../tests/raft_quic.rs)、[崩溃](../tests/replication_crash.rs)、[应用失败](../tests/application_failure.rs) | fsync/vote/log/commit/snapshot、官方 storage-v2、RF1/RF3 多数派、换主、B 快照与 R 日志、原结果、SIGKILL、日志 rewrite、状态损坏/应用失败关闭 | 一部分底层测试使用受控内存网络；raft_quic 才是原生网络，不混称三区 |
+| S02 [WAL](../tests/wal_journal.rs)、[分段边界](../src/wal/segmented/tests.rs)、[段发布故障](../src/wal/segmented/fault_tests.rs)、[存储](../tests/replication_storage.rs)、[Raft QUIC](../tests/raft_quic.rs)、[崩溃](../tests/replication_crash.rs)、[应用失败](../tests/application_failure.rs) | 分段 fsync/vote/log/commit、唯一 manifest、refs-only 检查点、原 index 重用／truncate、受限段搬迁、快照 reader pin 与取消、实际文件大小限制写失败、SIGKILL 发布屏障、损坏拒绝；官方 storage-v2、RF1/RF3 多数派、换主与原结果 | 完整应用快照仍非增量；新格式用新目录，拒绝旧布局。一部分测试使用受控内存网络；真实 QUIC、Linux、性能按冻结版本分别验收，进程崩溃不代表宿主掉电 |
 | S03 [元数据](../tests/metadata_state.rs)、[权威](../tests/ownership_authority.rs) | CRUD 与永久身份、grant/fence/recover/activate、重试/CAS/旧 epoch、TTL 从请求开始、控制失 quorum、有限安全收尾 | 纯状态证据与 S08 的实际角色接管分别记录，前者不能代表入口故障 |
 | S04 [Broker 测试](../src/broker/tests/mod.rs)、SDK 网络测试 | producer 注册/固定过期/全局高水位、canonical digest、sequence/冲突/原结果、owned 取消后提交、快照恢复、原 PendingBatch 重试 | 有限原结果窗口；SDK 进程重启没有持久 outbox |
 | S05 [订阅状态](../tests/subscription_state.rs)、[持久组合](../tests/lifecycle_persistence.rs)、SDK 网络测试 | 逐条 attempt/token/ACK、洞/连续前沿、旧代次拒绝、seek、KeySerial、冷 H/接收屏障和 B 重试 | 外部副作用需要业务幂等；自动接管仍以运行时回归为准 |

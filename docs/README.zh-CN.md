@@ -1,6 +1,6 @@
 # 文档导航
 
-新增入口：[CI 重构与实际失败修复](evidence/2026-10-20-ci-refactor.zh-CN.md)、[SDK 总期限与取消](guide/rust-sdk.zh-CN.md)、[RF1/RF3 CI 性能门禁与基线](performance.zh-CN.md)、[rkyv / FlatBuffers / FlexBuffers 适用边界](research/zero-copy-formats.zh-CN.md)、[WAL 分段与容量管理评估](research/wal-segments.zh-CN.md)。
+新增入口：[分段 WAL 当前设计](design/storage-recovery.zh-CN.md)、[分段 WAL Linux 覆盖率与失败记录](evidence/2026-10-21-wal-segments-coverage.zh-CN.md)、[CI 重构与实际失败修复](evidence/2026-10-20-ci-refactor.zh-CN.md)、[SDK 总期限与取消](guide/rust-sdk.zh-CN.md)、[RF1/RF3 CI 性能门禁与基线](performance.zh-CN.md)、[rkyv / FlatBuffers / FlexBuffers 适用边界](research/zero-copy-formats.zh-CN.md)、[WAL 分段与容量管理评估](research/wal-segments.zh-CN.md)。
 
 先读[实施状态](implementation-status.zh-CN.md)和[要求覆盖](requirements-coverage.zh-CN.md)：已运行的本地证据、候选性能目标和外部待验条件分别记录。历史[架构草案](architecture.zh-CN.md)保留原始要求，当前行为以设计、配置、测试和使用指南为准。
 

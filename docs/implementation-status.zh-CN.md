@@ -1,6 +1,10 @@
 # 实施状态
 
-2026-10-20 本轮重构：Rust 已固定为 1.99.1，配置仅接受当前按角色拆分的格式。源码 `693f9bd` 的 Rust CI 8／8 job 成功，Linux／macOS workspace 各 310 passed／12 skipped，文档各 4 passed；System／jemalloc 各 250 passed／11 skipped，全 target 严格 Clippy 与生产 panic／索引审计通过。无效参数、错误日志位置、共享身份字符串及 multipart 许可生命周期已整理；SDK 可选 OpenTelemetry 指标复用宿主 provider。WAL segment 的结论、容量模型和落地边界见[分析](research/wal-segments.zh-CN.md)，本轮没有实现分段写入器。
+2026-10-21：分段 WAL 已实现，包含唯一 manifest、有序 writer、引用检查点、有界段搬迁、快照 reader pin、失败关闭、物理容量采样与迁移预留；详见[当前存储设计](design/storage-recovery.zh-CN.md)。磁盘布局版本为 2，开发阶段使用全新数据目录，明确拒绝旧格式。源码 `426ff65` 的 macOS／Linux 普通 nextest 均为 351 passed／13 skipped；该版 Linux 插桩回归另有一项迁移 Unknown 失败，仍在定位，不由普通通过替代。`4f79a5` 的[完整 Linux 覆盖率](evidence/2026-10-21-wal-segments-coverage.zh-CN.md)及独立 Docker 十项矩阵通过，但其完整性能 cohort 在 RF3 持久 ACK 校验失败；新版本完整性能与覆盖率仍待验收，旧结果不冒认后续源码。
+
+2026-10-21：按用户要求，仓库已设为 Public，并重跑远端 main `addf6d9` 的 [Rust](https://github.com/bitcapybara/tidemq/actions/runs/39419125570) 与 [Performance](https://github.com/bitcapybara/tidemq/actions/runs/39419125608)。runner 已实际执行；Rust 重跑因超大 HELLO 拒绝断言和精确覆盖率下降失败，不能继续记作计费未启动。HELLO 已用真实 EOF 红绿回归修正测试，仍禁止任何成功帧；性能重跑的最终结果另行记录。没有修改付款、负载、期限、比较策略或基线。
+
+2026-10-20 历史重构：Rust 已固定为 1.99.1，配置仅接受当前按角色拆分的格式。源码 `693f9bd` 的 Rust CI 8／8 job 成功，Linux／macOS workspace 各 310 passed／12 skipped，文档各 4 passed；System／jemalloc 各 250 passed／11 skipped，全 target 严格 Clippy 与生产 panic／索引审计通过。无效参数、错误日志位置、共享身份字符串及 multipart 许可生命周期已整理；SDK 可选 OpenTelemetry 指标复用宿主 provider。该轮仅完成 WAL [分析](research/wal-segments.zh-CN.md)，后续实现以上述新布局为准。
 
 首轮 main `401c7c9` 的两平台默认测试与 Linux 覆盖率通过，但 System 两例超时，性能候选在配置校验退出；覆盖率与性能基线均未晋升。已修复可复现的过期 Control 回复关闭共享 stream、换主测试固定旧 Metadata 权威，以及共享 Cargo target 错用另一源码产物三个缺陷；均有实际 red／green 回归，未改 lease、deadline、重试、负载或统计门槛。原始失败记录及新完整 cohort 声明见[本轮证据](evidence/2026-10-20-ci-refactor.zh-CN.md)。
 
@@ -12,7 +16,7 @@
 | --- | --- | --- |
 | T00 基础与内存 | 四个 package、schema/codec/ID/边界、Snafu 错误、有限日志/指标、配置、应用许可与控制预留；默认 mimalloc，System/jemalloc 为互斥选项，实际二进制可识别；同 jemalloc 发布构建可符号化采样；Linux Docker 的 System/cgroup 与 RF1 受控 OOM 恢复已验 | 默认 mimalloc 的生产性能、Linux 分配栈与长稳待验 |
 | T01 QUIC | 实际 s2n-quic 1.91、TLS/mTLS、有限分类连接池/流/队列、独立读写、单请求取消、原生新包 ACK 活性探测；空闲 sibling 不关闭活跃连接，半帧仍有限组装；原期限内关闭 owned I/O 并释放端口；大块唯一所有 payload 分段发送、容量计费与末引用许可；有限 2/4 lane 同预算对照 | 真实 LB/NAT/CID、混合连接/短流/公平性与完整规模矩阵待验；codec 探针不能代替服务性能结论 |
-| T02 持久化 | fsync WAL/vote/log/commit/snapshot、官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 恢复、物理日志压缩与失败关闭 | 真实掉电、跨区故障和长稳待验；同机不代表独立故障域 |
+| T02 持久化 | 分段 fsync WAL/vote/log/commit、唯一 manifest、refs-only 检查点、有界搬迁、具名快照与 reader pin；官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 发布屏障、实际文件写失败与失败关闭 | 新冻结版本的完整覆盖率／性能仍待验；完整应用快照仍有 O(状态) 成本，真实掉电、跨区和长稳待验 |
 | T03 控制与所有权 | 独立元数据组、CRUD 容量与永久身份、grant/fence/recover/activate、有限 TTL；真实 Broker 强杀后自动接管、旧身份拒绝及元数据少数派停授权 | 未 Active 的原 grant 目标同时死亡时保守阻塞；三区与长期故障组合待验 |
 | T04 生产 | 同组持久 producer/epoch/sequence/摘要/原结果、显式注册、固定过期、owned 提交；稳定版本 key 路由 helper | 无持久 outbox；有限原结果窗口届满不能自动以新身份重发 |
 | T05 订阅 | 同组持久 attempt/token/ACK、连续前沿/ACK 洞、seek/代次、冷读 H/接收屏障与 B 重试、窗口硬上限；部分冷页提交后丢响应、尾部先 ACK 和重启补投 | 外部业务副作用仍需幂等；高压力和长稳待验 |

@@ -109,6 +109,6 @@
 | NC05 | 清理无效参数，错误日志放 inspect_err，减少重复字符串分配 | T00,T01,T06,T07,T10 | 调用方同步、许可活到 owned worker／abort 完成、授权与取消匹配不变 | 复用 `Arc<str>` 而不新增 FastStr 依赖；授权共享及阻塞 abort 许可回归通过，见[代码质量证据](evidence/2026-10-20-code-quality.zh-CN.md)；实际 RAII guard 保留 |
 | NC06 | 复用指标／日志生态，优先 OpenTelemetry，SDK 由宿主初始化 | T00,T06,T10,T14 | 固定 series、宿主设施共存、终态释放计数准确、导出预算由宿主管理 | SDK 可选 OpenTelemetry feature 新增十个固定无标签 instrument；39 项 SDK 测试及 Collector 配置校验通过；未新增本轮远端 OTLP 导出验证 |
 | NC07 | 按角色分离 TOML；开发阶段不兼容旧版本 | T10,T12,T14 | 当前生成器／本地／Docker 配置同构，拒绝旧字段、混合或无效角色段 | 仅接受公共段、runtime、authorization 和适用的 gateway／storage 段；旧字段及生成器第三参数均拒绝。配置和真实 RF1／分角色 RF3 CLI 回归通过；历史性能基线源码仅在对照工具中生成自身配置 |
-| NC08 | 分析 segment WAL 是否必要及容量管理边界 | T02,T09,T13,T14 | 核对当前上限／重写成本、磁盘双份与读者占用、恢复与清理屏障 | [分析完成](research/wal-segments.zh-CN.md)，建议生产实现 segment 并同步物理采样／迁移模型；本轮仅分析，无新存储格式实现或故障测试。开发阶段采用新目录并明确拒绝旧格式，不做迁移兼容层 |
+| NC08 | 分析并按确认的方案实现 segment WAL 及容量管理 | T02,T09,T13,T14 | 段轮转、唯一 manifest／引用检查点、读者 pin、有界搬迁、故障恢复／清理屏障、物理采样与迁移预留 | [分析](research/wal-segments.zh-CN.md)与[新存储设计](design/storage-recovery.zh-CN.md)已落地，S02 覆盖真实文件、发布边界 SIGKILL 和写失败；开发阶段使用新目录并明确拒绝旧格式。完整应用快照成本保留；[Linux 覆盖率](evidence/2026-10-21-wal-segments-coverage.zh-CN.md)按源码标注，新冻结版覆盖率／性能尚待完整验收 |
 
 每个任务交付代码、正确性/故障证据、使用/设计文档、指标/事件/span、诊断/看板/告警和限制说明。具体进展见[实施状态](implementation-status.zh-CN.md)；本表按完整需求验收后更新，包含 54 项架构、8 项 QUIC、8 项观测、6 项内存与上述 8 项追加要求。
