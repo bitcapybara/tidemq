@@ -105,6 +105,11 @@ pub(super) async fn load(
     let checkpoint = load_checkpoint(directory, &manifest, options).await?;
     let mut index = BTreeMap::new();
     for location in &checkpoint.references {
+        if location.offset < SEGMENT_HEADER_BYTES || location.sequence >= manifest.replay_sequence {
+            return Err(corrupt(
+                "Checkpoint reference crosses the physical replay barrier",
+            ));
+        }
         if !manifest.sealed.iter().any(|s| s.id == location.segment) {
             return Err(corrupt("Checkpoint references a missing sealed segment"));
         }
@@ -163,7 +168,7 @@ pub(super) async fn load(
             .ok_or(Error::Limit {
                 name: "record total",
             })?;
-        if segment.first_sequence >= manifest.replay_sequence {
+        if !segment.reference_only && segment.first_sequence >= manifest.replay_sequence {
             if segment.first_sequence != expected {
                 return Err(corrupt("Physical replay sequence is not contiguous"));
             }
@@ -174,10 +179,11 @@ pub(super) async fn load(
             valid.byte_len = scan.valid_bytes;
             valid.records = scan.records;
             tail.push_back(valid);
-        } else if segment
-            .first_sequence
-            .checked_add(scan.records)
-            .is_none_or(|v| v > manifest.replay_sequence)
+        } else if !segment.reference_only
+            && segment
+                .first_sequence
+                .checked_add(scan.records)
+                .is_none_or(|v| v > manifest.replay_sequence)
         {
             return Err(corrupt("Checkpoint barrier splits a sealed segment"));
         }
@@ -284,7 +290,7 @@ fn validate_manifest(
             return Err(corrupt("Manifest has duplicate or invalid segments"));
         }
     }
-    if manifest.active.first_sequence < manifest.replay_sequence {
+    if manifest.active.reference_only || manifest.active.first_sequence < manifest.replay_sequence {
         return Err(corrupt("Active segment precedes checkpoint replay barrier"));
     }
     Ok(())
@@ -368,16 +374,33 @@ async fn scan_segment(
             .ok_or(Error::Limit {
                 name: "physical sequence",
             })?;
-        if frame.sequence != expected {
+        if !segment.reference_only && frame.sequence != expected {
             return Err(corrupt("Segment record sequence is not contiguous"));
         }
-        hash.update(&crate::wal::codec::frame(&frame.payload, frame.sequence)?);
+        hash.update(&frame.header);
+        hash.update(&frame.payload);
         let record = decode_record(frame.payload)?;
+        if segment.reference_only && record.id.is_none() {
+            return Err(corrupt("Reference-only segment contains a control record"));
+        }
         if let Some(id) = record.id {
+            if segment.reference_only
+                && index.get(&id).is_none_or(|location| {
+                    location.segment != segment.id
+                        || location.offset != offset
+                        || location.sequence != frame.sequence
+                        || location.frame_bytes != frame.bytes
+                })
+            {
+                return Err(corrupt(
+                    "Reference-only segment frame is not named by its checkpoint",
+                ));
+            }
             *next_id = (*next_id).max(id.0.checked_add(1).ok_or(Error::Limit {
                 name: "record identity",
             })?);
-            if frame.sequence >= barrier
+            if !segment.reference_only
+                && frame.sequence >= barrier
                 && (index.len() >= options.max_retained_records
                     || index
                         .insert(

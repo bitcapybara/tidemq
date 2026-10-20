@@ -1,3 +1,5 @@
+mod relocation;
+
 use super::disk::*;
 use super::format::*;
 use super::recovery::referenced;
@@ -33,6 +35,7 @@ pub(super) struct Writer {
     options: JournalOptions,
     metrics: Option<Arc<OperationMetrics>>,
     _owner: Option<Arc<std::fs::File>>,
+    mutated: bool,
 }
 impl Writer {
     #[allow(clippy::too_many_arguments)] // The recovered fields are moved directly into their single owner.
@@ -71,6 +74,7 @@ impl Writer {
             options,
             metrics,
             _owner: owner,
+            mutated: false,
         };
         writer.refresh();
         Ok(writer)
@@ -90,14 +94,24 @@ impl Writer {
                 fail(request, reason);
                 continue;
             }
+            self.mutated = false;
             let result = match request {
                 Request::Append(first) => {
-                    let (pending, next) = self.collect(first, &mut receiver).await;
+                    let (mut pending, next) = self.collect(first, &mut receiver).await;
                     carry = next;
-                    let result = self.append_group(&pending).await;
+                    let result = self.append_group(&mut pending).await;
+                    self.refresh();
                     let status = result.as_ref().map(|_| ()).map_err(ToString::to_string);
                     for item in pending {
-                        let _ = item.completion.send(status.clone());
+                        let Pending {
+                            completion,
+                            _bytes,
+                            _request,
+                            retained_slots,
+                            ..
+                        } = item;
+                        drop((_bytes, _request, retained_slots));
+                        let _ = completion.send(status.clone());
                     }
                     result
                 }
@@ -108,16 +122,19 @@ impl Writer {
                     ..
                 } => {
                     let result = self.checkpoint(control, ids).await;
+                    self.refresh();
                     let _ = completion.send(status(&result));
                     result
                 }
                 Request::Snapshot(snapshot, completion) => {
                     let result = self.publish_snapshot(snapshot).await;
+                    self.refresh();
                     let _ = completion.send(status(&result));
                     result
                 }
                 Request::Cleanup(completion) => {
                     let result = self.cleanup().await;
+                    self.refresh();
                     let _ = completion.send(status(&result));
                     result
                 }
@@ -136,7 +153,8 @@ impl Writer {
                 }
             };
             if let Err(error) = result
-                && !matches!(error, Error::Limit { .. } | Error::Configuration { .. })
+                && (self.mutated
+                    || !matches!(error, Error::Limit { .. } | Error::Configuration { .. }))
             {
                 let error = anyhow::Error::new(error);
                 tracing::error!(
@@ -178,7 +196,7 @@ impl Writer {
         (batch, None)
     }
     #[tracing::instrument(name="wal_segment_group_commit",level="debug",skip_all,fields(requests=pending.len()))]
-    async fn append_group(&mut self, pending: &[Pending]) -> Result<()> {
+    async fn append_group(&mut self, pending: &mut [Pending]) -> Result<()> {
         let bytes = pending
             .iter()
             .try_fold(0u64, |n, p| n.checked_add(p.physical_bytes))
@@ -218,13 +236,14 @@ impl Writer {
             });
         }
         if rotate {
-            self.ensure_file_slots(2, true).await?;
+            self.ensure_file_slots(2, 1, true).await?;
         }
         let frames = self.frames(pending)?;
         if rotate {
             self.rotate().await?;
         }
         let start = Instant::now();
+        self.mutated = true;
         let path = self.directory.join(self.manifest.active.name());
         for EncodedFrame {
             id,
@@ -269,6 +288,9 @@ impl Writer {
         stats.written_bytes = stats.written_bytes.saturating_add(bytes);
         drop(stats);
         for item in pending {
+            if let Some(slots) = &mut item.retained_slots {
+                slots.count = 0;
+            }
             if let Some(metrics) = &self.metrics {
                 metrics.observe(Stage::WalQueue, item.admitted_at.elapsed().as_secs_f64());
             }
@@ -317,6 +339,7 @@ impl Writer {
     async fn rotate(&mut self) -> Result<()> {
         let start = Instant::now();
         self.sync().await?;
+        self.mutated = true;
         let (active, file) =
             create_segment(&self.directory, self.manifest.identity, self.sequence).await?;
         let mut candidate = self.manifest.clone();
@@ -349,7 +372,12 @@ impl Writer {
         );
         Ok(())
     }
-    async fn ensure_file_slots(&self, additional: usize, reserve_checkpoint: bool) -> Result<()> {
+    async fn ensure_file_slots(
+        &self,
+        additional: usize,
+        new_segments: usize,
+        reserve_checkpoint: bool,
+    ) -> Result<()> {
         let files = directory_files(&self.directory).await?;
         if files.len().saturating_add(additional) > MAX_SEGMENTED_DIRECTORY_ENTRIES {
             return Err(Error::Limit {
@@ -360,8 +388,8 @@ impl Writer {
             .iter()
             .filter(|f| f.kind == SegmentedFileKind::Segment)
             .count();
-        let reserve = usize::from(reserve_checkpoint);
-        if count.saturating_add(1).saturating_add(reserve) > self.options.max_segments {
+        let reserve = if reserve_checkpoint { 2 } else { 0 };
+        if count.saturating_add(new_segments).saturating_add(reserve) > self.options.max_segments {
             return Err(Error::Limit {
                 name: "segment count; checkpoint and purge are required",
             });
@@ -397,6 +425,7 @@ impl Writer {
                 reason: "Checkpoint references an unknown record identity",
             })?);
         }
+        let relocation = self.plan_relocation(&mut references)?;
         let checkpoint = Checkpoint {
             version: LAYOUT_VERSION,
             identity: self.manifest.identity,
@@ -405,7 +434,11 @@ impl Writer {
             references,
         };
         let encoded = value_frame(&checkpoint, self.options.max_checkpoint_bytes)?;
-        let staging = encoded.len() as u64 + SEGMENT_HEADER_BYTES + self.options.manifest_reserve();
+        let relocation_bytes = relocation.as_ref().map_or(0, |plan| plan.segment.byte_len);
+        let staging = encoded.len() as u64
+            + SEGMENT_HEADER_BYTES
+            + self.options.manifest_reserve()
+            + relocation_bytes;
         if self
             .physical_bytes
             .checked_add(staging)
@@ -415,9 +448,23 @@ impl Writer {
                 name: "checkpoint staging capacity",
             });
         }
-        self.ensure_file_slots(3, false).await?;
+        self.ensure_file_slots(
+            3 + usize::from(relocation.is_some()),
+            1 + usize::from(relocation.is_some()),
+            false,
+        )
+        .await?;
         self.sync().await?;
-        lock(&self.shared.stats).staging_bytes = staging;
+        self.mutated = true;
+        {
+            let mut stats = lock(&self.shared.stats);
+            stats.staging_bytes = staging;
+            stats.current_file_bytes = self.physical_bytes.saturating_add(staging);
+        }
+        let relocated = match &relocation {
+            Some(plan) => Some(self.copy_relocation(plan).await?),
+            None => None,
+        };
         let checkpoint_ref = FileRef {
             id: new_id()?,
             byte_len: encoded.len() as u64,
@@ -430,6 +477,7 @@ impl Writer {
         sync_directory(&self.directory).await?;
         #[cfg(test)]
         super::fault_tests::boundary("checkpoint_directory_sync");
+        self.mutated = true;
         let (active, file) =
             create_segment(&self.directory, self.manifest.identity, self.sequence).await?;
         let needed: BTreeSet<_> = checkpoint.references.iter().map(|r| r.segment).collect();
@@ -437,6 +485,9 @@ impl Writer {
         let mut old_active = self.manifest.active.clone();
         old_active.checksum = *self.hash.finalize().as_bytes();
         sealed.push(old_active);
+        if let Some(segment) = relocated {
+            sealed.push(segment);
+        }
         sealed.retain(|s| needed.contains(&s.id));
         let candidate = Manifest {
             version: LAYOUT_VERSION,
@@ -453,12 +504,17 @@ impl Writer {
         self.physical_bytes = self
             .physical_bytes
             .saturating_add(encoded.len() as u64)
+            .saturating_add(relocation_bytes)
             .saturating_add(SEGMENT_HEADER_BYTES)
             .saturating_add(manifest_bytes)
             .saturating_sub(self.manifest_bytes);
         self.manifest_bytes = manifest_bytes;
         self.manifest = candidate;
         self.file = file;
+        self.shared.retained_count.fetch_sub(
+            self.index.len().saturating_sub(checkpoint.references.len()),
+            Ordering::Relaxed,
+        );
         self.index = checkpoint
             .references
             .into_iter()
@@ -526,6 +582,7 @@ impl Writer {
         let mut manifest = self.manifest.clone();
         manifest.snapshot = Some(snapshot.clone());
         manifest.next_record_id = self.shared.next_record_id.load(Ordering::Relaxed);
+        self.mutated = true;
         let bytes = publish_manifest(&self.directory, &manifest).await?;
         self.physical_bytes = self
             .physical_bytes

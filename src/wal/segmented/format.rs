@@ -8,8 +8,8 @@ pub const SEGMENTED_MANIFEST_FILE: &str = "manifest.bin";
 pub const MAX_SEGMENTED_DIRECTORY_ENTRIES: usize = 256;
 pub(super) const MAX_MANIFEST_BYTES: usize = 65_536;
 pub(super) const LAYOUT_VERSION: u32 = 2;
-pub(super) const SEGMENT_HEADER_PAYLOAD: usize = 68;
-pub(super) const SEGMENT_HEADER_BYTES: u64 = 156;
+pub(super) const SEGMENT_HEADER_PAYLOAD: usize = 69;
+pub(super) const SEGMENT_HEADER_BYTES: u64 = 157;
 pub(super) const ENVELOPE_BYTES: usize = 9;
 pub(super) const MAX_SEGMENTS: usize = 64;
 pub(super) const MAX_REFERENCES: usize = 65_536;
@@ -70,6 +70,7 @@ pub(super) struct FileRef {
 pub(super) struct Segment {
     pub id: [u8; 16],
     pub first_sequence: u64,
+    pub reference_only: bool,
     pub records: u64,
     pub byte_len: u64,
     pub checksum: [u8; 32],
