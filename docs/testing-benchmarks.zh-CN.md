@@ -8,7 +8,7 @@
 
 新版 Linux 普通测试 246 通过、11 ignored；十个真实 RustFS ignored 显式通过，余下官方 Collector ignored 未在 Linux 执行。workspace 文档三项、验证 driver 六项，以及 SDK metrics＋OpenTelemetry 的 25 项普通和一项文档测试通过，计数有重叠。格式、Clippy 与生产 panic/索引审计均通过。完整回归使用 `--test-threads=1` 隔离 fixture，测试内部真实 Raft/QUIC/SDK 并发保持原样；macOS 原 drain 瞬时拒绝仍未定位。
 
-新增性能门禁覆盖真实单节点与三个完整角色节点，对照两版 SDK/服务端的同机八组成对样本，A/B、B/A 各四对。五项指标 × 两拓扑统一使用 95% 比较族的 Bonferroni 校正，任何显著退化均失败；吞吐和两项原始消息延迟均值还必须满足 0.15 log 半宽的不确定性预算。p99 保留显著回退否决和完整诊断区间，宽区间显示 `imprecise`，其宽度本身不阻塞主指标验收，不能称作已排除小幅尾回退。每次测量必须通过全部持久正确性校验，固定 cohort 不得筛样本或重跑挑选结果。策略、检测能力、A/A 校准、初始基线、晋升和 GitHub 分支保护限制见[性能手册](performance.zh-CN.md)。大帧发送的字节等价、原分配容量计费和最后 clone 释放测试见 `crates/tidemq-protocol/src/framing.rs` 与 `crates/tidemq-transport/src/frame/tests.rs`；SDK 默认预算、嵌套取消域与发送后 Unknown 由真实网络测试覆盖。[本轮验证记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)区分已完成的检查与失败实验，codec 探针不能替代端到端性能测量。
+新增性能门禁覆盖真实单节点与三个完整角色节点，对照两版 SDK/服务端的同机八组成对样本，A/B、B/A 各四对。构建与测量使用独立 runner，通过外部 manifest 摘要、干净源码和四个二进制身份校验传递固定产物；测量 job 不编译，产物缺失、损坏或源身份不符均失败。五项指标 × 两拓扑统一使用 95% 比较族的 Bonferroni 校正，任何显著退化均失败；吞吐和两项原始消息延迟均值还必须满足 0.15 log 半宽的不确定性预算。p99 保留显著回退否决和完整诊断区间，宽区间显示 `imprecise`，其宽度本身不阻塞主指标验收，不能称作已排除小幅尾回退。每次测量必须通过全部持久正确性校验，固定 cohort 不得筛样本或重跑挑选结果。策略、检测能力、A/A 校准、初始基线、晋升和 GitHub 分支保护限制见[性能手册](performance.zh-CN.md)。大帧发送的字节等价、原分配容量计费和最后 clone 释放测试见 `crates/tidemq-protocol/src/framing.rs` 与 `crates/tidemq-transport/src/frame/tests.rs`；SDK 默认预算、嵌套取消域与发送后 Unknown 由真实网络测试覆盖。[本轮验证记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)区分已完成的检查与失败实验，codec 探针不能替代端到端性能测量。
 
 ## 可复现验证
 
@@ -61,7 +61,7 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 | S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../examples/deploy_validation.rs)、[读取回收回归](../src/runtime/data_reclaim_tests.rs)、[Linux 记录](evidence/2026-10-20-linux-docker.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界 | 单机共享项目内 netns，无宿主端口；736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；macOS drain 瞬时拒绝另保留未定位记录 |
 | M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
 | P01 [性能工具与报告口径](performance.zh-CN.md)、[17 项报告](evidence/2026-10-20-local-performance.zh-CN.md) | 外部 SDK、独立 RF1 服务进程、warmup/measure/cooldown、原 PendingBatch、unique ID/offset 与最终持久 ACK；36032 条测量/2264 条预热；三 allocator、日志三档、同预算 2/4 lanes 及官方 Collector 53 span | 单消费者的有限闭环短跑；高吞吐低延迟、生产 P99.9、长稳及公平竞品未验。原 16 项缺独立子进程 exit-status 制品；样本不足高分位为 null |
-| P02 [CI 性能门禁](../.github/workflows/performance.yml)、[统计校验](../scripts/performance/compare.test.mjs)、[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md) | 真 RF1/三进程 RF3、两版服务/SDK、同机八对平衡交错、独立吞吐/计划发送延迟；十项比较族校正，五项显著回退否决、三项主指标精度验收，main 成功后才晋升 | p99 可在成功报告中保持 imprecise，不保证小幅尾退化检出；旧失败保留，新八对初始基线按本轮记录验收；当前套餐无法将检查设为 required status |
+| P02 [CI 性能门禁](../.github/workflows/performance.yml)、[统计校验](../scripts/performance/compare.test.mjs)、[产物校验](../scripts/performance/prepared.test.mjs)、[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md) | 真 RF1/三进程 RF3、两版服务/SDK、独立构建 runner 与测量 runner、四个固定二进制校验、同机八对平衡交错、独立吞吐/计划发送延迟；十项比较族校正，五项显著回退否决、三项主指标精度验收，main 成功后才晋升 | p99 可在成功报告中保持 imprecise，不保证小幅尾退化检出；旧失败保留，新八对初始基线按本轮记录验收；当前套餐无法将检查设为 required status |
 
 ## 构建、生成与 allocator
 

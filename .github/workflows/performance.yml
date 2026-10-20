@@ -14,10 +14,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  performance:
-    name: Performance gate (RF1 and RF3)
+  build:
+    name: Build fixed performance binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
+    outputs:
+      source_commit: ${{ steps.reference.outputs.source_commit }}
+      manifest_sha256: ${{ steps.build.outputs.manifest_sha256 }}
     steps:
       - name: Check out protected comparison tools
         uses: actions/checkout@v4
@@ -42,6 +45,7 @@ jobs:
       - name: Check out proposed service
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           path: candidate
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.96.0
@@ -51,13 +55,77 @@ jobs:
           key: performance-mimalloc-release
           cache-on-failure: true
       - name: Validate the trusted comparator
-        run: node --test trusted/scripts/performance/compare.test.mjs
-      - name: Alternate real baseline and candidate trials on this runner
+        run: node --test trusted/scripts/performance/*.test.mjs
+      - name: Build both service and SDK workload artifacts
+        id: build
         env:
           REQUIRE_UNCHANGED: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || '' }}
         run: >-
-          node trusted/scripts/performance-gate.mjs run
+          node trusted/scripts/performance-gate.mjs prepare
           --tools trusted --baseline baseline --candidate candidate
+          --output performance-build $REQUIRE_UNCHANGED >> "$GITHUB_OUTPUT"
+      - name: Transfer fixed binary artifacts to the measurement job
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-build
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 1
+          path: |
+            performance-build/manifest.json
+            performance-build/builds/baseline/tidemq
+            performance-build/builds/candidate/tidemq
+            performance-build/builds/baseline-load/perf_load
+            performance-build/builds/candidate-load/perf_load
+            performance-build/builds/*/identity.json
+            performance-build/builds/*/build.log
+      - name: Retain failed build identities and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-build-failure
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            performance-build/builds/*/identity.json
+            performance-build/builds/*/build.log
+
+  measure:
+    name: Measure RF1 and RF3 on a fresh runner
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Check out the same protected comparison tools
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted
+          persist-credentials: false
+      - name: Check out the protected baseline source for verification
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.source_commit }}
+          path: baseline
+          persist-credentials: false
+      - name: Check out the exact proposed source for verification
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: performance-build
+          path: performance-build
+      - name: Verify fixed builds and alternate all paired trials
+        env:
+          PREPARED_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
+          REQUIRE_UNCHANGED: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || '' }}
+        run: >-
+          node trusted/scripts/performance-gate.mjs measure
+          --tools trusted --baseline baseline --candidate candidate
+          --prepared performance-build --manifest-sha256 "$PREPARED_SHA256"
           --output performance-result $REQUIRE_UNCHANGED
       - name: Upload reports, metrics and bounded process logs
         if: always()
@@ -68,6 +136,7 @@ jobs:
           retention-days: 30
           path: |
             performance-result/summary.json
+            performance-result/build-manifest.json
             performance-result/builds/*/identity.json
             performance-result/builds/*/build.log
             performance-result/rf*/*/report-*.json
@@ -76,12 +145,25 @@ jobs:
             performance-result/rf*/*/*-metrics.txt
             performance-result/rf*/*/*-diagnostics.json
 
+  performance:
+    name: Performance gate (RF1 and RF3)
+    if: always()
+    needs: [build, measure]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require successful fixed builds and complete measurements
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          MEASURE_RESULT: ${{ needs.measure.result }}
+        run: '[[ "$BUILD_RESULT" == "success" && "$MEASURE_RESULT" == "success" ]]'
+
   promote-baseline:
     name: Record successful main baseline
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: performance
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 4
     permissions:
       contents: write
       actions: read
