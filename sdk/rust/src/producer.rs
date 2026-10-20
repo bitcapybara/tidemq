@@ -90,7 +90,15 @@ pub struct Producer {
 
 impl Producer {
     /// Starts an explicit registration. Keep the supplied identity when an open result is unknown.
-    pub async fn open(
+    pub async fn open(client: Client, topic: Id, partition: u32, producer: Id) -> Result<Self> {
+        client
+            .operation(|deadline| {
+                Self::open_inner(client.clone(), topic, partition, producer, deadline)
+            })
+            .await
+    }
+
+    async fn open_inner(
         client: Client,
         topic: Id,
         partition: u32,
@@ -112,7 +120,7 @@ impl Producer {
                 deadline,
             )
             .await?;
-        Self::open_at(
+        Self::open_at_inner(
             client,
             topic,
             partition,
@@ -130,11 +138,33 @@ impl Producer {
         partition: u32,
         producer: Id,
         expected_registration_epoch: u64,
+    ) -> Result<Self> {
+        client
+            .operation(|deadline| {
+                Self::open_at_inner(
+                    client.clone(),
+                    topic,
+                    partition,
+                    producer,
+                    expected_registration_epoch,
+                    deadline,
+                )
+            })
+            .await
+    }
+
+    async fn open_at_inner(
+        client: Client,
+        topic: Id,
+        partition: u32,
+        producer: Id,
+        expected_registration_epoch: u64,
         deadline: Instant,
     ) -> Result<Self> {
         if expected_registration_epoch == 0 {
             return Err(Error::ResponseMismatch);
         }
+        crate::request::mark_registration(producer, expected_registration_epoch);
         let request = public::OpenProducer {
             topic_id: bytes(topic),
             partition_id: partition,
@@ -201,7 +231,16 @@ impl Producer {
 
     /// Enqueues batches in sequence order while responses are read independently.
     #[tracing::instrument(target = "tidemq_trace", name = "tidemq.sdk.produce", skip_all, fields(producer_epoch = self.epoch))]
-    pub async fn produce(
+    pub async fn produce(&self, messages: Vec<public::Message>) -> Result<ProduceReceipt> {
+        let result = self
+            .client
+            .operation(|deadline| self.produce_inner(messages, deadline))
+            .await;
+        self.record_unknown(&result);
+        result
+    }
+
+    async fn produce_inner(
         &self,
         messages: Vec<public::Message>,
         deadline: Instant,
@@ -255,10 +294,12 @@ impl Producer {
         let (batch, frame) = self.prepare(payload, request_slot, domain_slot, deadline)?;
         state.next_sequence = next_sequence;
         state.pending.insert(first_sequence, batch.clone());
+        crate::request::mark_produce_pending();
         let guard = Attempt {
             batch: batch.clone(),
             completed: false,
         };
+        crate::request::mark_sent();
         let response = rpc
             .submit_affinity(frame, deadline, self.affinity)
             .await
@@ -356,6 +397,16 @@ impl Producer {
 
     /// Lists unresolved identities even when the original produce future was dropped.
     pub async fn pending_batches(&self) -> Result<Vec<PendingBatch>> {
+        // Local retry identities remain inspectable after closing the network client.
+        crate::request::run(
+            std::time::Duration::from_millis(self.client.inner.config.request_timeout_ms),
+            &tokio_util::sync::CancellationToken::new(),
+            |_| self.pending_batches_inner(),
+        )
+        .await
+    }
+
+    async fn pending_batches_inner(&self) -> Result<Vec<PendingBatch>> {
         let state = self.state.lock().await;
         let mut output = Vec::new();
         output
@@ -365,7 +416,33 @@ impl Producer {
         Ok(output)
     }
 
-    pub async fn retry(&self, batch: &PendingBatch, deadline: Instant) -> Result<ProduceReceipt> {
+    pub async fn retry(&self, batch: &PendingBatch) -> Result<ProduceReceipt> {
+        let result = self
+            .client
+            .operation(|deadline| self.retry_inner(batch, deadline))
+            .await
+            .map_err(|error| {
+                if batch.inner.uncertain.load(Ordering::Acquire)
+                    && matches!(error, Error::Cancelled | Error::Deadline | Error::Closed)
+                {
+                    Error::ProduceUnknown {
+                        source: Box::new(error),
+                    }
+                } else {
+                    error
+                }
+            });
+        self.record_unknown(&result);
+        result
+    }
+
+    fn record_unknown(&self, result: &Result<ProduceReceipt>) {
+        if result.as_ref().is_err_and(Error::outcome_unknown) {
+            increment(&self.client.inner.metrics.unknown, 1);
+        }
+    }
+
+    async fn retry_inner(&self, batch: &PendingBatch, deadline: Instant) -> Result<ProduceReceipt> {
         let result = self.retry_once(batch, deadline).await;
         self.retry_rejected(batch, result, deadline).await
     }
@@ -426,6 +503,7 @@ impl Producer {
             .in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| Error::Admission)?;
+        crate::request::mark_produce_pending();
         let guard = Attempt {
             batch: batch.clone(),
             completed: false,
@@ -443,6 +521,7 @@ impl Producer {
                     }
                 }
                 state.rpc = Some(rpc.clone());
+                crate::request::mark_sent();
                 rpc.submit_affinity(
                     self.client.frame(
                         FrameKind::ProduceBatch,
@@ -464,7 +543,13 @@ impl Producer {
         self.finish(batch.clone(), guard, response, deadline).await
     }
 
-    pub async fn retire(&self, deadline: Instant) -> Result<()> {
+    pub async fn retire(&self) -> Result<()> {
+        self.client
+            .operation(|deadline| self.retire_inner(deadline))
+            .await
+    }
+
+    async fn retire_inner(&self, deadline: Instant) -> Result<()> {
         let mut state = timeout_at(deadline, self.state.lock())
             .await
             .map_err(|_| Error::Deadline)?;
@@ -547,12 +632,9 @@ impl Producer {
                     ..
                 },
             ) => Err(error),
-            other => {
-                increment(&self.client.inner.metrics.unknown, 1);
-                Err(Error::ProduceUnknown {
-                    source: Box::new(other.err().unwrap_or(Error::ResponseMismatch)),
-                })
-            }
+            other => Err(Error::ProduceUnknown {
+                source: Box::new(other.err().unwrap_or(Error::ResponseMismatch)),
+            }),
         }
     }
 

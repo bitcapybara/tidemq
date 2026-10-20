@@ -16,16 +16,39 @@ use tidemq_sdk::{Client, ClientConfig, Id, Producer, Bytes, public::Message};
 let ca = tokio::fs::read("certs/ca.pem").await?;
 let client = Client::connect(ClientConfig::new("localhost:7443"), ca.into(),
     std::env::var("TIDEMQ_TOKEN")?).await?;
-let topic = client.admin().create_topic("events", 1, client.deadline()?).await?;
+let topic = client.admin().create_topic("events", 1).await?;
 let producer = Producer::open(client.clone(), Id::from_slice(&topic.topic_id)?, 0,
-    Id::random()?, client.deadline()?).await?;
+    Id::random()?).await?;
 let receipt = producer.produce(vec![Message {
     key: Bytes::from_static(b"key"), body: Bytes::from_static(b"message"),
-}], client.deadline()?).await?;
+}]).await?;
 println!("Committed offset {}", receipt.first_offset);
-client.close(client.deadline()?).await;
+client.close().await;
 # Ok(()) }
 ```
+
+Every network operation uses `ClientConfig::request_timeout_ms` by default, including admission queues, connection establishment, retries and backoff. Callers no longer create an `Instant` for every request. Set an explicit shared total budget and a Tokio cancellation parent with `RequestContext`:
+
+```rust,no_run
+use std::time::Duration;
+use tidemq_sdk::{Client, RequestContext};
+
+# async fn example(client: &Client) -> tidemq_sdk::Result<()> {
+let context = RequestContext::with_timeout(Duration::from_secs(5))?;
+let cancellation = context.cancellation_token();
+// Pass a clone of cancellation to the task that owns shutdown or user cancellation.
+context.scope(async {
+    client.admin().topic("events").await?;
+    client.admin().subscription(tidemq_sdk::Id::random()?, "workers").await?;
+    Ok(())
+}).await?;
+cancellation.cancel();
+# Ok(()) }
+```
+
+`RequestContext::new(absolute_deadline, cancellation_token)` accepts an existing `tokio_util::sync::CancellationToken`; the SDK also re-exports this type. A token signals cancellation and is not a timer: an inline Tokio timeout enforces the absolute deadline without spawning timer tasks. Each operation uses the earlier of the configured client timeout and the context deadline. Reusing a context across calls preserves its original total budget; nested SDK calls and retries never refresh an operation deadline. Nested scopes use the earliest deadline and preserve every parent cancellation; nesting is bounded to 16 scopes. `context.child()` isolates cancellation from its parent and siblings. Scope carries this policy for SDK calls and does not cancel unrelated host computation between calls. It follows the future being polled and does not implicitly propagate to spawned Tokio tasks; explicitly clone and scope the context inside each spawned task.
+
+Cancellation drops the current operation future and releases transient admission permits. It does not roll back a server operation or reset a shared QUIC lane. `Cancelled` before submission has no submitted request; `RequestUnknown` means interruption after potential submission. Registration interruption preserves its epoch through `RegistrationUnknown`, and an admitted producer batch remains available as `ProduceUnknown` with the original identity in `pending_batches()`. Those unresolved batches intentionally retain their bounded permits until resolved or dropped. `client.close().await` cancels in-flight operations, rejects new ones, and performs cleanup within the configured timeout. It does not use an already-cancelled request context to skip connection cleanup. Local pending-batch inspection remains available after close.
 
 `ProduceUnknown` and a dropped produce future retain the original batch in `pending_batches()`. Retry the earliest batch with `retry`, preserving producer, epoch, sequence and digest. New sequences remain blocked until unresolved batches recover. Expired sessions never silently acquire a new identity. `RegistrationUnknown` exposes the original producer ID and registration epoch for `open_at`. There is no persistent SDK outbox or process-restart recovery promise.
 

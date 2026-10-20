@@ -1,0 +1,366 @@
+//! Total request budgets and cooperative cancellation without background timer tasks.
+
+use std::future::Future;
+use std::sync::{
+    Arc, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
+
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
+
+use crate::{Error, Id, Result};
+
+tokio::task_local! {
+    static REQUEST_CONTEXT: Arc<ScopedContext>;
+    static OPERATION: Arc<Operation>;
+}
+
+/// An absolute total deadline and a caller-owned cancellation parent.
+/// Reusing this context across calls never refreshes its remaining budget.
+#[derive(Clone, Debug)]
+pub struct RequestContext {
+    deadline: Instant,
+    cancellation: CancellationToken,
+}
+
+impl RequestContext {
+    pub fn new(deadline: Instant, cancellation: CancellationToken) -> Self {
+        Self {
+            deadline,
+            cancellation,
+        }
+    }
+
+    pub fn with_deadline(deadline: Instant) -> Self {
+        Self::new(deadline, CancellationToken::new())
+    }
+
+    pub fn with_timeout(timeout: Duration) -> Result<Self> {
+        Ok(Self::with_deadline(crate::client::deadline_after(timeout)?))
+    }
+
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    /// Cancelling this handle cancels its scopes, never their ancestors.
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.cancellation.clone()
+    }
+
+    pub fn child(&self) -> Self {
+        Self::new(self.deadline, self.cancellation.child_token())
+    }
+
+    /// Scopes SDK calls in the polled future. Spawned tasks must scope a clone.
+    /// Nested scopes keep the earliest deadline and every parent's cancellation.
+    pub async fn scope<T>(&self, future: impl Future<Output = Result<T>>) -> Result<T> {
+        let parent = REQUEST_CONTEXT.try_with(Arc::clone).ok();
+        let depth = parent
+            .as_ref()
+            .map_or(Some(1), |parent| parent.depth.checked_add(1))
+            .ok_or(Error::Configuration {
+                reason: "request context nesting exceeds its bound",
+            })?;
+        if depth > 16 {
+            return Err(Error::Configuration {
+                reason: "request context nesting exceeds its bound",
+            });
+        }
+        let deadline = parent
+            .as_ref()
+            .map_or(self.deadline, |parent| self.deadline.min(parent.deadline));
+        let scope = Arc::new(ScopedContext {
+            deadline,
+            cancellation: self.cancellation.child_token(),
+            parent,
+            depth,
+        });
+        REQUEST_CONTEXT.scope(scope, future).await
+    }
+}
+
+struct ScopedContext {
+    deadline: Instant,
+    cancellation: CancellationToken,
+    parent: Option<Arc<Self>>,
+    depth: usize,
+}
+
+impl ScopedContext {
+    async fn parent_cancelled(&self) {
+        match &self.parent {
+            Some(parent) => Box::pin(parent.cancelled()).await,
+            None => std::future::pending().await,
+        }
+    }
+
+    async fn cancelled(&self) {
+        tokio::select! {
+            _ = self.cancellation.cancelled() => {},
+            _ = self.parent_cancelled() => {},
+        }
+    }
+}
+
+struct Operation {
+    deadline: Instant,
+    sent: AtomicBool,
+    produce_pending: AtomicBool,
+    registration: OnceLock<(Id, u64)>,
+}
+
+impl Operation {
+    fn interrupted(&self, error: Error) -> Error {
+        let error = if self.sent.load(Ordering::Acquire) {
+            Error::RequestUnknown {
+                source: Box::new(error),
+            }
+        } else {
+            error
+        };
+        if self.produce_pending.load(Ordering::Acquire) {
+            Error::ProduceUnknown {
+                source: Box::new(error),
+            }
+        } else if let Some((producer_id, registration_epoch)) = self.registration.get() {
+            Error::RegistrationUnknown {
+                producer_id: *producer_id,
+                registration_epoch: *registration_epoch,
+                source: Box::new(error),
+            }
+        } else {
+            error
+        }
+    }
+}
+
+/// Nested SDK calls use their original operation; retries cannot refresh the budget.
+pub(crate) async fn run<T, F: Future<Output = Result<T>>>(
+    timeout: Duration,
+    closed: &CancellationToken,
+    operation: impl FnOnce(Instant) -> F,
+) -> Result<T> {
+    if let Ok(deadline) = OPERATION.try_with(|operation| operation.deadline) {
+        return operation(deadline).await;
+    }
+    let default_deadline = crate::client::deadline_after(timeout)?;
+    let scope = match REQUEST_CONTEXT.try_with(Arc::clone) {
+        Ok(scope) => scope,
+        Err(_) => Arc::new(ScopedContext {
+            deadline: default_deadline,
+            cancellation: CancellationToken::new(),
+            parent: None,
+            depth: 1,
+        }),
+    };
+    let deadline = scope.deadline.min(default_deadline);
+    let state = Arc::new(Operation {
+        deadline,
+        sent: AtomicBool::new(false),
+        produce_pending: AtomicBool::new(false),
+        registration: OnceLock::new(),
+    });
+    if Instant::now() >= deadline {
+        return Err(Error::Deadline);
+    }
+    let cancellation = scope.cancellation.child_token();
+    let _guard = cancellation.clone().drop_guard();
+    OPERATION
+        .scope(Arc::clone(&state), async {
+            tokio::select! {
+                biased;
+                _ = closed.cancelled() => Err(state.interrupted(Error::Closed)),
+                _ = scope.parent_cancelled() => Err(state.interrupted(Error::Cancelled)),
+                _ = cancellation.cancelled() => Err(state.interrupted(Error::Cancelled)),
+                result = tokio::time::timeout_at(deadline, operation(deadline)) => {
+                    match result {
+                        Ok(Err(error @ (Error::Deadline | Error::Cancelled | Error::Closed))) => {
+                            Err(state.interrupted(error))
+                        }
+                        Ok(result) => result,
+                        Err(_) => Err(state.interrupted(Error::Deadline)),
+                    }
+                },
+            }
+        })
+        .await
+}
+
+pub(crate) fn mark_sent() {
+    let _ = OPERATION.try_with(|operation| operation.sent.store(true, Ordering::Release));
+}
+
+pub(crate) fn mark_produce_pending() {
+    let _ =
+        OPERATION.try_with(|operation| operation.produce_pending.store(true, Ordering::Release));
+}
+
+pub(crate) fn mark_registration(producer: Id, epoch: u64) {
+    let _ = OPERATION.try_with(|operation| operation.registration.set((producer, epoch)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn expired_or_cancelled_requests_never_poll_the_operation() {
+        let polled = AtomicBool::new(false);
+        let context = RequestContext::with_deadline(Instant::now());
+        let execute = || async {
+            run(
+                Duration::from_secs(1),
+                &CancellationToken::new(),
+                |_| async {
+                    polled.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+            .await
+        };
+        assert!(matches!(
+            context.scope(execute()).await,
+            Err(Error::Deadline)
+        ));
+        let context = RequestContext::with_timeout(Duration::from_secs(1)).unwrap();
+        context.cancellation_token().cancel();
+        assert!(matches!(
+            context.scope(execute()).await,
+            Err(Error::Cancelled)
+        ));
+        assert!(!polled.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn nested_scopes_keep_earliest_budget_across_sequential_calls() {
+        let parent = RequestContext::with_timeout(Duration::from_secs(1)).unwrap();
+        let later = RequestContext::with_timeout(Duration::from_secs(10)).unwrap();
+        let expected = parent.deadline();
+        parent
+            .scope(later.scope(async {
+                for _ in 0..2 {
+                    run(
+                        Duration::from_secs(20),
+                        &CancellationToken::new(),
+                        |deadline| async move {
+                            assert_eq!(deadline, expected);
+                            tokio::task::yield_now().await;
+                            Ok(())
+                        },
+                    )
+                    .await?;
+                }
+                Ok(())
+            }))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn long_scope_cannot_extend_client_timeout_or_refresh_nested_budget() {
+        let context = RequestContext::with_timeout(Duration::from_secs(30)).unwrap();
+        let latest = Instant::now() + Duration::from_secs(1);
+        context
+            .scope(run(
+                Duration::from_millis(100),
+                &CancellationToken::new(),
+                |outer| async move {
+                    assert!(outer < latest);
+                    tokio::task::yield_now().await;
+                    run(
+                        Duration::from_secs(20),
+                        &CancellationToken::new(),
+                        |inner| async move {
+                            assert_eq!(inner, outer);
+                            Ok(())
+                        },
+                    )
+                    .await
+                },
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn child_cancellation_isolated_from_parent_and_siblings() {
+        let parent = RequestContext::with_timeout(Duration::from_secs(1)).unwrap();
+        let first = parent.child();
+        let second = parent.child();
+        first.cancellation_token().cancel();
+        assert!(!parent.cancellation_token().is_cancelled());
+        assert!(!second.cancellation_token().is_cancelled());
+        assert!(matches!(
+            first
+                .scope(run(
+                    Duration::from_secs(1),
+                    &CancellationToken::new(),
+                    |_| async { Ok(()) }
+                ))
+                .await,
+            Err(Error::Cancelled)
+        ));
+        second
+            .scope(run(
+                Duration::from_secs(1),
+                &CancellationToken::new(),
+                |_| async { Ok(()) },
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_outer_scope_interrupts_nested_pending_operation() {
+        let parent = RequestContext::with_timeout(Duration::from_secs(3)).unwrap();
+        let inner = RequestContext::with_timeout(Duration::from_secs(10)).unwrap();
+        let cancellation = parent.cancellation_token();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            parent
+                .scope(inner.scope(run(
+                    Duration::from_secs(20),
+                    &CancellationToken::new(),
+                    |_| async {
+                        started.send(()).unwrap();
+                        std::future::pending::<Result<()>>().await
+                    },
+                )))
+                .await
+        });
+        ready.await.unwrap();
+        cancellation.cancel();
+        assert!(matches!(task.await.unwrap(), Err(Error::Cancelled)));
+    }
+
+    #[tokio::test]
+    async fn dropping_operation_releases_permit_without_cancelling_context() {
+        let context = RequestContext::with_timeout(Duration::from_secs(3)).unwrap();
+        let cancellation = context.cancellation_token();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let reserved = Arc::clone(&semaphore);
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            context
+                .scope(run(
+                    Duration::from_secs(20),
+                    &CancellationToken::new(),
+                    |_| async {
+                        let _permit = reserved.acquire_owned().await.unwrap();
+                        started.send(()).unwrap();
+                        std::future::pending::<Result<()>>().await
+                    },
+                ))
+                .await
+        });
+        ready.await.unwrap();
+        assert_eq!(semaphore.available_permits(), 0);
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(semaphore.available_permits(), 1);
+        assert!(!cancellation.is_cancelled());
+    }
+}
