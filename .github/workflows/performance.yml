@@ -21,7 +21,7 @@ jobs:
   build:
     name: Build fixed performance binaries
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     outputs:
       source_commit: ${{ steps.reference.outputs.source_commit }}
       manifest_sha256: ${{ steps.build.outputs.manifest_sha256 }}
@@ -145,6 +145,7 @@ jobs:
             performance-result/builds/*/build.log
             performance-result/rf*/*/report-*.json
             performance-result/rf*/*/execution.json
+            performance-result/rf*/*/node-*-validated.json
             performance-result/rf*/*/*.log
             performance-result/rf*/*/*-metrics.txt
             performance-result/rf*/*/*-diagnostics.json

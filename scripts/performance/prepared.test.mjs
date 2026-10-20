@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import {execFileSync, spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
-import {chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile} from 'node:fs/promises';
+import {chmod, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, utimes, writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {HARNESS_FILES} from './compare.mjs';
-import {verifyPreparedBuilds} from '../performance-gate.mjs';
+import {build, command, verifyPreparedBuilds} from '../performance-gate.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const binaries = {baseline: 'tidemq', candidate: 'tidemq', 'baseline-load': 'perf_load', 'candidate-load': 'perf_load'};
@@ -17,6 +17,61 @@ const commit = cwd => {
     '-c', 'user.email=perf-test@example.invalid', 'commit', '--no-gpg-sign', '-qm', 'Test source');
   return git(cwd, 'rev-parse', 'HEAD');
 };
+
+test('logged command failures preserve a bounded diagnostic cause in the gate summary', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'tidemq-perf-command-'));
+  const log = path.join(directory, 'validated.json');
+  try {
+    await assert.rejects(command(process.execPath, ['-e',
+      'process.stderr.write("x".repeat(8192) + "\\nFixture configuration validation failed\\n"); process.exitCode = 1;'], {log}), error => {
+      assert.match(error.message, /Fixture configuration validation failed/);
+      assert.ok(error.message.includes(log));
+      assert.ok(error.message.length < 16384);
+      return true;
+    });
+    assert.match(await readFile(log, 'utf8'), /x{8192}\nFixture configuration validation failed/);
+  } finally { await rm(directory, {recursive: true, force: true}); }
+});
+
+test('real alternating source builds refresh workspace code while retaining external dependency artifacts', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tidemq-perf-cargo-'));
+  const target = path.join(root, 'target');
+  try {
+    const dependency = path.join(root, 'dependency');
+    await mkdir(path.join(dependency, 'src'), {recursive: true});
+    await writeFile(path.join(dependency, 'Cargo.toml'), '[package]\nname="shared-dependency"\nversion="0.1.0"\nedition="2024"\n[workspace]\n');
+    await writeFile(path.join(dependency, 'src/lib.rs'), 'pub fn touch() {}\n');
+    const toolchain = await readFile(new URL('../../rust-toolchain.toml', import.meta.url));
+    for (const side of ['baseline', 'candidate']) {
+      const source = path.join(root, side);
+      await mkdir(path.join(source, 'src'), {recursive: true});
+      await mkdir(path.join(source, 'library/src'), {recursive: true});
+      await writeFile(path.join(source, 'rust-toolchain.toml'), toolchain);
+      await writeFile(path.join(source, 'Cargo.toml'), '[package]\nname="tidemq"\nversion="0.1.0"\nedition="2024"\n[workspace]\nmembers=["library"]\n[features]\nallocator-mimalloc=[]\n[dependencies]\nfixture-library={path="library"}\n');
+      await writeFile(path.join(source, 'src/main.rs'), 'fn main() { println!("{}", fixture_library::identity()); }\n');
+      await writeFile(path.join(source, 'library/Cargo.toml'), `[package]\nname="fixture-library"\nversion="0.1.0"\nedition="2024"\n[dependencies]\nshared-dependency={path=${JSON.stringify(dependency)}}\n`);
+      await writeFile(path.join(source, 'library/src/lib.rs'), `pub fn identity() -> &'static str { shared_dependency::touch(); "${side}" }\n`);
+      execFileSync('cargo', ['generate-lockfile', '--offline'], {cwd: source, stdio: 'pipe'});
+      git(source, 'init', '-q', '--initial-branch=main');
+      commit(source);
+      for (const file of ['Cargo.toml', 'src/main.rs', 'library/Cargo.toml', 'library/src/lib.rs']) {
+        await utimes(path.join(source, file), new Date(1700000000000), new Date(1700000000000));
+      }
+    }
+    let dependencyMtime;
+    for (const [iteration, side] of ['baseline', 'candidate', 'baseline', 'candidate'].entries()) {
+      const output = path.join(root, `build-${iteration}`);
+      await build(path.join(root, side), output, target, {allocator_feature: 'allocator-mimalloc'});
+      assert.equal(execFileSync(path.join(output, 'tidemq'), {encoding: 'utf8'}).trim(), side,
+        'A build must execute its own source revision, even with older source mtimes');
+      const artifacts = (await readdir(path.join(target, 'release/deps'))).filter(file => /^libshared_dependency-.*\.rlib$/.test(file));
+      assert.equal(artifacts.length, 1);
+      const mtime = (await stat(path.join(target, 'release/deps', artifacts[0]), {bigint: true})).mtimeNs;
+      dependencyMtime ??= mtime;
+      assert.equal(mtime, dependencyMtime, 'External dependencies must remain cached across workspace refreshes');
+    }
+  } finally { await rm(root, {recursive: true, force: true}); }
+});
 
 async function fixture(sameSource = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'tidemq-perf-prepared-'));

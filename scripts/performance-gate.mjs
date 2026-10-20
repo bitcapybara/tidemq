@@ -34,7 +34,7 @@ function options(values) {
   return result;
 }
 
-async function command(binary, args, settings = {}) {
+export async function command(binary, args, settings = {}) {
   const child = spawn(binary, args, {cwd: settings.cwd, env: settings.env ?? process.env, stdio: ['ignore', 'pipe', 'pipe']});
   OWNED.add(child);
   child.once('close', () => OWNED.delete(child));
@@ -58,7 +58,7 @@ async function command(binary, args, settings = {}) {
   const output = bytesOutput.toString('utf8');
   if (settings.log) await fs.writeFile(settings.log, bytesOutput, {mode: 0o600});
   assert.ok(!exceeded, `${binary} output exceeded its byte limit`);
-  assert.equal(result.code, 0, `${binary} failed (${result.code ?? result.signal}); ${settings.log ?? output.slice(-4096)}`);
+  assert.equal(result.code, 0, `${binary} failed (${result.code ?? result.signal}); ${settings.log ? `${settings.log}\n` : ''}${output.slice(-4096)}`);
   return output.trim();
 }
 
@@ -138,7 +138,7 @@ export async function reuseBuild(source, directory, binary, identity) {
   return identity;
 }
 
-async function build(source, directory, target, policy, loadOverlay) {
+export async function build(source, directory, target, policy, loadOverlay) {
   await fs.mkdir(directory, {recursive: true, mode: 0o700});
   const loadOnly = loadOverlay !== undefined;
   const original = loadOnly ? loadOverlay.original_source : source;
@@ -146,7 +146,11 @@ async function build(source, directory, target, policy, loadOverlay) {
   if (loadOnly) assert.equal(commit, loadOverlay.source_commit, 'Archived SDK source changed before build');
   const args = ['build', '--manifest-path', path.join(source, 'Cargo.toml'), '--release', '--locked', '-p', 'tidemq',
     loadOnly ? '--example' : '--bin', loadOnly ? 'perf_load' : 'tidemq', '--no-default-features', '--features', policy.allocator_feature, '-j2'];
-  await command('cargo', args, {cwd: source, env: {...process.env, CARGO_TARGET_DIR: target},
+  const env = {...process.env, CARGO_TARGET_DIR: target};
+  // Older checkout mtimes can reuse another revision's workspace artifacts in a shared target.
+  await command('cargo', ['clean', '--manifest-path', path.join(source, 'Cargo.toml'), '--workspace', '--release', '--locked'],
+    {cwd: source, env, timeoutMs: 120000});
+  await command('cargo', args, {cwd: source, env,
     timeoutMs: 1800000, log: path.join(directory, 'build.log')});
   const name = loadOnly ? 'perf_load' : 'tidemq';
   await fs.copyFile(path.join(target, 'release', ...(loadOnly ? ['examples'] : []), name), path.join(directory, name));
