@@ -77,6 +77,39 @@ SDK 和 runtime 的专项检查与 workspace 有重叠，不能相加为不同�
 
 GitHub 当前私有仓库的分支保护 API 返回 403，要求升级套餐或公开仓库；自动性能检查可以失败，但当前不能通过平台设置强制禁止合并。没有变更套餐、仓库可见性或现有权限。
 
-## 尚待本轮后续记录
+## 修复合流后的终态本地验证
 
-三节点错误修复、分离延迟与吞吐负载的 A/A 校准、最终数值基线和修复后的 CI 终态将在实际完成后追加。当前记录不表示性能门禁已经可放行，也不表示生产高吞吐、低延迟或三区目标已经达成。
+生产源码冻结于 `3b75d9c301229d8c40652e0ac51957a7b5e3fa54`。随后 `b2dde4b` 只固定校准源码和修改 JavaScript 校准工具，服务、SDK、crates、Cargo.toml 和 Cargo.lock 没有变化。
+
+- workspace 普通及文档测试共 276 passed、12 ignored，34 个 suite，0 failed，终态日志为 `/tmp/tidemq-final-workspace-tests-20261020.log`。
+- SDK all-features 为 7 个 unit、31 个真实 UDP/TLS integration、2 个文档测试，0 failed，终态日志为 `/tmp/tidemq-final-sdk-all-features-20261020.log`。这与 workspace 有重叠，不相加。
+- workspace tests/examples Clippy `-D warnings`、production lib/bins 的 panic/unwrap/expect/未实现/直接索引审计、格式检查均通过。
+- `f56b48f` 与 `1d50fed` 只修正扩容测试的磁盘准入和元数据 quorum 就绪前提。合流后 root crate Clippy 通过，runtime queue 11 passed/3 ignored、scaling Raft 3 passed、scaling remote 2 passed，0 failed。日志为 `/tmp/tidemq-ci-fixtures-clippy-20261020.log` 与 `/tmp/tidemq-ci-fixtures-tests-20261020.log`。磁盘证据和回放见[专项记录](2026-10-20-linux-scaling-capacity.zh-CN.md)。
+- 八对比较工具 `1d3bfa2` 的 16 项 Node 测试通过；包括原始逐消息耗时均值、保留尾样本、旧报告拒绝晋升以及每项指标稳定退化 1% 的拒绝。这不是实际性能通过证据。
+
+## 修复后的完整 A/A：语义通过，统计未通过
+
+`corrected-aa-1` 使用同一源码 `3b75d9c301229d8c40652e0ac51957a7b5e3fa54`，工具源码为 `b2dde4bf1351b049320a7da52580d791e0e4a5ca`，保留原五对策略。`same_source_reused_builds=true`：两侧实际复用同一个已校验的服务二进制和负载二进制，不是分别构建后假定相同。
+
+| 身份 | SHA-256 |
+| --- | --- |
+| 服务二进制 | `beab7144cb51a40f0d804381f6ef9b8f94fcb54b271597c702fff497771ccf04` |
+| 负载二进制 | `341c6dfdfdf070d6c81daf26c3242304708ce931bd4d6f5dcbaecf1b4cc02719` |
+| Cargo.lock | `4ac8dfd7ef50eec37d7be7e1703bbc55b093352d96ff140193831cb235eeb175` |
+
+RF1 和三 combined 节点各完成十个真实试次。每个试次包含四分区吞吐场景和单分区固定速率场景，各 1024 条测量消息，全部通过唯一交付、持久 ACK、前沿和正常退出校验；总计 40,960 条测量消息，另有独立预热。容器继续保持 4 CPU、8 GiB 和 PID 2048 上限，没有停止既有业务容器。
+
+| 拓扑 | 指标 | log CI 半宽 | slowdown ratio 的 95% CI |
+| --- | --- | ---: | --- |
+| RF1 | 完整持久吞吐 | 0.04304 | [0.94076, 1.02534] |
+| RF1 | 生产 p99 | 0.22880 | [0.84541, 1.33598] |
+| RF1 | offered→持久 ACK p99 | 0.11958 | [0.88318, 1.12181] |
+| RF3 | 完整持久吞吐 | 0.07463 | [0.95002, 1.10296] |
+| RF3 | 生产 p99 | 0.68271 | [0.55394, 2.17000] |
+| RF3 | offered→持久 ACK p99 | 0.38708 | [0.73204, 1.58763] |
+
+这里的 slowdown ratio 对吞吐使用倒数，使大于 1 始终表示更慢。六项区间都包含 1，但半宽均超过原 0.03 上限，因此最终进程返回 1，状态为 `inconclusive`。没有晋升 `baseline-report.json`，也没有删除低尾或高尾试次后重算通过结果。原始目录为 `/root/tidemq-performance/20261020-0257/corrected-aa-1`，运行日志为相邻 `corrected-aa-1.log`。
+
+RF3 的 `4-baseline` 测量阶段有 7200 个 Produce/Sync 样本，没有超过 10 ms 的样本；`4-candidate` 有 6976 个样本，其中 25 个超过 10 ms、14 个超过 50 ms。WalQueue 在这些轮次没有超过 10 ms 的样本。`Sync` 计时覆盖 `sync_all().await`，包含 blocking pool 调度、内核同步和任务唤醒，不能仅凭该指标确定物理磁盘为唯一原因。十个 RF3 试次的数据组均由 node 1、term 1 领导；当前没有依据归因于不同 leader。
+
+后续策略必须基于完整校准和实际判别能力；不能把此轮五对失败报告改写成八对通过，也不能将同机校准称为三可用区证据。最终数值基线与新 CI 终态将在实际完成后记录。
