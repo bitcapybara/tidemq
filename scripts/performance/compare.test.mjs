@@ -7,41 +7,80 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {comparePairs, summarizeReport, validatePolicy, workloadFor, HARNESS_FILES} from './compare.mjs';
+import {comparePairs, summarizeReport, validatePolicy, weightedMeanLatency, workloadFor, HARNESS_FILES} from './compare.mjs';
 import {management, canReuseBuilds, reuseBuild} from '../performance-gate.mjs';
 
 const policy = validatePolicy(JSON.parse(readFileSync(new URL('../../performance/baseline.json', import.meta.url))));
 const summary = multiplier => ({
   durable_messages_per_second: 1000 / multiplier,
+  produce_mean_ns: 500000 * multiplier,
   produce_p99_upper_ns: 1000000 * multiplier,
+  offered_to_durable_ack_mean_ns: 1000000 * multiplier,
   offered_to_durable_ack_p99_upper_ns: 2000000 * multiplier,
 });
 const pairs = values => values.map(value => ({baseline: summary(1), candidate: summary(value)}));
 
 test('a consistent one percent slowdown fails without a five percent allowance', () => {
-  assert.equal(comparePairs(pairs([1.01, 1.01, 1.01, 1.01, 1.01]), policy).status, 'regressed');
+  assert.equal(comparePairs(pairs(Array(policy.pairs).fill(1.01)), policy).status, 'regressed');
+  for (const metric of Object.keys(summary(1))) {
+    const isolated = pairs(Array(policy.pairs).fill(1));
+    for (const pair of isolated) pair.candidate[metric] *= metric === 'durable_messages_per_second' ? 1 / 1.01 : 1.01;
+    const result = comparePairs(isolated, policy);
+    assert.equal(result.status, 'regressed', metric);
+    assert.equal(result.metrics[metric].status, 'regressed', metric);
+  }
 });
 
 test('stable improvement and exact equality pass', () => {
-  assert.equal(comparePairs(pairs([0.98, 0.981, 0.98, 0.979, 0.98]), policy).status, 'passed');
-  assert.equal(comparePairs(pairs([1, 1, 1, 1, 1]), policy).status, 'passed');
+  assert.equal(comparePairs(pairs([0.98, 0.981, 0.98, 0.979, 0.98, 0.981, 0.979, 0.98]), policy).status, 'passed');
+  assert.equal(comparePairs(pairs(Array(policy.pairs).fill(1)), policy).status, 'passed');
 });
 
 test('unstable samples are inconclusive and missing or invalid trials fail', () => {
-  assert.equal(comparePairs(pairs([0.7, 1.2, 0.9, 1.3, 1]), policy).status, 'inconclusive');
+  assert.equal(comparePairs(pairs([0.7, 1.2, 0.9, 1.3, 1, 0.8, 1.4, 0.9]), policy).status, 'inconclusive');
   assert.throws(() => comparePairs(pairs([1, 1]), policy));
-  assert.throws(() => comparePairs(pairs([1, 1, 0, 1, 1]), policy));
+  assert.throws(() => comparePairs(pairs([1, 1, 0, 1, 1, 1, 1, 1]), policy));
+  assert.throws(() => comparePairs(pairs(Array(5).fill(1)), policy), /Missing paired trials/);
+  assert.throws(() => validatePolicy({...policy, schema_version: 2}), /Unsupported performance policy schema/);
+  assert.throws(() => validatePolicy({...policy, pairs: 5}), /requires eight pairs/);
+});
+
+test('eight paired log ratios use the Student t critical value with seven degrees of freedom', () => {
+  const values = [0.99, 1, 1.01, 1.02, 0.98, 1, 1.01, 0.99];
+  const ratios = values.map(Math.log);
+  const mean = ratios.reduce((sum, value) => sum + value, 0) / values.length;
+  const deviation = Math.sqrt(ratios.reduce((sum, value) => sum + (value - mean) ** 2, 0) / 7);
+  const result = comparePairs(pairs(values), policy);
+  assert.equal(Object.keys(result.metrics).length, 5);
+  assert.ok(Math.abs(result.metrics.produce_mean_ns.log_ci_half_width - 2.3646242515927844 * deviation / Math.sqrt(8)) < 1e-14);
+});
+
+test('raw latency means weight unequal partition samples and retain rare long durations', () => {
+  assert.equal(weightedMeanLatency([
+    {samples: 1, mean_ns: 1000, maximum_ns: 1000},
+    {samples: 3, mean_ns: 100, maximum_ns: 100},
+  ]), 325);
+  assert.equal(weightedMeanLatency([
+    {samples: 999, mean_ns: 1000, maximum_ns: 1000},
+    {samples: 1, mean_ns: 1000000, maximum_ns: 1000000},
+  ]), 1999);
+  for (const mean_ns of [null, NaN, Infinity, -1, 1025]) {
+    assert.throws(() => weightedMeanLatency([{samples: 1, mean_ns, maximum_ns: 1024}]));
+  }
+  assert.throws(() => weightedMeanLatency([]));
+  assert.throws(() => weightedMeanLatency([{samples: 0, mean_ns: 1, maximum_ns: 1}]));
 });
 
 function fixture(scenario = 'throughput') {
   const workload = workloadFor(policy, scenario);
   const measured = workload.messages;
   const warmupCount = workload.warmup_messages;
-  const histogram = {samples: measured, maximum_ns: 1024, histogram_buckets: [[320, measured]]};
+  const histogram = {samples: measured, mean_ns: 1024, maximum_ns: 1024, histogram_buckets: [[320, measured]]};
   const phase = {
     terminal_error: null, planned_messages: measured, committed_messages: measured,
     acknowledged_messages: measured, durable_acknowledged_before: measured,
-    produce_batch: histogram, produce_scheduling_lateness: histogram, offered_to_durable_ack: histogram, control_errors: 0,
+    produce_batch: structuredClone(histogram), produce_scheduling_lateness: structuredClone(histogram),
+    offered_to_durable_ack: structuredClone(histogram), control_errors: 0,
   };
   const warmup = {...phase, planned_messages: warmupCount, committed_messages: warmupCount, acknowledged_messages: warmupCount,
     durable_acknowledged_before: warmupCount, produce_batch: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]},
@@ -59,6 +98,7 @@ test('histogram aggregation retains every partition and durability failures cann
   const report = fixture();
   const result = summarizeReport(report, policy, policy.service_source_commit);
   assert.equal(result.durable_messages_per_second, 512);
+  assert.equal(result.produce_mean_ns, 1024);
   assert.equal(result.produce_p99_upper_ns, 1024);
   report.measured.partitions[3].durable_acknowledged_before = 255;
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit));
@@ -66,7 +106,7 @@ test('histogram aggregation retains every partition and durability failures cann
 
 test('a rare slow partition changes the merged p99 instead of being averaged away', () => {
   const report = fixture();
-  report.measured.partitions[3].produce_batch = {samples: 256, maximum_ns: 4096, histogram_buckets: [[384, 256]]};
+  report.measured.partitions[3].produce_batch = {samples: 256, mean_ns: 4096, maximum_ns: 4096, histogram_buckets: [[384, 256]]};
   assert.equal(summarizeReport(report, policy, policy.service_source_commit).produce_p99_upper_ns, 4096);
   report.measured.partitions[3].produce_batch.histogram_buckets = [[384, 255]];
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit));
@@ -125,12 +165,16 @@ test('promotion rejects a stale report or dirty source and accepts only the clea
     git('add', 'source.txt');
     commit();
     const current = git('rev-parse', 'HEAD');
-    const report = {status: 'passed', baseline_manifest_sha256: createHash('sha256').update(original).digest('hex'),
+    const report = {schema_version: 3, status: 'passed', baseline_manifest_sha256: createHash('sha256').update(original).digest('hex'),
       baseline: {source_commit: policy.service_source_commit}, candidate: {source_commit: stale},
-      topologies: Object.fromEntries(policy.topologies.map(topology => [topology, {pairs: pairs([0.98, 0.98, 0.98, 0.98, 0.98])}]))};
+      topologies: Object.fromEntries(policy.topologies.map(topology => [topology, {pairs: pairs(Array(policy.pairs).fill(0.98))}]))};
     const reportPath = path.join(temporary, 'report.json');
     const promote = () => spawnSync(process.execPath, [new URL('../performance-gate.mjs', import.meta.url).pathname,
       'promote', '--tools', temporary, '--report', reportPath], {encoding: 'utf8', timeout: 5000});
+    await writeFile(reportPath, JSON.stringify({...report, schema_version: 2}));
+    const previousSchema = promote();
+    assert.equal(previousSchema.status, 1);
+    assert.match(previousSchema.stderr, /Unsupported performance gate report schema/);
     await writeFile(reportPath, JSON.stringify(report));
     const staleResult = promote();
     assert.equal(staleResult.status, 1);
@@ -165,7 +209,7 @@ test('A/A calibration binds both binaries and never promotes its source', async 
     report.identity.service_binary_blake3 = '1'.repeat(64);
     report.identity.generator_binary_blake3 = '2'.repeat(64);
     const inputs = [];
-    for (let index = 0; index < 10; index++) {
+    for (let index = 0; index < policy.pairs * 2; index++) {
       const input = path.join(temporary, `${index}.json`);
       await writeFile(input, JSON.stringify(report));
       inputs.push(input);
@@ -177,22 +221,28 @@ test('A/A calibration binds both binaries and never promotes its source', async 
     assert.equal(accepted.status, 0, accepted.stderr);
     const result = JSON.parse(await readFile(output, 'utf8'));
     assert.equal(result.kind, 'same_binary_scheduled_latency_calibration');
+    assert.equal(result.schema_version, 2);
     assert.equal(result.status, 'passed');
     assert.ok(!('durable_messages_per_second' in result.metrics));
+    assert.equal(Object.keys(result.metrics).length, 4);
+    assert.deepEqual(result.pairs.map(pair => pair.order), Array.from({length: policy.pairs}, (_, pair) =>
+      pair % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline']));
     for (const [label, maximum, bucket] of [['faster', 512, 288], ['slower', 2048, 352]]) {
       const biased = structuredClone(report);
       for (const field of ['produce_batch', 'offered_to_durable_ack']) {
         biased.measured.partitions[0][field] = {
-          samples: 1024, maximum_ns: maximum, histogram_buckets: [[bucket, 1024]],
+          samples: 1024, mean_ns: maximum, maximum_ns: maximum, histogram_buckets: [[bucket, 1024]],
         };
       }
-      for (let index = 1; index < inputs.length; index += 2) await writeFile(inputs[index], JSON.stringify(biased));
+      for (let pair = 0; pair < policy.pairs; pair++) {
+        await writeFile(inputs[pair * 2 + (pair % 2 === 0 ? 1 : 0)], JSON.stringify(biased));
+      }
       const biasedOutput = path.join(temporary, `${label}.json`);
       assert.equal(cli(biasedOutput).status, 0);
       assert.equal(JSON.parse(await readFile(biasedOutput, 'utf8')).status, 'temporal_bias_detected');
     }
     report.identity.generator_binary_blake3 = '3'.repeat(64);
-    await writeFile(inputs[9], JSON.stringify(report));
+    await writeFile(inputs[inputs.length - 1], JSON.stringify(report));
     assert.equal(cli(path.join(temporary, 'invalid.json')).status, 1);
   } finally { await rm(temporary, {recursive: true, force: true}); }
 });
@@ -201,9 +251,23 @@ test('latency validates its own single-partition counts and all 1024 observation
   const report = fixture('latency');
   const result = summarizeReport(report, policy, policy.service_source_commit, 'latency');
   assert.equal(result.durable_messages, 1024);
+  assert.equal(result.produce_mean_ns, 1024);
   assert.equal(result.produce_p99_upper_ns, 1024);
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit, 'throughput'));
   report.measured.partitions.push(structuredClone(report.measured.partitions[0]));
+  assert.throws(() => summarizeReport(report, policy, policy.service_source_commit, 'latency'));
+});
+
+test('latency means use raw message durations without subtracting lateness or using group throughput', () => {
+  const report = fixture('latency');
+  report.measured.partitions[0].produce_batch.mean_ns = 900.25;
+  report.measured.partitions[0].offered_to_durable_ack.mean_ns = 901.75;
+  report.measured.partitions[0].produce_scheduling_lateness.mean_ns = 512;
+  const result = summarizeReport(report, policy, policy.service_source_commit, 'latency');
+  assert.equal(result.produce_mean_ns, 900.25);
+  assert.equal(result.offered_to_durable_ack_mean_ns, 901.75);
+  assert.notEqual(result.produce_mean_ns, report.measured.elapsed_ns / result.durable_messages);
+  report.measured.partitions[0].produce_batch.mean_ns = null;
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit, 'latency'));
 });
 

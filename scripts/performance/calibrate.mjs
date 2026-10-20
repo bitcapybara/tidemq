@@ -7,10 +7,10 @@ import {comparePairs, summarizeReport, validatePolicy} from './compare.mjs';
 
 async function main() {
   const [output, ...inputs] = process.argv.slice(2);
-  assert.ok(output, 'Usage: calibrate.mjs new-output.json ten-ordered-latency-reports.json...');
+  assert.ok(output, 'Usage: calibrate.mjs new-output.json sixteen-ordered-latency-reports.json...');
   const policyBytes = await readFile(new URL('../../performance/baseline.json', import.meta.url));
   const policy = validatePolicy(JSON.parse(policyBytes));
-  assert.equal(inputs.length, policy.pairs * 2, 'Calibration requires ten ordered A/A reports');
+  assert.equal(inputs.length, policy.pairs * 2, 'Calibration requires sixteen ordered A/A reports');
   const reports = await Promise.all(inputs.map(async input => JSON.parse(await readFile(input, 'utf8'))));
   const first = reports[0].identity;
   assert.match(first.build.source_commit, /^[0-9a-f]{40}$/, 'Calibration requires a service source identity');
@@ -25,7 +25,9 @@ async function main() {
   });
   const pairs = [];
   for (let index = 0; index < measurements.length; index += 2) {
-    pairs.push({pair: index / 2, baseline: measurements[index], candidate: measurements[index + 1]});
+    const pair = index / 2;
+    const order = pair % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
+    pairs.push({pair, order, [order[0]]: measurements[index], [order[1]]: measurements[index + 1]});
   }
   const compared = comparePairs(pairs, policy);
   const metrics = Object.fromEntries(Object.entries(compared.metrics).filter(([metric]) => metric !== 'durable_messages_per_second'));
@@ -33,7 +35,7 @@ async function main() {
   const biased = Object.values(metrics).some(metric =>
     metric.slowdown_ci95[0] > 1 || metric.slowdown_ci95[1] < 1);
   const result = {
-    schema_version: 1, kind: 'same_binary_scheduled_latency_calibration', calibration_only: true, scenario: 'latency',
+    schema_version: 2, kind: 'same_binary_scheduled_latency_calibration', calibration_only: true, scenario: 'latency',
     status: biased ? 'temporal_bias_detected' : statuses.includes('inconclusive') ? 'inconclusive' : 'passed',
     service_source_commit: first.build.source_commit,
     service_binary_blake3: first.service_binary_blake3,

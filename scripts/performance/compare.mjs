@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict';
 
-const T95_DF4 = 2.7764451051977987;
+const T95_DF7 = 2.3646242515927844;
 export const HARNESS_FILES = Object.freeze([
   'examples/perf_load.rs', 'examples/perf/sample.rs', 'examples/perf/stats.rs', 'examples/perf/workload.rs',
 ]);
 const METRICS = {
   durable_messages_per_second: -1,
+  produce_mean_ns: 1,
   produce_p99_upper_ns: 1,
+  offered_to_durable_ack_mean_ns: 1,
   offered_to_durable_ack_p99_upper_ns: 1,
 };
 
 export function validatePolicy(policy) {
-  assert.equal(policy.schema_version, 2, 'Unsupported performance policy schema');
+  assert.equal(policy.schema_version, 3, 'Unsupported performance policy schema');
   assert.match(policy.service_source_commit, /^[0-9a-f]{40}$/, 'Invalid baseline source');
-  assert.equal(policy.pairs, 5, 'The Student t calibration requires five pairs');
+  assert.equal(policy.pairs, 8, 'The Student t calibration requires eight pairs');
   assert.equal(policy.confidence, 0.95, 'The Student t calibration requires 95% confidence');
   assert.equal(policy.allocator_feature, 'allocator-mimalloc', 'CI uses the default allocator');
   assert.equal(policy.server_worker_threads, 4, 'Server worker budget changed');
@@ -52,6 +54,21 @@ export function workloadFor(policy, scenario) {
 function positive(value, label) {
   assert.ok(Number.isFinite(value) && value > 0, `Invalid ${label}`);
   return value;
+}
+
+export function weightedMeanLatency(distributions) {
+  let samples = 0;
+  let totalNanoseconds = 0;
+  for (const distribution of distributions) {
+    assert.ok(Number.isSafeInteger(distribution.samples) && distribution.samples > 0,
+      'Invalid latency mean sample count');
+    const mean = positive(distribution.mean_ns, 'raw latency mean');
+    assert.ok(mean <= positive(distribution.maximum_ns, 'latency maximum'), 'Latency mean exceeds its maximum');
+    samples += distribution.samples;
+    totalNanoseconds += mean * distribution.samples;
+  }
+  assert.ok(Number.isSafeInteger(samples) && samples > 0, 'Missing latency mean observations');
+  return positive(totalNanoseconds / samples, 'weighted raw latency mean');
 }
 
 function p99(distributions) {
@@ -116,8 +133,10 @@ export function summarizeReport(report, policy, sourceCommit, scenario = 'throug
   return {
     durable_messages: messages,
     durable_messages_per_second: messages * 1e9 / positive(report.measured.elapsed_ns, 'group duration'),
+    produce_mean_ns: weightedMeanLatency(phases.map(phase => phase.produce_batch)),
     produce_p99_upper_ns: p99(phases.map(phase => phase.produce_batch)),
     producer_scheduling_lateness_p99_upper_ns: p99(phases.map(phase => phase.produce_scheduling_lateness)),
+    offered_to_durable_ack_mean_ns: weightedMeanLatency(phases.map(phase => phase.offered_to_durable_ack)),
     offered_to_durable_ack_p99_upper_ns: p99(phases.map(phase => phase.offered_to_durable_ack)),
   };
 }
@@ -130,7 +149,7 @@ export function comparePairs(pairs, policy) {
       positive(pair.candidate[metric], metric) / positive(pair.baseline[metric], metric)));
     const mean = ratios.reduce((sum, value) => sum + value, 0) / ratios.length;
     const variance = ratios.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (ratios.length - 1);
-    const halfWidth = T95_DF4 * Math.sqrt(variance / ratios.length);
+    const halfWidth = T95_DF7 * Math.sqrt(variance / ratios.length);
     const lower = mean - halfWidth;
     const upper = mean + halfWidth;
     metrics[metric] = {

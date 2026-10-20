@@ -1,11 +1,13 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "service_source_commit": "3b75d9c301229d8c40652e0ac51957a7b5e3fa54",
-  "pairs": 5,
+  "pairs": 8,
   "confidence": 0.95,
   "max_log_ci_half_width": {
     "durable_messages_per_second": 0.03,
+    "produce_mean_ns": 0.03,
     "produce_p99_upper_ns": 0.03,
+    "offered_to_durable_ack_mean_ns": 0.03,
     "offered_to_durable_ack_p99_upper_ns": 0.03
   },
   "allocator_feature": "allocator-mimalloc",
