@@ -2,6 +2,8 @@
 //!
 //! Raft log indices are consensus positions and must never be used as message offsets.
 
+#[cfg(test)]
+mod cancellation_tests;
 mod log;
 pub mod rpc;
 mod snapshot;

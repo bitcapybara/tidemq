@@ -2,7 +2,7 @@
 mod support;
 
 use std::path::PathBuf;
-use std::process::{Command as ProcessCommand, Stdio};
+use std::process::Command as ProcessCommand;
 use std::time::Duration;
 
 use openraft::storage::{RaftLogStorage, RaftLogStorageExt, RaftStateMachine};
@@ -118,6 +118,11 @@ async fn crash_writer_child() {
         );
     } else if mode == "replacement" {
         for term in 9..15 {
+            storage
+                .log
+                .save_vote(&Vote::new_committed(term, 1))
+                .await
+                .unwrap();
             storage.log.truncate(log_id(term - 1, 2)).await.unwrap();
             let suffix = (2..6)
                 .map(|index| {
@@ -172,22 +177,25 @@ async fn killed_process_recovers_committed_state_snapshot_and_incomplete_tail_wi
     ] {
         let path = directory.path().join(mode);
         let ready = directory.path().join(format!("{mode}.ready"));
+        let log_path = directory.path().join(format!("{mode}.child.log"));
         let executable = std::env::current_exe().unwrap();
         let arguments = (
             path.clone(),
             ready.clone(),
             mode.to_owned(),
             cluster.to_string(),
+            log_path.clone(),
         );
         let mut child = tokio::task::spawn_blocking(move || {
+            let output = std::fs::File::create(&arguments.4).unwrap();
             ProcessCommand::new(executable)
                 .args(["--exact", "crash_writer_child", "--nocapture"])
                 .env("TIDEMQ_STORAGE_CRASH_PATH", arguments.0)
                 .env("TIDEMQ_STORAGE_CRASH_READY", arguments.1)
                 .env("TIDEMQ_STORAGE_CRASH_MODE", arguments.2)
                 .env("TIDEMQ_STORAGE_CRASH_CLUSTER", arguments.3)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stdout(output.try_clone().unwrap())
+                .stderr(output)
                 .spawn()
                 .unwrap()
         })
@@ -196,7 +204,10 @@ async fn killed_process_recovers_committed_state_snapshot_and_incomplete_tail_wi
         let reached_boundary = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 if tokio::fs::try_exists(&ready).await.unwrap() {
-                    break;
+                    return true;
+                }
+                if child.try_wait().unwrap().is_some() {
+                    return false;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
@@ -209,8 +220,9 @@ async fn killed_process_recovers_committed_state_snapshot_and_incomplete_tail_wi
         .await
         .unwrap();
         assert!(
-            reached_boundary.is_ok(),
-            "Child reached the requested durable boundary"
+            matches!(reached_boundary, Ok(true)),
+            "Child did not reach {mode}: {}",
+            tokio::fs::read_to_string(log_path).await.unwrap()
         );
         assert!(
             !status.success(),
@@ -227,7 +239,10 @@ async fn killed_process_recovers_committed_state_snapshot_and_incomplete_tail_wi
                 .unwrap();
         assert_eq!(
             recovered.log.read_vote().await.unwrap(),
-            Some(Vote::new_committed(8, 1))
+            Some(Vote::new_committed(
+                if mode == "replacement" { 14 } else { 8 },
+                1
+            ))
         );
         assert_eq!(
             recovered

@@ -21,6 +21,8 @@ Metadata/Combined 的 `/ownership/<topic UUID>/<partition u32>` 按键返回一�
 
 `config/local.toml` 是路径示例，需要自行提供 `certs/` 与 `secrets/`。生成器输出可以直接启动。静态令牌文件中每条授权指定 `principal`、`scope` 与操作白名单；`scope='topic:events'` 只授权该主题，`scope='*'` 用于本地管理员。Gateway 和 Storage 都重新检查业务授权。
 
+当前副本目录使用物理格式 v2：`identity.bin`、`manifest.bin`、唯一 UUID 段、引用检查点和完整快照共同组成恢复状态。旧单文件布局不能复用；开发升级时另建私有状态目录并保留旧目录及匹配旧二进制，不运行自动迁移或删除命令。恢复/备份必须包含 manifest 指定的全部文件，不能只复制最新段或某个快照。详见[存储恢复](../design/storage-recovery.zh-CN.md)和[存储排障](../operations/storage-troubleshooting.zh-CN.md)。
+
 ## 本地 RF3 与分角色
 
 ```sh

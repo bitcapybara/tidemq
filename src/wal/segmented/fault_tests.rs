@@ -52,12 +52,63 @@ async fn crash_boundary_child() {
     let path = PathBuf::from(std::env::var_os("TIDEMQ_WAL_TEST_PATH").unwrap());
     let arm = PathBuf::from(std::env::var_os("TIDEMQ_WAL_TEST_ARM").unwrap());
     let scenario = std::env::var("TIDEMQ_WAL_TEST_SCENARIO").unwrap();
-    let (journal, _, _) = SegmentedJournal::open(&path, options(), IDENTITY)
+    if scenario == "initialization" {
+        tokio::fs::write(&arm, b"armed").await.unwrap();
+    }
+    let journal_options = if scenario == "file-size" {
+        JournalOptions {
+            segment_target_bytes: 2048,
+            ..options()
+        }
+    } else {
+        options()
+    };
+    let (journal, _, _) = SegmentedJournal::open(&path, journal_options.clone(), IDENTITY)
         .await
         .unwrap();
+    assert_ne!(
+        scenario, "initialization",
+        "Initialization did not reach its requested boundary"
+    );
     let (first, durable) = journal.append_retained(vec![1; 512]).await.unwrap();
     durable.durable().await.unwrap();
-    if scenario == "rotation" {
+    if scenario == "file-size" {
+        let inspection = super::inspect_segmented(&path, &journal_options, IDENTITY)
+            .await
+            .unwrap();
+        let length = tokio::fs::metadata(path.join(inspection.active_segment))
+            .await
+            .unwrap()
+            .len();
+        let limit = libc::rlimit {
+            rlim_cur: length + 64,
+            rlim_max: length + 64,
+        };
+        // The limit affects only this disposable child and creates a real file write failure.
+        unsafe {
+            assert_ne!(libc::signal(libc::SIGXFSZ, libc::SIG_IGN), libc::SIG_ERR);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limit), 0);
+        }
+        let error = journal
+            .append(vec![2; 512])
+            .await
+            .unwrap()
+            .durable()
+            .await
+            .unwrap_err();
+        assert!(matches!(error, crate::wal::Error::Writer { .. }));
+        let stopped = match journal.append(b"control-after-error".to_vec()).await {
+            Ok(pending) => pending.durable().await.is_err(),
+            Err(_) => true,
+        };
+        assert!(
+            stopped,
+            "A failed file write must poison subsequent durability callbacks"
+        );
+        assert_eq!(journal.statistics().written_records, 1);
+        tokio::fs::write(arm, b"armed").await.unwrap();
+        boundary("file_size_error");
+    } else if scenario == "rotation" {
         tokio::fs::write(arm, b"armed").await.unwrap();
         journal
             .append_retained(vec![2; 512])
@@ -181,5 +232,84 @@ async fn sigkill_at_each_publication_boundary_recovers_one_complete_authority() 
         }
         journal.close().await.unwrap();
     }
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+async fn directory_contents(directory: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+    let mut contents = std::collections::BTreeMap::new();
+    let mut entries = tokio::fs::read_dir(directory).await.unwrap();
+    while let Some(entry) = entries.next_entry().await.unwrap() {
+        assert!(entry.file_type().await.unwrap().is_file());
+        contents.insert(entry.path(), tokio::fs::read(entry.path()).await.unwrap());
+    }
+    contents
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
+async fn sigkill_during_initialization_never_reinterprets_unpublished_segments() {
+    let directory = std::env::temp_dir().join(format!(
+        "tidemq-segment-initialization-{}",
+        tidemq_protocol::Id::random().unwrap()
+    ));
+    tokio::fs::create_dir(&directory).await.unwrap();
+    for phase in [
+        "segment_sync",
+        "segment_directory_sync",
+        "manifest_temp_sync",
+        "manifest_rename",
+        "manifest_directory_sync",
+    ] {
+        let path = directory.join(phase);
+        kill_at_boundary(&path, phase, "initialization").await;
+        if tokio::fs::try_exists(path.join("manifest.bin"))
+            .await
+            .unwrap()
+        {
+            let (journal, _, mut recovery) = SegmentedJournal::open(&path, options(), IDENTITY)
+                .await
+                .unwrap();
+            assert!(recovery.checkpoint().is_empty());
+            assert!(recovery.next().await.unwrap().is_none());
+            journal.close().await.unwrap();
+        } else {
+            let before = directory_contents(&path).await;
+            assert!(
+                super::inspect_segmented(&path, &options(), IDENTITY)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                SegmentedJournal::open(&path, options(), IDENTITY)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(directory_contents(&path).await, before);
+        }
+    }
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(unix)]
+async fn real_file_size_limit_never_acknowledges_the_failed_or_subsequent_write() {
+    let directory = std::env::temp_dir().join(format!(
+        "tidemq-segment-file-size-{}",
+        tidemq_protocol::Id::random().unwrap()
+    ));
+    tokio::fs::create_dir(&directory).await.unwrap();
+    let path = directory.join("journal");
+    kill_at_boundary(&path, "file_size_error", "file-size").await;
+    let options = JournalOptions {
+        segment_target_bytes: 2048,
+        ..options()
+    };
+    let (journal, report, mut recovery) = SegmentedJournal::open(&path, options, IDENTITY)
+        .await
+        .unwrap();
+    assert!(report.incomplete_tail_bytes <= 64);
+    assert_eq!(recovery.next().await.unwrap().unwrap().data, vec![1; 512]);
+    assert!(recovery.next().await.unwrap().is_none());
+    journal.close().await.unwrap();
     tokio::fs::remove_dir_all(directory).await.unwrap();
 }

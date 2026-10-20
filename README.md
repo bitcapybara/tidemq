@@ -64,6 +64,8 @@ target/debug/tidemq serve --config /tmp/tidemq-demo/node-1.toml
 
 The generator requires a new directory and OpenSSL. It creates short-lived development identities; retain the private token file locally. See [running TideMQ](docs/guide/running.zh-CN.md) and the [Rust SDK](sdk/rust/README.md) for topic creation, production, consumption, durable ACKs, and RF3 deployment. Management endpoints expose the running process on loopback; the separate `diagnose` command describes its own short-lived process.
 
+Replica storage uses a versioned segmented WAL with reference checkpoints and generation-named full snapshots. This development format requires fresh state directories or Docker volumes; the old `raft.wal` / `snapshot.bin` layout is rejected without deleting it. Preserve the whole replica directory for recovery, including its manifest and referenced files. See the [storage and recovery contract](docs/design/storage-recovery.zh-CN.md) for capacity limits, reader pins, and safe reclamation.
+
 Docker deployment assets are versioned under [deploy/docker](deploy/docker/README.zh-CN.md): the [builder Dockerfile](deploy/docker/Dockerfile.builder), [runtime Dockerfile](deploy/docker/Dockerfile), complete [RF1 Compose](deploy/docker/compose.rf1.yaml) and [RF3 Compose](deploy/docker/compose.rf3.yaml) configurations, and [deployment preparation script](deploy/docker/prepare.sh). Generate a private state directory before starting Compose; see the deployment guide for build, startup, validation, and cleanup commands.
 
 Install cargo-nextest 0.9.148, then run the same target scope as CI:
