@@ -71,8 +71,12 @@ Docker 部署文件均在 [deploy/docker](deploy/docker/README.zh-CN.md) 中版�
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --tests --no-deps
-cargo test --workspace --locked
+cargo test --workspace --locked -- --test-threads=1
 ```
+
+SDK 默认使用配置超时，通过 `RequestContext` 与 `CancellationToken` 在多次调用间共享总期限和取消；大块唯一所有权 payload 使用有界分段发送。接口见[SDK 手册](docs/guide/rust-sdk.zh-CN.md)，格式候选见[rkyv / FlatBuffers / FlexBuffers 调研](docs/research/zero-copy-formats.zh-CN.md)。
+
+[性能工作流](.github/workflows/performance.yml) 在同一 runner 上交替对照上次接受源码和候选源码，覆盖真实 RF1、三个完整角色进程的 RF3 及两版 SDK；吞吐与持久 ACK 尾延迟显著回退会失败。基线维护、噪声判定、复现与当前 GitHub 套餐的强制检查限制见[性能手册](docs/performance.zh-CN.md)。
 
 ## 完整文档与实施路线
 

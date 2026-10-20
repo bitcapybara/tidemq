@@ -1,8 +1,38 @@
-# TideMQ 本地负载与性能证据
+# TideMQ 性能门禁、负载与实测证据
 
 本工具使用仓库中的 Rust SDK，经真实 UDP/TLS/QUIC 连接独立 `tidemq serve` 操作系统进程。生产成功以服务端持久提交回执为准；消费完成以逐消息 token 的持久 ACK 为准。运行工具不代替 RF3、故障恢复和对象生命周期正确性测试。
 
 已完成的本地执行见 [2026-10-20 实测报告](evidence/2026-10-20-local-performance.zh-CN.md)。该轮 17 项均通过有限负载校验；结果尚未证明高吞吐、低延迟目标达成，也不用于选择生产 allocator。
+
+## CI 单节点与三节点回归门禁
+
+[Performance 工作流](../.github/workflows/performance.yml) 在隔离的 Ubuntu 24.04 runner 上运行真实 QUIC/TLS、Raft 与同步持久化，不关闭生产或逐消息 ACK 的持久性。`rf1` 是一个完整角色进程；`rf3-combined` 是三个完整角色进程，元数据和数据 voter 均为 `[1,2,3]`。原有角色分离的 `rf3` 十进程部署保持原样，不能把它称作三进程基准。同机 loopback 与共享磁盘测试用于代码回归，不代表三可用区性能或故障隔离。
+
+仓库 [baseline.json](../performance/baseline.json) 固定上次接受的服务源码、负载和统计策略，实际数值、构建身份与原始试次由 `baseline-report.json` 保存。PR 使用 base commit 的工具和策略，不接受候选提交降低门槛或替换基线。基线与候选在同一 job、同一机器上各测五次，顺序交替为 A/B、B/A；不拿不同 GitHub runner 的绝对吞吐直接比较。每次从新目录启动并预热，服务使用 mimalloc 与四个 Tokio worker。
+
+负载使用四个独立分区队列，每个有独立 Producer/Consumer。每分区 64 条预热、512 条测量，128 B 正文、单条生产批次、有界持久 ACK 批次、四条 request lanes。每轮先验证所有预期身份、唯一交付、offset、生产回执、消费持久 ACK 与最终持久前沿，再计算完整阶段吞吐，以及合并直方图后的生产持久回执 p99、offered-to-durable-ACK p99。任意失败、超时、遗漏、强制退出或不完整报告均失败，不能少做工作后声称提速。
+
+两个负载二进制分别链接基线和候选的 SDK/protocol/transport；构建时只在一次性源码归档中覆盖受保护的四个负载文件，不修改真实 checkout。报告记录服务/SDK 源提交、锁文件、负载文件与实际二进制摘要。首轮 `9fe9c95` SDK 仍使用旧 API，固定从不可变 `595dbaa` 提取同一 schema 2 负载的旧签名适配；这处机械 API 适配差异必须保留在报告，不能当成任意更换场景的入口。后续已晋升的基线与候选使用同一份受保护负载源码。
+
+统计比较采用成对 log ratio 的双侧 95% Student t 区间。吞吐下降或任一 p99 上升的区间完全落在退化方向时失败，即使退化不到 5%；不存在默认放行 5%/10% 的回退额度。区间半宽超过固定 0.03 log ratio 时标为 inconclusive 并失败，应先排除后台负载、温度和磁盘噪声再重跑；优化必须在原策略下重新通过。稳定区间包含零只表示未检测到回退，有限测试无法证明差异恰好为零。直方图沿用约 3.125% 的桶上界，不能将它当作高精度纳秒测量。
+
+复现需要 Node.js 20+、Rust 1.96、C/C++、CMake、pkg-config、Git、tar 和 OpenSSL。三个路径必须指向干净的提交，baseline 的 HEAD 必须匹配受保护清单；输出目录必须不存在。
+
+```bash
+node --test scripts/performance/compare.test.mjs
+node scripts/performance-gate.mjs run \
+  --tools /absolute/path/to/trusted \
+  --baseline /absolute/path/to/previous-baseline \
+  --candidate /absolute/path/to/candidate \
+  --output /absolute/path/to/new-results \
+  --target /absolute/path/to/cargo-cache
+```
+
+完整成功的 main 运行才会晋升基线，同时提交真实报告；main 已前进时旧运行不覆盖新基线。失败保留 `summary.json`、原始报告、每节点指标/诊断、有限进程日志与失败 WAL；成功时在检查所有节点并正常排空后清理试次数据目录。CI artifact 保留 30 天，仓库基线报告长期跟随 Git 历史。
+
+GitHub 的 `Performance gate (RF1 and RF3)` 检查失败会阻止该检查通过。当前私有仓库套餐的分支保护 API 返回 403，无法设为平台强制的 required status check；具有合并权限的人仍可能绕过失败检查。升级套餐或调整仓库可见性后，应将该名称设为 main 的必需检查并保留原有规则。
+
+这组有限回归负载不覆盖冷回放、大消息饱和吞吐、跨可用区网络、所有 allocator 或长期资源漂移；下面的手动矩阵保留这些独立测量入口。新格式评估见 [rkyv / FlatBuffers / FlexBuffers](research/zero-copy-formats.zh-CN.md)，格式迁移前必须实测校验、编码和保留内存成本。
 
 ## 固定构建
 

@@ -8,6 +8,8 @@
 
 新版 Linux 普通测试 246 通过、11 ignored；十个真实 RustFS ignored 显式通过，余下官方 Collector ignored 未在 Linux 执行。workspace 文档三项、验证 driver 六项，以及 SDK metrics＋OpenTelemetry 的 25 项普通和一项文档测试通过，计数有重叠。格式、Clippy 与生产 panic/索引审计均通过。完整回归使用 `--test-threads=1` 隔离 fixture，测试内部真实 Raft/QUIC/SDK 并发保持原样；macOS 原 drain 瞬时拒绝仍未定位。
 
+新增性能门禁覆盖真实单节点与三个完整角色节点，对照两版 SDK/服务端的同机五组成对样本；正确性、吞吐与持久 p99 均参与判断，噪声过大也失败。策略、首次旧 API 适配、基线晋升和 GitHub 分支保护限制见[性能手册](performance.zh-CN.md)。大帧发送的字节等价、原分配容量计费和最后 clone 释放测试见 `crates/tidemq-protocol/src/framing.rs` 与 `crates/tidemq-transport/src/frame/tests.rs`；它们不能替代端到端性能测量。
+
 ## 可复现验证
 
 ```sh

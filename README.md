@@ -71,8 +71,12 @@ For local validation:
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --tests --no-deps
-cargo test --workspace --locked
+cargo test --workspace --locked -- --test-threads=1
 ```
+
+The SDK uses configured timeouts by default; `RequestContext` and `CancellationToken` share cancellation and a total deadline across calls. Large uniquely owned frame payloads can use bounded vectored sending. See the [SDK guide](docs/guide/rust-sdk.zh-CN.md) and [zero-copy format evaluation](docs/research/zero-copy-formats.zh-CN.md).
+
+The [performance workflow](.github/workflows/performance.yml) compares real RF1 and three-process RF3 runs against the previous accepted source on the same runner, including each version's SDK. Throughput and durable-ACK tail regressions fail the check. The [performance guide](docs/performance.zh-CN.md) explains baselines, noise handling, reproduction, and the current GitHub plan's required-check limitation.
 
 ## Documentation and implementation roadmap
 
