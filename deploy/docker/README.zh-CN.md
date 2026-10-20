@@ -46,6 +46,41 @@ sha256sum "$REPO/Cargo.lock" "$STAGE/runtime/bin/tidemq" "$STAGE/runtime/bin/dep
 
 Runtime 构建 context 只有 `runtime/bin/{tidemq,deploy_validation}`，无需把整个仓库或生成的密钥交给 Docker build。容器 UID/GID 为 `10001:10001`。镜像创建该用户拥有、模式为 `0700` 的 `/var/lib/tidemq` 和 `objects` 子目录；空 named volume 的初始化依赖 Docker 的[卷内容复制语义](https://docs.docker.com/engine/storage/volumes/)，运行前仍须实际核对卷的 owner 和可写性。
 
+### Linux Rust 回归容器
+
+回归测试与只编译二进制的容器有两个额外挂载要求：RustFS fixture 写入当前源码目录下的 `target/s3-rustfs`，不跟随 `CARGO_TARGET_DIR`；Rustdoc 会在临时目录生成并执行测试程序。Docker 的 `/tmp` tmpfs 默认带 `noexec`，因此必须为构建测试提供独立、可执行的 `TMPDIR`。运行集群的 `/tmp` 仍保持 `noexec`。
+
+为已冻结的提交创建独立测试快照，并将同一个自有输出目录挂载到 `/stage` 和 `/work/target`。以下命令只改变新建的 staging 目录；不要把已有业务目录或密钥目录作为测试输出。
+
+```bash
+TEST_SOURCE="$STAGE/test-source"
+TEST_OUTPUT="$STAGE/test-output"
+test ! -e "$TEST_SOURCE" && test ! -e "$TEST_OUTPUT"
+mkdir -m 0700 "$TEST_SOURCE" "$TEST_OUTPUT"
+git -C "$REPO" archive --format=tar HEAD | tar -xf - -C "$TEST_SOURCE"
+mkdir -m 0700 "$TEST_SOURCE/target" "$TEST_OUTPUT/doctest-tmp"
+chown -R 10001:10001 "$TEST_SOURCE" "$TEST_OUTPUT"
+
+docker run --rm --user 10001:10001 --cpus 4 --memory 8g --memory-swap 8g \
+  --pids-limit 512 --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+  --tmpfs /tmp:rw,size=1g,uid=10001,gid=10001,mode=1777 \
+  --mount "type=bind,source=$TEST_SOURCE,target=/work,readonly" \
+  --mount "type=bind,source=$TEST_OUTPUT,target=/stage" \
+  --mount "type=bind,source=$TEST_OUTPUT,target=/work/target" \
+  --mount "type=bind,source=$RUSTFS_BINARY,target=/tools/rustfs,readonly" \
+  -e CARGO_HOME=/stage/cargo -e CARGO_TARGET_DIR=/stage/target \
+  -e TMPDIR=/stage/doctest-tmp -e TIDEMQ_TEST_RUSTFS_BIN=/tools/rustfs \
+  "$BUILDER_IMAGE" /bin/bash -euc \
+  'cargo fmt --all -- --check
+   cargo clippy --workspace --tests --examples --no-deps --release --locked -j2 -- -D warnings
+   cargo test --workspace --release --locked -j2 -- --test-threads=1
+   cargo test -p tidemq --example deploy_validation --release --locked -j2
+   cargo test -p tidemq --test s3_rustfs --test lifecycle_compaction --test lifecycle_persistence --release --locked -j2 -- --ignored --test-threads=1
+   cargo test -p tidemq --test runtime_queue actual_runtime_sdk --release --locked -j2 -- --ignored --test-threads=1'
+```
+
+先设置下面说明的 `RUSTFS_BINARY`。新测试输出没有 Cargo 缓存，首次执行需要下载依赖；已有专用缓存可以单独挂载并设置 `CARGO_HOME`，但不能把宿主的其他项目缓存或凭据整体带入容器。上面的普通测试不自动运行 ignored，后两条只运行真实 RustFS 的对应测试；需要官方 Collector 的 ignored 另按[测试方法](../../docs/testing-benchmarks.zh-CN.md)执行。每条命令须保存真实退出码和日志；fixture 准备失败或临时目录执行失败不能算业务验证通过。
+
 RustFS 使用官方 1.0.3 的 Linux x86_64 musl 可执行文件，只读 bind 到同一个 runtime 镜像，不依赖未经核实的 RustFS 镜像。此次操作者已验证的发布物为：
 
 | 对象 | SHA-256 |
