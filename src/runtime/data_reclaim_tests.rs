@@ -28,6 +28,9 @@ mod rustfs;
 mod s3;
 use fixture::*;
 
+#[path = "metadata_replay_tests.rs"]
+mod metadata_replay_tests;
+
 const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 const MESSAGES: u64 = 8;
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

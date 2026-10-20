@@ -187,6 +187,24 @@ impl Service {
             .map_err(|source| Error::operation("read metadata revision", source))
     }
 
+    async fn metadata_request_revision(&self, operation: Id) -> Result<u64> {
+        self.metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| match state.lookup_operation(operation) {
+                // A successful replay must retain its original runtime-generated CAS revision.
+                metadata::OperationResult::Known(Response::Applied { revision, .. }) => {
+                    revision.checked_sub(1).ok_or_else(|| {
+                        Error::invalid("Durable metadata result has an invalid revision")
+                    })
+                }
+                _ => Ok(state.revision()),
+            })
+            .await
+            .map_err(|source| Error::operation("read original metadata request revision", source))?
+    }
+
     pub(crate) async fn meta_write(
         &self,
         command: Command,
@@ -241,7 +259,7 @@ impl Service {
                     .meta_write(
                         Command::create_topic(
                             operation,
-                            self.meta_revision().await?,
+                            self.metadata_request_revision(operation).await?,
                             operation,
                             request.name,
                             groups,
@@ -333,7 +351,7 @@ impl Service {
                     .meta_write(
                         Command::put_subscription(
                             operation,
-                            self.meta_revision().await?,
+                            self.metadata_request_revision(operation).await?,
                             operation,
                             topic_id,
                             request.name,
