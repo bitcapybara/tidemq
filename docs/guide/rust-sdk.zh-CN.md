@@ -68,6 +68,8 @@ cancellation.cancel();
 
 `fill` 将消息放入有界队列；`next` 从当前缓冲区选择可执行工作，`recv` 在队列为空时 fetch。`Parallel` 只对当前已缓冲的 offset 排序，不等待尚未收到的更低 offset；读取回复丢失后，后续消息可以先交付，较低 offset 在原 attempt 租约到期后重投。连续接收和持久 ACK 前沿仍不能跨过空洞，业务不能用“首次收到较高 offset”判断前缀已经确认或丢失。`Delivery` 的 key、body 和 token 不出现在 Debug；payload/token 在最后一个 clone 释放前一直计入逻辑预算。队列满、宿主长期持有 Delivery 或未决批次时，会得到背压，不无限缓存。保留消息超过服务端 attempt 期限后，ACK 可能报告旧 token；它不会确认新的 attempt。
 
+Read 已持久签发部分消息、后续读取失败时，整批返回 Unknown，不把部分消息放入 SDK 队列。调用方可在有界业务取消域内继续使用同一个 Consumer 读取，但恢复总预算应覆盖投递租约（默认 30 s）及后续 Read/ACK；一次空批次不证明租约内的前缀不存在。只有实际收到并处理成功的 Delivery 才能 ACK，不通过 seek、更换身份或跨过 offset 洞来“修复”未知结果。明确不可重试、权限和协议错误仍需终止处理。
+
 1. 分配冻结排他边界 H。B 只接收 H 之前的数据，D 只接收 H 及之后的数据。持续消费 D 后，持久 ACK 前沿可超过 H；H 不随 ACK 推进，后续接收屏障与 owner 恢复仍接受这种合法状态。
 2. SDK 只合并实际成功入队的 offset 和服务端给出的持久 ACK 区间。缺少 offset 时不取最大值推进；最早块缺失时保留有限预取和头部容量。
 3. 连续接收前沿通过 C 上的 `ReceiveBarrier` 确认；回包未知可用相同 tuple/前沿重试。服务端确认后才启用 D。

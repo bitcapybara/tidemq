@@ -184,3 +184,19 @@ RF1 首个 baseline 延迟试次的生产均值为 67.23 ms、计划发送迟到
 旧 docs-only main 的 [Rust 39375744150](https://github.com/bitcapybara/tidemq/actions/runs/39375744150) 也失败：System 的创建返回相同 `ContentConflict`；macOS 的稳定 UDP 测试在首次读取时依次出现已发送 RPC Deadline、空批次及总 Deadline，20 s 后终止。现场没有保留嵌入节点日志，不能唯一确认该次持久签发状态；不过测试的 20 s 总期限确实短于默认 30 s 投递租约，与上述丢 Read 回复后的正确契约冲突。
 
 共享 `durable_consume` 测试 helper 现在使用默认投递租约加原 20 s 恢复预算，保留每次读取的原 2 s 范围；默认 Parallel 验证期望 offset 全集和逐条正文，每次持久 ACK 都核对当前连续前沿。RF3、稳定 UDP、Broker 故障与冷读调用方一并更新。生产代码、SDK 超时和投递租约未改。合流元数据修复后的 runtime queue 为 11 passed/3 ignored，0 failed，116.27 s；测试 Clippy 与 diff 检查通过，日志为 `/tmp/tidemq-recovery-fixture-tests-20261020.log`、`/tmp/tidemq-recovery-fixture-clippy-20261020.log`。这不代表其他尚在定位的 CI 拒绝已经解决。
+
+## 后续结果边界和完成重放修复
+
+`56e8743` 的已完成迁移重放改为双重线性 metadata 确认与真实 data 稳定 quorum 证明，保持原三秒有效期；pending 仍走原变更阶段。定向并发变更锁竞争先红后绿，原计划、generation、target、退休、证明丢失和证明后代次变化均有回归，详见[专项证据](2026-10-20-completed-membership-replay.zh-CN.md)。root 合流后的 lib 94 passed/2 ignored、metadata state 5 passed、scaling remote 2 passed，tests/examples Clippy 与严格生产审计通过；这些检查尚未包含下一段新增 Read 修复。
+
+`8e868d8` 修复整个 Read 的后续错误分类。真实运行时先持久签发 offset 0，再让 offset 1 的只读 hot read 单次返回 Draining，旧实现误报 Rejected，SDK 合法自动重试后返回 `Ok(2)`，隐藏 offset 0；红例 1.58 s。修复后的相同测试 1.51 s 返回整批 Unknown，SDK 缓冲为空；原 ACK、cold/issued 与保留前沿均不跨过 0，高 offset 可依 Parallel 规则交付，原 0 在默认租约后待重投。相关模块 6 passed/2 RustFS ignored，8.39 s，测试 Clippy 与严格生产审计通过。后续所有 `?`、session 和最终回复都通过同一结果边界保护，已有 Unknown 和已验证部分成功不变。旧 CI 缺少具体 Read 相位，仍不能宣称其每次故障都由该漏洞引起。
+
+combined 端到端 fixture 在原 50 s 总窗口内显式恢复 Read Unknown 和可重试 Unavailable/Fenced Rejected，记录次数；不可重试、权限/协议错误、生产与 ACK 失败仍失败。四个队列各 64 条的 key、正文与 offset 身份、每批连续 ACK 前沿和最终 64 前沿全部核验。没有修改 SDK 重试、生产准入、Raft 退避次数或租约，也没有将失败性能试次改写为成功。
+
+`30bf7e2` 纠正 A/A 身份判断：测量和晋升都依据两侧实际服务及负载 SHA-256，而不是源码提交是否相等或是否复用构建。不同源码若产生相同二进制，也必须否决统计显著的双向时序偏差；仅一种二进制相同仍按 A/B 处理。31 项 Node 测试通过，旧两份原始 summary 在此实际身份规则下重新计算，所有指标和拓扑状态仍与原报告相同，保持 inconclusive。
+
+## 最新修复源码的本地终态
+
+生产修复与消费 fixture 冻结为 `56a83498ae4ad31ff122504b2f865a7caf7c1126`。最终 workspace 普通及文档测试为 34 个 suite、284 passed、12 ignored、0 failed，其中 runtime queue 11 passed/3 ignored、82.22 s。workspace tests/examples Clippy、最后变动 runtime fixture 的 Clippy、严格 production lib/bins panic/索引审计和 fmt 均通过；31 项 Node 测试通过。日志分别为 `/tmp/tidemq-final-read-contract-workspace-tests-20261020.log`、`/tmp/tidemq-final-read-contract-clippy-20261020.log`、`/tmp/tidemq-final-combined-contract-clippy-20261020.log`、`/tmp/tidemq-final-read-contract-panic-audit-20261020.log` 与 `/tmp/tidemq-performance-identity-tests-20261020.log`。
+
+由于尚未接受任何数值基线，新一轮初始源码引用更新为上述包含全部正确性修复的冻结提交；原 `3b75d9c` 不再作为未修复漏洞的起点。该更新没有修改统计策略或重标旧报告。下一轮在构建和测量分离的 VM 上完整执行固定 32 个试次，对应 main Rust CI 必须成功；运行开始前仍没有 `baseline-report.json`，本地正确性通过不等于性能通过。

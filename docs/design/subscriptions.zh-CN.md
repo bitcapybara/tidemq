@@ -62,4 +62,6 @@ DataApplication 已在真实磁盘/Raft 中组合生产、所有权与订阅状�
 
 默认 Parallel 不承诺跨读取批次的全局 offset 交付顺序。持久签发后回包丢失时，下一批可能先交付更高 offset；原前缀仍受保留前沿保护，并在 attempt 租约到期后重投。SDK 只对当前缓冲区排序，连续 received/ACK 前沿不能因此跨洞。KeySerial 额外等待连续接收覆盖并限制 busy key；正确性测试应验证完整身份集合、正文和连续 ACK 前沿，不把 Parallel 的首次交付顺序当作缺失证据。
 
+一批 Read 在任何 RecordDelivery 成功后，后续 hot read、保留检查、session 检查或回复构造的失败都不能把整批标为明确 Rejected。统一结果边界将这种后续 Rejected 转为 Unknown，原有 Unknown 保持不变，已验证的有界部分成功仍允许返回。这样 SDK 不会把已经产生持久租约的整批误作未执行而隐式重试；Unknown 不暴露部分缓冲，未确认前缀继续由默认 30 s attempt 租约和保留前沿保护。
+
 SDK 在 owner fence 后保留原逻辑 session，从新鲜状态恢复分配；自动恢复不抢占其他活跃 session，不修改旧 Delivery/token。KeySerial 的失败 offset 跨 assignment 保持阻塞，显式重试或 seek 才改变业务决定。H 保持冻结的 B/D 交界；实时 D 的 received/issued/持久 ACK 前沿可以超过 H，不能据此拒绝合法响应，也不能把 H 推高来掩盖错误。

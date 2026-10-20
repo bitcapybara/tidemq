@@ -1,6 +1,6 @@
 # 实施状态
 
-2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区和有界恢复已完成本地验证；`aaaf234` 的七项 Rust CI job 曾全部通过，随后 CI 又暴露元数据创建重放、迁移重放和读取不稳定，按[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)分别修复与复验。开发机和 GitHub 的两轮八对比较均完成 32 个语义试次，但统计不确定，尚未晋升数值基线，不能将其写成性能达标。
+2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区、元数据创建/迁移重放及持久 Read 前缀结果边界已修复，冻结 `56a8349` 的 workspace 为 284 passed/12 ignored、34 个 suite、0 failed，Clippy/严格审计通过。`aaaf234` 的七项 Rust CI job 曾全部通过，后续失败与修复按[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)分别保留，新冻结源码的远端 CI 待验。开发机和 GitHub 的两轮八对比较均完成 32 个语义试次，但统计不确定，尚未晋升数值基线，不能将其写成性能达标。
 
 | 任务 | 已实现与已有行为证据 | 剩余验收边界 |
 | --- | --- | --- |
