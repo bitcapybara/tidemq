@@ -142,3 +142,45 @@ RF3 的 `4-baseline` 测量阶段有 7200 个 Produce/Sync 样本，没有超过
 `5a7db0f35632457dd0d62f0efbec039b3f3d9ba4` 已推送 main，启动 [Performance 39373827288](https://github.com/bitcapybara/tidemq/actions/runs/39373827288) 及新 [Rust 39373827309](https://github.com/bitcapybara/tidemq/actions/runs/39373827309)。虽然该提交与此前七项 CI 全绿的 `aaaf234` 之间没有 Rust 源码变化，新一轮 mimalloc job 仍失败：combined 用例的 `recv` 返回 Deadline，分角色 RF3 用例首先收到 offset 5 而断言期待 0。两项均需独立定位，不能归为之前的磁盘容量问题，也不能把先前通过写成当前全部 CI 通过。
 
 当前性能和开发服务器的 `corrected-aa-2` 八对 cohort 保持原输入完整执行，不挑选试次。此文档提交会使 main 前进；已有晋升步骤的 exact-HEAD 检查因此跳过 `5a7db0f`，避免独立 Rust 工作流失败时自动晋升。该跳过不代表数值基线已经更新。后续晋升需要同一提交的 main Rust 工作流成功，并保留失败 runtime 进程日志制品。
+
+## 八对同二进制 A/A 终态
+
+`corrected-aa-2` 在固定 schema 4、原 0.15 主指标预算下完整执行；RF1/RF3 各十六个试次、合计 65,536 条测量消息全部完成持久语义校验并正常退出，预热另外计数。真实服务仍为源码 `3b75d9c`、SHA-256 `beab7144cb51a40f0d804381f6ef9b8f94fcb54b271597c702fff497771ccf04`；工具为 `5a7db0f`，负载 SHA-256 为 `955e64f72b916ccc753bebbd5cb7cf3e1cf3e4b3b350ad1b97109856c1f9af5e`。两侧实际复用同一服务及负载构建。
+
+完整数值和全部八对样本保存在[校准报告](../../performance/calibrations/2026-10-20-dev-aa-schema4.json)，文件原样取自远端 summary；主 agent 核对了 schema、相同构建、源码、policy 摘要，并使用当前未修改策略重新计算两拓扑及各指标状态。该文件不是 `baseline-report.json`，也不是晋升记录。
+
+| 拓扑 | 持久吞吐 H | 生产原始均值 H | offered→持久 ACK 均值 H | 拓扑终态 |
+| --- | ---: | ---: | ---: | --- |
+| RF1 | 0.016868 | 0.154613 | 0.085362 | inconclusive |
+| RF3 | 0.111292 | 0.105219 | 0.074054 | passed |
+
+H 为十项比较 Bonferroni 校正区间的 log 半宽。RF1 的生产均值超过预设 0.15，不能四舍五入放行；其区间为 [0.835296, 1.137982]，没有显著退化证据，但精度不合格。四个 p99 全为 `imprecise`，H 为 0.936850、0.768403、0.773199、0.511939，不能宣称小幅尾延迟退化已被排除。总终态为 `inconclusive`、进程退出 1，未接受或晋升数值基线。没有删除试次、追加样本或提高阈值让本轮通过。成功语义试次的数据已按脚本清理，原始报告、指标与日志保留；WAL 保留规则针对业务校验失败的试次。
+
+## 首轮 GitHub 八对比较终态
+
+[Performance 39373827288](https://github.com/bitcapybara/tidemq/actions/runs/39373827288) 完成全部 32 个试次的持久语义校验，统计终态为 `inconclusive`，工作流失败，晋升步骤跳过。基线源码为 `3b75d9c`，候选源码为 `5a7db0f`；两侧实际服务 SHA-256 均为 `7e3e6d47ec192289a83fe0253712aaa0ab3872eebb7f933dc0993ff0e78788ea`，负载均为 `a67dc8895bcd79f15d2618974e797e6bbb3eccd13d306e92345f2fe9b1d82f7d`。源码身份不同，报告正确保留 `same_source_reused_builds=false`，不能改写为同源码复用构建。
+
+[原始 summary](../../performance/calibrations/2026-10-20-github-aa-schema4.json) 原样取自 artifact `12244321353`；下载 ZIP 的 SHA-256 为 `c90735b22690cce4f4291bc66e9f2b16007143050534e52d026e6461e5ba2f6f`。主 agent 按当前未修改的策略重算两拓扑及所有指标状态，结果与报告一致。
+
+| 拓扑 | 持久吞吐 H | 生产原始均值 H | offered→持久 ACK 均值 H | 拓扑终态 |
+| --- | ---: | ---: | ---: | --- |
+| RF1 | 0.014842 | 1.216972 | 0.755020 | inconclusive |
+| RF3 | 0.023801 | 0.060118 | 0.015120 | passed |
+
+RF1 首个 baseline 延迟试次的生产均值为 67.23 ms、计划发送迟到均值为 59.64 ms，生产 p99 约 1.61 s；其余十五个 RF1 试次的生产均值约为 6.00—7.47 ms。该试次 Sync 有七个超过 50 ms、六个超过 100 ms、一个超过 500 ms，WalQueue 没有超过 50 ms 的样本。观测支持一次长停顿引发计划发送积压，尚不能唯一归因于构建、宿主调度或磁盘。没有删除首个试次、扣除调度迟到或修改门槛。
+
+`b298ccc` 将固定构建与测量拆为不同 GitHub VM：测量前核对外部 manifest 摘要、干净源码、策略、SDK、lockfile、harness 和四个实际二进制，再恢复固定文件的执行权限。测量不运行 Cargo，首个试次前固定执行一次有界 sync；两个版本仍在同一测量 VM 交错运行。三十项 Node 测试及 YAML/shell 语法检查通过，包括损坏、缺失、symlink 和同源码伪复用拒绝。该环境隔离是下一轮控制条件，不能当作已证明旧长尾根因或新性能通过。
+
+## CI 正确性失败与定向修复
+
+`1ebc66d` 修正 Parallel 测试的全局首次交付顺序假设。真实运行时在第二条 RecordDelivery 持久提交后丢弃 Read 回复，旧断言稳定收到 offset 2 而期待 0；正确契约为 offset 2 可以先交付，ACK 前沿仍为 0、保留保护仍覆盖 0，未确认的 0/1 在默认租约到期后待重投。测试改为验证身份全集、正文和连续 ACK 前沿。该定向证据不唯一证明旧 CI 的具体丢包时机。
+
+`74a25d0` 在映射 wire 错误前增加静态 runtime Unknown 原因日志，与 dispatch 共用每秒限频；字节级测试确认错误回复未改变。`549095b` 为 combined 测试按默认 30 s 投递租约加一次 Read/ACK 的原有预算安排恢复窗口，没有修改生产超时或租约。合流 `edffba4` 的本地 root lib 为 90 passed/2 ignored，runtime 为 11 passed/3 ignored；fmt、测试 Clippy 与生产 panic/索引审计通过。对应日志为 `/tmp/tidemq-final-unknown-runtime-tests-20261020.log`、`/tmp/tidemq-final-unknown-clippy-20261020.log` 和 `/tmp/tidemq-final-unknown-panic-audit-20261020.log`。
+
+[Rust 39377051991](https://github.com/bitcapybara/tidemq/actions/runs/39377051991) 在更早的 `fb12dc1` 终态失败：System 的两个创建 fixture 返回 `ContentConflict`，已完成副本替换的重放返回 Unknown；Linux validate 的 combined 读取返回 `Unavailable / Rejected`。mimalloc、macOS validate 和两个 heap-profile job 通过，jemalloc 取消，不能称为全绿。失败子进程的 stdout/stderr 日志制品已成功保留；嵌入式 `RunningNode` 的副本迁移测试没有独立 process log，不能从其他 fixture 日志推定其内部相位。
+
+`7f80775` 定向复现并修复元数据创建重放的 CAS 问题：首次成功后，服务器为同一 operation 重新取当前 revision，导致完整 Command 摘要变化。现在仅对已 Applied 的原结果以受检查的 `revision - 1` 还原原 CAS，再走既有 digest 与 CAS 校验。两项真实创建重放先红为 `ContentConflict`，修复后三项运行时回归通过；五项 metadata state 测试通过，改变内容仍拒绝，已缓存拒绝不转为成功。原 System combined 和 broker failover 分别通过 13.63 s 与 19.59 s 的专项检查；旧 CI 首次回复究竟丢失还是提交后建路由失败，仍没有唯一现场证明。
+
+旧 docs-only main 的 [Rust 39375744150](https://github.com/bitcapybara/tidemq/actions/runs/39375744150) 也失败：System 的创建返回相同 `ContentConflict`；macOS 的稳定 UDP 测试在首次读取时依次出现已发送 RPC Deadline、空批次及总 Deadline，20 s 后终止。现场没有保留嵌入节点日志，不能唯一确认该次持久签发状态；不过测试的 20 s 总期限确实短于默认 30 s 投递租约，与上述丢 Read 回复后的正确契约冲突。
+
+共享 `durable_consume` 测试 helper 现在使用默认投递租约加原 20 s 恢复预算，保留每次读取的原 2 s 范围；默认 Parallel 验证期望 offset 全集和逐条正文，每次持久 ACK 都核对当前连续前沿。RF3、稳定 UDP、Broker 故障与冷读调用方一并更新。生产代码、SDK 超时和投递租约未改。合流元数据修复后的 runtime queue 为 11 passed/3 ignored，0 failed，116.27 s；测试 Clippy 与 diff 检查通过，日志为 `/tmp/tidemq-recovery-fixture-tests-20261020.log`、`/tmp/tidemq-recovery-fixture-clippy-20261020.log`。这不代表其他尚在定位的 CI 拒绝已经解决。

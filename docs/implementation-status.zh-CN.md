@@ -1,6 +1,6 @@
 # 实施状态
 
-2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区、Raft 合法准入拒绝和 ReceiveBarrier Unknown 恢复已完成本地验证；`aaaf234` 的七项 Rust CI job 全部通过。真实 RF1/RF3 的二十个 A/A 试次通过持久语义校验，统计结果为 inconclusive，尚未晋升数值基线；不能将其写成性能达标。
+2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区和有界恢复已完成本地验证；`aaaf234` 的七项 Rust CI job 曾全部通过，随后 CI 又暴露元数据创建重放、迁移重放和读取不稳定，按[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)分别修复与复验。开发机和 GitHub 的两轮八对比较均完成 32 个语义试次，但统计不确定，尚未晋升数值基线，不能将其写成性能达标。
 
 | 任务 | 已实现与已有行为证据 | 剩余验收边界 |
 | --- | --- | --- |
@@ -17,8 +17,8 @@
 | T10 运行时 | serve、组合/独立角色、实际内外 QUIC、管理健康/就绪/指标/诊断、TLS/静态授权、正常关闭；兼容 LibreSSL 的配置生成器；真实 RF1/RF3 热冷路径、独立 OS 进程故障与原 SDK 恢复；Linux 独立 Docker 项目、UID/卷/cgroup/无宿主端口实际核验 | 真实生产部署、跨区及长期压力待验 |
 | T11 弹性 | 私有稳定成员证明、learner/joint/stable、真实 Raft 迁移、独立修复预算、真实容量/CPU/网络/连接/ACK 评分；owned ticker 驱动显式/自动 Storage 修复及 Broker 移交 | 冷却/长期均衡、高压力及跨区容量待验 |
 | T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；独立 RF3 CLI 与 Linux Docker 的 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启、RF1 真 OOM；新版十个 Docker case 合计 736 条完整唯一交付和持久 ACK；新版 Linux 普通 246、十个真实 RustFS ignored 及三个 docs 通过 | macOS drain 瞬时拒绝未确证；Linux 官方 Collector ignored 未执行；生产 LB/三区、掉电与长稳待验 |
-| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；测量 36032 条、预热 2264 条完整持久 ACK；新增真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；修复后完整二十个 A/A 试次共 40960 条测量消息通过持久语义 | 旧五对统计未达到精度，未晋升数值基线；保留全部失败和 inconclusive 证据。八对门禁改用 family 区间，尾部检测能力单独说明，见[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)；高吞吐低延迟、长稳与三区目标未放行 |
-| T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；可选 OTLP 有界导出、实际四角色关联、Collector 多故障隔离；统一导航、76 条覆盖、Linux Docker 构建/隔离/故障脚本与真实命令证据 | Linux 分配栈、生产命令与浏览器画面仍按对应环境验收 |
+| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；测量 36032 条、预热 2264 条完整持久 ACK；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；开发机/GitHub 各 32 个八对试次通过持久语义；构建与测量 VM 已拆分 | 两轮八对统计均 inconclusive，未晋升数值基线；完整校准报告已入库。固定门槛和尾部检测边界见[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)；新隔离 cohort、高吞吐低延迟、长稳与三区目标待验 |
+| T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；可选 OTLP 有界导出、实际四角色关联、Collector 多故障隔离；统一导航、79 条覆盖、Linux Docker 构建/隔离/故障脚本与真实命令证据 | Linux 分配栈、生产命令与浏览器画面仍按对应环境验收 |
 
 ## 证据口径
 
