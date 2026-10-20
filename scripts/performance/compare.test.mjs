@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
-import {execFileSync} from 'node:child_process';
+import {mkdtemp, mkdir, readFile, readdir, rm, writeFile} from 'node:fs/promises';
+import {execFileSync, spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {comparePairs, summarizeReport, validatePolicy} from './compare.mjs';
+import {management} from '../performance-gate.mjs';
 
 const policy = validatePolicy(JSON.parse(readFileSync(new URL('../../performance/baseline.json', import.meta.url))));
 const summary = multiplier => ({
@@ -81,5 +84,62 @@ test('RF3 combined generation creates exactly three full-role quorum members', a
       assert.equal((text.match(/\[\[runtime.peers\]\]/g) ?? []).length, 3);
       assert.equal(new Set([...text.matchAll(/zone = '([^']+)'/g)].map(match => match[1])).size, 3);
     }
+  } finally { await rm(temporary, {recursive: true, force: true}); }
+});
+
+test('management enforces an absolute deadline when a peer keeps sending data', {timeout: 4000}, async context => {
+  const server = http.createServer((request, response) => {
+    response.writeHead(200);
+    const ticker = setInterval(() => response.write('x'), 50);
+    request.once('close', () => clearInterval(ticker));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const get = http.get.bind(http);
+  context.mock.method(http, 'get', (_url, settings, callback) =>
+    get(`http://127.0.0.1:${server.address().port}/metrics`, settings, callback));
+  const started = performance.now();
+  try {
+    await assert.rejects(management(1, '/metrics'), /Management absolute deadline expired/);
+    assert.ok(performance.now() - started < 2500, 'Slow response extended the total request budget');
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('promotion rejects a stale report or dirty source and accepts only the clean current HEAD', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'tidemq-perf-promote-'));
+  const git = (...args) => execFileSync('git', args, {cwd: temporary, encoding: 'utf8'}).trim();
+  const commit = () => git('-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Performance Test',
+    '-c', 'user.email=perf-test@example.invalid', 'commit', '--no-gpg-sign', '-qm', 'Test source');
+  try {
+    await mkdir(path.join(temporary, 'performance'));
+    const original = `${JSON.stringify(policy, null, 2)}\n`;
+    await writeFile(path.join(temporary, 'performance/baseline.json'), original);
+    git('init', '-q', '--initial-branch=main');
+    git('add', 'performance/baseline.json');
+    commit();
+    const stale = git('rev-parse', 'HEAD');
+    await writeFile(path.join(temporary, 'source.txt'), 'current\n');
+    git('add', 'source.txt');
+    commit();
+    const current = git('rev-parse', 'HEAD');
+    const report = {status: 'passed', baseline_manifest_sha256: createHash('sha256').update(original).digest('hex'),
+      baseline: {source_commit: policy.service_source_commit}, candidate: {source_commit: stale},
+      topologies: Object.fromEntries(policy.topologies.map(topology => [topology, {pairs: pairs([0.98, 0.98, 0.98, 0.98, 0.98])}]))};
+    const reportPath = path.join(temporary, 'report.json');
+    const promote = () => spawnSync(process.execPath, [new URL('../performance-gate.mjs', import.meta.url).pathname,
+      'promote', '--tools', temporary, '--report', reportPath], {encoding: 'utf8', timeout: 5000});
+    await writeFile(reportPath, JSON.stringify(report));
+    const staleResult = promote();
+    assert.equal(staleResult.status, 1);
+    assert.match(staleResult.stderr, /Promotion candidate must match the current clean tools HEAD/);
+    assert.equal(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8'), original);
+    report.candidate.source_commit = current;
+    await writeFile(reportPath, JSON.stringify(report));
+    await writeFile(path.join(temporary, 'source.txt'), 'dirty\n');
+    assert.equal(promote().status, 1);
+    assert.equal(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8'), original);
+    await writeFile(path.join(temporary, 'source.txt'), 'current\n');
+    const accepted = promote();
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8')).service_source_commit, current);
   } finally { await rm(temporary, {recursive: true, force: true}); }
 });
