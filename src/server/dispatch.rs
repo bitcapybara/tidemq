@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use tidemq_protocol::common::{ErrorCode, ErrorReply, Frame, FrameKind, Outcome, TrafficClass};
-use tidemq_protocol::framing::{frame_limit, new_frame};
+use tidemq_protocol::framing::{decode_payload, frame_limit, new_frame};
 use tidemq_protocol::{Id, ProtocolLimits};
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
@@ -305,6 +305,7 @@ async fn execute<S: WireService>(
             }
         }
     };
+    log_unknown_reply(frame.frame(), result.as_ref(), &limits, &health);
     if let Some(mut response) = result {
         response.payload = Bytes::from_owner(ReplyMemory {
             bytes: response.payload,
@@ -316,6 +317,48 @@ async fn execute<S: WireService>(
             notification: notification_peer.map(|peer| (peer, frame)),
         });
     }
+}
+
+fn log_unknown_reply(
+    request: &Frame,
+    response: Option<&Frame>,
+    limits: &ProtocolLimits,
+    health: &DispatchMetrics,
+) {
+    let Some(error) = response.and_then(|frame| unknown_reply(frame, limits)) else {
+        return;
+    };
+    if !health.may_log(std::time::Instant::now()) {
+        return;
+    }
+    let command_kind = FrameKind::try_from(request.kind)
+        .map(|kind| kind.as_str_name())
+        .unwrap_or("UNSPECIFIED");
+    let request_id = Id::from_slice(&request.request_id)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|_| "invalid".into());
+    let operation_id = Id::from_slice(&request.operation_id)
+        .map(|id| id.to_string())
+        .unwrap_or_else(|_| "invalid".into());
+    tracing::warn!(
+        event_code = "wire_request_unknown",
+        stage = "handler_reply",
+        command_kind,
+        request_id,
+        operation_id,
+        code = error.code,
+        outcome = "Unknown",
+        "Handler returned an unknown operation result"
+    );
+}
+
+fn unknown_reply(frame: &Frame, limits: &ProtocolLimits) -> Option<ErrorReply> {
+    if frame.kind != i32::from(FrameKind::Error) {
+        return None;
+    }
+    decode_payload::<ErrorReply>(frame.payload.clone(), limits)
+        .ok()
+        .filter(|error| error.outcome == i32::from(Outcome::Unknown))
 }
 
 struct ReplyMemory {
@@ -492,4 +535,34 @@ fn error_frame(
         limits,
     )
     .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_valid_unknown_error_replies_are_classified_for_logging() {
+        let limits = ProtocolLimits::default();
+        let id = Id::random().unwrap();
+        let success = new_frame(
+            FrameKind::TopicResult,
+            TrafficClass::Control,
+            id,
+            id,
+            &tidemq_protocol::public::TopicResult::default(),
+            1_000,
+            &limits,
+        )
+        .unwrap();
+        assert!(unknown_reply(&success, &limits).is_none());
+        let rejected = overload(&success, &limits, ErrorCode::Unavailable).unwrap();
+        assert!(unknown_reply(&rejected, &limits).is_none());
+        let mut unknown = failure(&success, &limits).unwrap();
+        let classified = unknown_reply(&unknown, &limits).unwrap();
+        assert_eq!(classified.outcome, i32::from(Outcome::Unknown));
+        assert_eq!(classified.code, i32::from(ErrorCode::Unavailable));
+        unknown.payload = Bytes::from_static(&[0xff]);
+        assert!(unknown_reply(&unknown, &limits).is_none());
+    }
 }
