@@ -115,7 +115,7 @@ fn parse_quota(text: &str) -> io::Result<Option<u64>> {
     Ok(Some(quota))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn read_limited(path: &std::path::Path, limit: u64) -> io::Result<String> {
     use std::io::Read;
     let mut text = String::new();
@@ -128,6 +128,16 @@ fn read_limited(path: &std::path::Path, limit: u64) -> io::Result<String> {
     Ok(text)
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn read_quota(path: &std::path::Path, root: &std::path::Path) -> io::Result<Option<u64>> {
+    match read_limited(&path.join("cpu.max"), 256) {
+        Ok(text) => parse_quota(&text),
+        // The host root has no bandwidth controller; a namespaced root may still have a quota.
+        Err(error) if path == root && error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn quota_capacity(mut available: u64) -> io::Result<u64> {
     use std::path::Path;
@@ -135,7 +145,7 @@ fn quota_capacity(mut available: u64) -> io::Result<u64> {
     let membership = read_limited(Path::new("/proc/self/cgroup"), 16_384)?;
     let mut path = cgroup_path(&membership)?;
     loop {
-        if let Some(quota) = parse_quota(&read_limited(&path.join("cpu.max"), 256)?)? {
+        if let Some(quota) = read_quota(&path, root)? {
             available = available.min(quota);
         }
         if path == root {
@@ -152,6 +162,27 @@ fn quota_capacity(mut available: u64) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_cpu_quota_is_optional_but_present_limits_and_child_errors_are_preserved() {
+        let root = std::env::temp_dir().join(format!(
+            "tidemq-cpu-quota-{}",
+            tidemq_protocol::Id::random().unwrap()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let child = root.join("child");
+        std::fs::create_dir(&child).unwrap();
+        assert_eq!(read_quota(&root, &root).unwrap(), None);
+        assert_eq!(
+            read_quota(&child, &root).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        std::fs::write(root.join("cpu.max"), "50000 100000\n").unwrap();
+        assert_eq!(read_quota(&root, &root).unwrap(), Some(500));
+        std::fs::write(root.join("cpu.max"), "invalid\n").unwrap();
+        assert!(read_quota(&root, &root).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn native_cpu_inputs_reject_invalid_time_and_container_quotas() {

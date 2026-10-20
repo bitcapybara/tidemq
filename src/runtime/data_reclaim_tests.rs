@@ -122,7 +122,7 @@ async fn an_unknown_delivery_after_a_durable_prefix_cannot_become_partial_succes
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -131,35 +131,31 @@ async fn an_unknown_delivery_after_a_durable_prefix_cannot_become_partial_succes
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
     producer
-        .produce(
-            vec![
-                public::Message {
-                    key: Bytes::new(),
-                    body: Bytes::from_static(b"unknown-delivery"),
-                };
-                3
-            ],
-            deadline(),
-        )
+        .produce(vec![
+            public::Message {
+                key: Bytes::new(),
+                body: Bytes::from_static(b"unknown-delivery"),
+            };
+            3
+        ])
         .await
         .unwrap();
     // Lose the reply only after the second real RecordDelivery is durable and fence-checked.
     let _hook = InstalledHook::new(partition, 1, HookPoint::AfterDurableDelivery);
-    let result = consumer.fill(deadline()).await;
+    let result = consumer.fill().await;
     let buffered = consumer.next().await.unwrap();
     let assignment = client
         .admin()
-        .subscription_status(topic, 0, subscription, deadline())
+        .subscription_status(topic, 0, subscription)
         .await
         .unwrap()
         .assignment
         .unwrap();
-    client.close(deadline()).await;
+    client.close().await;
     drop(consumer);
     drop(producer);
     drop(client);
@@ -198,7 +194,7 @@ async fn a_real_logical_retention_floor_still_rejects_the_expired_offset() {
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -207,28 +203,20 @@ async fn a_real_logical_retention_floor_still_rejects_the_expired_offset() {
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
     producer
-        .produce(
-            vec![public::Message {
-                key: Bytes::new(),
-                body: Bytes::from_static(b"retained-until-acknowledged"),
-            }],
-            deadline(),
-        )
+        .produce(vec![public::Message {
+            key: Bytes::new(),
+            body: Bytes::from_static(b"retained-until-acknowledged"),
+        }])
         .await
         .unwrap();
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let delivered = consumer.next().await.unwrap().unwrap();
     assert_eq!(
-        consumer
-            .ack(&delivered, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
+        consumer.ack(&delivered).await.unwrap().acknowledged_before,
         1
     );
     let service = &fixture.running.get(&1).unwrap().service;
@@ -274,8 +262,8 @@ async fn a_real_logical_retention_floor_still_rejects_the_expired_offset() {
     let valid = service
         .require_retained_offset(2, partition, 1, deadline())
         .await;
-    let seek = consumer.seek(0, Id::random().unwrap(), deadline()).await;
-    client.close(deadline()).await;
+    let seek = consumer.seek(0, Id::random().unwrap()).await;
+    client.close().await;
     drop(delivered);
     drop(consumer);
     drop(producer);
@@ -315,7 +303,7 @@ async fn run_reclaimed_read(paused_offset: u64) {
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     // Claim before writing: the same live assignment must keep H=0 across local reclamation.
@@ -326,7 +314,6 @@ async fn run_reclaimed_read(paused_offset: u64) {
             0,
             subscription,
             ConsumerConfig::default(),
-            deadline(),
         )
         .await
         .unwrap(),
@@ -338,11 +325,7 @@ async fn run_reclaimed_read(paused_offset: u64) {
         })
         .collect();
     assert_eq!(
-        producer
-            .produce(messages, deadline())
-            .await
-            .unwrap()
-            .message_count,
+        producer.produce(messages).await.unwrap().message_count,
         MESSAGES as u32
     );
     let service = &fixture.running.get(&1).unwrap().service;
@@ -385,7 +368,11 @@ async fn run_reclaimed_read(paused_offset: u64) {
     let until = deadline();
     let reading = {
         let consumer = consumer.clone();
-        tokio::spawn(async move { consumer.fill(until).await })
+        tokio::spawn(async move {
+            tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(consumer.fill())
+                .await
+        })
     };
     tokio::time::timeout_at(until, hook.0.ready.notified())
         .await
@@ -414,7 +401,7 @@ async fn run_reclaimed_read(paused_offset: u64) {
     let result = consume_all(&consumer, first, paused_offset, until).await;
     let assignment = client
         .admin()
-        .subscription_status(topic, 0, subscription, deadline())
+        .subscription_status(topic, 0, subscription)
         .await
         .unwrap()
         .assignment
@@ -429,7 +416,7 @@ async fn run_reclaimed_read(paused_offset: u64) {
         .find_map(|line| line.strip_prefix("tidemq_runtime_read_hot_reclaim_conflicts_total "))
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    client.close(deadline()).await;
+    client.close().await;
     drop(consumer);
     drop(producer);
     drop(client);
@@ -471,16 +458,16 @@ async fn consume_all(
         }
         assert_eq!(page.len(), count);
         if !page.is_empty() {
-            let ack = consumer
-                .ack_many(&page, until)
+            let ack = tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(consumer.ack_many(&page))
                 .await
                 .map_err(|error| format!("The original delivery ACK was rejected: {error:?}"))?;
             assert_eq!(ack.acknowledged_before, next);
         }
         drop(page);
         if next < MESSAGES {
-            count = consumer
-                .fill(until)
+            count = tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(consumer.fill())
                 .await
                 .map_err(|error| format!("The original consumer could not resume: {error:?}"))?;
         }

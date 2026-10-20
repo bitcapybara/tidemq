@@ -51,7 +51,7 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     }
     let client = fixture.client(4).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap(), deadline())
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -60,7 +60,6 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
         0,
         subscription,
         ConsumerConfig::default(),
-        deadline(),
     )
     .await
     .unwrap();
@@ -165,7 +164,7 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
                 .any(|value| value == b"trace-secret")
         );
     }
-    client.close(deadline()).await;
+    client.close().await;
     for (node, child) in processes.iter_mut().rev() {
         let pid = i32::try_from(child.id().unwrap()).unwrap();
         // The owned child PID is live and SIGINT uses the CLI's normal bounded drain path.
@@ -190,25 +189,18 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
 async fn roundtrip(producer: &Producer, consumer: &Consumer, offset: u64) {
     let started = Instant::now();
     let receipt = producer
-        .produce(
-            vec![public::Message {
-                key: Bytes::from_static(b"trace-secret-key"),
-                body: Bytes::from_static(b"trace-secret-body"),
-            }],
-            deadline(),
-        )
+        .produce(vec![public::Message {
+            key: Bytes::from_static(b"trace-secret-key"),
+            body: Bytes::from_static(b"trace-secret-body"),
+        }])
         .await
         .unwrap();
     assert_eq!(receipt.first_offset, offset);
-    assert_eq!(consumer.fill(deadline()).await.unwrap(), 1);
+    assert_eq!(consumer.fill().await.unwrap(), 1);
     let delivery = consumer.next().await.unwrap().unwrap();
     assert_eq!(delivery.offset(), offset);
     assert_eq!(
-        consumer
-            .ack(&delivery, deadline())
-            .await
-            .unwrap()
-            .acknowledged_before,
+        consumer.ack(&delivery).await.unwrap().acknowledged_before,
         offset + 1
     );
     assert!(

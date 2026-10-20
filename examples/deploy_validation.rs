@@ -247,7 +247,7 @@ async fn validate_connected(
                 .checked_add(Duration::from_secs(5))
                 .context("Close deadline overflow")?,
         );
-    match timeout_at(close, client.close(close)).await {
+    match timeout_at(close, client.close()).await {
         Ok(()) => report.client_close_completed = true,
         Err(error) if result.is_ok() => {
             result = Err(error).context("Owned SDK close exceeded its budget")
@@ -279,7 +279,6 @@ async fn connect(args: &Args, deadline: Instant) -> Result<Client> {
             node_id: None,
         },
         token.trim_end_matches(['\r', '\n']).into(),
-        request_deadline(deadline)?,
     )
     .await?)
 }

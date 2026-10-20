@@ -17,7 +17,7 @@ async fn default_credit_live_pages_preserve_every_identity_and_durable_ack() {
     let until = Instant::now() + Duration::from_secs(30);
     tokio::time::timeout_at(until, async {
         exercise_live_pages(&client, until).await;
-        client.close(deadline().min(until)).await;
+        client.close().await;
     })
     .await
     .expect("The complete live-page workload must finish within its original 30-second deadline");
@@ -26,15 +26,15 @@ async fn default_credit_live_pages_preserve_every_identity_and_durable_ack() {
 
 async fn exercise_live_pages(client: &Client, until: Instant) {
     let (topic, subscription) = create(client).await;
-    let producer = Producer::open(
-        client.clone(),
-        topic,
-        0,
-        Id::random().unwrap(),
-        deadline().min(until),
-    )
-    .await
-    .unwrap();
+    let producer = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
+        .scope(Producer::open(
+            client.clone(),
+            topic,
+            0,
+            Id::random().unwrap(),
+        ))
+        .await
+        .unwrap();
     let config = ConsumerConfig::default();
     assert_eq!(config.max_buffered_messages as usize, DEFAULT_CREDIT);
     // A generous metadata allowance leaves a full-credit page below both default byte limits.
@@ -47,21 +47,20 @@ async fn exercise_live_pages(client: &Client, until: Instant) {
                 .max_frame_bytes as usize
     );
     // Claim before producing so H remains zero and all deliveries use the live path.
-    let consumer = Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        config,
-        deadline().min(until),
-    )
-    .await
-    .unwrap();
+    let consumer = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
+        .scope(Consumer::claim(
+            client.clone(),
+            topic,
+            0,
+            subscription,
+            config,
+        ))
+        .await
+        .unwrap();
     produce_committed_messages(&producer, until).await;
     consume_live_pages(&consumer, until).await;
-    let assignment = client
-        .admin()
-        .subscription_status(topic, 0, subscription, deadline().min(until))
+    let assignment = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
+        .scope(client.admin().subscription_status(topic, 0, subscription))
         .await
         .unwrap()
         .assignment
@@ -73,8 +72,8 @@ async fn exercise_live_pages(client: &Client, until: Instant) {
 async fn produce_committed_messages(producer: &Producer, until: Instant) {
     for first in (0..MESSAGE_COUNT).step_by(PRODUCE_BATCH) {
         let messages = (first..first + PRODUCE_BATCH as u64).map(message).collect();
-        let receipt = producer
-            .produce(messages, deadline().min(until))
+        let receipt = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
+            .scope(producer.produce(messages))
             .await
             .expect("Every original producer batch must obtain a durable receipt before reading");
         assert_eq!(receipt.first_offset, first);
@@ -91,7 +90,9 @@ async fn consume_live_pages(consumer: &Consumer, until: Instant) {
     while seen.len() < MESSAGE_COUNT as usize {
         let pending = MESSAGE_COUNT as usize - seen.len();
         let started = Instant::now();
-        let result = consumer.fill(deadline().min(until)).await;
+        let result = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
+            .scope(consumer.fill())
+            .await;
         eprintln!(
             "Live Read page {page}: pending={pending}, result={result:?}, elapsed_us={}",
             started.elapsed().as_micros()
@@ -114,8 +115,8 @@ async fn consume_live_pages(consumer: &Consumer, until: Instant) {
         while seen.contains(&contiguous) {
             contiguous += 1;
         }
-        let ack = consumer
-            .ack_many(&deliveries, deadline().min(until))
+        let ack = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
+            .scope(consumer.ack_many(&deliveries))
             .await
             .expect("Each original delivery token must obtain a durable ACK without retries");
         assert!(ack.acknowledged_before >= frontier);

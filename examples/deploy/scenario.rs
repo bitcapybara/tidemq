@@ -64,21 +64,18 @@ impl<'a> Queue<'a> {
         report: &mut Report,
         deadline: Instant,
     ) -> Result<Self> {
-        let topic = client
-            .admin()
-            .create_topic(&format!("deploy-{run}"), 1, request_deadline(deadline)?)
+        let topic = tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+            .scope(client.admin().create_topic(&format!("deploy-{run}"), 1))
             .await?;
         let topic = Id::from_slice(&topic.topic_id)?;
         report.topic_id = Some(topic.to_string());
-        let subscription = client
-            .admin()
-            .create_subscription(
+        let subscription = tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+            .scope(client.admin().create_subscription(
                 topic,
                 "validation",
                 0,
                 public::DeliveryMode::Parallel,
-                request_deadline(deadline)?,
-            )
+            ))
             .await?;
         let subscription = Id::from_slice(&subscription.subscription_id)?;
         report.subscription_id = Some(subscription.to_string());
@@ -104,15 +101,15 @@ impl<'a> Queue<'a> {
             "Replacing the original consumer is forbidden"
         );
         self.consumer = Some(
-            Consumer::claim(
-                self.client.clone(),
-                self.topic,
-                0,
-                self.subscription,
-                ConsumerConfig::default(),
-                request_deadline(deadline)?,
-            )
-            .await?,
+            tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+                .scope(Consumer::claim(
+                    self.client.clone(),
+                    self.topic,
+                    0,
+                    self.subscription,
+                    ConsumerConfig::default(),
+                ))
+                .await?,
         );
         let assignment = self.assignment(deadline).await?;
         ensure!(
@@ -190,7 +187,11 @@ impl<'a> Queue<'a> {
             .as_ref()
             .context("The original consumer is unavailable")?;
         while report.ledger.acknowledged < target {
-            let Some(delivery) = consumer.recv(request_deadline(deadline)?).await? else {
+            let Some(delivery) =
+                tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+                    .scope(consumer.recv())
+                    .await?
+            else {
                 let next = Instant::now()
                     .checked_add(Duration::from_millis(50))
                     .context("Receive delay overflow")?;
@@ -213,13 +214,11 @@ impl<'a> Queue<'a> {
     }
 
     async fn assignment(&self, deadline: Instant) -> Result<public::AssignmentResult> {
-        self.client
-            .admin()
-            .subscription_status(
-                self.topic,
-                0,
-                self.subscription,
-                request_deadline(deadline)?,
+        tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+            .scope(
+                self.client
+                    .admin()
+                    .subscription_status(self.topic, 0, self.subscription),
             )
             .await?
             .assignment
@@ -326,14 +325,9 @@ impl<'a> Queue<'a> {
 
 async fn open(client: &Client, topic: Id, deadline: Instant) -> Result<Producer> {
     let identity = Id::random()?;
-    match Producer::open(
-        client.clone(),
-        topic,
-        0,
-        identity,
-        request_deadline(deadline)?,
-    )
-    .await
+    match tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+        .scope(Producer::open(client.clone(), topic, 0, identity))
+        .await
     {
         Ok(producer) => Ok(producer),
         Err(tidemq_sdk::Error::RegistrationUnknown {
@@ -345,15 +339,17 @@ async fn open(client: &Client, topic: Id, deadline: Instant) -> Result<Producer>
                 producer_id == identity,
                 "Unknown registration changed the original producer identity"
             );
-            Ok(Producer::open_at(
-                client.clone(),
-                topic,
-                0,
-                identity,
-                registration_epoch,
-                request_deadline(deadline)?,
+            Ok(
+                tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+                    .scope(Producer::open_at(
+                        client.clone(),
+                        topic,
+                        0,
+                        identity,
+                        registration_epoch,
+                    ))
+                    .await?,
             )
-            .await?)
         }
         Err(error) => Err(anyhow::Error::new(error)).context("Open the original producer"),
     }
@@ -366,7 +362,10 @@ async fn ack(
     deadline: Instant,
 ) -> Result<public::AckResult> {
     for attempt in 0..5 {
-        match consumer.ack(delivery, request_deadline(deadline)?).await {
+        match tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+            .scope(consumer.ack(delivery))
+            .await
+        {
             Ok(result) => return Ok(result),
             Err(error) if error.outcome_unknown() && attempt < 4 => {
                 report.ack_unknown_retries = report

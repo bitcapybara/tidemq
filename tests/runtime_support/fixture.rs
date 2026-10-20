@@ -169,7 +169,6 @@ impl Fixture {
                 node_id: None,
             },
             TOKEN.into(),
-            Instant::now() + Duration::from_secs(10),
         )
         .await
         .unwrap()
@@ -322,21 +321,11 @@ pub(super) async fn http(address: SocketAddr, path: &str) -> String {
 }
 
 pub(super) async fn create(client: &Client) -> (Id, Id) {
-    let topic = client
-        .admin()
-        .create_topic("events", 1, deadline())
-        .await
-        .unwrap();
+    let topic = client.admin().create_topic("events", 1).await.unwrap();
     let topic = Id::from_slice(&topic.topic_id).unwrap();
     let subscription = client
         .admin()
-        .create_subscription(
-            topic,
-            "durable",
-            0,
-            public::DeliveryMode::Parallel,
-            deadline(),
-        )
+        .create_subscription(topic, "durable", 0, public::DeliveryMode::Parallel)
         .await
         .unwrap();
     (

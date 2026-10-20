@@ -11,10 +11,10 @@ use tidemq_sdk::{Bytes, Client, ClientConfig, Id, Producer, public};
 let roots = tokio::fs::read("certs/ca.pem").await?;
 let token = std::env::var("TIDEMQ_TOKEN")?;
 let client = Client::connect(ClientConfig::new("localhost:7443"), roots.into(), token).await?;
-let topic = client.admin().create_topic("events", 4, client.deadline()?).await?;
+let topic = client.admin().create_topic("events", 4).await?;
 let topic_id = Id::from_slice(&topic.topic_id)?;
 let subscription = client.admin().create_subscription(
-    topic_id, "worker", 0, public::DeliveryMode::Parallel, client.deadline()?,
+    topic_id, "worker", 0, public::DeliveryMode::Parallel,
 ).await?;
 # let _ = (Bytes::new(), subscription);
 # Ok(()) }
@@ -24,9 +24,33 @@ let subscription = client.admin().create_subscription(
 
 `Admin` 提供创建、按名称查询 Topic/Subscription，查询生产会话和订阅分配，以及带期望代次和 operation ID 的分区订阅删除。创建操作的自动网络重试保持 operation ID；最终结果未知时，按唯一资源名查询并核对配置。删除某个分区不代表所有分区均已删除，积压保护的全局解除由服务端协调。
 
+## 总期限与主动取消
+
+默认网络操作使用 `ClientConfig::request_timeout_ms`，期限在操作入口计算一次，排队、连接、发送、重试与退避共同消耗这个预算；公共 API 不再要求传入 `Instant`，也不再提供 `client.deadline()`。
+
+需要让多步操作共享总期限时，复用 `RequestContext`。它使用 `tokio_util::sync::CancellationToken`，SDK 同时导出该类型。`RequestContext::new(absolute_deadline, cancellation_token)` 可接入宿主已有的任务生命周期；`with_timeout` 在创建 context 时计算绝对期限，复用时不会重新计时。
+
+```rust,no_run
+use std::time::Duration;
+use tidemq_sdk::{Client, RequestContext};
+
+# async fn example(client: &Client) -> tidemq_sdk::Result<()> {
+let context = RequestContext::with_timeout(Duration::from_secs(5))?;
+let cancellation = context.cancellation_token();
+let topic = context.scope(client.admin().create_topic("events", 4)).await?;
+let _ = context.scope(client.admin().topic("events")).await?;
+cancellation.cancel();
+# let _ = topic;
+# Ok(()) }
+```
+
+单次调用取配置超时与作用域期限中较早者；嵌套作用域保留最早期限和父级取消。`child()` 派生的 token 只向下取消，取消一个子任务不会取消父级或兄弟请求。作用域约束 SDK 操作；两次调用之间的宿主计算仍由宿主管理。通过 `tokio::spawn` 创建的任务需要显式克隆 context 并在新任务中调用 `scope`。实现同时等待 token 和绝对期限，不为每个 RPC 派生计时任务。
+
+取消不能撤销已提交的业务。发出后的普通变更可能返回 `RequestUnknown`；生产返回 `ProduceUnknown` 时，通过 `pending_batches()` 恢复原身份。预先取消或已经过期的 context 不发起新请求；取消等待准入的操作会释放其已持有额度。`Client::close()` 取消在途操作并停止新准入，仍需按原身份处理未知结果。
+
 ## 生产：有序发出、并行等回执
 
-`Producer::open(client, topic, partition, producer_id, deadline)` 查询注册 epoch 提示并显式注册。多个 clone 共享一个序号域。`produce(Vec<Message>, deadline)` 在有限的顺序锁中分配序号和 enqueue，离开该锁后独立等持久回执；并发调用可以流水发送。单条消息与整个编码帧分别受协议限制，没有隐式 linger；宿主显式组成批次。
+`Producer::open(client, topic, partition, producer_id)` 查询注册 epoch 提示并显式注册。多个 clone 共享一个序号域。`produce(Vec<Message>)` 在有限的顺序锁中分配序号和 enqueue，离开该锁后独立等持久回执；并发调用可以流水发送。单条消息与整个编码帧分别受协议限制，没有隐式 linger；宿主显式组成批次。
 
 每批保存 producer ID、epoch、first sequence、内容摘要、operation ID 和消息。每次网络尝试新建 request ID，重试保留业务身份与摘要。不同内容不能复用原序号。QUIC send、transport ACK 和取消均不等于 WAL/Raft 已提交。
 
@@ -40,7 +64,7 @@ let subscription = client.admin().create_subscription(
 
 ## 消费、逐条 ACK 与冷热切换
 
-`Consumer::claim(client, topic, partition, subscription, config, deadline)` 先查询当前代次，再 CAS 取得分配。默认不抢占其他逻辑 session。确需接管时，先用 `Admin::subscription_status` 核对旧 session，再显式提供 `ConsumerConfig::replace_session_id`。同一 Client 的同一订阅分区只能建立一份消费状态；用 `Consumer::clone` 共享。已经创建过的 handle 被全部丢弃后，需要新 Client 和明确接管决定，避免复用丢失内存队列的旧代次。
+`Consumer::claim(client, topic, partition, subscription, config)` 先查询当前代次，再 CAS 取得分配。默认不抢占其他逻辑 session。确需接管时，先用 `Admin::subscription_status` 核对旧 session，再显式提供 `ConsumerConfig::replace_session_id`。同一 Client 的同一订阅分区只能建立一份消费状态；用 `Consumer::clone` 共享。已经创建过的 handle 被全部丢弃后，需要新 Client 和明确接管决定，避免复用丢失内存队列的旧代次。
 
 `fill` 将消息放入有界队列；`next` 取出已排好顺序的可执行工作，`recv` 在队列为空时 fetch。`Delivery` 的 key、body 和 token 不出现在 Debug；payload/token 在最后一个 clone 释放前一直计入逻辑预算。队列满、宿主长期持有 Delivery 或未决批次时，会得到背压，不无限缓存。保留消息超过服务端 attempt 期限后，ACK 可能报告旧 token；它不会确认新的 attempt。
 
@@ -55,7 +79,7 @@ let subscription = client.admin().create_subscription(
 
 KeySerial 按配置的最多缓冲条数，为失败 offset 元数据在 consumer/client 字节准入中额外固定预留每条 40 B；此保守逻辑额度不等于 allocator 或 RSS。收到新一代对应消息后复用已有 key 调度表，不在每次 `next` 上扫描所有失败 key。宿主持有的旧 Delivery clone 仍按原字节额度计费，SDK 无法替宿主释放它。
 
-`seek(offset, operation_id, deadline)` 使旧 token、排队数据、失败决定与接收屏障失效，并重新 Claim。seek 结果未知或 future 取消后，本地停止派发；以相同 operation ID 重试 seek。`fill`/`recv` 收到 owner 的 `Fenced`/`StaleGeneration` 后，在传入的原总 deadline 和固定次数内查询最新 status 并 CAS 重新 Claim，Consumer clone 共享恢复后的状态。仅原逻辑 session 或未分配状态允许自动恢复；其他 session 已占用时返回 AssignmentBusy，自动路径不会复用配置中既有的 takeover consent 去抢占它。确需接管仍由业务明确调用 `reclaim`，并匹配 `replace_session_id`。
+`seek(offset, operation_id)` 使旧 token、排队数据、失败决定与接收屏障失效，并重新 Claim。seek 结果未知或 future 取消后，本地停止派发；以相同 operation ID 重试 seek。`fill`/`recv` 收到 owner 的 `Fenced`/`StaleGeneration` 后，在该操作的原总 deadline 和固定次数内查询最新 status 并 CAS 重新 Claim，Consumer clone 共享恢复后的状态。仅原逻辑 session 或未分配状态允许自动恢复；其他 session 已占用时返回 AssignmentBusy，自动路径不会复用配置中既有的 takeover consent 去抢占它。确需接管仍由业务明确调用 `reclaim`，并匹配 `replace_session_id`。
 
 新代次从持久 ACK frontier 重新建立连续 enqueue/冷热屏障，旧 Delivery 的代次和 token 保持原样；旧 ACK 不会被改写到新分配或自动成功。`ack`/`ack_many` 本身返回原操作错误，让下一次 `fill`/`recv` 恢复，业务须按幂等契约处理重交付。`next` 只访问本地队列，没有网络 deadline，不主动恢复。普通 QUIC 断连自动重握手并保留原逻辑 session；无法确定的 seek 不会被 owner 自动恢复分支擅自重解释。
 
@@ -67,7 +91,7 @@ KeySerial 按配置的最多缓冲条数，为失败 offset 元数据在 consume
 
 全客户端生产在途/未决对象默认最多 256，每个 producer 最多 32；生产准入用 Tokio FIFO semaphore，在调用总期限内排队，顺序锁不跨等待回执。SDK 的 payload/元数据预算、每个 RPC 池的 pending 字节、原生传输 envelope 和控制保留分别受限，不能把其中一个数直接当作进程 RSS 上限。宿主输入 `Bytes` 的底层大块共享分配也不能仅凭切片长度还原；RSS/分配器开销由宿主观测。
 
-`Client::cancel(request_id, deadline)` 发送跨流取消，保留其他复用请求；它只说明取消已进入有限发送队列，不证明服务端业务已经撤销。`Client::close(deadline)` 停止新准入并有限排空；超时未决结果按原身份查询/重试，不把 close 当事务回滚。
+`Client::cancel(request_id)` 发送跨流取消，保留其他复用请求；它只说明取消已进入有限发送队列，不证明服务端业务已经撤销。`Client::close()` 取消在途操作、停止新准入并在配置超时内释放 owned 任务；超时未决结果按原身份查询/重试，不把 close 当事务回滚。
 
 ## 宿主观测与验证
 
@@ -95,4 +119,4 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 
 消费 Read 在发出前预扣消息体、令牌及交付元数据的全部 credit，按返回交付拆分许可，未用部分归还；服务端不能用逻辑载荷字节越过调用者队列预算。小队列会降低请求条数，以容纳一条实际可装入的消息。SDK 为需跨未知结果保留的生产内容创建有界副本，避免一个很小的 Bytes 切片长期保留调用方的大块底层分配；这会增加一次复制，性能报告需包含该成本。
 
-最后一个 Consumer clone 释放后，本地 claim 额度回收；这不修改服务端持久 assignment，也不会替业务 ACK。连接关闭会终止并等待 SDK/RPC 所有的接收、发送和 stream acceptance 任务，最多等待传入 deadline。上游 QUIC endpoint 的异步释放可能仍需短暂调度与协议关闭过程；重启验证检测实际 UDP 端口释放，不通过复用端口绕过。
+最后一个 Consumer clone 释放后，本地 claim 额度回收；这不修改服务端持久 assignment，也不会替业务 ACK。连接关闭会终止并等待 SDK/RPC 所有的接收、发送和 stream acceptance 任务，最多等待关闭入口按配置计算的总 deadline。上游 QUIC endpoint 的异步释放可能仍需短暂调度与协议关闭过程；重启验证检测实际 UDP 端口释放，不通过复用端口绕过。
