@@ -41,7 +41,7 @@ impl Default for JournalOptions {
             max_segments: 64,
             max_checkpoint_bytes: 8 * 1024 * 1024,
             max_retained_records: 65_536,
-            control_reserve_bytes: 16 * 1024 * 1024,
+            control_reserve_bytes: 32 * 1024 * 1024,
         }
     }
 }

@@ -33,6 +33,7 @@ pub(super) struct Writer {
     options: JournalOptions,
     metrics: Option<Arc<OperationMetrics>>,
     _owner: Option<Arc<std::fs::File>>,
+    mutated: bool,
 }
 impl Writer {
     #[allow(clippy::too_many_arguments)] // The recovered fields are moved directly into their single owner.
@@ -71,6 +72,7 @@ impl Writer {
             options,
             metrics,
             _owner: owner,
+            mutated: false,
         };
         writer.refresh();
         Ok(writer)
@@ -90,14 +92,23 @@ impl Writer {
                 fail(request, reason);
                 continue;
             }
+            self.mutated = false;
             let result = match request {
                 Request::Append(first) => {
-                    let (pending, next) = self.collect(first, &mut receiver).await;
+                    let (mut pending, next) = self.collect(first, &mut receiver).await;
                     carry = next;
-                    let result = self.append_group(&pending).await;
+                    let result = self.append_group(&mut pending).await;
                     let status = result.as_ref().map(|_| ()).map_err(ToString::to_string);
                     for item in pending {
-                        let _ = item.completion.send(status.clone());
+                        let Pending {
+                            completion,
+                            _bytes,
+                            _request,
+                            retained_slots,
+                            ..
+                        } = item;
+                        drop((_bytes, _request, retained_slots));
+                        let _ = completion.send(status.clone());
                     }
                     result
                 }
@@ -136,7 +147,8 @@ impl Writer {
                 }
             };
             if let Err(error) = result
-                && !matches!(error, Error::Limit { .. } | Error::Configuration { .. })
+                && (self.mutated
+                    || !matches!(error, Error::Limit { .. } | Error::Configuration { .. }))
             {
                 let error = anyhow::Error::new(error);
                 tracing::error!(
@@ -178,7 +190,7 @@ impl Writer {
         (batch, None)
     }
     #[tracing::instrument(name="wal_segment_group_commit",level="debug",skip_all,fields(requests=pending.len()))]
-    async fn append_group(&mut self, pending: &[Pending]) -> Result<()> {
+    async fn append_group(&mut self, pending: &mut [Pending]) -> Result<()> {
         let bytes = pending
             .iter()
             .try_fold(0u64, |n, p| n.checked_add(p.physical_bytes))
@@ -225,6 +237,7 @@ impl Writer {
             self.rotate().await?;
         }
         let start = Instant::now();
+        self.mutated = true;
         let path = self.directory.join(self.manifest.active.name());
         for EncodedFrame {
             id,
@@ -269,6 +282,9 @@ impl Writer {
         stats.written_bytes = stats.written_bytes.saturating_add(bytes);
         drop(stats);
         for item in pending {
+            if let Some(slots) = &mut item.retained_slots {
+                slots.count = 0;
+            }
             if let Some(metrics) = &self.metrics {
                 metrics.observe(Stage::WalQueue, item.admitted_at.elapsed().as_secs_f64());
             }
@@ -317,6 +333,7 @@ impl Writer {
     async fn rotate(&mut self) -> Result<()> {
         let start = Instant::now();
         self.sync().await?;
+        self.mutated = true;
         let (active, file) =
             create_segment(&self.directory, self.manifest.identity, self.sequence).await?;
         let mut candidate = self.manifest.clone();
@@ -417,6 +434,7 @@ impl Writer {
         }
         self.ensure_file_slots(3, false).await?;
         self.sync().await?;
+        self.mutated = true;
         lock(&self.shared.stats).staging_bytes = staging;
         let checkpoint_ref = FileRef {
             id: new_id()?,
@@ -430,6 +448,7 @@ impl Writer {
         sync_directory(&self.directory).await?;
         #[cfg(test)]
         super::fault_tests::boundary("checkpoint_directory_sync");
+        self.mutated = true;
         let (active, file) =
             create_segment(&self.directory, self.manifest.identity, self.sequence).await?;
         let needed: BTreeSet<_> = checkpoint.references.iter().map(|r| r.segment).collect();
@@ -459,6 +478,10 @@ impl Writer {
         self.manifest_bytes = manifest_bytes;
         self.manifest = candidate;
         self.file = file;
+        self.shared.retained_count.fetch_sub(
+            self.index.len().saturating_sub(checkpoint.references.len()),
+            Ordering::Relaxed,
+        );
         self.index = checkpoint
             .references
             .into_iter()
@@ -526,6 +549,7 @@ impl Writer {
         let mut manifest = self.manifest.clone();
         manifest.snapshot = Some(snapshot.clone());
         manifest.next_record_id = self.shared.next_record_id.load(Ordering::Relaxed);
+        self.mutated = true;
         let bytes = publish_manifest(&self.directory, &manifest).await?;
         self.physical_bytes = self
             .physical_bytes
