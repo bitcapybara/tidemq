@@ -362,6 +362,9 @@ impl Writer {
             self.manifest.identity,
             &self.manifest.active,
         )?);
+        if let Some(metrics) = &self.metrics {
+            metrics.observe(Stage::WalRotate, start.elapsed().as_secs_f64());
+        }
         let mut stats = lock(&self.shared.stats);
         stats.rotations = stats.rotations.saturating_add(1);
         tracing::debug!(
@@ -533,6 +536,9 @@ impl Writer {
         }
         self.gc().await;
         drop(gate);
+        if let Some(metrics) = &self.metrics {
+            metrics.observe(Stage::WalCheckpoint, start.elapsed().as_secs_f64());
+        }
         tracing::debug!(
             event = "wal_reference_checkpoint_published",
             elapsed_seconds = start.elapsed().as_secs_f64(),
@@ -554,6 +560,7 @@ impl Writer {
                     name,
                     bytes: segment.byte_len,
                     kind: SegmentedFileKind::Segment,
+                    gc_eligible: true,
                 });
             }
         }
@@ -564,12 +571,13 @@ impl Writer {
                     name,
                     bytes: checkpoint.byte_len,
                     kind: SegmentedFileKind::Checkpoint,
+                    gc_eligible: true,
                 });
             }
         }
     }
     async fn publish_snapshot(&mut self, snapshot: super::SnapshotRef) -> Result<()> {
-        validate_snapshot(&self.directory, &snapshot).await?;
+        validate_snapshot(&self.directory, &snapshot, true).await?;
         if self
             .physical_bytes
             .saturating_add(self.options.manifest_reserve())
@@ -603,13 +611,36 @@ impl Writer {
             .map_err(|_| Error::Writer {
                 reason: "Recovery gate closed".to_owned(),
             })?;
-        for file in directory_files(&self.directory).await? {
+        let files = directory_files(&self.directory).await?;
+        let observed = files
+            .iter()
+            .filter(|file| engine_file(file.kind))
+            .try_fold(0u64, |sum, file| sum.checked_add(file.bytes))
+            .ok_or(Error::Limit {
+                name: "observed WAL physical bytes",
+            })?;
+        let missing = self
+            .retired
+            .iter()
+            .filter(|retired| !files.iter().any(|file| file.name == retired.name))
+            .try_fold(0u64, |sum, file| sum.checked_add(file.bytes))
+            .ok_or(Error::Limit {
+                name: "retired WAL physical bytes",
+            })?;
+        self.physical_bytes = observed.checked_add(missing).ok_or(Error::Limit {
+            name: "WAL physical bytes",
+        })?;
+        for mut file in files {
             if engine_file(file.kind)
                 && !referenced(&self.manifest, &file.name)
                 && !self.retired.iter().any(|f| f.name == file.name)
             {
+                file.gc_eligible = true;
                 self.retired.push(file);
             }
+        }
+        for retired in &mut self.retired {
+            retired.gc_eligible = true;
         }
         self.gc().await;
         Ok(())
@@ -618,6 +649,9 @@ impl Writer {
         let start = Instant::now();
         let mut removed = Vec::new();
         for (index, file) in self.retired.iter().enumerate() {
+            if !file.gc_eligible {
+                continue;
+            }
             #[cfg(test)]
             super::fault_tests::boundary("gc_before_unlink");
             let path = self.directory.join(&file.name);
@@ -658,6 +692,9 @@ impl Writer {
         self.physical_bytes = self.physical_bytes.saturating_sub(reclaimed);
         let mut stats = lock(&self.shared.stats);
         stats.reclaimed_bytes = stats.reclaimed_bytes.saturating_add(reclaimed);
+        if let Some(metrics) = &self.metrics {
+            metrics.observe(Stage::WalGc, start.elapsed().as_secs_f64());
+        }
         tracing::debug!(
             event = "wal_segments_collected",
             reclaimed_bytes = reclaimed,

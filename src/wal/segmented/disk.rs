@@ -11,6 +11,7 @@ pub(super) struct DiskFile {
     pub name: String,
     pub bytes: u64,
     pub kind: SegmentedFileKind,
+    pub gc_eligible: bool,
 }
 pub(super) async fn directory_files(path: &Path) -> Result<Vec<DiskFile>> {
     let meta = fs::symlink_metadata(path)
@@ -42,6 +43,7 @@ pub(super) async fn directory_files(path: &Path) -> Result<Vec<DiskFile>> {
             name,
             bytes: metadata.len(),
             kind,
+            gc_eligible: false,
         });
     }
     Ok(files)
@@ -137,6 +139,7 @@ pub(super) async fn hash_file(path: &Path, expected: u64) -> Result<[u8; 32]> {
 pub(super) async fn validate_snapshot(
     directory: &Path,
     snapshot: &super::SnapshotRef,
+    synchronize: bool,
 ) -> Result<()> {
     if segmented_file_kind(&snapshot.file_name) != Some(SegmentedFileKind::Snapshot) {
         return Err(corrupt("Invalid snapshot reference name"));
@@ -144,6 +147,9 @@ pub(super) async fn validate_snapshot(
     let path = directory.join(&snapshot.file_name);
     if hash_file(&path, snapshot.byte_len).await? != snapshot.checksum {
         return Err(corrupt("Snapshot reference checksum differs"));
+    }
+    if !synchronize {
+        return Ok(());
     }
     File::open(&path)
         .await
