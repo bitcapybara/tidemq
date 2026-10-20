@@ -71,19 +71,8 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                 .map_err(|source| Error::Remote {
                     source: Box::new(source),
                 })?;
-                // Include real snapshot/replica files and bounded future snapshot, rewrite and tail growth.
-                let copy_bytes = length
-                    .checked_mul(2)
-                    .and_then(|value| value.checked_add(physical))
-                    .and_then(|value| {
-                        value.checked_add(disk.journal_file_limit_bytes.checked_mul(2)?)
-                    })
-                    .and_then(|value| {
-                        value
-                            .checked_add((disk.snapshot_payload_limit_bytes as u64).checked_mul(2)?)
-                    })
-                    .and_then(|value| value.checked_add(64 * 1024))
-                    .ok_or(Error::Placement)?;
+                let copy_bytes =
+                    migration_copy_bytes(physical, length, disk.replica_file_limit_bytes)?;
                 Ok(Reply::Estimate { copy_bytes })
             }
             .await;
@@ -303,5 +292,41 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             .entry(group)
             .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(None)))
             .clone())
+    }
+}
+
+fn migration_copy_bytes(physical: u64, snapshot: u64, replica_limit: u64) -> Result<u64> {
+    // Reserve observed files, full target growth, transfer copies, and bounded control headroom.
+    snapshot
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(physical))
+        .and_then(|bytes| bytes.checked_add(replica_limit))
+        .and_then(|bytes| bytes.checked_add(64 * 1024))
+        .ok_or(Error::Placement)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_reserves_observed_orphans_target_peak_and_transfer_staging() {
+        let mib = 1024 * 1024;
+        let snapshot = 64 * mib + crate::wal::FRAME_HEADER_BYTES as u64;
+        let replica_limit = 128 * mib + snapshot * 5 + 64 * 1024;
+        let physical = 150 * mib;
+        let required = migration_copy_bytes(physical, snapshot, replica_limit).unwrap();
+        assert_eq!(
+            required,
+            physical + replica_limit + snapshot * 2 + 64 * 1024
+        );
+        assert!(required > physical + 2 * (128 + 64) * mib);
+        assert_eq!(
+            migration_copy_bytes(physical + mib, snapshot, replica_limit).unwrap(),
+            required + mib
+        );
+        assert!(migration_copy_bytes(u64::MAX, snapshot, replica_limit).is_err());
+        assert!(migration_copy_bytes(physical, u64::MAX, replica_limit).is_err());
+        assert!(migration_copy_bytes(physical, snapshot, u64::MAX).is_err());
     }
 }

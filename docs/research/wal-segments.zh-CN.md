@@ -1,8 +1,27 @@
-# WAL 分段与容量管理评估
+# WAL 分段决策与实现
 
-评估日期：2026-10-20。代码基线：`9e80cb7`。本文是基于实现的分析和后续实施约束；本次没有更改磁盘格式、删除文件或运行新的存储性能实验。
+最初评估日期：2026-10-20，分析代码基线为 `9e80cb7`。该次评估没有改动磁盘格式、删除文件或运行新性能实验。随后用户确认实施分段 WAL；当前契约见 [WAL、Raft 与持久恢复](../design/storage-recovery.zh-CN.md)，排障入口见 [存储与复制排障](../operations/storage-troubleshooting.zh-CN.md)。本文保留决策来源，避免将历史单文件证据误当成分段验收。
 
-## 结论
+## 已选择的实现边界
+
+分段是每个 Raft group 的物理存储变更，保留单 writer、group commit、完整应用快照和 quorum ACK。S3 归档仍在后台，上传或对象合并均不进入生产成功回执路径；WAL segment、消息逻辑区间和归档 object 的边界分别管理。
+
+| 部分 | 实施约束与容量口径 |
+| --- | --- |
+| 恢复权威 | `manifest.bin` 唯一指定具名段、checkpoint 和当前 snapshot；文件名使用 UUID，不根据 mtime 猜链 |
+| 日志回收 | checkpoint 保存有限控制状态和存活位置引用；持久化新恢复链后才删除完整失效段，purge 不再重编码整个 retained tail |
+| 默认 WAL | 16 MiB 目标段、64 段、128 MiB 总文件字节；8 MiB checkpoint 与 8 MiB 控制 reserve 纳入总额 |
+| 快照生命周期 | 完整 snapshot 仍为 64 MiB payload；4 个具名文件、8 个 reader、另一个 incoming；退休 reader 保留文件名和 owner lock |
+| 物理采样 | 按共享规范名称校验所有实际具名文件，包含 orphan、staging 和退休快照；256 项硬界限代替旧的 16 项与 `raft.wal` 检查 |
+| 未来空间 | WAL 总限额 + 5 份有 frame 的默认快照 + 64 KiB control 余量，约 448.06 MiB/副本；仅未占用部分作为目标节点增长 reserve |
+| 迁移空间 | 实际源文件 + 完整目标文件预算 + 两份实际 framed snapshot + 控制余量，全部 checked arithmetic；statvfs available 独立采样 |
+| 格式切换 | 新物理版本、全新数据目录；旧布局明确拒绝，无兼容读取、双写、迁移工具或自动清空 |
+
+代码入口为 [`src/wal`](../../src/wal/mod.rs)、[`src/replication`](../../src/replication/store.rs)、[`物理采样`](../../src/runtime/physical.rs)、[`管理容量`](../../src/runtime/management.rs)和[`迁移估算`](../../src/scaling/remote/data.rs)。具名文件的长度不是文件系统已分配块上界；控制 reserve 不替代设备、文件系统和并发任务余量。
+
+正确性测试、进程 SIGKILL 与完整 RF1/RF3 回归的实际结果由实施证据记录。设备掉电、慢盘/满盘长稳、真实三区和固定基线性能比较仍需相应环境；没有测量结果时，不宣称吞吐提升百分比或恢复时间 SLA。以下章节是 `9e80cb7` 的原始评估，描述的“当前”均指该历史基线。
+
+## 原始结论与历史代码分析
 
 建议为生产数据组实现分段 WAL，元数据组复用同一存储实现。当前单文件模式可以继续支持受控的小规模验证；扩充单组容量、长时间运行或增加并发组数之前，应完成分段、故障恢复和容量压测。收益主要是按文件释放已失效的前缀，避免每次 purge 重编码、复制整个保留 tail，以及减少 rewrite 与前台复制争用。
 
@@ -124,6 +143,6 @@ manifest 唯一指定哪些文件属于当前恢复链，包括布局版本、cl
 6. 旧版本与损坏身份明确拒绝、无自动清空或格式猜测；新目录初始化前后故障，恢复后逐一比对应用、membership、原生产结果和持久 ACK。
 7. 固定 source/binary/allocator/磁盘/负载运行长稳 RF1/RF3：报告写入总量、snapshot/rewrite/GC 字节、文件数、峰值/回落磁盘用量、恢复时间，以及含 checkpoint 周期的吞吐/尾延迟。用受保护基线判定，不丢弃轮转/回收样本，也不靠放宽阈值接受回归。
 
-在这些检查完成前，现有格式继续作为运行格式；不能仅因段文件可创建、单元测试通过或短期吞吐提升就宣布新布局可用。磁盘控制器掉电、文件系统和跨区故障模型仍需要相应环境单独验证。
+以上是 `9e80cb7` 评估时列出的实施验收条件，不是已执行结果。当前开发版本切换到新分段布局；不能仅因段文件可创建、单元测试通过或短期吞吐提升就宣布生产验收完成。磁盘控制器掉电、文件系统和跨区故障模型仍需要相应环境单独验证。
 
 OpenRaft 的日志连续性、vote/log IO 顺序与 durable callback 契约保持不变，依据 [OpenRaft 0.9.25 storage-v2 源码](https://docs.rs/openraft/0.9.25/src/openraft/storage/v2.rs.html)。现有正确性边界另见 [WAL 与恢复](../design/storage-recovery.zh-CN.md)、[保留与容量](../design/retention-quota.zh-CN.md)、[对象生命周期](../design/object-lifecycle.zh-CN.md)和[存储排障](../operations/storage-troubleshooting.zh-CN.md)。
