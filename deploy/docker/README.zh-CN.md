@@ -6,6 +6,10 @@
 
 这套拓扑验证容器进程故障、持久目录和真实 QUIC/S3 链路；共享 namespace、内核和主机，不能证明跨 AZ 或独立节点网络故障域。RF3 配置中的 zone 名称只用于逻辑拓扑。开发证书由原 `deploy/local/generate.sh` 签发，有效期 7 天。
 
+当前开发版本使用分段 WAL 新布局。已有单 `raft.wal` / `snapshot.bin` 数据卷无法直接复用；为本版本重新生成独立状态目录和全新 Compose 项目/数据卷，保留旧项目与匹配旧二进制供诊断，不执行自动清空、格式猜测或迁移。新目录由 `manifest.bin` 指定段、控制/索引 checkpoint 和当前 UUID 快照，不能只备份编号最大的段或单个 snapshot 文件。
+
+磁盘规划应同时包含各角色本地组的 WAL、完整快照、退休 reader pin、incoming、staging 和文件系统余量。默认完整文件预算约 448.06 MiB/副本，现有文件与未来增长分别计量；迁移还会预留目标完整预算和实际快照传输量。16 MiB 目标段大小不代表 128 MiB 总预算中恒定只有 8 个文件。详见 [存储契约](../../docs/design/storage-recovery.zh-CN.md)与[排障手册](../../docs/operations/storage-troubleshooting.zh-CN.md)。
+
 ## 仓库文件
 
 | 文件 | 用途 |

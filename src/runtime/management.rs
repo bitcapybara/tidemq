@@ -337,12 +337,9 @@ fn reserve_growth(
     previous: u64,
     diagnostics: &crate::replication::StorageDiagnostics,
 ) -> Result<u64> {
-    // One live and one atomic-replacement journal/snapshot can coexist within fixed replica bounds.
-    diagnostics
-        .journal_file_limit_bytes
-        .checked_add(diagnostics.snapshot_payload_limit_bytes as u64)
-        .and_then(|bytes| bytes.checked_mul(2))
-        .and_then(|bytes| previous.checked_add(bytes))
+    // Includes WAL checkpoints/staging and bounded named, pinned, and incoming snapshots.
+    previous
+        .checked_add(diagnostics.replica_file_limit_bytes)
         .ok_or_else(Error::unavailable)
 }
 

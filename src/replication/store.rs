@@ -10,14 +10,15 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::observability::metrics::OperationMetrics;
 use crate::wal::{
-    self, Error, FRAME_HEADER_BYTES, Inspection, Journal, JournalOptions, JournalStatistics, Result,
+    self, Error, FRAME_HEADER_BYTES, JournalOptions, RecordId, Result, SegmentedInspection,
+    SegmentedJournal, SegmentedStatistics,
 };
 
+use super::snapshot_registry::{SnapshotDiagnostics, SnapshotRegistry};
 use super::{Application, LogEntry, StorageIdentity};
 
-pub(crate) const FORMAT_VERSION: u32 = 1;
-pub(crate) const JOURNAL_FILE: &str = "raft.wal";
-pub(crate) const SNAPSHOT_FILE: &str = "snapshot.bin";
+pub(crate) const FORMAT_VERSION: u32 = 2;
+const IDENTITY_LIMIT: usize = 16 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct StorageOptions {
@@ -25,6 +26,8 @@ pub struct StorageOptions {
     pub max_log_entries: usize,
     pub max_log_bytes: usize,
     pub max_snapshot_bytes: usize,
+    pub max_snapshot_files: usize,
+    pub max_snapshot_readers: usize,
     pub max_replication_batch_bytes: usize,
 }
 
@@ -35,6 +38,8 @@ impl Default for StorageOptions {
             max_log_entries: 65_536,
             max_log_bytes: 64 * 1024 * 1024,
             max_snapshot_bytes: 64 * 1024 * 1024,
+            max_snapshot_files: 4,
+            max_snapshot_readers: 8,
             max_replication_batch_bytes: 1024 * 1024,
         }
     }
@@ -42,25 +47,43 @@ impl Default for StorageOptions {
 
 impl StorageOptions {
     pub fn validate(&self) -> Result<()> {
-        self.journal.validate()?;
+        self.journal.validate_segmented()?;
         let checkpoint_bound = self
             .max_log_entries
-            .checked_mul(FRAME_HEADER_BYTES.saturating_add(16))
-            .and_then(|overhead| overhead.checked_add(self.max_log_bytes))
-            .and_then(|bytes| bytes.checked_add(4096));
+            // Includes maximum-width LogIds and journal record locations, never entry payloads.
+            .checked_mul(96)
+            .and_then(|bytes| bytes.checked_add(1024));
         if self.max_log_entries == 0
             || self.max_log_bytes == 0
             || self.max_log_bytes as u64 >= self.journal.max_file_bytes
             || self.max_snapshot_bytes == 0
             || self.max_snapshot_bytes > u32::MAX as usize
+            || self.max_snapshot_files < 2
+            || self.max_snapshot_files > 32
+            || self.max_snapshot_readers == 0
+            || self.max_snapshot_readers > 64
+            || self.max_log_entries > self.journal.max_retained_records
             || self.max_replication_batch_bytes == 0
-            || checkpoint_bound.is_none_or(|bytes| bytes as u64 > self.journal.max_file_bytes)
+            || checkpoint_bound.is_none_or(|bytes| bytes > self.journal.max_checkpoint_bytes)
         {
             return Err(Error::Configuration {
                 reason: "replicated storage budgets are invalid",
             });
         }
+        self.replica_file_limit_bytes()?;
         Ok(())
+    }
+
+    /// Logical file lengths, including one incoming snapshot and bounded identity metadata.
+    pub fn replica_file_limit_bytes(&self) -> Result<u64> {
+        (self.max_snapshot_bytes as u64)
+            .checked_add(FRAME_HEADER_BYTES as u64)
+            .and_then(|bytes| bytes.checked_mul(self.max_snapshot_files.checked_add(1)? as u64))
+            .and_then(|bytes| bytes.checked_add(self.journal.max_file_bytes))
+            .and_then(|bytes| bytes.checked_add(64 * 1024))
+            .ok_or(Error::Limit {
+                name: "replica file budget",
+            })
     }
 }
 
@@ -70,10 +93,61 @@ impl StorageOptions {
 pub(crate) enum Record<'a, A: Application> {
     Vote(Vote<u64>),
     Committed(Option<LogId<u64>>),
-    Entries(Cow<'a, [LogEntry<A>]>),
+    Entry(Cow<'a, LogEntry<A>>),
     Truncate(LogId<u64>),
-    Purge(LogId<u64>),
-    Identity(StorageIdentity),
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ControlCheckpoint {
+    pub format: u32,
+    pub identity: StorageIdentity,
+    pub vote: Option<Vote<u64>>,
+    pub committed: Option<LogId<u64>>,
+    pub purged: Option<LogId<u64>>,
+    #[serde(deserialize_with = "bounded_log_ids")]
+    pub retained: Vec<LogId<u64>>,
+}
+
+fn bounded_log_ids<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<LogId<u64>>, D::Error> {
+    struct LogIds;
+    impl<'de> serde::de::Visitor<'de> for LogIds {
+        type Value = Vec<LogId<u64>>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("at most 65536 retained log identities")
+        }
+        fn visit_seq<S: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: S,
+        ) -> std::result::Result<Self::Value, S::Error> {
+            use serde::de::Error;
+            let count = seq.size_hint().unwrap_or(0);
+            if count > 65_536 {
+                return Err(S::Error::custom(
+                    "Retained log identity count exceeds its limit",
+                ));
+            }
+            let mut result = Vec::new();
+            result.try_reserve(count).map_err(S::Error::custom)?;
+            while let Some(log_id) = seq.next_element()? {
+                if result.len() >= 65_536 {
+                    return Err(S::Error::custom(
+                        "Retained log identity count exceeds its limit",
+                    ));
+                }
+                result.push(log_id);
+            }
+            Ok(result)
+        }
+    }
+    deserializer.deserialize_seq(LogIds)
+}
+
+#[derive(Serialize, Deserialize)]
+struct IdentityEnvelope {
+    format: u32,
+    identity: StorageIdentity,
 }
 
 pub(crate) struct LogState<A: Application> {
@@ -82,6 +156,7 @@ pub(crate) struct LogState<A: Application> {
     pub purged: Option<LogId<u64>>,
     pub entries: BTreeMap<u64, LogEntry<A>>,
     pub entry_bytes: BTreeMap<u64, usize>,
+    pub record_refs: BTreeMap<u64, RecordId>,
     pub retained_bytes: usize,
 }
 
@@ -93,6 +168,7 @@ impl<A: Application> Default for LogState<A> {
             purged: None,
             entries: BTreeMap::new(),
             entry_bytes: BTreeMap::new(),
+            record_refs: BTreeMap::new(),
             retained_bytes: 0,
         }
     }
@@ -130,13 +206,14 @@ pub(crate) struct Shared<A: Application> {
     pub identity: StorageIdentity,
     pub directory: PathBuf,
     pub options: StorageOptions,
-    pub journal: Journal,
-    pub log: Mutex<LogState<A>>,
+    pub journal: SegmentedJournal,
+    pub log: Arc<Mutex<LogState<A>>>,
     pub applied: RwLock<Applied<A>>,
-    pub snapshot_serial: Mutex<()>,
+    pub snapshot_serial: Arc<Mutex<()>>,
     pub snapshot_meta: RwLock<Option<SnapshotMeta<u64, BasicNode>>>,
+    pub snapshots: Mutex<SnapshotRegistry>,
     pub incoming: Mutex<Option<PathBuf>>,
-    pub recovered: Inspection,
+    pub recovered: SegmentedInspection,
     pub metrics: Option<Arc<OperationMetrics>>,
     pub _owner: Arc<std::fs::File>,
 }
@@ -167,8 +244,10 @@ pub struct StorageDiagnostics {
     pub remaining_encoded_log_bytes: usize,
     pub journal_file_limit_bytes: u64,
     pub snapshot_payload_limit_bytes: usize,
-    pub journal_recovery: Inspection,
-    pub journal_runtime: JournalStatistics,
+    pub replica_file_limit_bytes: u64,
+    pub snapshots: SnapshotDiagnostics,
+    pub journal_recovery: SegmentedInspection,
+    pub journal_runtime: SegmentedStatistics,
 }
 
 impl<A: Application> DiskStore<A> {
@@ -185,53 +264,34 @@ impl<A: Application> DiskStore<A> {
         create_directory(directory).await?;
         let owner = lock_directory(directory).await?;
         persist_identity(directory, &identity).await?;
-        clean_temporary_files(directory).await?;
-        let (journal, recovered, records) = Journal::open_owned(
-            &directory.join(JOURNAL_FILE),
+        let identity_bytes = wal::encode_value(&identity, IDENTITY_LIMIT)?;
+        let (journal, recovered, mut records) = SegmentedJournal::open_owned(
+            directory,
             options.journal.clone(),
+            *blake3::hash(&identity_bytes).as_bytes(),
             metrics.clone(),
             Some(owner.clone()),
         )
         .await?;
-        let mut log = LogState::<A>::default();
-        let mut records = records.into_iter();
-        match records.next() {
-            Some(bytes) => {
-                let record: Record<A> = wal::decode_value(&bytes)?;
-                if !matches!(record, Record::Identity(saved) if saved == identity) {
-                    return Err(Error::Corrupt {
-                        offset: 0,
-                        reason: "journal identity does not match the replica directory",
-                    });
-                }
-            }
-            None => {
-                journal
-                    .append(wal::encode_value(
-                        &Record::<A>::Identity(identity.clone()),
-                        options.journal.max_record_bytes,
-                    )?)
-                    .await?
-                    .durable()
-                    .await?;
-            }
-        }
-        for bytes in records {
-            let record = wal::decode_value(&bytes)?;
-            super::log::replay(&mut log, record, &options)?;
-        }
+        let log = super::log::recover(&mut records, &identity, &options).await?;
+        let current = journal.current_snapshot();
         let (mut applied, snapshot_meta) =
-            super::snapshot::load::<A>(directory, &identity, &options).await?;
+            super::snapshot::load::<A>(directory, &identity, &options, current.as_ref()).await?;
         super::state_machine::recover(&mut applied, &log)?;
+        // Domain validation must succeed before any orphan or superseded file is removed.
+        journal.cleanup_orphans().await?;
+        let mut snapshots = SnapshotRegistry::new(current, &options, owner.clone());
+        snapshots.cleanup(directory).await?;
         let shared = Arc::new(Shared {
             identity,
             directory: directory.to_owned(),
             options,
             journal,
-            log: Mutex::new(log),
+            log: Arc::new(Mutex::new(log)),
             applied: RwLock::new(applied),
-            snapshot_serial: Mutex::new(()),
+            snapshot_serial: Arc::new(Mutex::new(())),
             snapshot_meta: RwLock::new(snapshot_meta),
+            snapshots: Mutex::new(snapshots),
             incoming: Mutex::new(None),
             recovered,
             metrics,
@@ -283,6 +343,13 @@ impl<A: Application> DiskLog<A> {
                 .saturating_sub(log.retained_bytes),
             journal_file_limit_bytes: self.0.options.journal.max_file_bytes,
             snapshot_payload_limit_bytes: self.0.options.max_snapshot_bytes,
+            // Validated at open; retaining this value avoids silently wrapping a budget.
+            replica_file_limit_bytes: self
+                .0
+                .options
+                .replica_file_limit_bytes()
+                .unwrap_or(u64::MAX),
+            snapshots: self.0.snapshots.lock().await.diagnostics(),
             journal_recovery: self.0.recovered.clone(),
             journal_runtime: self.0.journal.statistics(),
         }
@@ -374,11 +441,31 @@ async fn create_directory(directory: &Path) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(Error::io(directory, error)),
     }
+    if !fs::symlink_metadata(directory)
+        .await
+        .map_err(|error| Error::io(directory, error))?
+        .file_type()
+        .is_dir()
+    {
+        return Err(Error::Configuration {
+            reason: "replica path must be a real directory",
+        });
+    }
     Ok(())
 }
 
 async fn lock_directory(directory: &Path) -> Result<Arc<std::fs::File>> {
     let path = directory.join(".writer-lock");
+    match fs::symlink_metadata(&path).await {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(Error::Configuration {
+                reason: "replica lock must be a regular file",
+            });
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(Error::io(&path, error)),
+    }
     let file = fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -402,56 +489,63 @@ async fn lock_directory(directory: &Path) -> Result<Arc<std::fs::File>> {
 }
 
 async fn persist_identity(directory: &Path, identity: &StorageIdentity) -> Result<()> {
+    for name in ["raft.wal", "snapshot.bin", ".journal-checkpoint"] {
+        let path = directory.join(name);
+        if fs::try_exists(&path)
+            .await
+            .map_err(|error| Error::io(&path, error))?
+        {
+            return Err(Error::Configuration {
+                reason: "legacy replica layout is unsupported; use a fresh replica directory",
+            });
+        }
+    }
     let path = directory.join("identity.bin");
     if fs::try_exists(&path)
         .await
         .map_err(|e| Error::io(&path, e))?
     {
-        let bytes = super::snapshot::read_single(&path, 16 * 1024).await?;
-        let saved: StorageIdentity = wal::decode_value(&bytes)?;
-        if saved != *identity {
+        let metadata = fs::symlink_metadata(&path)
+            .await
+            .map_err(|error| Error::io(&path, error))?;
+        if !metadata.file_type().is_file() {
             return Err(Error::Configuration {
-                reason: "replica directory belongs to a different identity",
+                reason: "replica identity must be a regular file",
+            });
+        }
+        let bytes = super::snapshot::read_single(&path, IDENTITY_LIMIT).await?;
+        let saved: IdentityEnvelope = wal::decode_value(&bytes).map_err(|_| Error::Configuration {
+            reason: "replica identity format is unsupported or corrupt; use a fresh directory for legacy data",
+        })?;
+        if saved.format != FORMAT_VERSION || saved.identity != *identity {
+            return Err(Error::Configuration {
+                reason: "replica directory identity or storage format differs",
             });
         }
     } else {
-        for data_file in [JOURNAL_FILE, SNAPSHOT_FILE] {
-            let data_path = directory.join(data_file);
-            if fs::try_exists(&data_path)
-                .await
-                .map_err(|e| Error::io(&data_path, e))?
-            {
+        let mut entries = fs::read_dir(directory)
+            .await
+            .map_err(|error| Error::io(directory, error))?;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|error| Error::io(directory, error))?
+        {
+            if entry.file_name() != ".writer-lock" {
                 return Err(Error::Configuration {
                     reason: "replica identity is missing from a directory containing durable data",
                 });
             }
         }
-        let bytes = wal::encode_value(identity, 16 * 1024)?;
+        let bytes = wal::encode_value(
+            &IdentityEnvelope {
+                format: FORMAT_VERSION,
+                identity: identity.clone(),
+            },
+            IDENTITY_LIMIT,
+        )?;
         let framed = crate::wal::codec_frame(&bytes, 0)?;
         wal::write_atomic(&path, &framed).await?;
-    }
-    Ok(())
-}
-
-async fn clean_temporary_files(directory: &Path) -> Result<()> {
-    let mut entries = fs::read_dir(directory)
-        .await
-        .map_err(|e| Error::io(directory, e))?;
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| Error::io(directory, e))?
-    {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name.starts_with(".incoming-")
-            || name.starts_with(".replace-")
-            || name == ".journal-checkpoint"
-        {
-            fs::remove_file(entry.path())
-                .await
-                .map_err(|e| Error::io(entry.path(), e))?;
-        }
     }
     Ok(())
 }
