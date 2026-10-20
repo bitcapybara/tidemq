@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {comparePairs, summarizeReport, validatePolicy, weightedMeanLatency, workloadFor, HARNESS_FILES} from './compare.mjs';
-import {management, canReuseBuilds, reuseBuild} from '../performance-gate.mjs';
+import {management, canReuseBuilds, reuseBuild, sameActualBinaries} from '../performance-gate.mjs';
 
 const policy = validatePolicy(JSON.parse(readFileSync(new URL('../../performance/baseline.json', import.meta.url))));
 const summary = multiplier => ({
@@ -41,6 +41,26 @@ test('same-binary calibration rejects an apparent improvement as temporal bias',
   assert.equal(comparePairs(observations, policy).status, 'passed');
   assert.equal(comparePairs(observations, policy, {sameBinary: true}).status, 'temporal_bias_detected');
   assert.equal(comparePairs(pairs(Array(policy.pairs).fill(1)), policy, {sameBinary: true}).status, 'passed');
+});
+
+test('actual binary equality enables the bias veto across different source commits', () => {
+  const report = {same_source_reused_builds: false,
+    baseline: {source_commit: 'a'.repeat(40), service_binary_sha256: '1'.repeat(64)},
+    candidate: {source_commit: 'b'.repeat(40), service_binary_sha256: '1'.repeat(64)},
+    workload_binaries: {baseline: {binary_sha256: '2'.repeat(64)}, candidate: {binary_sha256: '2'.repeat(64)}}};
+  const observations = pairs(Array(policy.pairs).fill(0.99));
+  assert.equal(sameActualBinaries(report), true);
+  assert.equal(comparePairs(observations, policy, {sameBinary: sameActualBinaries(report)}).status, 'temporal_bias_detected');
+  for (const identity of [report.candidate, report.workload_binaries.candidate]) {
+    const field = 'service_binary_sha256' in identity ? 'service_binary_sha256' : 'binary_sha256';
+    const original = identity[field];
+    identity[field] = '3'.repeat(64);
+    assert.equal(sameActualBinaries(report), false);
+    assert.equal(comparePairs(observations, policy, {sameBinary: sameActualBinaries(report)}).status, 'passed');
+    identity[field] = original;
+  }
+  delete report.workload_binaries.candidate.binary_sha256;
+  assert.throws(() => sameActualBinaries(report), /Missing or invalid actual binary digest/);
 });
 
 test('unstable samples are inconclusive and missing or invalid trials fail', () => {
@@ -211,7 +231,9 @@ test('promotion rejects a stale report or dirty source and accepts only the clea
     commit();
     const current = git('rev-parse', 'HEAD');
     const report = {schema_version: 4, status: 'passed', baseline_manifest_sha256: createHash('sha256').update(original).digest('hex'),
-      baseline: {source_commit: policy.service_source_commit}, candidate: {source_commit: stale},
+      baseline: {source_commit: policy.service_source_commit, service_binary_sha256: '1'.repeat(64)},
+      candidate: {source_commit: stale, service_binary_sha256: '2'.repeat(64)},
+      workload_binaries: {baseline: {binary_sha256: '3'.repeat(64)}, candidate: {binary_sha256: '4'.repeat(64)}},
       topologies: Object.fromEntries(policy.topologies.map(topology => [topology, {pairs: pairs(Array(policy.pairs).fill(0.98))}]))};
     const reportPath = path.join(temporary, 'report.json');
     const promote = () => spawnSync(process.execPath, [new URL('../performance-gate.mjs', import.meta.url).pathname,
@@ -231,6 +253,15 @@ test('promotion rejects a stale report or dirty source and accepts only the clea
     assert.equal(promote().status, 1);
     assert.equal(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8'), original);
     await writeFile(path.join(temporary, 'source.txt'), 'current\n');
+    report.candidate.service_binary_sha256 = report.baseline.service_binary_sha256;
+    report.workload_binaries.candidate.binary_sha256 = report.workload_binaries.baseline.binary_sha256;
+    await writeFile(reportPath, JSON.stringify(report));
+    const rejectedBias = promote();
+    assert.equal(rejectedBias.status, 1);
+    assert.match(rejectedBias.stderr, /Recomputed gate did not pass/);
+    assert.equal(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8'), original);
+    report.candidate.service_binary_sha256 = '2'.repeat(64);
+    report.workload_binaries.candidate.binary_sha256 = '4'.repeat(64);
     for (const pair of report.topologies.rf1.pairs) pair.candidate.produce_p99_upper_ns = pair.baseline.produce_p99_upper_ns * 1.01;
     await writeFile(reportPath, JSON.stringify(report));
     const rejectedTail = promote();

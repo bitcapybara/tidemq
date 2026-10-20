@@ -116,6 +116,13 @@ export function canReuseBuilds(baseline, candidate) {
       && baseline.harness_files_sha256[file] === candidate.harness_files_sha256?.[file]);
 }
 
+export function sameActualBinaries(report) {
+  const service = [report.baseline?.service_binary_sha256, report.candidate?.service_binary_sha256];
+  const load = [report.workload_binaries?.baseline?.binary_sha256, report.workload_binaries?.candidate?.binary_sha256];
+  for (const digest of [...service, ...load]) assert.match(digest ?? '', /^[0-9a-f]{64}$/, 'Missing or invalid actual binary digest');
+  return service[0] === service[1] && load[0] === load[1];
+}
+
 export async function reuseBuild(source, directory, binary, identity) {
   assert.ok(['tidemq', 'perf_load'].includes(binary), 'Unknown reusable binary');
   assert.deepEqual(await json(path.join(source, 'identity.json')), identity, 'Reusable build identity changed');
@@ -448,7 +455,7 @@ async function measureGate(settings, combined = false) {
         summary.topologies[topology] = {status: 'running', pairs};
         await save(path.join(output, 'summary.json'), summary);
       }
-      summary.topologies[topology] = {...comparePairs(pairs, policy, {sameBinary: reused}), pairs};
+      summary.topologies[topology] = {...comparePairs(pairs, policy, {sameBinary: sameActualBinaries(summary)}), pairs};
     }
     const statuses = Object.values(summary.topologies).map(topology => topology.status);
     summary.status = statuses.every(status => status === 'passed') ? 'passed' : statuses.includes('regressed') ? 'regressed'
@@ -477,9 +484,9 @@ async function promote(settings) {
   assert.match(report.candidate.source_commit, /^[0-9a-f]{40}$/, 'Invalid candidate source');
   assert.equal(report.candidate.source_commit, await sourceIdentity(tools),
     'Promotion candidate must match the current clean tools HEAD');
+  const sameBinary = sameActualBinaries(report);
   for (const topology of policy.topologies) {
-    assert.equal(comparePairs(report.topologies[topology].pairs, policy,
-      {sameBinary: report.baseline.source_commit === report.candidate.source_commit}).status, 'passed', 'Recomputed gate did not pass');
+    assert.equal(comparePairs(report.topologies[topology].pairs, policy, {sameBinary}).status, 'passed', 'Recomputed gate did not pass');
   }
   policy.service_source_commit = report.candidate.source_commit;
   await save(policyPath(tools), policy);
