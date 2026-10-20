@@ -1,6 +1,6 @@
 # WAL、Raft 与持久恢复
 
-本文记录 T02 已实现的存储契约。实现使用 OpenRaft 0.9.25 的 storage-v2，当前 RF1/RF3 证据来自真实 OpenRaft 与独立磁盘目录上的受控 RPC harness。harness 不经过 QUIC，不代表跨进程网络、三区容灾或生产性能验收。
+本文记录分段 WAL 的本地存储契约，实现使用 OpenRaft 0.9.25 的 storage-v2。磁盘布局、容量采样和完整快照共同演进；历史单文件实现的 RF1/RF3 结果不能直接作为新布局的验收证据。QUIC、跨进程恢复、三区故障域及性能仍按相应测试记录单独核验。
 
 ## 状态与接入
 
@@ -16,38 +16,42 @@
 
 快照只绑定 cluster/group/application 版本，允许同组不同 node 安装。它不把节点身份复制成另一副本身份。磁盘格式与公共 Protobuf wire schema 分开演进。
 
-## Journal 格式与恢复策略
+## 分段布局与恢复策略
 
 每个副本目录包含：
 
 | 文件 | 内容 |
 | --- | --- |
 | `identity.bin` | 已校验的副本身份 |
-| `raft.wal` | 首帧副本身份，之后顺序 vote、日志批次、committed、truncate 与 purge/checkpoint 记录 |
-| `snapshot.bin` | 当前完整应用快照及 applied/membership 元数据 |
+| `manifest.bin` | 唯一恢复权威；指定 active/sealed 段、控制/索引 checkpoint 和当前完整快照 |
+| `segment-<uuid>.wal` | 绑定副本与物理段身份的顺序记录；active 可追加，sealed 不再修改 |
+| `checkpoint-<uuid>.bin` | 有界控制状态、存活记录位置引用及精确 replay barrier；不复制所有 retained payload |
+| `snapshot-<uuid>.bin` | 完整应用快照及 applied/membership 元数据；旧文件被 reader 持有时保留名称 |
 | `.writer-lock` | 操作系统独占锁句柄，不通过删除锁文件强制解锁 |
-| `.incoming-*` | 接收中的有界临时快照，重新打开时清理 |
-| `.replace-*`、`.journal-checkpoint` | 原子替换过程的临时文件；完成 rename 前不能作为权威数据，独占重开时清理 |
+| `.incoming-<uuid>` | 唯一接收中的有界临时快照 |
+| `.replace-<uuid>` | 有界原子发布临时文件；没有 manifest 引用时不能作为恢复权威 |
 
-初始 frame 为 88 字节头部加有界 payload：magic/格式版本 8 字节、payload 长度 8 字节、顺序号 8 字节、独立 BLAKE3 头部校验 32 字节、BLAKE3 记录校验 32 字节。整数为小端，journal 内顺序号从零连续递增；checkpoint rewrite 重新从零开始。
+文件名使用规范 UUID，不承接客户端路径。物理布局版本独立于应用版本和 wire schema；旧 `raft.wal` / `snapshot.bin` 布局拒绝启动。开发阶段使用全新数据目录，不提供旧格式读取、双写、迁移或自动清空。
+
+record frame 保留 88 字节头部：magic/格式版本 8 字节、payload 长度 8 字节、顺序号 8 字节、独立 BLAKE3 头部校验 32 字节、BLAKE3 记录校验 32 字节。整数为小端。物理序号在 manifest/checkpoint 确定的恢复链内检查，和可被合法 truncate 后复用的 Raft index 分开。段头绑定副本身份和段身份；单条 record 及一个 group commit 不跨段拆分。
 
 先校验头部，再使用长度分配或判断尾部是否完整。独立头部校验防止长度损坏被误当作未完成的最后一帧而截断已确认记录。记录校验覆盖 magic、长度、顺序号和 payload。
 
 恢复逐帧执行：
 
-1. 配置和文件总大小超过上限时拒绝加载。
-2. 最后不足一个完整头部，或已通过头部校验但正文尚未完成，只截断这一未完成尾部，并同步修复后的文件。
-3. 完整帧的头部/正文校验错误、非法版本、序号不连续或非法长度均拒绝启动，包括最后一帧；不搜索下一段 magic 后继续服务。
-4. 正文保留日志连续，禁止未来索引留洞；已被 purge 覆盖的重放前缀被忽略，不能复活旧日志。
-5. 恢复快照后，仅重放已持久 committed 范围。未提交尾部可被合法新任期截断替换，不向应用公开成功结果。
+1. 获取副本目录独占锁，校验 identity、唯一 manifest、有限文件数/字节和全部必需引用。不能按 mtime 或最大 UUID 猜测恢复链。
+2. 校验 checkpoint 的控制状态和 retained 引用，再从精确 barrier 重放后续记录；被 purge 或 truncate 排除的旧 payload 不能复活。
+3. 只允许修复 active 最末不足一个完整头部，或已通过头部校验但正文尚未完成的 record；截断后同步文件。sealed 长度/校验不符、缺段、错误身份、完整 frame 校验失败或非法顺序均拒绝启动，不扫描下一个 magic 跳过损坏。
+4. 恢复完整快照后，只应用已持久 committed 范围；保留日志必须连续，purged 必须有快照覆盖。未提交 tail 可被合法新任期替换，不能向应用公开成功结果。
+5. 只有整个恢复链及应用状态校验成功后，才清理没有引用的 engine 文件和旧快照。删除失败的文件仍占物理字节；manifest 损坏或缺失时不能先删“疑似 orphan”再尝试恢复。
 
-journal 首帧的身份必须匹配目录 identity，不能把其他组的有效 WAL 单独复制过来使用。目录已有 durable data 而缺少 identity 时拒绝绑定新身份。
+段与 manifest 中的身份必须匹配目录 identity，不能把其他组的有效 WAL 单独复制过来使用。目录已有 durable data 而缺少 identity 时拒绝绑定新身份。
 
-`wal::inspect` 只读校验并报告文件字节、有效字节、记录数与不完整尾部字节，不修复文件。活跃 writer 可产生暂时尾部；严肃损坏排查应先保留证据并在隔离副本上复查，不能把一次并发检查结果直接作为删除依据。
+`DiskLog::diagnostics` 报告本地恢复与运行统计，不读取正文或建立 quorum 权威。单文件 `wal::inspect` 不等价于整个分段恢复链校验。活跃 writer 可产生暂时尾部；严肃损坏排查应先保留证据并在隔离副本上复查，不能把一次并发检查结果直接作为删除依据。
 
 ## 持久顺序与 group commit
 
-一个副本的 vote、日志、committed、截断和 checkpoint 进入同一 writer，禁止后发 IO 越过先发 IO。应用队列同时受字节与记录数 semaphore 限制，writer 将短时间内的有限批次聚合后一次 `sync_all`。
+一个副本的 vote、日志、committed、截断、checkpoint 和 manifest 发布进入同一 writer，禁止后发 IO 越过先发 IO。应用队列同时受字节与记录数 semaphore 限制，writer 将短时间内的有限批次聚合后一次 `sync_all`。写入前按整批实际 frame 长度判断段内余量，必要时先轮转。
 
 - `append` 返回前，日志已对 reader 可见；只有整个 group 同步成功后才调用 OpenRaft `LogFlushed` 成功回调。
 - `save_vote` 返回前 vote 已持久。vote 不得倒退或变得不可比较。
@@ -63,12 +67,14 @@ journal 首帧的身份必须匹配目录 identity，不能把其他组的有效
 快照携带格式版本、group 身份、last applied log id、last membership 和完整应用状态，正文与元数据共同校验。文件接收器在写入/seek 前检查总上限；接收采用有界 chunk，不能通过超大偏移制造稀疏文件。
 
 1. 在一致的应用视图上生成快照。克隆和序列化的内存成本受状态/快照上限约束，序列化放入阻塞任务，不长时间阻塞 Tokio IO worker。
-2. 临时文件写完并 `sync_all`，rename 到权威文件，再同步父目录，之后才报告 build/install 成功。
+2. 临时文件写完并 `sync_all`，发布到全新 UUID 文件名并同步父目录；同一 writer 将该名称纳入 manifest，持久成功后才报告 build/install 成功。不能通过文件存在或编号推断当前快照。
 3. 安装时校验 checksum、格式、cluster/group/application、请求 metadata 与正文 metadata 相等，以及 membership log 不超过 last applied。拒绝回退已应用状态。
-4. 真正 OpenRaft core 在快照成功后才可压缩对应日志。checkpoint rewrite 先同步完整替换文件，再 rename 和同步目录；旧文件在替换成功前保持权威。
+4. 真正 OpenRaft core 在快照成功后才可压缩对应日志。checkpoint 先同步有限控制状态及存活位置引用，再原子发布 manifest 并同步目录，最后删除没有引用的 sealed 段；旧文件在新恢复链持久成功前保留。
 5. 重开时，purged 范围必须被 durable snapshot 覆盖，committed 尾部必须连续且身份一致，否则拒绝恢复。
 
-purge 会实际重写 `raft.wal`，保留 identity、vote、purged、日志尾部及 committed，随后切换 writer 文件句柄；不是在永久增长的文件中只追加删除标记。任一替换/同步/重开错误都会 poison writer，禁止继续向已被替换的旧 fd 写入。资源校验为 checkpoint 逐条 frame 和控制标记预留文件空间。16 KiB journal 的反复 snapshot/purge/继续追加及最终 SIGKILL 重开测试验证此回收路径。
+purge 不再重编码所有 retained payload。检查点引用仍存活的物理 record，完整失效段只有在新 checkpoint/manifest 已持久后才删除。混合段保留，未提交 suffix 的 truncate 仍通过有序记录和精确重放边界排除；逻辑失效字节在文件真正删除前继续占容量。控制 reserve 和剩余段槽位用于检查点/回收，不能用满所有空间后再假设 GC 不需要临时空间。任一写入、同步或发布错误都会 poison writer，不绕过持久语义继续返回成功。
+
+快照 reader 持有目录 owner、reader 槽位和文件引用。当前、退休及候选快照默认合计最多 4 个具名文件，reader 默认最多 8 个，另允许一个 incoming 文件；reader 还在执行 IO 时，取消等待者不会提前解除 pin。退休文件保留名称直到最后一个 reader 释放，所以物理采样不会漏算已 unlink 但仍占磁盘的快照。达到文件或 reader 上限时拒绝新增工作，不无限积累旧快照。
 
 底层 `RaftLogStorage::purge` 按官方合约接受 core 的删除指令，不是对外管理 API。官方 Suite 会人工构造不含快照的 purge/不一致 fixtures；真实 core 顺序另有测试覆盖。禁止在业务层直接调用低层 purge 来做对象正文回收。
 
@@ -76,20 +82,29 @@ purge 会实际重写 `raft.wal`，保留 identity、vote、purged、日志尾�
 
 ## 初始资源预算
 
-单文件 purge 的复制/临时空间成本、完整 snapshot 的独立限制及后续物理版本迁移约束见 [WAL 分段与容量管理评估](../research/wal-segments.zh-CN.md)。结论是为生产数据组推进分段，但当前运行格式仍为本文的单 `raft.wal`；分段必须同时更新容量采样、迁移估算和崩溃恢复，不能只替换 writer。
+单文件成本的历史分析和分段决策来源见 [WAL 分段与容量管理评估](../research/wal-segments.zh-CN.md)。当前运行使用上述新布局；以下默认值由 `StorageOptions` / `JournalOptions` 统一校验，不是新增的角色 TOML 选项。
 
 | 项目 | 默认值与口径 |
 | --- | --- |
 | 单 journal payload | 4 MiB，包含实际编码开销 |
-| journal 文件 | 128 MiB，达到前应做检查点/压缩和准入控制 |
+| WAL 总文件字节 | 128 MiB；包括 active、sealed、checkpoint、manifest、WAL staging 和未清理的退休文件 |
+| 目标段大小 / 段数 | 16 MiB / 64；按整批 frame 长度轮转，检查点保留所需槽位 |
+| WAL 控制 reserve | 8 MiB，包含于 128 MiB 总额；不能额外用作正常新写额度 |
+| 控制/索引 checkpoint | 8 MiB；旧/新 checkpoint、manifest 和段头共存也须先通过 WAL 硬限额 |
 | 等待与同步中 payload | 16 MiB；64 条记录，计入活跃 group |
 | group commit | 1 MiB 或 1 ms；单个较大记录仍受 4 MiB 上限 |
 | retained log | 65,536 条及 64 MiB 编码字节双上限 |
 | snapshot payload | 64 MiB；另加 88 字节 frame |
+| snapshot 文件 / reader | 4 个具名文件、8 个 reader、另一个 incoming；被 pin 的退休文件计入具名上限 |
+| 副本目录项 | 256 项；包含 identity、锁、manifest、全部段、检查点、快照及临时文件 |
 | reader 单次复制预算 | 1 MiB；至少允许一条有界日志，以避免大记录永久无法推进 |
-| checkpoint rewrite | 每个 journal 最多一个排队/进行中的替换；另计有界 retained state 与编码缓冲 |
+| checkpoint / manifest 发布 | 同一 writer 串行，临时文件与索引缓冲都有界；普通 append 不改写 manifest |
 
 这些是可调的正确性基线，不能作为生产吞吐或容量承诺。应用状态本身、snapshot 视图、编码/解码、retained logs 和 writer 缓冲的总内存仍由运行时统一预算；per-record 限额不能冒充总 RSS 上限。
+
+容量观察统计所有规范具名文件的实际长度，包括未引用段、checkpoint、staging 和被 reader 持有的旧 snapshot；不只统计 manifest 中的恢复链。unknown、畸形名称、符号链接、非普通文件、超限目录、缺少 identity/manifest/段或预期 snapshot 都使观察不可用，不能补零继续准入。单副本未来文件预算为 WAL 硬限额，加 `(snapshot 文件上限 + 1) × (snapshot payload 上限 + 88)`，再加 64 KiB identity/control 余量；默认约 448.06 MiB。运行时只把该上界扣除已观察本地文件后的余量列为 `reserved_storage_bytes`，不会把现有文件再扣一次。
+
+迁移估算另保守包含源副本的全部实际具名文件、目标完整文件预算、两份实际 framed snapshot 传输量和 64 KiB 控制余量；不沿用两倍单 WAL/快照公式。文件长度不等于已分配块或目录元数据，statvfs `available` 独立采样；部署仍须配置文件系统及并发任务余量。空间样本只决定准入，不授权删除或宣告持久成功。
 
 payload 使用 postcard 1.1.3 二进制编码，写入经过有界 `std::io::Write`，读取显式拒绝未消费尾部字节；`bytes::Bytes` 正文按字节串编码，避免 JSON 数组放大。Record 枚举顺序也是磁盘格式的一部分。若更换 codec、variant 顺序或应用格式，必须升级版本；开发阶段使用新数据目录并明确拒绝旧版本，不自动迁移、猜测格式或清空已有数据。
 
