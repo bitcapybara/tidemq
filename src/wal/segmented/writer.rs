@@ -297,7 +297,7 @@ impl Writer {
             if let Some(metrics) = &self.metrics {
                 metrics.observe(Stage::WalQueue, item.admitted_at.elapsed().as_secs_f64());
             }
-            tracing::trace!(parent:&item.span,event="wal_record_durable",records=item.records.len(),"Segment records became durable in one synchronized group");
+            trace_durable(item);
         }
         Ok(())
     }
@@ -766,4 +766,19 @@ fn fail(request: Request, reason: &str) {
         | Request::Shutdown(completion) => completion,
     };
     let _ = completion.send(Err(reason.to_owned()));
+}
+
+fn trace_durable(item: &Pending) {
+    if tracing::Level::TRACE > tracing::level_filters::LevelFilter::current() {
+        return;
+    }
+    let emit = || tracing::trace!(parent:&item.span,event="wal_record_durable",records=item.records.len(),"Segment records became durable in one synchronized group");
+    // Explicit parents identify spans but do not select their subscriber on this background task.
+    if item
+        .span
+        .with_subscriber(|(_, dispatch)| tracing::dispatcher::with_default(dispatch, emit))
+        .is_none()
+    {
+        emit();
+    }
 }
