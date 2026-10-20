@@ -14,6 +14,7 @@ import {comparePairs, summarizeReport, validatePolicy, workloadFor, HARNESS_FILE
 const DEFAULT_TOOLS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LOG_LIMIT = 32 * 1024 * 1024;
 const OWNED = new Set();
+const BUILD_BINARIES = {baseline: 'tidemq', candidate: 'tidemq', 'baseline-load': 'perf_load', 'candidate-load': 'perf_load'};
 const policyPath = tools => path.join(tools, 'performance/baseline.json');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = async file => JSON.parse(await fs.readFile(file, 'utf8'));
@@ -64,6 +65,29 @@ async function sourceIdentity(source) {
   await command('git', ['diff', '--quiet'], {cwd: source});
   await command('git', ['diff', '--cached', '--quiet'], {cwd: source});
   return command('git', ['rev-parse', 'HEAD'], {cwd: source});
+}
+
+function environment() {
+  return {platform: os.platform(), arch: os.arch(), kernel: os.release(), node: process.version,
+    hostname: os.hostname(), cpu_model: os.cpus()[0]?.model ?? 'unknown', logical_cpus: os.cpus().length,
+    total_memory_bytes: os.totalmem(), github_runner_image: process.env.ImageVersion ?? null,
+    github_run_id: process.env.GITHUB_RUN_ID ?? null, github_job: process.env.GITHUB_JOB ?? null};
+}
+
+async function gateInputs(settings) {
+  const tools = path.resolve(settings['--tools'] ?? DEFAULT_TOOLS);
+  const baseline = path.resolve(settings['--baseline']);
+  const candidate = path.resolve(settings['--candidate']);
+  const policyBytes = await fs.readFile(policyPath(tools));
+  const policy = validatePolicy(JSON.parse(policyBytes));
+  if (settings['--require-baseline-unchanged']) {
+    assert.deepEqual(await fs.readFile(policyPath(candidate)), policyBytes,
+      'PRs cannot replace their protected performance baseline; successful main runs promote it');
+  }
+  const [toolsCommit, baselineCommit, candidateCommit] = await Promise.all(
+    [tools, baseline, candidate].map(sourceIdentity));
+  assert.equal(baselineCommit, policy.service_source_commit, 'Baseline checkout is not the protected source');
+  return {tools, baseline, candidate, policyBytes, policy, toolsCommit, baselineCommit, candidateCommit};
 }
 
 async function overlay(source, tools, directory) {
@@ -276,19 +300,11 @@ async function trial(tools, serviceBuild, loadBinary, output, topology, policy, 
   return summaries;
 }
 
-async function runGate(settings) {
-  const tools = path.resolve(settings['--tools'] ?? DEFAULT_TOOLS);
-  const baseline = path.resolve(settings['--baseline']);
-  const candidate = path.resolve(settings['--candidate']);
+async function prepareGate(settings) {
+  const inputs = await gateInputs(settings);
+  const {tools, baseline, candidate, policyBytes, policy} = inputs;
   const output = path.resolve(settings['--output']);
   await fs.mkdir(output, {mode: 0o700});
-  const policyBytes = await fs.readFile(policyPath(tools));
-  const policy = validatePolicy(JSON.parse(policyBytes));
-  if (settings['--require-baseline-unchanged']) {
-    assert.deepEqual(await fs.readFile(policyPath(candidate)), policyBytes,
-      'PRs cannot replace their protected performance baseline; successful main runs promote it');
-  }
-  assert.equal(await sourceIdentity(baseline), policy.service_source_commit, 'Baseline checkout is not the protected source');
   const target = path.resolve(settings['--target'] ?? path.join(tools, 'target/performance-gate'));
   const builds = path.join(output, 'builds');
   const baselineOverlay = await overlay(baseline, tools, path.join(output, 'overlays/baseline'));
@@ -306,15 +322,98 @@ async function runGate(settings) {
   assert.equal(candidateIdentity.source_commit, candidateOverlay.source_commit, 'Candidate build source differs from its snapshot');
   assert.equal(await sourceIdentity(baseline), baselineOverlay.source_commit, 'Baseline source changed during build');
   assert.equal(await sourceIdentity(candidate), candidateOverlay.source_commit, 'Candidate source changed during build');
+  assert.equal(await sourceIdentity(tools), inputs.toolsCommit, 'Trusted tools changed during build');
+  const manifest = {schema_version: 1, baseline_manifest_sha256: sha256(policyBytes), trusted_tools_commit: inputs.toolsCommit,
+    same_source_reused_builds: reused, build_environment: environment(),
+    builds: {baseline: baselineIdentity, candidate: candidateIdentity, 'baseline-load': baselineLoad, 'candidate-load': candidateLoad}};
+  const file = path.join(output, 'manifest.json');
+  await save(file, manifest);
+  return sha256(await fs.readFile(file));
+}
+
+async function regularFile(file) {
+  assert.ok((await fs.lstat(file)).isFile(), `Prepared artifact is not a regular file: ${file}`);
+  return fs.readFile(file);
+}
+
+async function verifyIdentity(inputs, prepared, name, expected) {
+  const directory = path.join(prepared, 'builds', name);
+  assert.ok((await fs.lstat(directory)).isDirectory(), 'Prepared build directory is not a real directory');
+  const identity = JSON.parse(await regularFile(path.join(directory, 'identity.json')));
+  assert.deepEqual(identity, expected, 'Prepared build identity differs from its manifest');
+  const log = await fs.lstat(path.join(directory, 'build.log'));
+  assert.ok(log.isFile() && log.size <= LOG_LIMIT, 'Prepared build log is not a bounded regular file');
+  const source = name.startsWith('baseline') ? inputs.baseline : inputs.candidate;
+  const commit = name.startsWith('baseline') ? inputs.baselineCommit : inputs.candidateCommit;
+  assert.equal(identity.source_commit, commit, 'Prepared build source does not match the clean checkout');
+  assert.equal(identity.cargo_lock_sha256, sha256(await fs.readFile(path.join(source, 'Cargo.lock'))), 'Prepared lockfile differs');
+  const binary = BUILD_BINARIES[name];
+  if (binary === 'perf_load') {
+    assert.equal(identity.sdk_source_commit, commit, 'Prepared SDK source differs');
+    assert.equal(identity.harness_source_commit, inputs.toolsCommit, 'Prepared harness source differs');
+    assert.equal(identity.generator_allocator, 'system', 'Prepared load allocator differs');
+    for (const file of HARNESS_FILES) {
+      assert.equal(identity.harness_files_sha256?.[file], sha256(await fs.readFile(path.join(inputs.tools, file))),
+        'Prepared protected harness differs');
+    }
+  } else {
+    assert.equal(identity.allocator_feature, inputs.policy.allocator_feature, 'Prepared service allocator differs');
+    assert.equal(identity.profile, 'release', 'Prepared service profile differs');
+    assert.equal(identity.tracked_source_clean, true, 'Prepared service source was not clean');
+  }
+  assert.equal(sha256(await regularFile(path.join(directory, binary))),
+    binary === 'tidemq' ? identity.service_binary_sha256 : identity.binary_sha256, 'Prepared binary digest differs');
+  return identity;
+}
+
+export async function verifyPreparedBuilds(settings) {
+  const inputs = await gateInputs(settings);
+  const prepared = path.resolve(settings['--prepared']);
+  assert.ok((await fs.lstat(prepared)).isDirectory(), 'Prepared artifact root is not a real directory');
+  assert.ok((await fs.lstat(path.join(prepared, 'builds'))).isDirectory(), 'Prepared builds root is not a real directory');
+  assert.match(settings['--manifest-sha256'] ?? '', /^[0-9a-f]{64}$/, 'An external prepared manifest digest is required');
+  const bytes = await regularFile(path.join(prepared, 'manifest.json'));
+  assert.equal(sha256(bytes), settings['--manifest-sha256'], 'Prepared manifest digest differs from the build job');
+  const manifest = JSON.parse(bytes);
+  assert.equal(manifest.schema_version, 1, 'Unsupported prepared build manifest');
+  assert.equal(manifest.baseline_manifest_sha256, sha256(inputs.policyBytes), 'Prepared protected policy differs');
+  assert.equal(manifest.trusted_tools_commit, inputs.toolsCommit, 'Prepared trusted tools source differs');
+  assert.equal(manifest.build_environment.platform, os.platform(), 'Prepared platform differs from measurement');
+  assert.equal(manifest.build_environment.arch, os.arch(), 'Prepared architecture differs from measurement');
+  for (const name of Object.keys(BUILD_BINARIES)) await verifyIdentity(inputs, prepared, name, manifest.builds[name]);
+  assert.equal(manifest.same_source_reused_builds,
+    canReuseBuilds(manifest.builds['baseline-load'], manifest.builds['candidate-load']), 'Prepared reuse claim differs');
+  if (manifest.same_source_reused_builds) {
+    assert.deepEqual(manifest.builds.baseline, manifest.builds.candidate, 'Reused service identities differ');
+    assert.deepEqual(manifest.builds['baseline-load'], manifest.builds['candidate-load'], 'Reused SDK workload identities differ');
+  }
+  // Artifact transport resets executable permissions. Restore only the four verified static files.
+  for (const [name, binary] of Object.entries(BUILD_BINARIES)) await fs.chmod(path.join(prepared, 'builds', name, binary), 0o700);
+  return {...inputs, prepared, manifest};
+}
+
+async function measureGate(settings, combined = false) {
+  const {tools, policy, prepared, manifest} = await verifyPreparedBuilds(settings);
+  const output = path.resolve(settings['--output']);
+  if (!combined) await fs.mkdir(output, {mode: 0o700});
+  const builds = path.join(prepared, 'builds');
+  if (output !== prepared) {
+    for (const name of Object.keys(BUILD_BINARIES)) {
+      await fs.mkdir(path.join(output, 'builds', name), {recursive: true, mode: 0o700});
+      for (const file of ['identity.json', 'build.log']) await fs.copyFile(path.join(builds, name, file), path.join(output, 'builds', name, file));
+    }
+    await fs.copyFile(path.join(prepared, 'manifest.json'), path.join(output, 'build-manifest.json'));
+  }
+  const reused = manifest.same_source_reused_builds;
   const summary = {
-    schema_version: 4, status: 'running', baseline_manifest_sha256: sha256(policyBytes),
+    schema_version: 4, status: 'running', baseline_manifest_sha256: manifest.baseline_manifest_sha256,
+    prepared_manifest_sha256: settings['--manifest-sha256'], trusted_tools_commit: manifest.trusted_tools_commit,
     same_source_reused_builds: reused,
-    policy, baseline: baselineIdentity, candidate: candidateIdentity,
-    workload_binaries: {baseline: baselineLoad, candidate: candidateLoad},
-    environment: {platform: os.platform(), arch: os.arch(), kernel: os.release(), node: process.version,
-      cpu_model: os.cpus()[0]?.model ?? 'unknown', logical_cpus: os.cpus().length, total_memory_bytes: os.totalmem(),
-      github_runner_image: process.env.ImageVersion ?? null, same_host_paired_trials: true,
-      physical_availability_zone_validation: false},
+    policy, baseline: manifest.builds.baseline, candidate: manifest.builds.candidate,
+    workload_binaries: {baseline: manifest.builds['baseline-load'], candidate: manifest.builds['candidate-load']},
+    build_environment: manifest.build_environment,
+    environment: {...environment(), same_host_paired_trials: true, physical_availability_zone_validation: false,
+      compilation_performed_in_measurement_phase: false, fixed_sync_before_trials: true},
     limitations: ['Closed-loop finite regression workload; no production saturation or availability-zone claim',
       'An interval containing one means no detected regression, not proof of zero performance difference',
       'Latency means use every raw message duration, including scheduled-offer lateness and tail stalls',
@@ -328,6 +427,7 @@ async function runGate(settings) {
     topologies: {},
   };
   try {
+    await command('sync', [], {timeoutMs: 60000});
     for (const topology of policy.topologies) {
       const pairs = [];
       await fs.mkdir(path.join(output, topology), {mode: 0o700});
@@ -360,6 +460,11 @@ async function runGate(settings) {
     'Performance gate failed; retain this cohort and address the regression or measurement conditions before a new declared run');
 }
 
+async function runGate(settings) {
+  const digest = await prepareGate(settings);
+  await measureGate({...settings, '--prepared': settings['--output'], '--manifest-sha256': digest}, true);
+}
+
 async function promote(settings) {
   const tools = path.resolve(settings['--tools'] ?? DEFAULT_TOOLS);
   const bytes = await fs.readFile(policyPath(tools));
@@ -390,7 +495,9 @@ async function main() {
   if (action === 'source') {
     const policy = validatePolicy(await json(policyPath(path.resolve(settings['--tools'] ?? DEFAULT_TOOLS))));
     console.log(`source_commit=${policy.service_source_commit}`);
-  } else if (action === 'run') await runGate(settings);
+  } else if (action === 'prepare') console.log(`manifest_sha256=${await prepareGate(settings)}`);
+  else if (action === 'measure') await measureGate(settings);
+  else if (action === 'run') await runGate(settings);
   else if (action === 'promote') await promote(settings);
   else if (action === 'trial') {
     const tools = path.resolve(settings['--tools'] ?? DEFAULT_TOOLS);
@@ -398,7 +505,7 @@ async function main() {
     console.log(JSON.stringify(await trial(tools, build, path.resolve(settings['--load'] ?? path.join(build, 'perf_load')),
       path.resolve(settings['--output']), settings['--topology'] ?? 'rf1', validatePolicy(await json(policyPath(tools))),
       settings['--scenario'] ? [settings['--scenario']] : ['throughput', 'latency']), null, 2));
-  } else throw new Error('Usage: performance-gate.mjs source|run|trial|promote --tools directory [named paths]');
+  } else throw new Error('Usage: performance-gate.mjs source|prepare|measure|run|trial|promote --tools directory [named paths]');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -8,7 +8,11 @@
 
 [Performance 工作流](../.github/workflows/performance.yml) 在隔离的 Ubuntu 24.04 runner 上运行真实 QUIC/TLS、Raft 与同步持久化，不关闭生产或逐消息 ACK 的持久性。`rf1` 是一个完整角色进程；`rf3-combined` 是三个完整角色进程，元数据和数据 voter 均为 `[1,2,3]`。原有角色分离的 `rf3` 十进程部署保持原样，不能把它称作三进程基准。同机 loopback 与共享磁盘测试用于代码回归，不代表三可用区性能或故障隔离。
 
-仓库 [baseline.json](../performance/baseline.json) 固定上次接受的服务源码、负载和统计策略，实际数值、构建身份与原始试次由 `baseline-report.json` 保存。PR 使用 base commit 的工具和策略，不接受候选提交降低门槛或替换基线。基线与候选在同一 job、同一机器上各测八次，顺序交替为 A/B、B/A，各占四对；不拿不同 GitHub runner 的绝对吞吐直接比较。每次从新目录启动并预热，服务使用 mimalloc 与四个 Tokio worker。两个拓扑共 32 次完整 trial，CI 总预算为 90 分钟。
+仓库 [baseline.json](../performance/baseline.json) 固定上次接受的服务源码、负载和统计策略，实际数值、构建身份与原始试次由 `baseline-report.json` 保存。PR 使用 base commit 的工具和策略，不接受候选提交降低门槛或替换基线。基线与候选在同一测量 job、同一机器上各测八次，顺序交替为 A/B、B/A，各占四对；不拿不同 GitHub runner 的绝对吞吐直接比较。每次从新目录启动并预热，服务使用 mimalloc 与四个 Tokio worker。两个拓扑共 32 次完整 trial。
+
+CI 将构建和测量拆到独立的 Ubuntu 24.04 runner：构建 job 最多 30 分钟，生成两个服务二进制、各自链接 SDK 的两个负载二进制、原始 identity 与构建日志；测量 job 最多 55 分钟，下载固定产物并核验后运行。manifest 通过 job output 提供外部 SHA-256，并绑定受保护策略、工具提交、两版源码、Cargo.lock、SDK、负载文件与实际二进制摘要。测量阶段重新核对干净 checkout，拒绝缺失、损坏或符号链接产物，全部校验通过后仅对四个固定二进制恢复执行权限。构建与测量的实际主机、内核、runner image 和 job 分别记录，构建来源不会重标成测量环境。
+
+测量 job 不编译、不恢复 Rust 构建缓存，在首个 trial 前执行一次最多 60 秒的固定 `sync`，之后保留原有预热和全部样本。这是预先声明的隔离措施；旧 cohort 的持久化路径长停顿尚不能归因为编译残留 I/O，也不会因此删除旧首轮或重标旧报告。构建缓存继续在失败时保存，成功构建也可独立于测量结果保存缓存。固定二进制传递 artifact 保留 1 天。稳定名称的汇总检查只有在构建和测量均成功时通过；汇总 1 分钟、晋升 4 分钟，与构建和测量合计最多 90 分钟，不包含 runner 排队时间。
 
 main 只有 Markdown 或 LICENSE 变动时跳过重复性能测量，PR 检查仍运行。首次接受真实数值报告之前，清单中的源码仅是经过正确性验证的比较起点，不能因文件存在就称已有数值基线。
 
@@ -33,13 +37,31 @@ p99 继续记录全部观测并参与显著回退否决，但不要求其区间�
 复现需要 Node.js 20+、Rust 1.96、C/C++、CMake、pkg-config、Git、tar 和 OpenSSL。三个路径必须指向干净的提交，baseline 的 HEAD 必须匹配受保护清单；输出目录必须不存在。
 
 ```bash
-node --test scripts/performance/compare.test.mjs
+node --test scripts/performance/*.test.mjs
 node scripts/performance-gate.mjs run \
   --tools /absolute/path/to/trusted \
   --baseline /absolute/path/to/previous-baseline \
   --candidate /absolute/path/to/candidate \
   --output /absolute/path/to/new-results \
   --target /absolute/path/to/cargo-cache
+```
+
+本地 `run` 仍依次准备并测量同一目录的固定产物。分阶段复现可先执行 `prepare`，保存其标准输出的 `manifest_sha256`，再将产物目录传给 `measure`；两个阶段使用相同的干净源码和受保护工具。更换主机时复制整个产物目录，执行权限会在完整校验后恢复。
+
+```bash
+node scripts/performance-gate.mjs prepare \
+  --tools /absolute/path/to/trusted \
+  --baseline /absolute/path/to/previous-baseline \
+  --candidate /absolute/path/to/candidate \
+  --output /absolute/path/to/new-builds
+# Set PREPARED_MANIFEST_SHA256 to the 64-character value after manifest_sha256=.
+node scripts/performance-gate.mjs measure \
+  --tools /absolute/path/to/trusted \
+  --baseline /absolute/path/to/previous-baseline \
+  --candidate /absolute/path/to/candidate \
+  --prepared /absolute/path/to/new-builds \
+  --manifest-sha256 "$PREPARED_MANIFEST_SHA256" \
+  --output /absolute/path/to/new-measurements
 ```
 
 完整成功的 main 运行才会晋升基线，同时提交真实报告；晋升前重新比较全部五项指标，校验受保护策略摘要、报告 schema、基线身份和当前干净 HEAD，并要求同一 main 提交最新的 Rust 工作流已完成且成功。正确性检查失败、仍在运行或不存在时均不晋升；main 已前进时旧运行直接跳过，跳过不代表基线更新。policy/summary 使用 schema 4，原始 Rust 报告仍为 schema 3；旧五对或旧统计 schema 的报告不能复用。失败保留 `summary.json`、原始报告、每节点指标/诊断、有限进程日志与失败 WAL；成功时在检查所有节点并正常排空后清理试次数据目录。CI artifact 保留 30 天，仓库基线报告长期跟随 Git 历史。Rust 工作流另在失败时上传临时目录中的 `process-*.log`，保留 7 天，不上传配置、token 和证书文件。
