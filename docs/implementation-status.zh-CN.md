@@ -2,6 +2,10 @@
 
 2026-10-20 本轮重构：Rust 已固定为 1.99.1，配置仅接受当前按角色拆分的格式。源码 `267226d` 的 macOS arm64 workspace 全 target nextest 为 309 passed、12 skipped，另有 4 项文档测试通过；严格全 target Clippy 与生产 panic／索引审计通过。无效参数、错误日志位置、共享身份字符串及 multipart 许可生命周期已整理；SDK 可选 OpenTelemetry 指标复用宿主 provider。CI 覆盖率与性能联合晋升仍须以本轮 Linux main 的实际报告验收。WAL segment 的结论、容量模型和落地边界见[分析](research/wal-segments.zh-CN.md)，本轮没有实现分段写入器。
 
+首轮 main `401c7c9` 的两平台默认测试与 Linux 覆盖率通过，但 System 两例超时，性能候选在配置校验退出；覆盖率与性能基线均未晋升。已修复可复现的过期 Control 回复关闭共享 stream、换主测试固定旧 Metadata 权威，以及共享 Cargo target 错用另一源码产物三个缺陷；均有实际 red／green 回归，未改 lease、deadline、重试、负载或统计门槛。原始失败记录及新完整 cohort 声明见[本轮证据](evidence/2026-10-20-ci-refactor.zh-CN.md)。
+
+源码 `1102c1b` 的最终 macOS CI 串行 profile 已通过 310 项／12 skipped，全 target 严格 Clippy 与生产审计通过。新一轮 Linux main 的完整测试、覆盖率与性能基线验收仍以实际终态为准。
+
 2026-10-20：完整计划已获用户批准，本轮在固定集成分支 `feat/yyx/integration-main` 汇合多个 `wt` worktree。Rust SDK 位于本仓库，默认 mimalloc。取消上下文、共享缓冲区、元数据创建/迁移重放及持久 Read 前缀结果边界已修复，冻结 `56a8349` 的 workspace 为 284 passed/12 ignored、34 个 suite、0 failed，Clippy/严格审计通过。main `077004e` 与 `d7c913e` 的七项 Rust CI job 均全部通过；`077004e` 的 Linux Docker 十项矩阵及 736 条完整持久 ACK 通过，精确版本与隔离审计见[最新记录](evidence/2026-10-20-docker-077004e.zh-CN.md)。隔离构建/测量的 `d7c913e` 完整 32 个试次、汇总与晋升均成功，`e16c79d` 已提交真实数值基线。四项 p99 仍为 imprecise，不证明小幅尾回退已排除或生产性能已达标；历史失败和不确定报告按[本轮记录](evidence/2026-10-20-cancellation-zero-copy-performance.zh-CN.md)分别保留。
 
 | 任务 | 已实现与已有行为证据 | 剩余验收边界 |
