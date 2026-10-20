@@ -145,8 +145,17 @@ function launch(binary, args, log, workerThreads) {
   return {child, done};
 }
 
-function management(node, suffix) {
+export function management(node, suffix) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = (error, body) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve(body);
+    };
     const request = http.get(`http://127.0.0.1:${8400 + node * 10}${suffix}`, {timeout: 1000}, response => {
       let bytes = 0;
       const chunks = [];
@@ -155,12 +164,18 @@ function management(node, suffix) {
         if (bytes > 262144) response.destroy(new Error('Management response exceeded 256 KiB'));
         else chunks.push(chunk);
       });
-      response.once('error', reject);
+      response.once('error', finish);
       response.once('end', () => response.statusCode === 200
-        ? resolve(Buffer.concat(chunks).toString('utf8')) : reject(new Error(`Node ${node} is not ready`)));
+        ? finish(null, Buffer.concat(chunks).toString('utf8')) : finish(new Error(`Node ${node} is not ready`)));
     });
-    request.once('timeout', () => request.destroy(new Error('Management deadline expired')));
-    request.once('error', reject);
+    timer = setTimeout(() => {
+      const error = new Error('Management absolute deadline expired');
+      request.destroy(error);
+      finish(error);
+    }, 1000);
+    request.once('timeout', () => request.destroy(new Error('Management idle deadline expired')));
+    request.once('error', finish);
+    request.once('close', () => finish(new Error('Management request closed before completion')));
   });
 }
 
@@ -306,6 +321,8 @@ async function promote(settings) {
   assert.equal(report.baseline_manifest_sha256, sha256(bytes), 'The previous baseline changed; rerun before promotion');
   assert.equal(report.baseline.source_commit, policy.service_source_commit, 'Previous source does not match');
   assert.match(report.candidate.source_commit, /^[0-9a-f]{40}$/, 'Invalid candidate source');
+  assert.equal(report.candidate.source_commit, await sourceIdentity(tools),
+    'Promotion candidate must match the current clean tools HEAD');
   for (const topology of policy.topologies) {
     assert.equal(comparePairs(report.topologies[topology].pairs, policy).status, 'passed', 'Recomputed gate did not pass');
   }
@@ -333,10 +350,11 @@ async function main() {
   } else throw new Error('Usage: performance-gate.mjs source|run|trial|promote --tools directory [named paths]');
 }
 
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
-
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
-  for (const child of OWNED) child.kill('SIGTERM');
-  setTimeout(() => { for (const child of OWNED) child.kill('SIGKILL'); }, 10000).unref();
-  process.exitCode = signal === 'SIGINT' ? 130 : 143;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(error => { console.error(error.message); process.exitCode = 1; });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+    for (const child of OWNED) child.kill('SIGTERM');
+    setTimeout(() => { for (const child of OWNED) child.kill('SIGKILL'); }, 10000).unref();
+    process.exitCode = signal === 'SIGINT' ? 130 : 143;
+  });
+}
