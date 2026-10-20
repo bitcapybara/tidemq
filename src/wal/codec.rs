@@ -4,20 +4,12 @@ use std::path::Path;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tokio::fs::{self, File};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use super::{Error, FRAME_HEADER_BYTES, JournalOptions, Result};
 
 const MAGIC: [u8; 8] = *b"TIDEWAL1";
 pub(crate) const HEADER_BYTES: u64 = FRAME_HEADER_BYTES as u64;
-
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
-pub struct Inspection {
-    pub file_bytes: u64,
-    pub valid_bytes: u64,
-    pub records: u64,
-    pub incomplete_tail_bytes: u64,
-}
 
 struct BoundedBuffer {
     bytes: Vec<u8>,
@@ -98,81 +90,6 @@ pub(crate) fn frame(payload: &[u8], sequence: u64) -> Result<Vec<u8>> {
     result.extend_from_slice(hash.finalize().as_bytes());
     result.extend_from_slice(payload);
     Ok(result)
-}
-
-/// Read-only validation. An incomplete final frame is reported, never repaired here.
-pub async fn inspect(path: impl AsRef<Path>, options: &JournalOptions) -> Result<Inspection> {
-    let (inspection, _) = scan(path.as_ref(), options, false).await?;
-    Ok(inspection)
-}
-
-pub(crate) async fn scan(
-    path: &Path,
-    options: &JournalOptions,
-    retain: bool,
-) -> Result<(Inspection, Vec<Vec<u8>>)> {
-    options.validate()?;
-    let mut file = File::open(path).await.map_err(|e| Error::io(path, e))?;
-    let file_bytes = file.metadata().await.map_err(|e| Error::io(path, e))?.len();
-    if file_bytes > options.max_file_bytes {
-        return Err(Error::Limit {
-            name: "journal file",
-        });
-    }
-    let mut report = Inspection {
-        file_bytes,
-        ..Inspection::default()
-    };
-    let mut records = Vec::new();
-    while report.valid_bytes < file_bytes {
-        let remaining = file_bytes.saturating_sub(report.valid_bytes);
-        if remaining < HEADER_BYTES {
-            break;
-        }
-        let mut header = [0_u8; FRAME_HEADER_BYTES];
-        file.read_exact(&mut header)
-            .await
-            .map_err(|e| Error::io(path, e))?;
-        let (length, sequence) = parse_header(&header, report.valid_bytes, options)?;
-        let frame_bytes = HEADER_BYTES.checked_add(length).ok_or(Error::Limit {
-            name: "frame length",
-        })?;
-        if frame_bytes > remaining {
-            break;
-        }
-        if sequence != report.records {
-            return Err(Error::Corrupt {
-                offset: report.valid_bytes,
-                reason: "record sequence is not contiguous",
-            });
-        }
-        let size = usize::try_from(length).map_err(|_| Error::Limit {
-            name: "record allocation",
-        })?;
-        let mut payload = Vec::new();
-        payload.try_reserve_exact(size).map_err(|_| Error::Limit {
-            name: "record allocation",
-        })?;
-        payload.resize(size, 0);
-        file.read_exact(&mut payload)
-            .await
-            .map_err(|e| Error::io(path, e))?;
-        validate_hash(&header, &payload, report.valid_bytes)?;
-        report.valid_bytes = report
-            .valid_bytes
-            .checked_add(frame_bytes)
-            .ok_or(Error::Limit {
-                name: "journal offset",
-            })?;
-        report.records = report.records.checked_add(1).ok_or(Error::Limit {
-            name: "journal record count",
-        })?;
-        if retain {
-            records.push(payload);
-        }
-    }
-    report.incomplete_tail_bytes = file_bytes.saturating_sub(report.valid_bytes);
-    Ok((report, records))
 }
 
 pub(crate) fn parse_header(

@@ -65,6 +65,7 @@ impl Writer {
         Ok(Some(RelocationPlan { segment, original }))
     }
     pub(super) async fn copy_relocation(&mut self, plan: &RelocationPlan) -> Result<Segment> {
+        let start = Instant::now();
         let destination = self.directory.join(plan.segment.name());
         let header = segment_header(self.manifest.identity, &plan.segment)?;
         let mut file = fs::OpenOptions::new()
@@ -116,6 +117,9 @@ impl Writer {
         super::super::fault_tests::boundary("segment_directory_sync");
         let mut segment = plan.segment.clone();
         segment.checksum = *hash.finalize().as_bytes();
+        if let Some(metrics) = &self.metrics {
+            metrics.observe(Stage::WalRelocate, start.elapsed().as_secs_f64());
+        }
         let mut stats = lock(&self.shared.stats);
         stats.relocation_operations = stats.relocation_operations.saturating_add(1);
         stats.relocated_bytes = stats.relocated_bytes.saturating_add(segment.byte_len);

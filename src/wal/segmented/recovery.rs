@@ -100,7 +100,7 @@ pub(super) async fn load(
     let mut manifest: Manifest = read_value(&manifest_path, MAX_MANIFEST_BYTES).await?;
     validate_manifest(&manifest, options, identity)?;
     if let Some(snapshot) = &manifest.snapshot {
-        validate_snapshot(directory, snapshot).await?;
+        validate_snapshot(directory, snapshot, false).await?;
     }
     let checkpoint = load_checkpoint(directory, &manifest, options).await?;
     let mut index = BTreeMap::new();
@@ -385,11 +385,11 @@ async fn scan_segment(
         }
         if let Some(id) = record.id {
             if segment.reference_only
-                && index.get(&id).is_none_or(|location| {
-                    location.segment != segment.id
-                        || location.offset != offset
-                        || location.sequence != frame.sequence
-                        || location.frame_bytes != frame.bytes
+                && index.get(&id).is_some_and(|location| {
+                    location.segment == segment.id
+                        && (location.offset != offset
+                            || location.sequence != frame.sequence
+                            || location.frame_bytes != frame.bytes)
                 })
             {
                 return Err(corrupt(

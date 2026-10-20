@@ -33,6 +33,10 @@ pub enum Stage {
     Queue,
     WalAdmission,
     WalQueue,
+    WalRotate,
+    WalCheckpoint,
+    WalRelocate,
+    WalGc,
     RepairPace,
     Decode,
     Append,
@@ -59,11 +63,15 @@ const OUTCOMES: [Outcome; 4] = [
     Outcome::Unknown,
     Outcome::Failed,
 ];
-const STAGES: [Stage; 14] = [
+const STAGES: [Stage; 18] = [
     Stage::Admission,
     Stage::Queue,
     Stage::WalAdmission,
     Stage::WalQueue,
+    Stage::WalRotate,
+    Stage::WalCheckpoint,
+    Stage::WalRelocate,
+    Stage::WalGc,
     Stage::RepairPace,
     Stage::Decode,
     Stage::Append,
