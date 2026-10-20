@@ -164,6 +164,9 @@ pub async fn directory_contents(directory: &Path) -> BTreeMap<PathBuf, Vec<u8>> 
     let mut contents = BTreeMap::new();
     let mut entries = tokio::fs::read_dir(directory).await.unwrap();
     while let Some(entry) = entries.next_entry().await.unwrap() {
+        if entry.file_name() == ".writer-lock" {
+            continue;
+        }
         assert!(entry.file_type().await.unwrap().is_file());
         contents.insert(entry.path(), tokio::fs::read(entry.path()).await.unwrap());
     }
