@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use serde::de::DeserializeOwned;
-use tidemq_protocol::common::{Frame, FrameKind, TrafficClass};
+use tidemq_protocol::common::{ErrorCode, ErrorReply, Frame, FrameKind, Outcome, TrafficClass};
 use tidemq_protocol::framing::{MAX_TIMEOUT_MS, decode_payload, frame_limit, new_frame};
 use tidemq_protocol::internal::RaftResult;
 use tidemq_protocol::{Id, ProtocolLimits};
@@ -228,6 +228,56 @@ impl PeerPool {
     pub(super) async fn call<T: DeserializeOwned>(
         &self,
         target: u64,
+        mut frame: Frame,
+        deadline: Instant,
+        affinity: u64,
+    ) -> Result<T> {
+        let mut attempts = 0_u32;
+        loop {
+            let result = self
+                .call_once(target, frame.clone(), deadline, affinity)
+                .await;
+            attempts = attempts.saturating_add(1);
+            if attempts >= 8
+                || !matches!(
+                    result,
+                    Err(Error::PeerRejected {
+                        code: ErrorCode::QuotaExceeded,
+                        outcome: Outcome::Rejected,
+                        retryable: true,
+                    })
+                )
+            {
+                return result;
+            }
+            // A complete Rejected reply proves no handler ran; its waiter was removed before ID reuse.
+            // Keep the original payload owner charged and preserve the original hard deadline.
+            let delay = Duration::from_millis(1_u64.checked_shl(attempts.min(5)).unwrap_or(32));
+            let Some(wake) = Instant::now()
+                .checked_add(delay)
+                .filter(|wake| *wake < deadline)
+            else {
+                return result;
+            };
+            tokio::time::sleep_until(wake).await;
+            let remaining = u64::try_from(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis(),
+            )
+            .map_err(|_| Error::Invalid {
+                reason: "Raft retry deadline overflow",
+            })?;
+            if remaining == 0 {
+                return result;
+            }
+            frame.remaining_timeout_ms = remaining;
+        }
+    }
+
+    async fn call_once<T: DeserializeOwned>(
+        &self,
+        target: u64,
         frame: Frame,
         deadline: Instant,
         affinity: u64,
@@ -268,26 +318,74 @@ impl PeerPool {
             metrics.observe(Stage::Replicate, started.elapsed().as_secs_f64());
         }
         let (rpc, received) = received?;
-        let frame = received.frame();
-        if frame.kind != i32::from(FrameKind::RaftResult)
-            || frame.traffic_class != i32::from(class)
-            || frame.request_id != id
-            || frame.operation_id != id
-        {
-            rpc.close(Instant::now()).await;
-            return Err(Error::Invalid {
-                reason: "Raft response does not match its request",
-            });
+        receive_response(&rpc, received.frame(), class, &id, &self.config.protocol).await
+    }
+}
+
+async fn receive_response<T: DeserializeOwned>(
+    rpc: &RpcClient,
+    frame: &Frame,
+    class: TrafficClass,
+    id: &Bytes,
+    limits: &ProtocolLimits,
+) -> Result<T> {
+    let result = decode_response(frame, class, id, limits);
+    if matches!(result, Err(Error::Invalid { .. })) {
+        rpc.close(Instant::now()).await;
+    }
+    result
+}
+
+fn decode_response<T: DeserializeOwned>(
+    frame: &Frame,
+    class: TrafficClass,
+    id: &Bytes,
+    limits: &ProtocolLimits,
+) -> Result<T> {
+    if frame.traffic_class != i32::from(class)
+        || frame.request_id != *id
+        || frame.operation_id != *id
+    {
+        return Err(Error::Invalid {
+            reason: "Raft response does not match its request",
+        });
+    }
+    match FrameKind::try_from(frame.kind) {
+        Ok(FrameKind::RaftResult) => {
+            let result: RaftResult = decode_payload(frame.payload.clone(), limits)
+                .map_err(|source| Error::Protocol { source })?;
+            if result.rpc_id != *id {
+                return Err(Error::Invalid {
+                    reason: "Raft inner response identity does not match",
+                });
+            }
+            codec::decode(&result.encoded_result)
         }
-        let result: RaftResult = decode_payload(frame.payload.clone(), &self.config.protocol)
-            .map_err(|source| Error::Protocol { source })?;
-        if result.rpc_id != id {
-            rpc.close(Instant::now()).await;
-            return Err(Error::Invalid {
-                reason: "Raft inner response identity does not match",
-            });
+        Ok(FrameKind::Error) => {
+            let error: ErrorReply = decode_payload(frame.payload.clone(), limits)
+                .map_err(|source| Error::Protocol { source })?;
+            let code = ErrorCode::try_from(error.code)
+                .ok()
+                .filter(|code| *code != ErrorCode::Unspecified)
+                .ok_or(Error::Invalid {
+                    reason: "Raft peer returned an invalid error code",
+                })?;
+            let outcome = Outcome::try_from(error.outcome)
+                .ok()
+                .filter(|outcome| matches!(outcome, Outcome::Rejected | Outcome::Unknown))
+                .ok_or(Error::Invalid {
+                    reason: "Raft peer returned an invalid error outcome",
+                })?;
+            // Valid backpressure must not reset other groups sharing this authenticated connection.
+            Err(Error::PeerRejected {
+                code,
+                outcome,
+                retryable: error.retryable,
+            })
         }
-        codec::decode(&result.encoded_result)
+        _ => Err(Error::Invalid {
+            reason: "Raft response does not match its request",
+        }),
     }
 }
 
@@ -312,3 +410,7 @@ pub(super) fn deadline(ttl: Duration) -> Result<Instant> {
         reason: "Raft RPC deadline overflow",
     })
 }
+
+#[cfg(test)]
+#[path = "pool_tests.rs"]
+mod tests;

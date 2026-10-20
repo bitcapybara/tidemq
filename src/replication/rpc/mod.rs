@@ -22,6 +22,14 @@ pub enum Error {
     Authorization { reason: &'static str },
     #[snafu(display("Invalid Raft RPC: {reason}"))]
     Invalid { reason: &'static str },
+    #[snafu(display(
+        "Raft peer rejected RPC: {code:?}; outcome: {outcome:?}; retryable: {retryable}"
+    ))]
+    PeerRejected {
+        code: tidemq_protocol::common::ErrorCode,
+        outcome: tidemq_protocol::common::Outcome,
+        retryable: bool,
+    },
     #[snafu(display("Raft RPC protocol validation failed"))]
     Protocol { source: tidemq_protocol::Error },
     #[snafu(display("Raft RPC encoding or decoding failed"))]
