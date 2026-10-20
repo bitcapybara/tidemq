@@ -309,10 +309,10 @@ async fn purging_old_segments_preserves_control_state_retained_entries_and_origi
             && !after.contains_key(file)
     ));
     for (file, bytes) in &after {
-        if file.extension().is_some_and(|extension| extension == "wal") {
-            if let Some(original) = before.get(file) {
-                assert_eq!(original, bytes);
-            }
+        if file.extension().is_some_and(|extension| extension == "wal")
+            && let Some(original) = before.get(file)
+        {
+            assert_eq!(original, bytes);
         }
     }
     storage.log.close().await.unwrap();

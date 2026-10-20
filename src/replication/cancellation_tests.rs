@@ -85,7 +85,7 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
         tidemq_protocol::Id::random().unwrap()
     ));
     tokio::fs::create_dir(&directory).await.unwrap();
-    for operation in ["truncate_queued", "purge_published"] {
+    for operation in ["truncate_queued", "purge_published", "snapshot_published"] {
         let path = directory.join(operation);
         let identity = StorageIdentity::new::<Ledger>(tidemq_protocol::Id::random().unwrap(), 1, 1);
         let mut storage =
@@ -97,20 +97,27 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
             .blocking_append((0..4).map(entry))
             .await
             .unwrap();
-        let committed = if operation == "purge_published" { 4 } else { 2 };
+        let committed = if operation == "truncate_queued" { 2 } else { 4 };
         storage
             .state_machine
             .apply((0..committed).map(entry))
             .await
             .unwrap();
-        if operation == "purge_published" {
+        if operation != "truncate_queued" {
             storage.state_machine.build_snapshot().await.unwrap();
+        }
+        if operation == "snapshot_published" {
+            storage.log.blocking_append([entry(4)]).await.unwrap();
+            storage.state_machine.apply([entry(4)]).await.unwrap();
         }
         let (reached, release) = hold(&path, operation);
         let mut log = storage.log.clone();
+        let mut state_machine = storage.state_machine.clone();
         let caller = tokio::spawn(async move {
             if operation == "truncate_queued" {
                 log.truncate(log_id(2)).await
+            } else if operation == "snapshot_published" {
+                state_machine.build_snapshot().await.map(|_| ())
             } else {
                 log.purge(log_id(1)).await
             }
@@ -123,12 +130,28 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
         assert!(caller.await.unwrap_err().is_cancelled());
         release.notify_one();
         storage.log.flush().await.unwrap();
+        if operation == "snapshot_published" {
+            let current = storage
+                .state_machine
+                .get_current_snapshot()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(current.meta.last_log_id, Some(log_id(4)));
+            drop(current);
+            let next = storage.state_machine.build_snapshot().await.unwrap();
+            assert_eq!(next.meta.last_log_id, Some(log_id(4)));
+            drop(next);
+            assert_eq!(storage.log.diagnostics().await.snapshots.snapshot_files, 1);
+        }
         let expected = if operation == "truncate_queued" {
             vec![log_id(0), log_id(1)]
+        } else if operation == "snapshot_published" {
+            (0..5).map(log_id).collect()
         } else {
             vec![log_id(2), log_id(3)]
         };
-        let memory = storage.log.try_get_log_entries(0..4).await.unwrap();
+        let memory = storage.log.try_get_log_entries(0..5).await.unwrap();
         assert_eq!(
             memory.iter().map(|entry| entry.log_id).collect::<Vec<_>>(),
             expected
@@ -140,12 +163,19 @@ async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_
             DiskStore::<Ledger>::open(&path, identity, StorageOptions::default(), None)
                 .await
                 .unwrap();
-        let disk = reopened.log.try_get_log_entries(0..4).await.unwrap();
+        let disk = reopened.log.try_get_log_entries(0..5).await.unwrap();
         assert_eq!(
             disk.iter().map(|entry| entry.log_id).collect::<Vec<_>>(),
             expected
         );
-        assert_eq!(reopened.state_machine.application().await.0, committed - 1);
+        assert_eq!(
+            reopened.state_machine.application().await.0,
+            if operation == "snapshot_published" {
+                4
+            } else {
+                committed - 1
+            }
+        );
         reopened.log.close().await.unwrap();
     }
     tokio::fs::remove_dir_all(directory).await.unwrap();
