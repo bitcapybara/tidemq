@@ -312,3 +312,68 @@ async fn partial_purge_of_reference_only_segment_does_not_revive_or_reject_dead_
     assert!(!seen.contains(&dropped));
     journal.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn segment_count_pressure_compacts_the_current_active_at_the_checkpoint_barrier() {
+    let dir = Directory::new();
+    let options = JournalOptions {
+        max_segments: 3,
+        max_retained_records: 8,
+        ..options()
+    };
+    let (journal, _, recovery) = SegmentedJournal::open(dir.path(), options.clone(), [7; 32])
+        .await
+        .unwrap();
+    drop(recovery);
+    let (old, durable) = journal.append_retained(vec![1; 900]).await.unwrap();
+    durable.durable().await.unwrap();
+    let (keep, durable) = journal.append_retained(vec![2; 900]).await.unwrap();
+    durable.durable().await.unwrap();
+    let old_file = inspect_segmented(dir.path(), &options, [7; 32])
+        .await
+        .unwrap()
+        .active_segment;
+    journal
+        .checkpoint(b"count".to_vec(), vec![keep])
+        .await
+        .unwrap();
+    assert_eq!(journal.statistics().relocation_operations, 1);
+    assert!(!dir.path().join(old_file).exists());
+    journal.close().await.unwrap();
+    drop(journal);
+    let (journal, _, mut recovery) = SegmentedJournal::open(dir.path(), options, [7; 32])
+        .await
+        .unwrap();
+    let record = recovery.next().await.unwrap().unwrap();
+    assert_eq!(record.id, Some(keep));
+    assert_ne!(record.id, Some(old));
+    assert!(recovery.next().await.unwrap().is_none());
+    journal.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn checkpoint_encoding_limit_rejects_before_io_and_keeps_the_writer_usable() {
+    let dir = Directory::new();
+    let (journal, _, recovery) = opened(dir.path()).await;
+    drop(recovery);
+    let before = directory_files(dir.path()).await.unwrap().len();
+    assert!(
+        journal
+            .checkpoint(vec![0; options().max_checkpoint_bytes], Vec::new())
+            .await
+            .is_err()
+    );
+    assert_eq!(directory_files(dir.path()).await.unwrap().len(), before);
+    journal
+        .append(b"still-live".to_vec())
+        .await
+        .unwrap()
+        .durable()
+        .await
+        .unwrap();
+    journal
+        .checkpoint(b"small".to_vec(), Vec::new())
+        .await
+        .unwrap();
+    journal.close().await.unwrap();
+}
