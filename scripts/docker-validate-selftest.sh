@@ -65,7 +65,10 @@ dk() {
         esac
       fi
       ;;
-    exec) shift; "$@" ;;
+    exec)
+      shift
+      if [[ $1 == curl ]]; then printf 'mock_metric 1\n'; printf 'HTTP\n' >> "$calls"; else "$@"; fi
+      ;;
     container) printf '%s\n' "$*" > "$task_dir/name-filter"; printf '%s\n' "$mock_collision" ;;
     kill|start|pause|unpause|update)
       printf '%s %s\n' "$command" "$*" >> "$calls"
@@ -86,6 +89,17 @@ mock_project=business; reject mutate "$id" node-1 kill --signal KILL; mock_proje
 mock_service=node-2; reject mutate "$id" node-1 pause; mock_service=node-1
 mock_image="sha256:$(printf '%064d' 2)"; reject mutate "$id" node-1 start; mock_image=$expected_image
 [[ ! -s $calls ]]
+network_id=$id; mock_service=network
+check management 1 /metrics "$task_dir/cached-holder.metrics"
+grep -q '^mock_metric 1$' "$task_dir/cached-holder.metrics"
+: > "$calls"
+mock_project=business; reject management 1 /metrics "$task_dir/rejected-holder.metrics"; mock_project=$project
+[[ ! -s $calls ]]
+deadline_status=0
+bash -c 'source "$1"; OP_DEADLINE=1; sleep 1.1; dk version' sh "$script_dir/docker-validate.sh" \
+  > "$task_dir/deadline-output" 2> "$task_dir/deadline-error" || deadline_status=$?
+[[ $deadline_status == 124 ]]
+grep -Fq 'Docker command deadline exhausted before invocation' "$task_dir/deadline-error"
 
 validator=$id; mock_service=validator
 check validator_name_free

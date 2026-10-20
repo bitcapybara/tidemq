@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-project= state= evidence= validator= validator_name= validator_case= case_dir= expected_image= topic=
+project= state= evidence= network_id= validator= validator_name= validator_case= case_dir= expected_image= topic=
 launch_attempted=false
 launch_state=not_started validator_stopped=false
 original_memory= original_swap= completed=false phase=preflight
@@ -13,7 +13,10 @@ dk() {
   local seconds=10 remaining
   if [[ ${OP_DEADLINE:-0} -gt 0 ]]; then
     remaining=$((OP_DEADLINE - SECONDS))
-    [[ $remaining -gt 0 ]] || return 124
+    if [[ $remaining -le 0 ]]; then
+      printf 'Docker command deadline exhausted before invocation\n' >&2
+      return 124
+    fi
     if [[ $remaining -lt $seconds ]]; then seconds=$remaining; fi
   fi
   timeout --signal=KILL "${seconds}s" docker "$@"
@@ -138,9 +141,9 @@ wait_exit() {
   fail 'Validator exit exceeded 120 seconds'
 }
 management() {
-  local node=$1 path=$2 destination=$3 holder
-  holder=$(container_id network) || return 1
-  dk exec "$holder" curl -q --fail --silent --show-error --noproxy '*' --connect-timeout 1 --max-time 2 \
+  local node=$1 path=$2 destination=$3
+  verify "$network_id" network || { fail 'Cached network holder identity verification failed'; return 1; }
+  dk exec "$network_id" curl -q --fail --silent --show-error --noproxy '*' --connect-timeout 1 --max-time 2 \
     "http://127.0.0.1:$((8400 + node * 10))$path" | head -c 262144 > "$destination"
 }
 wait_ready() {
@@ -379,7 +382,7 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   local node id config
-  container_id network > /dev/null
+  network_id=$(container_id network)
   for node in $node_ids; do
     id=$(container_id "node-$node")
     [[ $(dk inspect --format '{{.State.Running}}:{{.State.Paused}}' "$id") == true:false ]] || return 1
