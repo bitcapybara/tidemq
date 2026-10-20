@@ -49,6 +49,7 @@ jobs:
         with:
           workspaces: trusted -> target/performance-gate
           key: performance-mimalloc-release
+          cache-on-failure: true
       - name: Validate the trusted comparator
         run: node --test trusted/scripts/performance/compare.test.mjs
       - name: Alternate real baseline and candidate trials on this runner
