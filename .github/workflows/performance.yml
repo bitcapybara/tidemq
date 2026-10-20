@@ -64,7 +64,7 @@ jobs:
             performance-result/summary.json
             performance-result/builds/*/identity.json
             performance-result/builds/*/build.log
-            performance-result/rf*/*/report.json
+            performance-result/rf*/*/report-*.json
             performance-result/rf*/*/execution.json
             performance-result/rf*/*/*.log
             performance-result/rf*/*/*-metrics.txt

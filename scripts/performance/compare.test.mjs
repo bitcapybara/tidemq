@@ -7,7 +7,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {comparePairs, summarizeReport, validatePolicy} from './compare.mjs';
+import {comparePairs, summarizeReport, validatePolicy, workloadFor} from './compare.mjs';
 import {management} from '../performance-gate.mjs';
 
 const policy = validatePolicy(JSON.parse(readFileSync(new URL('../../performance/baseline.json', import.meta.url))));
@@ -34,17 +34,18 @@ test('unstable samples are inconclusive and missing or invalid trials fail', () 
 });
 
 function fixture() {
-  const histogram = {samples: 512, maximum_ns: 1024, histogram_buckets: [[320, 512]]};
+  const histogram = {samples: 256, maximum_ns: 1024, histogram_buckets: [[320, 256]]};
   const phase = {
-    terminal_error: null, planned_messages: 512, committed_messages: 512,
-    acknowledged_messages: 512, durable_acknowledged_before: 512,
-    produce_batch: histogram, offered_to_durable_ack: histogram, control_errors: 0,
+    terminal_error: null, planned_messages: 256, committed_messages: 256,
+    acknowledged_messages: 256, durable_acknowledged_before: 256,
+    produce_batch: histogram, produce_scheduling_lateness: histogram, offered_to_durable_ack: histogram, control_errors: 0,
   };
-  const warmup = {...phase, planned_messages: 64, committed_messages: 64, acknowledged_messages: 64,
-    durable_acknowledged_before: 64, produce_batch: {...histogram, samples: 64, histogram_buckets: [[320, 64]]},
-    offered_to_durable_ack: {...histogram, samples: 64, histogram_buckets: [[320, 64]]}};
+  const warmup = {...phase, planned_messages: 32, committed_messages: 32, acknowledged_messages: 32,
+    durable_acknowledged_before: 32, produce_batch: {...histogram, samples: 32, histogram_buckets: [[320, 32]]},
+    offered_to_durable_ack: {...histogram, samples: 32, histogram_buckets: [[320, 32]]},
+    produce_scheduling_lateness: {...histogram, samples: 32, histogram_buckets: [[320, 32]]}};
   return {
-    schema_version: 2, status: 'passed', configuration: policy.workload,
+    schema_version: 3, status: 'passed', configuration: policy.workload,
     identity: {build: {source_commit: policy.service_source_commit, allocator_feature: policy.allocator_feature}},
     warmup: {elapsed_ns: 1000, partitions: Array.from({length: 4}, () => structuredClone(warmup))},
     measured: {elapsed_ns: 2000000000, partitions: Array.from({length: 4}, () => structuredClone(phase))},
@@ -54,17 +55,17 @@ function fixture() {
 test('histogram aggregation retains every partition and durability failures cannot look faster', () => {
   const report = fixture();
   const result = summarizeReport(report, policy, policy.service_source_commit);
-  assert.equal(result.durable_messages_per_second, 1024);
+  assert.equal(result.durable_messages_per_second, 512);
   assert.equal(result.produce_p99_upper_ns, 1024);
-  report.measured.partitions[3].durable_acknowledged_before = 511;
+  report.measured.partitions[3].durable_acknowledged_before = 255;
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit));
 });
 
 test('a rare slow partition changes the merged p99 instead of being averaged away', () => {
   const report = fixture();
-  report.measured.partitions[3].produce_batch = {samples: 512, maximum_ns: 4096, histogram_buckets: [[384, 512]]};
+  report.measured.partitions[3].produce_batch = {samples: 256, maximum_ns: 4096, histogram_buckets: [[384, 256]]};
   assert.equal(summarizeReport(report, policy, policy.service_source_commit).produce_p99_upper_ns, 4096);
-  report.measured.partitions[3].produce_batch.histogram_buckets = [[384, 511]];
+  report.measured.partitions[3].produce_batch.histogram_buckets = [[384, 255]];
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit));
 });
 
@@ -142,4 +143,12 @@ test('promotion rejects a stale report or dirty source and accepts only the clea
     assert.equal(accepted.status, 0, accepted.stderr);
     assert.equal(JSON.parse(await readFile(path.join(temporary, 'performance/baseline.json'), 'utf8')).service_source_commit, current);
   } finally { await rm(temporary, {recursive: true, force: true}); }
+});
+
+
+test('latency uses the protected fixed schedule and throughput remains unpaced', () => {
+  assert.equal(workloadFor(policy, 'throughput').produce_interval_ms, 0);
+  assert.equal(workloadFor(policy, 'latency').produce_interval_ms, 160);
+  assert.equal(workloadFor(policy, 'latency').warmup_messages, 64);
+  assert.throws(() => workloadFor(policy, 'unsupported'));
 });
