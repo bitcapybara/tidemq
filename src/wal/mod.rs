@@ -2,14 +2,13 @@
 
 mod codec;
 mod error;
-mod journal;
+mod options;
 mod segmented;
 
 pub const FRAME_HEADER_BYTES: usize = 88;
 
-pub use codec::{Inspection, inspect};
 pub use error::{Error, Result};
-pub use journal::{Durability, Journal, JournalOptions, JournalStatistics};
+pub use options::{JournalOptions, JournalStatistics};
 pub use segmented::{
     MAX_SEGMENTED_DIRECTORY_ENTRIES, RecordId, RecoveredRecord, Recovery, SEGMENTED_MANIFEST_FILE,
     SegmentedDurability, SegmentedFileKind, SegmentedInspection, SegmentedJournal,
