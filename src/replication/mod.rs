@@ -5,11 +5,13 @@
 mod log;
 pub mod rpc;
 mod snapshot;
+mod snapshot_registry;
 mod state_machine;
 mod store;
 mod types;
 
 pub use snapshot::SnapshotFile;
+pub use snapshot_registry::SnapshotDiagnostics;
 pub use store::{DiskLog, DiskStateMachine, DiskStore, StorageDiagnostics, StorageOptions};
 pub use types::{Application, GroupIdentity, StorageIdentity, TypeConfig};
 

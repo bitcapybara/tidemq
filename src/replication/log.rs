@@ -9,16 +9,18 @@ use std::borrow::Cow;
 use crate::observability::metrics::Stage;
 use crate::wal::{self, Error, Result};
 
-use super::store::{LogState, Record, storage_error};
+use super::store::{ControlCheckpoint, FORMAT_VERSION, LogState, Record, storage_error};
 use super::{Application, DiskLog, LogEntry, StorageOptions, TypeConfig};
 
 fn invalid(reason: &'static str) -> Error {
     Error::Configuration { reason }
 }
 
-pub(crate) fn replay<A: Application>(
+fn replay<A: Application>(
     state: &mut LogState<A>,
     record: Record<'_, A>,
+    id: Option<wal::RecordId>,
+    encoded: &[u8],
     options: &StorageOptions,
 ) -> Result<()> {
     validate_record(state, &record)?;
@@ -29,31 +31,35 @@ pub(crate) fn replay<A: Application>(
         Record::Committed(committed) => {
             state.committed = committed;
         }
-        Record::Entries(entries) => {
-            let mut entries = entries.into_owned();
-            entries.retain(|entry| {
-                state
-                    .purged
-                    .is_none_or(|purged| entry.log_id.index > purged.index)
-            });
-            let (sizes, bytes) = prepare_entries(state, &entries, options)?;
-            install_entries(state, entries, sizes, bytes);
+        Record::Entry(entry) => {
+            let id = id.ok_or(invalid(
+                "retained entry is missing its physical record identity",
+            ))?;
+            if state
+                .purged
+                .is_some_and(|purged| entry.log_id.index <= purged.index)
+            {
+                return Ok(());
+            }
+            let (_, bytes) = prepare_entries(
+                state,
+                std::slice::from_ref(entry.as_ref()),
+                std::slice::from_ref(&encoded),
+                options,
+            )?;
+            install_entries(
+                state,
+                vec![entry.into_owned()],
+                vec![encoded.len()],
+                vec![id],
+                bytes,
+            );
         }
         Record::Truncate(log_id) => {
             state.entries.retain(|index, _| *index < log_id.index);
             state.entry_bytes.retain(|index, _| *index < log_id.index);
+            state.record_refs.retain(|index, _| *index < log_id.index);
             state.retained_bytes = retained_bytes(state)?;
-        }
-        Record::Purge(log_id) => {
-            state.entries.retain(|index, _| *index > log_id.index);
-            state.entry_bytes.retain(|index, _| *index > log_id.index);
-            state.retained_bytes = retained_bytes(state)?;
-            state.purged = Some(log_id);
-        }
-        Record::Identity(_) => {
-            return Err(invalid(
-                "journal identity must appear only at the beginning",
-            ));
         }
     }
     Ok(())
@@ -78,9 +84,6 @@ fn validate_record<A: Application>(state: &LogState<A>, record: &Record<'_, A>) 
         {
             Some("cannot truncate committed logs")
         }
-        Record::Purge(log_id) if state.purged.is_some_and(|purged| *log_id < purged) => {
-            Some("purged log boundary must not regress")
-        }
         _ => None,
     };
     match reason {
@@ -97,16 +100,21 @@ fn retained_bytes<A: Application>(state: &LogState<A>) -> Result<usize> {
     })
 }
 
-fn prepare_entries<A: Application>(
+fn prepare_entries<A: Application, E: AsRef<[u8]>>(
     state: &LogState<A>,
     entries: &[LogEntry<A>],
+    encoded: &[E],
     options: &StorageOptions,
 ) -> Result<(Vec<usize>, usize)> {
     let mut previous = None;
     let mut sizes = Vec::new();
     let mut bytes = state.retained_bytes;
     let mut count = state.entries.len();
-    for entry in entries {
+    if entries.len() != encoded.len() {
+        return Err(invalid("entry payload count differs from the append batch"));
+    }
+    for (entry, encoded) in entries.iter().zip(encoded) {
+        let encoded = encoded.as_ref();
         let index = entry.log_id.index;
         if state.purged.is_some_and(|purged| index <= purged.index)
             || previous.is_some_and(|previous: u64| previous.checked_add(1) != Some(index))
@@ -125,9 +133,14 @@ fn prepare_entries<A: Application>(
                 return Err(invalid("appended logs must not leave a gap"));
             }
         }
-        let encoded = wal::encode_value(entry, options.journal.max_record_bytes)?;
         if let Some(existing) = state.entries.get(&index) {
-            if wal::encode_value(existing, options.journal.max_record_bytes)? != encoded {
+            if wal::encode_value(
+                &Record::Entry(Cow::Borrowed(existing)),
+                options.journal.max_record_bytes,
+            )?
+            .as_slice()
+                != encoded
+            {
                 return Err(invalid(
                     "conflicting logs must be truncated before replacement",
                 ));
@@ -158,10 +171,12 @@ fn install_entries<A: Application>(
     state: &mut LogState<A>,
     entries: Vec<LogEntry<A>>,
     sizes: Vec<usize>,
+    ids: Vec<wal::RecordId>,
     bytes: usize,
 ) {
-    for (entry, size) in entries.into_iter().zip(sizes) {
+    for ((entry, size), id) in entries.into_iter().zip(sizes).zip(ids) {
         state.entry_bytes.insert(entry.log_id.index, size);
+        state.record_refs.insert(entry.log_id.index, id);
         state.entries.insert(entry.log_id.index, entry);
     }
     state.retained_bytes = bytes;
@@ -283,9 +298,13 @@ impl<A: Application> RaftLogStorage<TypeConfig<A>> for DiskLog<A> {
         match result {
             Ok(durability) => {
                 tokio::spawn(async move {
-                    callback.log_io_completed(
-                        durability.durable().await.map_err(std::io::Error::other),
-                    );
+                    let result = match durability {
+                        Some(durability) => {
+                            durability.durable().await.map_err(std::io::Error::other)
+                        }
+                        None => Ok(()),
+                    };
+                    callback.log_io_completed(result);
                 });
                 Ok(())
             }
@@ -297,21 +316,34 @@ impl<A: Application> RaftLogStorage<TypeConfig<A>> for DiskLog<A> {
     }
 
     async fn truncate(&mut self, log_id: LogId<u64>) -> std::result::Result<(), StorageError<u64>> {
-        self.persist(Record::Truncate(log_id))
-            .await
-            .map_err(|error| storage_error(ErrorSubject::Logs, ErrorVerb::Delete, error))
+        let mut state = self.0.log.clone().lock_owned().await;
+        let store = self.clone();
+        let result = finish_mutation(tokio::spawn(async move {
+            store
+                .persist_locked(&mut state, Record::Truncate(log_id))
+                .await?;
+            store.checkpoint_locked(&state, state.purged).await
+        }))
+        .await;
+        result.map_err(|error| storage_error(ErrorSubject::Logs, ErrorVerb::Delete, error))
     }
 
     async fn purge(&mut self, log_id: LogId<u64>) -> std::result::Result<(), StorageError<u64>> {
-        let result = async {
-            let mut state = self.0.log.lock().await;
-            let mut trial = clone_log(&state);
-            replay(&mut trial, Record::Purge(log_id), &self.0.options)?;
-            let records = checkpoint(&trial, &self.0.options, &self.0.identity)?;
-            self.0.journal.replace(records).await?;
-            *state = trial;
+        let mut state = self.0.log.clone().lock_owned().await;
+        let store = self.clone();
+        let result = finish_mutation(tokio::spawn(async move {
+            if state.purged.is_some_and(|purged| log_id < purged) {
+                return Err(invalid("purged log boundary must not regress"));
+            }
+            // OpenRaft authorizes purge after snapshot coverage; recovery rechecks that contract.
+            store.checkpoint_locked(&state, Some(log_id)).await?;
+            state.entries.retain(|index, _| *index > log_id.index);
+            state.entry_bytes.retain(|index, _| *index > log_id.index);
+            state.record_refs.retain(|index, _| *index > log_id.index);
+            state.retained_bytes = retained_bytes(&state)?;
+            state.purged = Some(log_id);
             Ok(())
-        }
+        }))
         .await;
         result.map_err(|error| storage_error(ErrorSubject::Logs, ErrorVerb::Delete, error))
     }
@@ -322,7 +354,7 @@ impl<A: Application> DiskLog<A> {
     async fn enqueue_entries<I: IntoIterator<Item = LogEntry<A>>>(
         &self,
         entries: I,
-    ) -> Result<wal::Durability> {
+    ) -> Result<Option<wal::SegmentedDurability>> {
         let mut batch = Vec::new();
         for entry in entries {
             if batch.len() >= self.0.options.max_log_entries {
@@ -339,15 +371,35 @@ impl<A: Application> DiskLog<A> {
                 .purged
                 .is_none_or(|purged| entry.log_id.index > purged.index)
         });
-        let encoded = wal::encode_value(
-            &Record::<A>::Entries(Cow::Borrowed(&batch)),
-            self.0.options.journal.max_record_bytes,
-        )?;
+        if batch.is_empty() {
+            return Ok(None);
+        }
+        let encoded = batch
+            .iter()
+            .map(|entry| {
+                wal::encode_value(
+                    &Record::Entry(Cow::Borrowed(entry)),
+                    self.0.options.journal.max_record_bytes,
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let batch_bytes = encoded
+            .iter()
+            .try_fold(0_usize, |total, bytes| total.checked_add(bytes.len()))
+            .ok_or(Error::Limit {
+                name: "append batch bytes",
+            })?;
+        if batch_bytes > self.0.options.journal.max_record_bytes {
+            return Err(Error::Limit {
+                name: "append batch bytes",
+            });
+        }
         // Validate first, then enqueue and expose the entries before the IO callback can fire.
-        let (sizes, bytes) = prepare_entries(&state, &batch, &self.0.options)?;
-        let durability = self.0.journal.append(encoded).await?;
-        install_entries(&mut state, batch, sizes, bytes);
-        Ok(durability)
+        let (sizes, bytes) = prepare_entries(&state, &batch, &encoded, &self.0.options)?;
+        self.maybe_checkpoint(&state, batch.len()).await?;
+        let (ids, durability) = self.0.journal.append_retained_batch(encoded).await?;
+        install_entries(&mut state, batch, sizes, ids, bytes);
+        Ok(Some(durability))
     }
 
     #[tracing::instrument(name = "raft_commit_marker", level = "trace", skip_all, fields(node_id = self.0.identity.node_id, group_id = self.0.identity.group.group_id))]
@@ -360,63 +412,134 @@ impl<A: Application> DiskLog<A> {
         Ok(())
     }
 
-    async fn persist(&self, record: Record<'_, A>) -> Result<()> {
-        let encoded = wal::encode_value(&record, self.0.options.journal.max_record_bytes)?;
-        let mut state = self.0.log.lock().await;
+    async fn persist(&self, record: Record<'static, A>) -> Result<()> {
+        let mut state = self.0.log.clone().lock_owned().await;
+        let store = self.clone();
+        finish_mutation(tokio::spawn(async move {
+            store.persist_locked(&mut state, record).await
+        }))
+        .await
+    }
+
+    async fn persist_locked(&self, state: &mut LogState<A>, record: Record<'_, A>) -> Result<()> {
         if matches!(&record, Record::Vote(vote) if Some(*vote) == state.vote)
             || matches!(&record, Record::Committed(committed) if *committed == state.committed)
         {
             return Ok(());
         }
         validate_record(&state, &record)?;
+        self.maybe_checkpoint(state, 0).await?;
+        let encoded = wal::encode_value(&record, self.0.options.journal.max_record_bytes)?;
         self.0.journal.append(encoded).await?.durable().await?;
-        replay(&mut state, record, &self.0.options)
+        replay(state, record, None, &[], &self.0.options)
+    }
+
+    async fn maybe_checkpoint(&self, state: &LogState<A>, additional: usize) -> Result<()> {
+        let options = &self.0.options.journal;
+        let stats = self.0.journal.statistics();
+        let trigger = options
+            .max_file_bytes
+            .saturating_sub(options.control_reserve_bytes)
+            .saturating_sub(options.segment_target_bytes);
+        if stats.current_file_bytes >= trigger
+            || stats.retained_records.saturating_add(additional) > options.max_retained_records
+        {
+            self.checkpoint_locked(state, state.purged).await?;
+        }
+        Ok(())
+    }
+
+    async fn checkpoint_locked(
+        &self,
+        state: &LogState<A>,
+        purged: Option<LogId<u64>>,
+    ) -> Result<()> {
+        let mut retained = Vec::new();
+        let mut references = Vec::new();
+        for (index, entry) in &state.entries {
+            if purged.is_some_and(|purged| *index <= purged.index) {
+                continue;
+            }
+            retained.push(entry.log_id);
+            references.push(
+                *state
+                    .record_refs
+                    .get(index)
+                    .ok_or(invalid("retained log has no record location"))?,
+            );
+        }
+        let checkpoint = ControlCheckpoint {
+            format: FORMAT_VERSION,
+            identity: self.0.identity.clone(),
+            vote: state.vote,
+            committed: state.committed,
+            purged,
+            retained,
+        };
+        let encoded = wal::encode_value(&checkpoint, self.0.options.journal.max_checkpoint_bytes)?;
+        self.0.journal.checkpoint(encoded, references).await
     }
 }
 
-fn clone_log<A: Application>(state: &LogState<A>) -> LogState<A> {
-    LogState {
-        vote: state.vote,
-        committed: state.committed,
-        purged: state.purged,
-        entries: state.entries.clone(),
-        entry_bytes: state.entry_bytes.clone(),
-        retained_bytes: state.retained_bytes,
-    }
+async fn finish_mutation(task: tokio::task::JoinHandle<Result<()>>) -> Result<()> {
+    task.await.map_err(|error| Error::Writer {
+        reason: format!("replica mutation task failed: {error}"),
+    })?
 }
 
-fn checkpoint<A: Application>(
-    state: &LogState<A>,
-    options: &StorageOptions,
+pub(crate) async fn recover<A: Application>(
+    records: &mut wal::Recovery,
     identity: &super::StorageIdentity,
-) -> Result<Vec<Vec<u8>>> {
-    let mut records = vec![wal::encode_value(
-        &Record::<A>::Identity(identity.clone()),
-        options.journal.max_record_bytes,
-    )?];
-    if let Some(vote) = state.vote {
-        records.push(wal::encode_value(
-            &Record::<A>::Vote(vote),
-            options.journal.max_record_bytes,
-        )?);
+    options: &StorageOptions,
+) -> Result<LogState<A>> {
+    let checkpoint: Option<ControlCheckpoint> = if records.checkpoint().is_empty() {
+        None
+    } else {
+        Some(wal::decode_value(records.checkpoint())?)
+    };
+    let mut state = LogState::default();
+    let mut retained = std::collections::VecDeque::new();
+    let mut committed = None;
+    if let Some(checkpoint) = checkpoint {
+        if checkpoint.format != FORMAT_VERSION
+            || checkpoint.identity != *identity
+            || checkpoint.retained.len() > options.max_log_entries
+        {
+            return Err(invalid(
+                "checkpoint identity, format, or retained count differs",
+            ));
+        }
+        state.vote = checkpoint.vote;
+        state.purged = checkpoint.purged;
+        committed = checkpoint.committed;
+        retained = checkpoint.retained.into();
     }
-    if let Some(purged) = state.purged {
-        records.push(wal::encode_value(
-            &Record::<A>::Purge(purged),
-            options.journal.max_record_bytes,
-        )?);
+    if retained.is_empty() {
+        state.committed = committed;
     }
-    for entry in state.entries.values() {
-        records.push(wal::encode_value(
-            &Record::Entries(vec![entry.clone()].into()),
-            options.journal.max_record_bytes,
-        )?);
+    while let Some(recovered) = records.next().await? {
+        let record: Record<A> = wal::decode_value(&recovered.data)?;
+        if let Some(expected) = retained.pop_front() {
+            if !matches!(&record, Record::Entry(entry) if entry.log_id == expected)
+                || recovered.id.is_none()
+            {
+                return Err(invalid(
+                    "checkpoint retained log identity differs from its location",
+                ));
+            }
+            replay(&mut state, record, recovered.id, &recovered.data, options)?;
+            if retained.is_empty() {
+                state.committed = committed;
+            }
+        } else {
+            if matches!(record, Record::Entry(_)) != recovered.id.is_some() {
+                return Err(invalid("record retention class differs from its payload"));
+            }
+            replay(&mut state, record, recovered.id, &recovered.data, options)?;
+        }
     }
-    if let Some(committed) = state.committed {
-        records.push(wal::encode_value(
-            &Record::<A>::Committed(Some(committed)),
-            options.journal.max_record_bytes,
-        )?);
+    if !retained.is_empty() {
+        return Err(invalid("checkpoint retained log records are missing"));
     }
-    Ok(records)
+    Ok(state)
 }
