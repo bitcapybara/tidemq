@@ -1,5 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tidemq_protocol::common::{ErrorCode, Outcome};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks() {
@@ -75,10 +76,44 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
             };
             let consume = async {
                 let mut seen = std::collections::BTreeSet::new();
+                let mut read_retries = 0_u32;
+                let mut frontier = 0_u64;
                 while seen.len() < 64 {
                     let receive_started = Instant::now();
                     let remaining = context.deadline().saturating_duration_since(receive_started);
-                    let delivery = context.scope(consumer.recv()).await.unwrap_or_else(|error| {
+                    let result = context.scope(consumer.recv()).await;
+                    let delivery = match result {
+                        Ok(delivery) => delivery,
+                        Err(error)
+                            if Instant::now() < context.deadline()
+                                && !matches!(
+                                    &error,
+                                    tidemq_sdk::Error::Remote {
+                                        retryable: false,
+                                        ..
+                                    }
+                                )
+                                && (error.outcome_unknown()
+                                    || matches!(
+                                        &error,
+                                        tidemq_sdk::Error::Remote {
+                                            code: ErrorCode::Unavailable | ErrorCode::Fenced,
+                                            outcome: Outcome::Rejected,
+                                            retryable: true,
+                                            ..
+                                        }
+                                    )) =>
+                        {
+                            // A failed Read can leave a durable prefix waiting for its lease.
+                            read_retries += 1;
+                            if read_retries == 1 {
+                                let error = anyhow::Error::new(error);
+                                eprintln!("Recovering combined Read: topic={name}: {error:#}");
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
+                        Err(error) => {
                         let error = anyhow::Error::new(error);
                         panic!(
                             "Combined receive failed: topic={name}, phase_elapsed_ms={}, receive_elapsed_ms={}, remaining_before_receive_ms={}, produced={}, acknowledged={}, metadata_reads={}, seen={}: {error:#}",
@@ -90,7 +125,8 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
                             metadata_reads.load(Ordering::Relaxed),
                             seen.len(),
                         )
-                    });
+                        }
+                    };
                     let Some(delivery) = delivery else {
                         tokio::task::yield_now().await;
                         continue;
@@ -104,13 +140,20 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
                     }
                     for delivery in &deliveries {
                         let body: [u8; 8] = delivery.body().try_into().unwrap();
+                        let sequence = u64::from_le_bytes(body);
+                        assert_eq!(delivery.offset(), sequence);
+                        assert_eq!(delivery.key(), b"combined");
                         assert!(
-                            seen.insert(u64::from_le_bytes(body)),
+                            seen.insert(sequence),
                             "Duplicate combined-node delivery"
                         );
                     }
-                    context.scope(consumer.ack_many(&deliveries)).await.unwrap();
-                    acknowledged.store(seen.len() as u64, Ordering::Relaxed);
+                    while seen.contains(&frontier) {
+                        frontier += 1;
+                    }
+                    let ack = context.scope(consumer.ack_many(&deliveries)).await.unwrap();
+                    assert_eq!(ack.acknowledged_before, frontier);
+                    acknowledged.store(frontier, Ordering::Relaxed);
                 }
                 assert_eq!(seen, (0..64).collect());
                 let status = context
@@ -118,6 +161,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
                     .await
                     .unwrap();
                 assert_eq!(status.assignment.unwrap().acknowledged_before, 64);
+                eprintln!("Combined durable Read recovery: topic={name}, retries={read_retries}");
             };
             let read_metadata = async {
                 for _ in 0..64 {
