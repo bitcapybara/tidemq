@@ -104,6 +104,6 @@
 | --- | --- | --- | --- | --- |
 | NC01 | 零复制等技术优化编解码，评估 rkyv/FlatBuffers/FlexBuffers | T01,T06,T07,T13 | 字节一致、完整所有权/容量计费、真实 QUIC 与分配/耗时对照 | 大块唯一所有 payload 分段发送与末引用许可已验；格式[研究](research/zero-copy-formats.zh-CN.md)已完成，未迁移现有格式；codec 探针不替代服务性能 |
 | NC02 | 使用 Tokio CancellationToken 约束异步调用，消除反复传递 client.deadline() | T06,T10 | 默认总预算、最早父期限、取消传播/隔离、关闭清理、发送后 Unknown 与身份保留 | SDK 全 feature 真实网络与文档测试通过，调用方/示例/部署工具已迁移；新 Tokio task 显式传 scope |
-| NC03 | CI RF1/RF3 性能测试、仓库基线与 PR 回退门禁 | T12,T13,T14 | 真持久语义、配对比较、受保护策略、回退/噪声失败、main 才晋升 | P02；首轮失败证据保留，固定速率场景与 A/A 校准后建立有效基线；GitHub 套餐限制无法设 required status |
+| NC03 | CI RF1/RF3 性能测试、仓库基线与 PR 回退门禁 | T12,T13,T14 | 真持久语义、配对比较、受保护策略、回退/噪声失败、main 才晋升 | P02；修复后二十个 A/A 试次语义通过、旧五对统计 inconclusive，尚无有效数值基线；八对策略及尾部检测限制见性能手册；GitHub 套餐限制无法设 required status |
 
 每个任务交付代码、正确性/故障证据、使用/设计文档、指标/事件/span、诊断/看板/告警和限制说明。具体进展见[实施状态](implementation-status.zh-CN.md)；本表按完整需求验收后更新，包含 54 项架构、8 项 QUIC、8 项观测、6 项内存与上述 3 项追加要求。
