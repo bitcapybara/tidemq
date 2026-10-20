@@ -1,6 +1,11 @@
 {
   "schema_version": 1,
   "service_source_commit": "9fe9c952276d2a2b7b27a41ca1021926aaa3c283",
+  "bootstrap": {
+    "legacy_service_source_commit": "9fe9c952276d2a2b7b27a41ca1021926aaa3c283",
+    "legacy_harness_source_commit": "595dbaa8ef1461eb38762f9fa572447bb4f920d4",
+    "harness_files": ["examples/perf_load.rs", "examples/perf/sample.rs", "examples/perf/stats.rs", "examples/perf/workload.rs"]
+  },
   "pairs": 5,
   "confidence": 0.95,
   "max_log_ci_half_width": 0.03,

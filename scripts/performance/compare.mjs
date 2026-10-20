@@ -10,6 +10,12 @@ const METRICS = {
 export function validatePolicy(policy) {
   assert.equal(policy.schema_version, 1, 'Unsupported performance policy schema');
   assert.match(policy.service_source_commit, /^[0-9a-f]{40}$/, 'Invalid baseline source');
+  assert.equal(policy.bootstrap.legacy_service_source_commit, '9fe9c952276d2a2b7b27a41ca1021926aaa3c283',
+    'The legacy SDK exemption is limited to the original pre-CancellationToken source');
+  assert.match(policy.bootstrap.legacy_harness_source_commit, /^[0-9a-f]{40}$/, 'Invalid immutable bootstrap harness');
+  assert.deepEqual(policy.bootstrap.harness_files,
+    ['examples/perf_load.rs', 'examples/perf/sample.rs', 'examples/perf/stats.rs', 'examples/perf/workload.rs'],
+    'The complete trusted workload source must be overlaid');
   assert.equal(policy.pairs, 5, 'The Student t calibration requires five pairs');
   assert.equal(policy.confidence, 0.95, 'The Student t calibration requires 95% confidence');
   assert.equal(policy.allocator_feature, 'allocator-mimalloc', 'CI uses the default allocator');

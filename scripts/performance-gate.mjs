@@ -52,11 +52,12 @@ async function command(binary, args, settings = {}) {
     child.once('error', reject);
     child.once('close', (code, signal) => resolve({code, signal}));
   }).finally(() => clearTimeout(timer));
-  const output = Buffer.concat(chunks).toString('utf8');
-  if (settings.log) await fs.writeFile(settings.log, output, {mode: 0o600});
+  const bytesOutput = Buffer.concat(chunks);
+  const output = bytesOutput.toString('utf8');
+  if (settings.log) await fs.writeFile(settings.log, bytesOutput, {mode: 0o600});
   assert.ok(!exceeded, `${binary} output exceeded its byte limit`);
   assert.equal(result.code, 0, `${binary} failed (${result.code ?? result.signal}); ${settings.log ?? output.slice(-4096)}`);
-  return output.trim();
+  return settings.raw ? bytesOutput : output.trim();
 }
 
 async function sourceIdentity(source) {
@@ -65,17 +66,49 @@ async function sourceIdentity(source) {
   return command('git', ['rev-parse', 'HEAD'], {cwd: source});
 }
 
-async function build(source, directory, target, policy, loadOnly = false) {
-  await fs.mkdir(directory, {recursive: true, mode: 0o700});
+async function overlay(source, tools, directory, policy) {
   const commit = await sourceIdentity(source);
+  const toolsCommit = await sourceIdentity(tools);
+  const legacy = commit === policy.bootstrap.legacy_service_source_commit;
+  const harnessCommit = legacy ? policy.bootstrap.legacy_harness_source_commit : toolsCommit;
+  await fs.mkdir(directory, {recursive: true, mode: 0o700});
+  const archive = `${directory}.tar`;
+  await command('git', ['archive', '--format=tar', '--output', archive, commit], {cwd: source});
+  await command('tar', ['-xf', archive, '-C', directory]);
+  await fs.unlink(archive);
+  const harnessHashes = {};
+  for (const file of policy.bootstrap.harness_files) {
+    const bytes = legacy ? await command('git', ['show', `${harnessCommit}:${file}`], {cwd: tools, raw: true})
+      : await fs.readFile(path.join(tools, file));
+    await fs.mkdir(path.dirname(path.join(directory, file)), {recursive: true});
+    await fs.writeFile(path.join(directory, file), bytes);
+    harnessHashes[file] = sha256(bytes);
+  }
+  return {original_source: source, source_commit: commit, harness_source_commit: harnessCommit,
+    harness_files_sha256: harnessHashes, legacy_deadline_api_adapter: legacy};
+}
+
+async function build(source, directory, target, policy, loadOverlay) {
+  await fs.mkdir(directory, {recursive: true, mode: 0o700});
+  const loadOnly = loadOverlay !== undefined;
+  const original = loadOnly ? loadOverlay.original_source : source;
+  const commit = await sourceIdentity(original);
   const args = ['build', '--manifest-path', path.join(source, 'Cargo.toml'), '--release', '--locked', '-p', 'tidemq',
     loadOnly ? '--example' : '--bin', loadOnly ? 'perf_load' : 'tidemq', '--no-default-features', '--features', policy.allocator_feature, '-j2'];
   await command('cargo', args, {cwd: source, env: {...process.env, CARGO_TARGET_DIR: target},
     timeoutMs: 1800000, log: path.join(directory, 'build.log')});
   const name = loadOnly ? 'perf_load' : 'tidemq';
   await fs.copyFile(path.join(target, 'release', ...(loadOnly ? ['examples'] : []), name), path.join(directory, name));
-  assert.equal(await sourceIdentity(source), commit, 'Tracked source changed during build');
-  if (loadOnly) return {source_commit: commit, binary_sha256: sha256(await fs.readFile(path.join(directory, name)))};
+  assert.equal(await sourceIdentity(original), commit, 'Tracked source changed during build');
+  if (loadOnly) {
+    for (const [file, hash] of Object.entries(loadOverlay.harness_files_sha256)) {
+      assert.equal(sha256(await fs.readFile(path.join(source, file))), hash, 'Trusted harness changed during build');
+    }
+    const {original_source: _original, ...identity} = loadOverlay;
+    return {...identity, sdk_source_commit: commit, generator_allocator: 'system',
+      cargo_lock_sha256: sha256(await fs.readFile(path.join(source, 'Cargo.lock'))),
+      binary_sha256: sha256(await fs.readFile(path.join(directory, name)))};
+  }
   const identity = {
     source_commit: commit,
     cargo_lock_sha256: sha256(await fs.readFile(path.join(source, 'Cargo.lock'))),
@@ -217,12 +250,16 @@ async function runGate(settings) {
   assert.equal(await sourceIdentity(baseline), policy.service_source_commit, 'Baseline checkout is not the protected source');
   const target = path.resolve(settings['--target'] ?? path.join(tools, 'target/performance-gate'));
   const builds = path.join(output, 'builds');
-  const loadIdentity = await build(tools, path.join(builds, 'load'), target, policy, true);
+  const baselineOverlay = await overlay(baseline, tools, path.join(output, 'overlays/baseline'), policy);
+  const candidateOverlay = await overlay(candidate, tools, path.join(output, 'overlays/candidate'), policy);
+  const baselineLoad = await build(path.join(output, 'overlays/baseline'), path.join(builds, 'baseline-load'), target, policy, baselineOverlay);
+  const candidateLoad = await build(path.join(output, 'overlays/candidate'), path.join(builds, 'candidate-load'), target, policy, candidateOverlay);
   const baselineIdentity = await build(baseline, path.join(builds, 'baseline'), target, policy);
   const candidateIdentity = await build(candidate, path.join(builds, 'candidate'), target, policy);
   const summary = {
     schema_version: 1, status: 'running', baseline_manifest_sha256: sha256(policyBytes),
-    policy, baseline: baselineIdentity, candidate: candidateIdentity, workload_binary: loadIdentity,
+    policy, baseline: baselineIdentity, candidate: candidateIdentity,
+    workload_binaries: {baseline: baselineLoad, candidate: candidateLoad},
     environment: {platform: os.platform(), arch: os.arch(), kernel: os.release(), node: process.version,
       cpu_model: os.cpus()[0]?.model ?? 'unknown', logical_cpus: os.cpus().length, total_memory_bytes: os.totalmem(),
       github_runner_image: process.env.ImageVersion ?? null, same_host_paired_trials: true,
@@ -230,6 +267,7 @@ async function runGate(settings) {
     limitations: ['Closed-loop finite regression workload; no production saturation or availability-zone claim',
       'A stable interval containing one means no detected regression, not proof of zero performance difference',
       'P99 uses all observations merged in log2/32 upper-bound buckets with up to 3.125 percent bucket width',
+      'Only exact original source 9fe9c95 uses the committed legacy deadline API adapter; subsequent sources share the protected harness',
       'Student t intervals assume independent paired log ratios; confidence is per metric, not simultaneous'],
     topologies: {},
   };
@@ -241,7 +279,7 @@ async function runGate(settings) {
         const values = {};
         const order = pair % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline'];
         for (const side of order) {
-          values[side] = await trial(tools, path.join(builds, side), path.join(builds, 'load/perf_load'),
+          values[side] = await trial(tools, path.join(builds, side), path.join(builds, `${side}-load/perf_load`),
             path.join(output, topology, `${pair}-${side}`), topology, policy);
           console.log(`${topology} pair ${pair + 1}/${policy.pairs} ${side}: ${values[side].durable_messages_per_second.toFixed(2)} durable messages/s`);
         }

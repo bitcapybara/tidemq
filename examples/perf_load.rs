@@ -253,9 +253,6 @@ async fn run(args: &Args) -> Result<Report> {
             node_id: None,
         },
         credential.trim_end_matches(['\r', '\n']).into(),
-        Instant::now()
-            .checked_add(Duration::from_millis(args.request_timeout_ms))
-            .context("Deadline overflow")?,
     )
     .await?;
     let nonce = Id::random()?;
@@ -274,7 +271,7 @@ async fn run(args: &Args) -> Result<Report> {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
-    client.close(client.deadline()?).await;
+    client.close().await;
     let passed = measured
         .partitions
         .iter()
