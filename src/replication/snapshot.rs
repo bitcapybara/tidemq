@@ -132,8 +132,10 @@ impl SnapshotFile {
         let file = self.file.clone();
         let lease = self.lease.clone();
         self.pending = Some(self.runtime.spawn_blocking(move || {
-            let _lease = lease;
-            operation(&file)
+            let result = operation(&file);
+            drop(file);
+            drop(lease);
+            result
         }));
     }
 
@@ -337,9 +339,7 @@ pub(crate) async fn load<A: Application>(
     )
     .await?;
     let bytes = file.read_bytes(maximum).await?;
-    if bytes.len() as u64 != reference.byte_len
-        || *blake3::hash(&bytes).as_bytes() != reference.checksum
-    {
+    if bytes.len() as u64 != reference.byte_len {
         return Err(Error::Corrupt {
             offset: 0,
             reason: "manifest snapshot length or checksum differs",
@@ -347,7 +347,14 @@ pub(crate) async fn load<A: Application>(
     }
     let identity = identity.clone();
     let maximum = options.max_snapshot_bytes;
+    let checksum = reference.checksum;
     tokio::task::spawn_blocking(move || {
+        if *blake3::hash(&bytes).as_bytes() != checksum {
+            return Err(Error::Corrupt {
+                offset: 0,
+                reason: "manifest snapshot checksum differs",
+            });
+        }
         let payload = wal::unframe(&bytes, maximum)?;
         let envelope: Envelope<A> = wal::decode_value(payload)?;
         validate(&envelope, &identity)?;

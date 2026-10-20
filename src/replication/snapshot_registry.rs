@@ -21,6 +21,7 @@ pub struct SnapshotDiagnostics {
     pub snapshot_file_limit: usize,
     pub snapshot_reader_limit: usize,
     pub snapshot_publication_uncertain: bool,
+    pub snapshot_publication_pending: bool,
 }
 
 #[cfg(test)]
@@ -55,7 +56,12 @@ mod tests {
         }
         let options = StorageOptions::default();
         let mut registry = SnapshotRegistry::new(Some(old.clone()), &options, owner);
-        registry.candidate(new.clone()).unwrap();
+        let candidate = registry.candidate(new.clone()).unwrap();
+        registry.begin_publication(&candidate);
+        drop(candidate);
+        registry.cleanup(&directory).await.unwrap();
+        assert!(registry.diagnostics().snapshot_publication_pending);
+        assert!(registry.candidate(new.clone()).is_err());
         registry.freeze_publication();
         assert!(registry.cleanup(&directory).await.is_err());
         assert!(registry.candidate(new.clone()).is_err());
@@ -105,6 +111,7 @@ pub(crate) struct SnapshotRegistry {
     max_readers: usize,
     gc_failures: u64,
     publication_uncertain: bool,
+    publishing: Option<SnapshotRef>,
 }
 
 impl SnapshotRegistry {
@@ -134,6 +141,7 @@ impl SnapshotRegistry {
             max_readers: options.max_snapshot_readers,
             gc_failures: 0,
             publication_uncertain: false,
+            publishing: None,
         }
     }
 
@@ -148,6 +156,7 @@ impl SnapshotRegistry {
             snapshot_file_limit: self.max_files,
             snapshot_reader_limit: self.max_readers,
             snapshot_publication_uncertain: self.publication_uncertain,
+            snapshot_publication_pending: self.publishing.is_some(),
             ..SnapshotDiagnostics::default()
         };
         for asset in &self.assets {
@@ -197,6 +206,13 @@ impl SnapshotRegistry {
 
     pub fn candidate(&mut self, reference: SnapshotRef) -> Result<Arc<SnapshotAsset>> {
         self.ensure_available()?;
+        if self.publishing.is_some() {
+            return Err(Error::Writer {
+                reason:
+                    "An unfinished snapshot publication requires recovery before another generation"
+                        .into(),
+            });
+        }
         if self.assets.len() >= self.max_files {
             return Err(Error::Limit {
                 name: "named snapshot generations",
@@ -212,6 +228,11 @@ impl SnapshotRegistry {
 
     pub fn commit(&mut self, asset: &SnapshotAsset) {
         self.current = Some(asset.reference.clone());
+        self.publishing = None;
+    }
+
+    pub fn begin_publication(&mut self, asset: &SnapshotAsset) {
+        self.publishing = Some(asset.reference.clone());
     }
 
     pub fn freeze_publication(&mut self) {
@@ -267,7 +288,10 @@ impl SnapshotRegistry {
                 name: "snapshot cleanup inventory",
             })?;
         for asset in &self.assets {
-            if self.current.as_ref() != Some(&asset.reference) && Arc::strong_count(asset) == 1 {
+            if self.current.as_ref() != Some(&asset.reference)
+                && self.publishing.as_ref() != Some(&asset.reference)
+                && Arc::strong_count(asset) == 1
+            {
                 removable.push(asset.reference.file_name.clone());
             }
         }
