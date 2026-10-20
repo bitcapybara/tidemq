@@ -13,6 +13,7 @@ use std::time::Duration;
 use prometheus_client::registry::Registry;
 use quic::{Cluster, GROUP, WAIT};
 use support::{Command, Response, State};
+use tidemq::metadata::MetadataState;
 use tidemq::replication::rpc::GroupRole;
 use tidemq::scaling::{
     Capacity, Error, MembershipCoordinator, MembershipPlan, RepairBudget, RepairLimits,
@@ -32,6 +33,31 @@ fn capacity() -> [Capacity; 1] {
         connections: 0,
         ack_bytes: 0,
     }]
+}
+
+async fn coordinator_leader(
+    metadata: &Cluster<MetadataState>,
+    data: &Cluster<State>,
+    eligible: &[u64],
+    deadline: Instant,
+) -> u64 {
+    tokio::time::timeout_at(deadline, async {
+        loop {
+            let current = data.node(2).raft.metrics().borrow().current_leader;
+            let observed = data.node(4).raft.metrics().borrow().current_leader;
+            // Published leader IDs do not prove either group's quorum is ready.
+            if current == observed
+                && let Some(leader) = current.filter(|leader| eligible.contains(leader))
+                && metadata.node(1).raft.ensure_linearizable().await.is_ok()
+                && data.node(leader).raft.ensure_linearizable().await.is_ok()
+            {
+                return leader;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("The replacement coordinator requires a ready leader")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -312,19 +338,27 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
     drop(coordinator);
     data.stop(1).await;
     data.pause_final_membership.store(false, Ordering::Release);
-    let leader = tokio::time::timeout(WAIT, async {
-        loop {
-            let current = data.node(2).raft.metrics().borrow().current_leader;
-            if current == data.node(4).raft.metrics().borrow().current_leader
-                && matches!(current, Some(2..=4))
-            {
-                return current.unwrap();
-            }
-            tokio::task::yield_now().await;
+    let resume_deadline = Instant::now() + WAIT;
+    coordinator_leader(&meta, &data, &[2, 3, 4], resume_deadline).await;
+    // Keep the data leader visible while the coordinator's metadata authority is unavailable.
+    meta.isolated.write().await.insert(1);
+    let barrier = meta.node(1).raft.ensure_linearizable().await;
+    assert!(matches!(
+        barrier,
+        Err(openraft::error::RaftError::APIError(
+            openraft::error::CheckIsLeaderError::QuorumNotEnough(_)
+        ))
+    ));
+    let leader = {
+        let ready = coordinator_leader(&meta, &data, &[2, 3, 4], resume_deadline);
+        tokio::pin!(ready);
+        tokio::select! {
+            ready = &mut ready => panic!("Leader metrics cannot prove metadata quorum readiness: {ready}"),
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
         }
-    })
-    .await
-    .unwrap();
+        meta.isolated.write().await.remove(&1);
+        ready.await
+    };
     let resumed = MembershipCoordinator::new(
         meta.node(1).raft.clone(),
         meta.node(1).state.clone(),
@@ -334,7 +368,7 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
         metrics,
     );
     let result = resumed
-        .execute(&plan, 4096, &capacity(), Instant::now() + WAIT)
+        .execute(&plan, 4096, &capacity(), resume_deadline)
         .await;
     if result.is_err() {
         assert_eq!(
@@ -342,19 +376,8 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
             "Only retirement of the current leader needs a new authority adapter: {result:?}"
         );
         drop(resumed);
-        let next = tokio::time::timeout(WAIT, async {
-            loop {
-                let current = data.node(2).raft.metrics().borrow().current_leader;
-                if current == data.node(4).raft.metrics().borrow().current_leader
-                    && matches!(current, Some(2 | 4))
-                {
-                    return current.unwrap();
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
+        let resume_deadline = Instant::now() + WAIT;
+        let next = coordinator_leader(&meta, &data, &[2, 4], resume_deadline).await;
         let resumed = MembershipCoordinator::new(
             meta.node(1).raft.clone(),
             meta.node(1).state.clone(),
@@ -364,7 +387,7 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
             Arc::new(ScalingMetrics::register(&mut Registry::default())),
         );
         resumed
-            .execute(&plan, 4096, &capacity(), Instant::now() + WAIT)
+            .execute(&plan, 4096, &capacity(), resume_deadline)
             .await
             .unwrap();
     } else {
