@@ -1,0 +1,11 @@
+--- run-gates.before-release-pause.sh
++++ run-gates.sh
+@@ -40,7 +40,7 @@
+ step allocator-probe cargo run --locked --bin tidemq -- allocator-probe --blocks 2
+ step trust-boundaries bash -c 'node --test scripts/coverage/*.test.mjs scripts/performance/*.test.mjs'
+ step rustfs cargo nextest run -p tidemq --locked --test s3_rustfs --test lifecycle_compaction --test lifecycle_persistence --test runtime_queue --lib --run-ignored only --profile ci -E 'not test(wal::segmented::fault_tests::crash_boundary_child)'
+-step release cargo build -p tidemq --release --locked --bin tidemq --example deploy_validation
++printf 'All pre-release gates completed; release paused by coordinator\n'; exit 0             
+ mkdir -p /stage/runtime/bin
+ install -m 0555 /stage/target/release/tidemq /stage/runtime/bin/tidemq
+ install -m 0555 /stage/target/release/examples/deploy_validation /stage/runtime/bin/deploy_validation

@@ -1,0 +1,20 @@
+{
+  "observed_at": "2026-10-20T18:23:51.952985+00:00",
+  "source_sha": "426ff6598c7b6a4337cc07ca79ac70d51d12b413",
+  "original_container_count": 68,
+  "original_ids_found": 68,
+  "original_changes": [],
+  "new_426_runtime_image_created": false,
+  "new_426_deployment_started": false,
+  "matching_426_runtime_image_ids": [],
+  "prepared_426_projects": [
+    {
+      "project": "tidemq-validation-rf1-34e0b78148317413",
+      "container_count": 0
+    },
+    {
+      "project": "tidemq-validation-rf3-32683861f69f9999",
+      "container_count": 0
+    }
+  ]
+}
