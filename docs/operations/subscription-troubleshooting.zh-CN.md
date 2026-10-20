@@ -12,6 +12,7 @@
 | `InFlightMessages` / `InFlightBytes` | 当前工作超过并发或字节预算 | 降低 handler 并发/预取，排查大消息；继续 ACK，不挤占控制保留 |
 | `AttemptsExhausted` | 至少一条消息达到上限，仍保护保留前沿 | 查业务失败与当前代次；采用显式受权 replay，不把写 DLQ 当 ACK |
 | `AwaitReceiveBarrier` | 已签发冷前缀，但 SDK 连续入队证据未到 H | 查最早缺块、SDK 队列容量和 skip 区间验证；不能用 QUIC ACK 或业务 ACK 替代 |
+| `ReceiveBarrier` 返回 Unknown | 屏障可能已持久化，但确认结果未返回，后续读取仍须等待 | 用 `wire_request_unknown` 的 command kind/operation ID 与 Control/Unknown 指标关联；SDK 以相同代次、session、接收位置和 operation ID 在原期限内有限重试。耗尽仍保留 Unknown，禁止跳过屏障或创建替代分配 |
 | 旧代次/token 拒绝 | seek、接管、owner fence 或重投已经替代旧交付 | 获取当前分配；确认 SDK 丢弃迟到块，保留旧 operation 供结果对账，禁止篡改 token |
 | ACK 本地提交快，持久响应慢 | Raft/磁盘/多数派或响应 C 流阶段阻塞 | 分别查排队、WAL sync、复制/commit/apply、控制回复；网络发送成功不能证明持久 ACK |
 | ACK 随生产满额一起停顿 | 运行时 ACK 预留没有生效，或共享盘已耗尽 | 先限制新生产/回放/诊断工作，保留 ACK/控制和磁盘安全余量；恢复后用原 token 重试 |

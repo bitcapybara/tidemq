@@ -54,6 +54,8 @@ Claim 冻结冷读交界 `H=cold_before`。冷段使用 B，SDK 的连续有界�
 
 接管时保留的持久 ACK 空洞通过有界 `AcknowledgedRange {start,end}`（排他 end）显式输出。它们可以填充 SDK 连续接收跟踪中的已完成范围；未收到正文的非 ACK 空洞不能跨越。`ReceiveBarrier` 必须单调且不超过当前 `issued_before`。seek、Claim 或新 fence 后的迟到块不得进入新队列，迟到屏障不得改变新代次。
 
+同代次、session 与相等接收位置的屏障可幂等重放。SDK 对该屏障的 Unknown 使用相同 operation ID、不同 wire request ID 在原 deadline 内有限重试；不能把这个规则扩大为任意控制命令的 Unknown 重试。屏障确认之前不发起后续热读取，耗尽时返回原 Unknown。
+
 ## 本批边界
 
 DataApplication 已在真实磁盘/Raft 中组合生产、所有权与订阅状态，SDK 通过 QUIC 完成热/冷投递与持久 ACK；没有第二套 Broker ACK 权威。底层状态、实际 RustFS、分角色 Runtime 和独立 OS RF3 故障分别有[行为证据](../testing-benchmarks.zh-CN.md)。默认至少一次，同 key 串行由 SDK 调度；真实三区与外部业务副作用不在这些本地证据范围。
