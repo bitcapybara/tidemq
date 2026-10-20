@@ -110,7 +110,7 @@ impl Drop for Charge {
         let _ =
             self.metrics
                 .admitted_bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
                     Some(old.saturating_sub(u64::from(self.bytes)))
                 });
         let count = if self.delivery {
@@ -118,7 +118,7 @@ impl Drop for Charge {
         } else {
             &self.metrics.pending_batches
         };
-        let _ = count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+        let _ = count.try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
             Some(old.saturating_sub(1))
         });
     }
@@ -149,7 +149,7 @@ impl Drop for Timer {
 }
 
 pub(crate) fn increment(counter: &AtomicU64, count: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+    let _ = counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
         Some(old.saturating_add(count))
     });
 }

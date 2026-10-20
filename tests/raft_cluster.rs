@@ -56,12 +56,12 @@ impl RaftNetworkFactory<Config> for Factory {
 }
 
 impl Network {
-    async fn target<E: std::error::Error>(&self) -> Result<Raft, RPCError<u64, BasicNode, E>> {
+    async fn target(&self) -> Result<Raft, Unreachable> {
         let isolated = self.router.isolated.read().await;
         if isolated.contains(&self.source) || isolated.contains(&self.target) {
-            return Err(
-                Unreachable::new(&std::io::Error::other("Injected replica isolation")).into(),
-            );
+            return Err(Unreachable::new(&std::io::Error::other(
+                "Injected replica isolation",
+            )));
         }
         self.router
             .nodes
@@ -69,7 +69,7 @@ impl Network {
             .await
             .get(&self.target)
             .cloned()
-            .ok_or_else(|| Unreachable::new(&std::io::Error::other("Replica is stopped")).into())
+            .ok_or_else(|| Unreachable::new(&std::io::Error::other("Replica is stopped")))
     }
 }
 

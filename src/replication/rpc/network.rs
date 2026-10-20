@@ -92,6 +92,8 @@ impl<A: Application> QuicNetwork<A> {
         self.pool.frame(kind, class, id, &payload, deadline, permit)
     }
 
+    // Preserve the error type required by OpenRaft's RaftNetwork contract.
+    #[allow(clippy::result_large_err)]
     async fn append(
         &self,
         rpc: AppendEntriesRequest<TypeConfig<A>>,

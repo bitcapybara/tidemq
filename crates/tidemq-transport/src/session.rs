@@ -80,12 +80,12 @@ pub(super) struct StreamLease {
 impl StreamLease {
     pub fn invalidate(&self) {
         if self.purpose == StreamPurpose::Core && self.core_live.swap(false, Ordering::AcqRel) {
-            let _ =
-                self.state
-                    .core_live
-                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                        count.checked_sub(1)
-                    });
+            let _ = self
+                .state
+                .core_live
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_sub(1)
+                });
         }
     }
     pub fn validate_kind(&self, frame: &Frame) -> Result<()> {
@@ -112,7 +112,7 @@ impl Drop for StreamLease {
 impl Drop for ConnectionState {
     fn drop(&mut self) {
         self.handle.close(0_u32.into());
-        let _ = self.metrics.active_connections.fetch_update(
+        let _ = self.metrics.active_connections.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |count| count.checked_sub(1),
