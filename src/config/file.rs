@@ -29,8 +29,6 @@ pub(super) struct ConfigFile {
     gateway: Option<GatewayConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     storage: Option<StorageConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    listen: Option<SocketAddr>,
 }
 
 impl Default for ConfigFile {
@@ -45,18 +43,10 @@ impl Default for ConfigFile {
 }
 
 impl ConfigFile {
-    fn validate_layout(&self) -> Result<()> {
-        if self.authorization.is_none() && self.gateway.is_none() && self.storage.is_none() {
-            return Ok(());
-        }
+    fn validate_layout(&self) -> Result<Role> {
         let role = self.role.ok_or(Error::Configuration {
             reason: "role-scoped configuration requires an explicit role",
         })?;
-        if self.listen.is_some() || self.runtime.contains_legacy_settings() {
-            return Err(Error::Configuration {
-                reason: "role sections cannot be mixed with legacy listener, authorization or storage settings",
-            });
-        }
         if role.serves_gateway() != self.gateway.is_some() {
             return Err(Error::Configuration {
                 reason: "gateway section is required only for gateway or combined roles",
@@ -77,7 +67,7 @@ impl ConfigFile {
                 reason: "shared authorization file paths must be nonempty",
             });
         }
-        Ok(())
+        Ok(role)
     }
 }
 
@@ -124,16 +114,6 @@ struct RuntimeFile {
     peers: Vec<PeerConfig>,
     bootstrap: bool,
     capacity: crate::quota::Limits,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    access_file: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    delivery_key_file: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    objects: Option<ObjectConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    retention: Option<crate::retention::Policy>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    archive_interval_ms: Option<u64>,
 }
 
 impl Default for RuntimeFile {
@@ -152,26 +132,12 @@ impl From<RuntimeConfig> for RuntimeFile {
             peers: runtime.peers,
             bootstrap: runtime.bootstrap,
             capacity: runtime.capacity,
-            access_file: None,
-            delivery_key_file: None,
-            objects: None,
-            retention: None,
-            archive_interval_ms: None,
         }
     }
 }
 
 impl RuntimeFile {
-    fn contains_legacy_settings(&self) -> bool {
-        self.access_file.is_some()
-            || self.delivery_key_file.is_some()
-            || self.objects.is_some()
-            || self.retention.is_some()
-            || self.archive_interval_ms.is_some()
-    }
-
     fn into_runtime(self) -> RuntimeConfig {
-        let defaults = RuntimeConfig::default();
         RuntimeConfig {
             internal_listen: self.internal_listen,
             metadata_group: self.metadata_group,
@@ -180,13 +146,7 @@ impl RuntimeFile {
             peers: self.peers,
             bootstrap: self.bootstrap,
             capacity: self.capacity,
-            access_file: self.access_file.unwrap_or(defaults.access_file),
-            delivery_key_file: self.delivery_key_file.unwrap_or(defaults.delivery_key_file),
-            objects: self.objects,
-            retention: self.retention.unwrap_or(defaults.retention),
-            archive_interval_ms: self
-                .archive_interval_ms
-                .unwrap_or(defaults.archive_interval_ms),
+            ..RuntimeConfig::default()
         }
     }
 }
@@ -195,7 +155,7 @@ impl TryFrom<ConfigFile> for Config {
     type Error = Error;
 
     fn try_from(file: ConfigFile) -> Result<Self> {
-        file.validate_layout()?;
+        let role = file.validate_layout()?;
         let mut runtime = file.runtime.into_runtime();
         if let Some(authorization) = file.authorization {
             runtime.access_file = authorization.access_file;
@@ -209,11 +169,10 @@ impl TryFrom<ConfigFile> for Config {
         Ok(Self {
             node_id: file.node_id,
             cluster_id: file.cluster_id,
-            role: file.role.unwrap_or_default(),
+            role,
             listen: file
                 .gateway
                 .map(|gateway| gateway.listen)
-                .or(file.listen)
                 .unwrap_or_else(|| Self::default().listen),
             management_listen: file.management_listen,
             data_dir: file.data_dir,
@@ -257,7 +216,6 @@ impl From<Config> for ConfigFile {
             runtime: RuntimeFile::from(config.runtime),
             gateway,
             storage,
-            listen: None,
         }
     }
 }

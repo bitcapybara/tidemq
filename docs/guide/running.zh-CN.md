@@ -1,6 +1,6 @@
 # 运行 TideMQ
 
-可执行程序的运行入口是 `tidemq serve --config <配置文件>`。Gateway、Broker、Storage、Metadata 和 Combined 使用同一个程序，通过 `role` 选择职责。生成的每个进程配置只包含其适用的 `[gateway]` / `[storage]` 表，授权、拓扑和进程设置共用；字段位置与旧配置迁移见[配置指南](configuration.zh-CN.md)。所有队列与内部节点通信使用 s2n-quic；AWS SDK 到 S3 的 HTTP 请求属于对象存储接口。
+可执行程序的运行入口是 `tidemq serve --config <配置文件>`。Gateway、Broker、Storage、Metadata 和 Combined 使用同一个程序，通过 `role` 选择职责。生成的每个进程配置只包含其适用的 `[gateway]` / `[storage]` 表，授权、拓扑和进程设置共用；字段位置与开发环境配置要求见[配置指南](configuration.zh-CN.md)。所有队列与内部节点通信使用 s2n-quic；AWS SDK 到 S3 的 HTTP 请求属于对象存储接口。
 
 ## 本地 RF1
 

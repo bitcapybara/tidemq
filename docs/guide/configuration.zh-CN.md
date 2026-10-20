@@ -34,9 +34,9 @@
 
 生成器分别输出每个进程的 `node-ID.toml`。例如 RF3 的 `node-41.toml` 只有 Gateway 表，`node-21.toml` 只有 Storage 表，`node-31.toml` 和 `node-11.toml` 只有共享设置；无需将整套角色的配置复制进每个进程。`config/local.toml` 展示 Combined 配置。配置中误加未启用角色的表、未知字段、缺少必需角色表或授权路径时立即失败，不静默忽略。
 
-仍可完整读取旧版顶层 `listen` 与 `[runtime]` 中的授权/对象/retention/归档字段。迁移时将 `listen` 移到 `[gateway]`，两个秘密文件路径移到 `[authorization]`，对象、retention 和归档间隔移到 `[storage]`，公共 runtime 字段保持原位。开始使用任何新表后必须一次迁完该文件，并显式填写 `role`；不能混用新旧位置，即使重复值相同也拒绝。生成器默认输出和配置序列化只产生新布局；旧二进制不能读取新布局，升级部署时应把二进制与配置作为一组切换，并保留原配置用于回退。
+当前开发阶段只接受这一套按角色组织的配置。旧版顶层 `listen`、`[runtime]` 中的授权/对象/retention/归档字段，以及新旧位置混合都明确拒绝，不提供自动兼容或回退分支。已有开发环境需要按当前示例更新配置，显式填写 `role`、共享授权路径和适用的角色表；保留原 cluster/node/group 身份、证书和数据目录，不自动删除已有数据，也不为了重建配置清空 WAL 或快照。
 
-生成器的完整接口为 `bash deploy/local/generate.sh MODE NEW_OUTPUT [roles|legacy]`，`MODE` 为 `rf1`、`rf3` 或 `rf3-combined`，默认 `roles`。`legacy` 仅用于需要比较旧基线二进制的性能工具或明确的升级兼容验证；两种布局具有相同身份、证书、预算和拓扑语义，不改变基线源代码。性能比较为两边明确指定同一种旧布局；常规本地与 Docker 部署使用新布局。
+生成器的完整接口为 `bash deploy/local/generate.sh MODE NEW_OUTPUT`，`MODE` 为 `rf1`、`rf3` 或 `rf3-combined`。它始终生成当前角色格式，拒绝多余参数。生成目录必须尚不存在，只为新的开发拓扑创建身份；已有持久目录的配置调整应保留其原始身份与密钥。
 
 本地生成配置明确给出 192 MiB 应用预算和 32 MiB 控制预留。开启 S3 时要求至少这些预算，并要求 RSS 高水位至少高于应用预算 64 MiB，保证打包临时缓冲、最终对象和控制工作能同时准入。修改应用预算必须同步检查 RSS、水位与容器限制；原生 QUIC、线程栈、诊断、追踪和 allocator 保留不包含在应用许可里。Linux cgroup v2 另按可见祖先的实际压力做独立门控，无法读取时不能填零。
 

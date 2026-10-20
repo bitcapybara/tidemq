@@ -109,7 +109,7 @@ RustFS 使用官方 1.0.3 的 Linux x86_64 musl 可执行文件，只读 bind �
 
 ## 生成与启动
 
-为每种拓扑创建新的状态目录，不能覆盖已有输出。父目录应预先存在且私有。`prepare.sh` 读取仓库中的 `compose.rf1.yaml` 或 `compose.rf3.yaml`，并调用现有 local generator，保留节点 ID、端口、拓扑和身份；分发文件、改写容器内路径并添加 loopback RustFS 配置。每个 `node.toml` 只保留所选角色适用的表：Gateway/Combined 有 `[gateway]`，Storage/Combined 有 `[storage]` 和 `[storage.objects]`；所有角色共用 `[authorization]` 与 `[runtime]`。Broker/Metadata 当前没有私有调参项。旧布局可读但不能与新表混合，迁移说明见[配置指南](../../docs/guide/configuration.zh-CN.md)。
+为每种拓扑创建新的状态目录，不能覆盖已有输出。父目录应预先存在且私有。`prepare.sh` 读取仓库中的 `compose.rf1.yaml` 或 `compose.rf3.yaml`，并调用现有 local generator，保留节点 ID、端口、拓扑和身份；分发文件、改写容器内路径并添加 loopback RustFS 配置。每个 `node.toml` 只保留所选角色适用的表：Gateway/Combined 有 `[gateway]`，Storage/Combined 有 `[storage]` 和 `[storage.objects]`；所有角色共用 `[authorization]` 与 `[runtime]`。Broker/Metadata 当前没有私有调参项。当前开发阶段只接受这套角色配置，旧布局和混合字段明确拒绝；已有开发环境需更新配置并保留原身份与数据，见[配置指南](../../docs/guide/configuration.zh-CN.md)。
 
 ```bash
 STATE=/absolute/new-rf1-state
