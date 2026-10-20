@@ -72,9 +72,9 @@ record frame 保留 88 字节头部：magic/格式版本 8 字节、payload 长�
 4. 真正 OpenRaft core 在快照成功后才可压缩对应日志。checkpoint 先同步有限控制状态及存活位置引用，再原子发布 manifest 并同步目录，最后删除没有引用的 sealed 段；旧文件在新恢复链持久成功前保留。
 5. 重开时，purged 范围必须被 durable snapshot 覆盖，committed 尾部必须连续且身份一致，否则拒绝恢复。
 
-purge 不再重编码所有 retained payload。检查点引用仍存活的物理 record，完整失效段只有在新 checkpoint/manifest 已持久后才删除。混合段先保留；字节压力下一次最多搬迁一个有界 sealed 混合段的有效原始 frame。段数压力下，可将一个 normal 混合源和一个已有 `ref_only` 目标合并成一个新 `ref_only` 段，输出仍不超过 16 MiB 目标大小；不扫描/重写完整 retained tail。`ref_only` 段只供检查点定位，不把其中保留的旧物理序号当新 tail 重放。新引用/checkpoint/manifest 持久后才删除旧文件，空 active 可复用，避免每次检查点制造空段。
+purge 不再重编码所有 retained payload。检查点引用仍存活的物理 record，完整失效段只有在新 checkpoint/manifest 已持久后才删除。压力整理每次最多生成一个 `ref_only` 目标段：输入至多为一个 normal 混合源和一个已有 `ref_only` 段，存活原始 frame 加段头合计不超过 `segment_target_bytes`，默认 16 MiB。当前 active 只有在有序 checkpoint 屏障同步封存后才可作为源；不扫描或重写完整 retained tail。`ref_only` 段只供检查点定位，不把其中保留的旧物理序号当新 tail 重放。新引用/checkpoint/manifest 持久后才删除旧文件；空 active 复用，相同 checkpoint 不重复发布。
 
-未提交 suffix 的 truncate 仍通过有序记录和精确重放边界排除；逻辑失效字节在文件真正删除前继续占容量。控制 reserve 和两个剩余段槽位用于轮转、搬迁和检查点，不能用满所有空间后再假设 GC 不需要临时空间。任一写入、同步或发布错误都会 poison writer，不绕过持久语义继续返回成功。
+未提交 suffix 的 truncate 仍通过有序记录和精确重放边界排除；逻辑失效字节在文件真正删除前继续占容量。控制 reserve 和两个剩余段槽位用于轮转、搬迁和检查点，不能用满所有空间后再假设 GC 不需要临时空间。写入前的配置、编码或配额拒绝不等于 IO 状态不确定；实际写入、同步或发布失败会 poison writer，不绕过持久语义继续返回成功。异步文件写入先完成 `flush`，再执行 `sync_all`，避免遗漏缓冲写入的错误。
 
 快照 reader 持有目录 owner、reader 槽位和文件引用。当前、退休及候选快照默认合计最多 4 个具名文件，reader 默认最多 8 个，另允许一个 incoming 文件；reader 还在执行 IO 时，取消等待者不会提前解除 pin。退休文件保留名称直到最后一个 reader 释放，所以物理采样不会漏算已 unlink 但仍占磁盘的快照。达到文件或 reader 上限时拒绝新增工作，不无限积累旧快照。
 

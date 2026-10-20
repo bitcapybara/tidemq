@@ -9,7 +9,7 @@
 | 部分 | 实施约束与容量口径 |
 | --- | --- |
 | 恢复权威 | `manifest.bin` 唯一指定具名段、checkpoint 和当前 snapshot；文件名使用 UUID，不根据 mtime 猜链 |
-| 日志回收 | checkpoint 保存有限控制状态和存活位置引用；字节压力下搬迁一个混合段，段数压力下至多将一个 normal 源和一个已有 `ref_only` 目标合并，输出不超过 16 MiB；新链持久后删除旧文件，不重编码整个 retained tail |
+| 日志回收 | checkpoint 保存有限控制状态和存活位置引用；压力整理至多合并一个 normal 混合源与一个已有 `ref_only` 段，输出一个不超过 16 MiB 的 `ref_only` 段；active 须先经屏障同步封存，新链持久后才删除旧文件，不重编码整个 retained tail |
 | 默认 WAL | 16 MiB 目标段、64 段、128 MiB 总文件字节；8 MiB checkpoint 与 32 MiB 控制 reserve 纳入总额，普通轮转保留两个段槽位 |
 | 快照生命周期 | 完整 snapshot 仍为 64 MiB payload；4 个具名文件、8 个 reader、另一个 incoming；退休 reader 保留文件名和 owner lock |
 | 物理采样 | 按共享规范名称校验所有实际具名文件，包含 orphan、staging 和退休快照；256 项硬界限代替旧的 16 项与 `raft.wal` 检查 |
