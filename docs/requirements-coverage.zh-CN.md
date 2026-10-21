@@ -104,7 +104,7 @@
 | --- | --- | --- | --- | --- |
 | NC01 | 零复制等技术优化编解码，评估 rkyv/FlatBuffers/FlexBuffers | T01,T06,T07,T13 | 字节一致、完整所有权/容量计费、真实 QUIC 与分配/耗时对照 | 大块唯一所有 payload 分段发送与末引用许可已验；格式[研究](research/zero-copy-formats.zh-CN.md)已完成，未迁移现有格式；codec 探针不替代服务性能 |
 | NC02 | 使用 Tokio CancellationToken 约束异步调用，消除反复传递 client.deadline() | T06,T10 | 默认总预算、最早父期限、取消传播/隔离、关闭清理、发送后 Unknown 与身份保留 | SDK 全 feature 真实网络与文档测试通过，调用方/示例/部署工具已迁移；新 Tokio task 显式传 scope |
-| NC03 | CI RF1/RF3 性能测试、仓库基线与 PR 回退门禁 | T12,T13,T14 | 真持久语义、配对比较、受保护策略、回退/噪声失败、main 才晋升 | P02；`693f9bd` 隔离构建／测量的完整 32 试次及原统计门禁通过，`d38fb80` 本地运行原联合脚本记录真实基线；历史失败／inconclusive 保留。RF3 两项 p99 仍 imprecise；远端汇总受 GitHub 计费阻塞，套餐另限制 required status |
+| NC03 | CI RF1/RF3 性能测试、仓库基线与 PR 回退门禁 | T12,T13,T14 | 真持久语义、配对比较、受保护策略、回退/噪声失败、main 才晋升 | P02；`693f9bd` 完整 32 试次及原统计门禁通过，`d38fb80` 本地运行原联合脚本记录基线；历史失败／inconclusive 保留，RF3 两项 p99 仍 imprecise。公开后 main `addf6d9` 已实际重跑，不再仅记录计费未启动；main 当前未设置 required checks，新 WAL 版完整性能待验 |
 | NC04 | 最新 stable、全 Rust target Clippy、nextest、llvm-cov 三格式报告与不得下降的覆盖率基线、复用缓存 | T00,T12,T13,T14 | 固定工具版本、精确计数比较、真实 Linux main 报告、测试与性能均成功才联合晋升 | Rust 1.99.1；`693f9bd` Rust CI 8／8 job 成功，两平台各 310 passed／12 skipped、docs 各 4 passed；严格 Clippy／生产审计通过。`d38fb80` 接受行 27907／35176、函数 2576／3637、region 38365／49848 数值基线；计费阻塞和本地审计晋升见[证据](evidence/2026-10-20-ci-refactor.zh-CN.md) |
 | NC05 | 清理无效参数，错误日志放 inspect_err，减少重复字符串分配 | T00,T01,T06,T07,T10 | 调用方同步、许可活到 owned worker／abort 完成、授权与取消匹配不变 | 复用 `Arc<str>` 而不新增 FastStr 依赖；授权共享及阻塞 abort 许可回归通过，见[代码质量证据](evidence/2026-10-20-code-quality.zh-CN.md)；实际 RAII guard 保留 |
 | NC06 | 复用指标／日志生态，优先 OpenTelemetry，SDK 由宿主初始化 | T00,T06,T10,T14 | 固定 series、宿主设施共存、终态释放计数准确、导出预算由宿主管理 | SDK 可选 OpenTelemetry feature 新增十个固定无标签 instrument；39 项 SDK 测试及 Collector 配置校验通过；未新增本轮远端 OTLP 导出验证 |

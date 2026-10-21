@@ -27,7 +27,7 @@
 | T10 运行时 | serve、组合/独立角色、实际内外 QUIC、管理健康/就绪/指标/诊断、TLS/静态授权、正常关闭；兼容 LibreSSL 的配置生成器；真实 RF1/RF3 热冷路径、独立 OS 进程故障与原 SDK 恢复；Linux 独立 Docker 项目、UID/卷/cgroup/无宿主端口实际核验 | 真实生产部署、跨区及长期压力待验 |
 | T11 弹性 | 私有稳定成员证明、learner/joint/stable、真实 Raft 迁移、独立修复预算、真实容量/CPU/网络/连接/ACK 评分；owned ticker 驱动显式/自动 Storage 修复及 Broker 移交 | 冷却/长期均衡、高压力及跨区容量待验 |
 | T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；独立 RF3 CLI 与 Linux Docker 的 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启、RF1 真 OOM；`077004e` 十个 Docker case 合计 736 条完整唯一交付和持久 ACK；`d7c913e` Linux workspace 284 passed/12 ignored、34 个 suite | 历史 RustFS ignored 与当前普通门禁分开计数；Linux 官方 Collector ignored 未执行；生产 LB/三区、掉电与长稳待验 |
-| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；`693f9bd` 隔离构建／测量完整 32 试次通过，`d38fb80` 本地审计晋升真实性能／覆盖率数值基线 | 历史失败与 inconclusive 保留；当前 RF3 两项 p99 仍 imprecise，无法排除尾回退；GitHub 计费阻塞远端汇总，高吞吐低延迟、长稳与三区目标待验。细节见[本轮记录](evidence/2026-10-20-ci-refactor.zh-CN.md) |
+| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；`693f9bd` 完整 32 试次通过，`d38fb80` 本地审计记录性能／覆盖率数值基线 | 原 RF3 两项 p99 仍 imprecise；历史计费失败与公开后的真实重跑分别保留。新分段 WAL 版的完整性能仍待验；高吞吐低延迟、长稳和三区目标未放行 |
 | T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；可选 OTLP 有界导出、实际四角色关联、Collector 多故障隔离；统一导航、84 条覆盖、Linux Docker 构建/隔离/故障脚本与真实命令证据 | Linux 分配栈、生产命令与浏览器画面仍按对应环境验收 |
 
 ## 证据口径
