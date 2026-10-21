@@ -491,10 +491,13 @@ async fn exercise(scenario: Scenario) {
             assert_eq!(recovered, plan);
             driver.execute(&recovered, deadline).await.unwrap();
         } else {
-            let first = driver.execute(&plan, Instant::now() + WAIT).await;
-            if first.is_err() {
-                // Retiring the joint leader requires discovering its successor before final proof.
-                driver.execute(&plan, Instant::now() + WAIT).await.unwrap();
+            let deadline = Instant::now() + WAIT;
+            match driver.execute(&plan, deadline).await {
+                Err(Error::Unknown) => {
+                    // Retiring the joint leader can leave the original plan's result unknown.
+                    driver.execute(&plan, deadline).await.unwrap();
+                }
+                result => result.unwrap(),
             }
         }
     }
