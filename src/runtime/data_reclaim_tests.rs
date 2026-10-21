@@ -284,7 +284,7 @@ async fn a_cancelled_read_retains_page_charge_until_its_owned_work_finishes() {
         .await
         .expect("Finishing owned work must release the page within the original deadline")
         .unwrap();
-    // The lane and memory permits have the same Admission owner, now released by cancellation.
+    // The lane and memory permits share one Admission, released after owned work finishes.
     drop(hook);
     let issued = service
         .data
