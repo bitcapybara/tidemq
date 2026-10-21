@@ -1,0 +1,1546 @@
+{
+  "schema_version": 1,
+  "source_commit": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+  "mac_verdict": "inconclusive",
+  "original_manifest_sha256": "025f2b3adb57bf99496af58f37a332b32f8a811fca7a792997fec94bfbf2d928",
+  "original_policy_sha256": "fa569a62bad1fcb8b65cf2be8296ca743e26f8609a9b376984ef1550684c1b54",
+  "metric": "produce_mean_ns",
+  "original_log_ci_half_width": 0.3791735514574764,
+  "required_max_log_ci_half_width": 0.15,
+  "method": {
+    "completion": "P_i=completion_i-offer_i",
+    "lateness": "L_i=pre-message-construction_i-offer_i",
+    "post_schedule": "mean(P_i)-mean(L_i); 1024 matching observations",
+    "stage": "node 1 measured after minus before Prometheus histogram counters",
+    "limits": [
+      "Stage deltas are leader node 1 measured-phase counters, not follower instantaneous I/O.",
+      "Completion minus lateness is all work after scheduling, not pure RPC latency.",
+      "Correlations of 16 observations are descriptive and do not prove fsync or host scheduling causality.",
+      "No policy, workload, deadline, retry, pair count, or original report was changed."
+    ]
+  },
+  "paired": [
+    {
+      "pair": 0,
+      "ratio": 0.6581113138969732,
+      "mean_reduction_ms": 939.1145620048826,
+      "scheduling_lateness_reduction_ms": 937.6240931894533,
+      "fraction_of_mean_reduction_from_lateness": 0.9984128998998297,
+      "post_schedule_ratio": 0.9670209802052553
+    },
+    {
+      "pair": 1,
+      "ratio": 0.6708957961152898,
+      "mean_reduction_ms": 1233.1088905673828,
+      "scheduling_lateness_reduction_ms": 1230.6756756279296,
+      "fraction_of_mean_reduction_from_lateness": 0.9980267639313398,
+      "post_schedule_ratio": 0.9482280117737142
+    },
+    {
+      "pair": 2,
+      "ratio": 0.8187771845541377,
+      "mean_reduction_ms": 633.5025389453122,
+      "scheduling_lateness_reduction_ms": 632.6837010019531,
+      "fraction_of_mean_reduction_from_lateness": 0.9987074433123467,
+      "post_schedule_ratio": 0.9823015562570071
+    },
+    {
+      "pair": 3,
+      "ratio": 0.9367218016635379,
+      "mean_reduction_ms": 197.3283072812501,
+      "scheduling_lateness_reduction_ms": 196.72232847656232,
+      "fraction_of_mean_reduction_from_lateness": 0.9969290832469156,
+      "post_schedule_ratio": 0.9869052923392152
+    },
+    {
+      "pair": 4,
+      "ratio": 0.5767145755527682,
+      "mean_reduction_ms": 1540.8938992031249,
+      "scheduling_lateness_reduction_ms": 1538.0716635683593,
+      "fraction_of_mean_reduction_from_lateness": 0.998168442592819,
+      "post_schedule_ratio": 0.9396738020924199
+    },
+    {
+      "pair": 5,
+      "ratio": 0.812226385570551,
+      "mean_reduction_ms": 476.4702269814452,
+      "scheduling_lateness_reduction_ms": 475.18368141015617,
+      "fraction_of_mean_reduction_from_lateness": 0.9972998405809328,
+      "post_schedule_ratio": 0.9713632373080622
+    },
+    {
+      "pair": 6,
+      "ratio": 0.6764770708500616,
+      "mean_reduction_ms": 567.4609329414063,
+      "scheduling_lateness_reduction_ms": 566.225193024414,
+      "fraction_of_mean_reduction_from_lateness": 0.9978223348159195,
+      "post_schedule_ratio": 0.9715384076477452
+    },
+    {
+      "pair": 7,
+      "ratio": 0.39335420565624085,
+      "mean_reduction_ms": 1545.0080105078127,
+      "scheduling_lateness_reduction_ms": 1541.9017500371092,
+      "fraction_of_mean_reduction_from_lateness": 0.997989485847596,
+      "post_schedule_ratio": 0.9311081342549958
+    }
+  ],
+  "rows": [
+    {
+      "pair": 0,
+      "side": "baseline",
+      "start_unix_ms": 1792557418501,
+      "produce_mean_ms": 2746.8430520742186,
+      "scheduling_lateness_mean_ms": 2701.6485973964845,
+      "post_schedule_completion_mean_ms": 45.19445467773438,
+      "lateness_fraction": 0.9835467648420587,
+      "produce_p99_upper_ms": 5368.709119,
+      "produce_elapsed_s": 46.306106916,
+      "consume_ack_elapsed_s": 55.776249666,
+      "read_calls": 152,
+      "read_mean_ms": 322.32821930263157,
+      "ack_calls": 151,
+      "ack_mean_ms": 44.839271516556295,
+      "ack_end_to_end_mean_ms": 11015.468148679687,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 6270000000,
+        "observed_cpu_interval_ms": 55776,
+        "sampled_rss_max_bytes": 86212608,
+        "samples": 57,
+        "sampling_errors": 0,
+        "successful_os_samples": 57
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 44.35956941503917,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 44.29444730371111,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4700,
+          "mean_ms": 6.748857039999956,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4700,
+          "mean_ms": 2.1481728993616938,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2350,
+          "mean_ms": 8.51447977914896,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 17899,
+          "mean_ms": 4.611853905916534,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 152,
+          "mean_ms": 284.19437609210445,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 151,
+          "mean_ms": 43.927646231788096,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 0,
+      "side": "candidate",
+      "start_unix_ms": 1792557530232,
+      "produce_mean_ms": 1807.728490069336,
+      "scheduling_lateness_mean_ms": 1764.0245042070312,
+      "post_schedule_completion_mean_ms": 43.703985862304684,
+      "lateness_fraction": 0.975823810875145,
+      "produce_p99_upper_ms": 3858.009083,
+      "produce_elapsed_s": 44.776375958,
+      "consume_ack_elapsed_s": 53.360487667,
+      "read_calls": 144,
+      "read_mean_ms": 325.5370026111111,
+      "ack_calls": 143,
+      "ack_mean_ms": 45.26717802797203,
+      "ack_end_to_end_mean_ms": 9176.71289184082,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 5940000000,
+        "observed_cpu_interval_ms": 53359,
+        "sampled_rss_max_bytes": 84017152,
+        "samples": 55,
+        "sampling_errors": 0,
+        "successful_os_samples": 55
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 42.95902559960932,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 42.90446532128905,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4669,
+          "mean_ms": 7.126151231098676,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4668,
+          "mean_ms": 9.288317280634049,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2334,
+          "mean_ms": 9.066918082262239,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15602,
+          "mean_ms": 4.513333837456638,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 144,
+          "mean_ms": 287.0024337708334,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 143,
+          "mean_ms": 44.355093510489574,
+          "p99_upper_ms": 100
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 46.999208,
+          "p99_upper_ms": 50
+        }
+      }
+    },
+    {
+      "pair": 1,
+      "side": "baseline",
+      "start_unix_ms": 1792557754290,
+      "produce_mean_ms": 3746.864597935547,
+      "scheduling_lateness_mean_ms": 3699.865921183594,
+      "post_schedule_completion_mean_ms": 46.99867675195313,
+      "lateness_fraction": 0.9874565318485625,
+      "produce_p99_upper_ms": 7247.757311,
+      "produce_elapsed_s": 48.168164708,
+      "consume_ack_elapsed_s": 56.739681,
+      "read_calls": 153,
+      "read_mean_ms": 325.9486149281046,
+      "ack_calls": 152,
+      "ack_mean_ms": 45.12469628289474,
+      "ack_end_to_end_mean_ms": 11503.066766064454,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 5440000000,
+        "observed_cpu_interval_ms": 56743,
+        "sampled_rss_max_bytes": 85098496,
+        "samples": 58,
+        "sampling_errors": 0,
+        "successful_os_samples": 58
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 46.190062600586046,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 46.140421373046806,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4704,
+          "mean_ms": 7.316479611394537,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4704,
+          "mean_ms": 2.200785768282323,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2352,
+          "mean_ms": 9.406802641581617,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 17963,
+          "mean_ms": 4.420434501085537,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 153,
+          "mean_ms": 285.99256290196075,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 152,
+          "mean_ms": 44.43305973684215,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 1,
+      "side": "candidate",
+      "start_unix_ms": 1792557640427,
+      "produce_mean_ms": 2513.755707368164,
+      "scheduling_lateness_mean_ms": 2469.190245555664,
+      "post_schedule_completion_mean_ms": 44.5654618125,
+      "lateness_fraction": 0.9822713632506641,
+      "produce_p99_upper_ms": 4697.620479,
+      "produce_elapsed_s": 45.657637084,
+      "consume_ack_elapsed_s": 54.006209083,
+      "read_calls": 146,
+      "read_mean_ms": 322.57035022602736,
+      "ack_calls": 144,
+      "ack_mean_ms": 47.872671875,
+      "ack_end_to_end_mean_ms": 9743.624943810546,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 6000000000,
+        "observed_cpu_interval_ms": 54010,
+        "sampled_rss_max_bytes": 83656704,
+        "samples": 56,
+        "sampling_errors": 0,
+        "successful_os_samples": 56
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 43.75498294140669,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 43.6997566513671,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4673,
+          "mean_ms": 6.953792789856633,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4672,
+          "mean_ms": 9.452879131635342,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2336,
+          "mean_ms": 9.330380965753431,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15691,
+          "mean_ms": 4.423313580842491,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 146,
+          "mean_ms": 283.4175522123284,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 144,
+          "mean_ms": 46.996283861110804,
+          "p99_upper_ms": 500
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 59.280666000000004,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "side": "baseline",
+      "start_unix_ms": 1792557870019,
+      "produce_mean_ms": 3495.71072155957,
+      "scheduling_lateness_mean_ms": 3449.444622955078,
+      "post_schedule_completion_mean_ms": 46.266098604492186,
+      "lateness_fraction": 0.9867648949556527,
+      "produce_p99_upper_ms": 6481.649792,
+      "produce_elapsed_s": 47.39784,
+      "consume_ack_elapsed_s": 56.458580208,
+      "read_calls": 154,
+      "read_mean_ms": 322.6126866428571,
+      "ack_calls": 153,
+      "ack_mean_ms": 44.21389594771242,
+      "ack_end_to_end_mean_ms": 11477.04983322168,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 5700000000,
+        "observed_cpu_interval_ms": 56468,
+        "sampled_rss_max_bytes": 84738048,
+        "samples": 58,
+        "sampling_errors": 0,
+        "successful_os_samples": 58
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 45.54625285937497,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 45.49460920703122,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4708,
+          "mean_ms": 7.238300145072168,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4708,
+          "mean_ms": 2.120209684367037,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2354,
+          "mean_ms": 9.118593364485983,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 17942,
+          "mean_ms": 4.4372795012261825,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 154,
+          "mean_ms": 283.73045314285685,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 153,
+          "mean_ms": 43.44390741176452,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 2,
+      "side": "candidate",
+      "start_unix_ms": 1792557984717,
+      "produce_mean_ms": 2862.208182614258,
+      "scheduling_lateness_mean_ms": 2816.760921953125,
+      "post_schedule_completion_mean_ms": 45.447260661132816,
+      "lateness_fraction": 0.9841216089950443,
+      "produce_p99_upper_ms": 5635.884958,
+      "produce_elapsed_s": 46.555038541,
+      "consume_ack_elapsed_s": 54.721882416,
+      "read_calls": 147,
+      "read_mean_ms": 326.3073200272109,
+      "ack_calls": 146,
+      "ack_mean_ms": 46.18919465068493,
+      "ack_end_to_end_mean_ms": 10093.083055033203,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 5780000000,
+        "observed_cpu_interval_ms": 54724,
+        "sampled_rss_max_bytes": 84983808,
+        "samples": 56,
+        "sampling_errors": 0,
+        "successful_os_samples": 56
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 44.600967236328074,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 44.54406842675782,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4681,
+          "mean_ms": 7.564691532578442,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4680,
+          "mean_ms": 9.89257797564106,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2340,
+          "mean_ms": 10.120159723076885,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15799,
+          "mean_ms": 4.196472405342102,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 147,
+          "mean_ms": 285.71913951700617,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 146,
+          "mean_ms": 45.390019712329064,
+          "p99_upper_ms": 100
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 32.056458000000006,
+          "p99_upper_ms": 50
+        }
+      }
+    },
+    {
+      "pair": 3,
+      "side": "baseline",
+      "start_unix_ms": 1792558211943,
+      "produce_mean_ms": 3118.424867788086,
+      "scheduling_lateness_mean_ms": 3072.1482482265624,
+      "post_schedule_completion_mean_ms": 46.27661956152344,
+      "lateness_fraction": 0.9851602582959301,
+      "produce_p99_upper_ms": 6442.450943,
+      "produce_elapsed_s": 47.407700166,
+      "consume_ack_elapsed_s": 56.852321583,
+      "read_calls": 153,
+      "read_mean_ms": 327.018348875817,
+      "ack_calls": 152,
+      "ack_mean_ms": 44.77843775,
+      "ack_end_to_end_mean_ms": 11657.652258966797,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 6090000000,
+        "observed_cpu_interval_ms": 56852,
+        "sampled_rss_max_bytes": 84901888,
+        "samples": 58,
+        "sampling_errors": 0,
+        "successful_os_samples": 58
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 45.42131648046871,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 45.36061943457032,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4704,
+          "mean_ms": 6.914711913690468,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4704,
+          "mean_ms": 2.337262044855433,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2352,
+          "mean_ms": 8.972311317176878,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 17934,
+          "mean_ms": 4.649149971060589,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 153,
+          "mean_ms": 287.9254523660135,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 152,
+          "mean_ms": 43.95161432236815,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 3,
+      "side": "candidate",
+      "start_unix_ms": 1792558096683,
+      "produce_mean_ms": 2921.096560506836,
+      "scheduling_lateness_mean_ms": 2875.42591975,
+      "post_schedule_completion_mean_ms": 45.67064075683594,
+      "lateness_fraction": 0.9843652409939808,
+      "produce_p99_upper_ms": 5887.778,
+      "produce_elapsed_s": 46.785077625,
+      "consume_ack_elapsed_s": 55.399826,
+      "read_calls": 148,
+      "read_mean_ms": 328.2388918581081,
+      "ack_calls": 147,
+      "ack_mean_ms": 46.316262775510204,
+      "ack_end_to_end_mean_ms": 10529.952726390626,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 5810000000,
+        "observed_cpu_interval_ms": 55400,
+        "sampled_rss_max_bytes": 84525056,
+        "samples": 57,
+        "sampling_errors": 0,
+        "successful_os_samples": 57
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 44.873376789062725,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 44.82114010546849,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4685,
+          "mean_ms": 7.126162096051182,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4684,
+          "mean_ms": 9.561737636848848,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2342,
+          "mean_ms": 9.30680373612294,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15867,
+          "mean_ms": 4.640758227327185,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 148,
+          "mean_ms": 288.59788402027004,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 147,
+          "mean_ms": 45.45327330612269,
+          "p99_upper_ms": 100
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 69.508541,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 4,
+      "side": "baseline",
+      "start_unix_ms": 1792558328860,
+      "produce_mean_ms": 3640.3188255664063,
+      "scheduling_lateness_mean_ms": 3593.5359064921877,
+      "post_schedule_completion_mean_ms": 46.78291907421875,
+      "lateness_fraction": 0.9871486753452317,
+      "produce_p99_upper_ms": 6979.321855,
+      "produce_elapsed_s": 47.921750916,
+      "consume_ack_elapsed_s": 57.197456417,
+      "read_calls": 155,
+      "read_mean_ms": 323.4708680129032,
+      "ack_calls": 153,
+      "ack_mean_ms": 46.02754139215686,
+      "ack_end_to_end_mean_ms": 11671.066511643554,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 6080000000,
+        "observed_cpu_interval_ms": 57197,
+        "sampled_rss_max_bytes": 86327296,
+        "samples": 59,
+        "sampling_errors": 0,
+        "successful_os_samples": 59
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 45.97102941210948,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 45.91523222460948,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4708,
+          "mean_ms": 7.244178946049264,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4708,
+          "mean_ms": 2.3863752824978675,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2354,
+          "mean_ms": 9.617469375531028,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 18049,
+          "mean_ms": 4.299658944484431,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 155,
+          "mean_ms": 283.1433392451616,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 153,
+          "mean_ms": 45.22230475163397,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 4,
+      "side": "candidate",
+      "start_unix_ms": 1792558442485,
+      "produce_mean_ms": 2099.4249263632814,
+      "scheduling_lateness_mean_ms": 2055.4642429238284,
+      "post_schedule_completion_mean_ms": 43.96068343945313,
+      "lateness_fraction": 0.9790606070798618,
+      "produce_p99_upper_ms": 4093.640703,
+      "produce_elapsed_s": 45.043033542,
+      "consume_ack_elapsed_s": 53.268027417,
+      "read_calls": 143,
+      "read_mean_ms": 327.21649267132864,
+      "ack_calls": 142,
+      "ack_mean_ms": 45.526730014084514,
+      "ack_end_to_end_mean_ms": 9242.914634816407,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 5650000000,
+        "observed_cpu_interval_ms": 53265,
+        "sampled_rss_max_bytes": 84033536,
+        "samples": 55,
+        "sampling_errors": 0,
+        "successful_os_samples": 55
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 43.12189856542957,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 43.066683950195404,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4665,
+          "mean_ms": 6.930276983708506,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4664,
+          "mean_ms": 9.435800946183475,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2332,
+          "mean_ms": 9.406510855059993,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15592,
+          "mean_ms": 4.300515458825033,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 143,
+          "mean_ms": 287.5115897622377,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 142,
+          "mean_ms": 44.65030106338029,
+          "p99_upper_ms": 100
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 52.313667,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 5,
+      "side": "baseline",
+      "start_unix_ms": 1792558668847,
+      "produce_mean_ms": 2537.471669963867,
+      "scheduling_lateness_mean_ms": 2492.545307821289,
+      "post_schedule_completion_mean_ms": 44.92636214257813,
+      "lateness_fraction": 0.9822948320273392,
+      "produce_p99_upper_ms": 5100.273663,
+      "produce_elapsed_s": 46.024686292,
+      "consume_ack_elapsed_s": 54.86712625,
+      "read_calls": 150,
+      "read_mean_ms": 321.78540747333335,
+      "ack_calls": 149,
+      "ack_mean_ms": 44.20135962416107,
+      "ack_end_to_end_mean_ms": 10263.981849646485,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 7920000000,
+        "observed_cpu_interval_ms": 54866,
+        "sampled_rss_max_bytes": 85131264,
+        "samples": 56,
+        "sampling_errors": 0,
+        "successful_os_samples": 56
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 43.861039387695605,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 43.79399522656222,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4692,
+          "mean_ms": 6.425081968457012,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4692,
+          "mean_ms": 2.4185005453964097,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2346,
+          "mean_ms": 8.665721794543893,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 17768,
+          "mean_ms": 4.566235574403351,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 150,
+          "mean_ms": 283.8152166266664,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 149,
+          "mean_ms": 43.09224611409354,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 5,
+      "side": "candidate",
+      "start_unix_ms": 1792558553676,
+      "produce_mean_ms": 2061.001442982422,
+      "scheduling_lateness_mean_ms": 2017.3616264111329,
+      "post_schedule_completion_mean_ms": 43.63981657128906,
+      "lateness_fraction": 0.9788259165368953,
+      "produce_p99_upper_ms": 3787.321916,
+      "produce_elapsed_s": 44.707348083,
+      "consume_ack_elapsed_s": 52.962470542,
+      "read_calls": 144,
+      "read_mean_ms": 323.3914522361111,
+      "ack_calls": 142,
+      "ack_mean_ms": 44.90891749295775,
+      "ack_end_to_end_mean_ms": 9218.934405381837,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 6250000000,
+        "observed_cpu_interval_ms": 52966,
+        "sampled_rss_max_bytes": 85426176,
+        "samples": 54,
+        "sampling_errors": 0,
+        "successful_os_samples": 54
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 42.720395940429704,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 42.66424243554671,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4665,
+          "mean_ms": 6.943187957127472,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4664,
+          "mean_ms": 9.29694330274446,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2332,
+          "mean_ms": 9.163711655660421,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15542,
+          "mean_ms": 4.421123834320001,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 144,
+          "mean_ms": 285.32755439583366,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 142,
+          "mean_ms": 43.9132790352114,
+          "p99_upper_ms": 100
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 59.790791000000006,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 6,
+      "side": "baseline",
+      "start_unix_ms": 1792558783236,
+      "produce_mean_ms": 1754.005301671875,
+      "scheduling_lateness_mean_ms": 1710.58749490625,
+      "post_schedule_completion_mean_ms": 43.417806765625,
+      "lateness_fraction": 0.9752464791729876,
+      "produce_p99_upper_ms": 3556.769791,
+      "produce_elapsed_s": 44.482641291,
+      "consume_ack_elapsed_s": 53.23959825,
+      "read_calls": 148,
+      "read_mean_ms": 316.85885255405407,
+      "ack_calls": 146,
+      "ack_mean_ms": 43.32197749315068,
+      "ack_end_to_end_mean_ms": 9193.895438375977,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 7800000000,
+        "observed_cpu_interval_ms": 53245,
+        "sampled_rss_max_bytes": 85966848,
+        "samples": 55,
+        "sampling_errors": 0,
+        "successful_os_samples": 55
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 42.40697046874982,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 42.33462656542944,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4680,
+          "mean_ms": 6.350622774786346,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4680,
+          "mean_ms": 2.4610743692307753,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2340,
+          "mean_ms": 8.872432823504338,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 17569,
+          "mean_ms": 4.219506565655295,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 148,
+          "mean_ms": 279.5766182635139,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 146,
+          "mean_ms": 42.288134136986464,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 6,
+      "side": "candidate",
+      "start_unix_ms": 1792558893639,
+      "produce_mean_ms": 1186.5443687304687,
+      "scheduling_lateness_mean_ms": 1144.362301881836,
+      "post_schedule_completion_mean_ms": 42.182066848632815,
+      "lateness_fraction": 0.9644496506323105,
+      "produce_p99_upper_ms": 2313.357375,
+      "produce_elapsed_s": 43.212617625,
+      "consume_ack_elapsed_s": 51.208847708,
+      "read_calls": 140,
+      "read_mean_ms": 321.4608818928571,
+      "ack_calls": 138,
+      "ack_mean_ms": 44.82084267391305,
+      "ack_end_to_end_mean_ms": 7743.650907006836,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 7110000000,
+        "observed_cpu_interval_ms": 51210,
+        "sampled_rss_max_bytes": 84459520,
+        "samples": 53,
+        "sampling_errors": 0,
+        "successful_os_samples": 53
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 41.16253753222683,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 41.09153651562493,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4649,
+          "mean_ms": 6.6113058167348,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4648,
+          "mean_ms": 9.011714783562816,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2324,
+          "mean_ms": 8.882523075301194,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15312,
+          "mean_ms": 4.386964753526662,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 140,
+          "mean_ms": 283.8748146214283,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 138,
+          "mean_ms": 43.78117966666679,
+          "p99_upper_ms": 100
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 45.2395,
+          "p99_upper_ms": 50
+        }
+      }
+    },
+    {
+      "pair": 7,
+      "side": "baseline",
+      "start_unix_ms": 1792559114798,
+      "produce_mean_ms": 2546.804123449219,
+      "scheduling_lateness_mean_ms": 2501.715194050781,
+      "post_schedule_completion_mean_ms": 45.0889293984375,
+      "lateness_fraction": 0.9822958785941606,
+      "produce_p99_upper_ms": 5298.936792,
+      "produce_elapsed_s": 46.218979792,
+      "consume_ack_elapsed_s": 55.331104292,
+      "read_calls": 150,
+      "read_mean_ms": 322.92432188666663,
+      "ack_calls": 149,
+      "ack_mean_ms": 46.16480281208054,
+      "ack_end_to_end_mean_ms": 10296.076466504883,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 7940000000,
+        "observed_cpu_interval_ms": 55332,
+        "sampled_rss_max_bytes": 84819968,
+        "samples": 57,
+        "sampling_errors": 0,
+        "successful_os_samples": 57
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 44.1354437246093,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 44.069462446289215,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4692,
+          "mean_ms": 6.627682869138926,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4692,
+          "mean_ms": 2.443005605711838,
+          "p99_upper_ms": 5
+        },
+        "Produce/CommitPersist": {
+          "samples": 2346,
+          "mean_ms": 9.090648789428819,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 17751,
+          "mean_ms": 4.382661122415509,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 150,
+          "mean_ms": 283.92838974666535,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 149,
+          "mean_ms": 43.69076732885914,
+          "p99_upper_ms": 100
+        }
+      }
+    },
+    {
+      "pair": 7,
+      "side": "candidate",
+      "start_unix_ms": 1792559002423,
+      "produce_mean_ms": 1001.7961129414062,
+      "scheduling_lateness_mean_ms": 959.8134440136719,
+      "post_schedule_completion_mean_ms": 41.98266892773437,
+      "lateness_fraction": 0.9580926014930646,
+      "produce_p99_upper_ms": 2113.929215,
+      "produce_elapsed_s": 43.013686541,
+      "consume_ack_elapsed_s": 51.26035825,
+      "read_calls": 140,
+      "read_mean_ms": 322.5483131142857,
+      "ack_calls": 139,
+      "ack_mean_ms": 43.8148342589928,
+      "ack_end_to_end_mean_ms": 7958.84910005957,
+      "unknown": {
+        "produce": 0,
+        "ack": 0,
+        "control": 0
+      },
+      "client_transport_delta": {
+        "rejected_total": 0,
+        "deadlines_total": 0,
+        "packets_lost_total": 0,
+        "liveness_failures_total": 0
+      },
+      "resource_summary": {
+        "cumulative_cpu_delta_ns": 7210000000,
+        "observed_cpu_interval_ms": 51263,
+        "sampled_rss_max_bytes": 85032960,
+        "samples": 53,
+        "sampling_errors": 0,
+        "successful_os_samples": 53
+      },
+      "stages": {
+        "Produce/Total": {
+          "samples": 1024,
+          "mean_ms": 40.94021265820348,
+          "p99_upper_ms": 100
+        },
+        "Produce/Commit": {
+          "samples": 1024,
+          "mean_ms": 40.882022625976674,
+          "p99_upper_ms": 100
+        },
+        "Produce/Sync": {
+          "samples": 4653,
+          "mean_ms": 6.551474815602823,
+          "p99_upper_ms": 50
+        },
+        "Produce/WalQueue": {
+          "samples": 4652,
+          "mean_ms": 8.929954764617335,
+          "p99_upper_ms": 50
+        },
+        "Produce/CommitPersist": {
+          "samples": 2326,
+          "mean_ms": 8.740973449699013,
+          "p99_upper_ms": 50
+        },
+        "Control/Replicate": {
+          "samples": 15322,
+          "mean_ms": 4.47167799745461,
+          "p99_upper_ms": 50
+        },
+        "Read/Total": {
+          "samples": 140,
+          "mean_ms": 285.50378779285717,
+          "p99_upper_ms": 500
+        },
+        "Ack/Total": {
+          "samples": 139,
+          "mean_ms": 42.785086071942494,
+          "p99_upper_ms": 100
+        },
+        "Produce/WalCheckpoint": {
+          "samples": 1,
+          "mean_ms": 69.031959,
+          "p99_upper_ms": 100
+        }
+      }
+    }
+  ],
+  "inputs": [
+    {
+      "file": "rf3-combined/0-baseline/report-latency.json",
+      "bytes": 857701,
+      "sha256": "a6f168458d00a48722eae41c0995eae870e2420f730e27d94008ace0323ea470"
+    },
+    {
+      "file": "rf3-combined/0-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "76380beefe8cc5490d2ff73c8e9cf30e2ca31b8fac8cd09b87f544f45d753ea2"
+    },
+    {
+      "file": "rf3-combined/0-candidate/report-latency.json",
+      "bytes": 987541,
+      "sha256": "5b60ee6213528762f35138ab77ec36acf0b16021f0a26a40d93351329532cdc0"
+    },
+    {
+      "file": "rf3-combined/0-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "2fc0bb7ab8a7e6f4e2b114b10a3c36e461753dad6a00dea0b28a0c00f61abb0d"
+    },
+    {
+      "file": "rf3-combined/1-baseline/report-latency.json",
+      "bytes": 862530,
+      "sha256": "256a68e06c8e013eb00f37b73778aeead459daa4c671b97d0b37bd529eb736b6"
+    },
+    {
+      "file": "rf3-combined/1-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "76380beefe8cc5490d2ff73c8e9cf30e2ca31b8fac8cd09b87f544f45d753ea2"
+    },
+    {
+      "file": "rf3-combined/1-candidate/report-latency.json",
+      "bytes": 982014,
+      "sha256": "9c285b4522d4c165fbdb7a7b4c3ad0a2a8ad60430e786b3a9b076990458499aa"
+    },
+    {
+      "file": "rf3-combined/1-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "2fc0bb7ab8a7e6f4e2b114b10a3c36e461753dad6a00dea0b28a0c00f61abb0d"
+    },
+    {
+      "file": "rf3-combined/2-baseline/report-latency.json",
+      "bytes": 858911,
+      "sha256": "d5e9de12c361cf2e1f53775970a93f26d9500b6327a7f031b9d31598f700e482"
+    },
+    {
+      "file": "rf3-combined/2-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "76380beefe8cc5490d2ff73c8e9cf30e2ca31b8fac8cd09b87f544f45d753ea2"
+    },
+    {
+      "file": "rf3-combined/2-candidate/report-latency.json",
+      "bytes": 991075,
+      "sha256": "9700ecfbafe63112bb30a2a325d66cee73d81ef6bf9e43c27c14d1512cbd7f48"
+    },
+    {
+      "file": "rf3-combined/2-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "d7f522af24cf480329740c2e882c2775e4de1f07e674bbe00d3cc85d2bf06ccb"
+    },
+    {
+      "file": "rf3-combined/3-baseline/report-latency.json",
+      "bytes": 861727,
+      "sha256": "6c5f42177bf67e3c8a2c0171d847daa27d11403ce08511bfde79163e84554f7a"
+    },
+    {
+      "file": "rf3-combined/3-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "2c7c1539fb1dc75f8321ee8b21c4189f5ef2641924ca37a225532623f92bec7b"
+    },
+    {
+      "file": "rf3-combined/3-candidate/report-latency.json",
+      "bytes": 991772,
+      "sha256": "7ed0e4d4d510b8c26b74767af8e2b6811f377e65d9eebc36aa20cd3d6f7a38bc"
+    },
+    {
+      "file": "rf3-combined/3-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "2fc0bb7ab8a7e6f4e2b114b10a3c36e461753dad6a00dea0b28a0c00f61abb0d"
+    },
+    {
+      "file": "rf3-combined/4-baseline/report-latency.json",
+      "bytes": 862380,
+      "sha256": "2b6aee00b011b8d36c774e4691c20870b8f7ee2639fc3077d9b4252ffa1f456f"
+    },
+    {
+      "file": "rf3-combined/4-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "ef0c58786ee86683199c52c17b8df94ada193435ef01db3a0b0b7db26c7a67f5"
+    },
+    {
+      "file": "rf3-combined/4-candidate/report-latency.json",
+      "bytes": 987159,
+      "sha256": "e9c1b163d587f13450419e22606bac91e304e508ea0c9f20a5f660b786b6bf51"
+    },
+    {
+      "file": "rf3-combined/4-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "3646eb81af07d5f904e26b507a0a12046379cc745552b0ee106d1f1f6f87433a"
+    },
+    {
+      "file": "rf3-combined/5-baseline/report-latency.json",
+      "bytes": 857425,
+      "sha256": "ed8cf841764d981b01f87203d791210252d97f57aa5d01d0c1b9514315d2c4c8"
+    },
+    {
+      "file": "rf3-combined/5-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "9e28d9f3834b6cd04b3f58654a1a99b54251d32d57de5332b789d337665701da"
+    },
+    {
+      "file": "rf3-combined/5-candidate/report-latency.json",
+      "bytes": 981171,
+      "sha256": "321c8ae06fa8382fcedf5b8f6f1710be81b50993812a1bd243647b6151953a6d"
+    },
+    {
+      "file": "rf3-combined/5-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "f086e017874353a95745a1c951e8191a3ab9fad7b00ec92c4fdc2188f6261d48"
+    },
+    {
+      "file": "rf3-combined/6-baseline/report-latency.json",
+      "bytes": 852631,
+      "sha256": "43c9bad43fa0c1367082971eb4d6f01bb63aa66fad6c813b28a723c47933612c"
+    },
+    {
+      "file": "rf3-combined/6-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "445106ecb6cd41d0078f5ced09dc6bc29158ea73976ff4d991de2b057a7e1d89"
+    },
+    {
+      "file": "rf3-combined/6-candidate/report-latency.json",
+      "bytes": 979828,
+      "sha256": "029879b975ebe50c544577163ed5d0bcb1de2457ba19dd404aa06fb7ab13548e"
+    },
+    {
+      "file": "rf3-combined/6-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "2fc0bb7ab8a7e6f4e2b114b10a3c36e461753dad6a00dea0b28a0c00f61abb0d"
+    },
+    {
+      "file": "rf3-combined/7-baseline/report-latency.json",
+      "bytes": 858723,
+      "sha256": "433dfc560935aedb5e336718a6cdc1b7b4b9c7c26398e5d54f4f1ff1b187e7ba"
+    },
+    {
+      "file": "rf3-combined/7-baseline/execution.json",
+      "bytes": 4350,
+      "sha256": "e21376598f96432ab239762acfd7ec0c57e0275316aa02afa567fa1ba27218ac"
+    },
+    {
+      "file": "rf3-combined/7-candidate/report-latency.json",
+      "bytes": 975827,
+      "sha256": "7745af6b5d50dc2b877df37d890cb0123167493c971fa1c8d6c5c5951a00cd1c"
+    },
+    {
+      "file": "rf3-combined/7-candidate/execution.json",
+      "bytes": 4350,
+      "sha256": "2fc0bb7ab8a7e6f4e2b114b10a3c36e461753dad6a00dea0b28a0c00f61abb0d"
+    }
+  ],
+  "raw_analysis_sha256": "c64d4a11687c324a8130f7d96d778b128bdd2f3932d65b991fc507878cf849a0",
+  "linux": {
+    "status": "pending",
+    "validation_root": "/root/tidemq-validation/performance-24471ce-20261021.XemuKYWG",
+    "scope": "one independent declared original-policy cohort; no Mac relabeling"
+  }
+}
