@@ -47,6 +47,34 @@ macOS nextest 为 356／356、13 skipped、37 binaries、175.349 秒，另有文
 
 后续只通过保留原条件的独立反馈和具体路径的正确性回归验证优化；不延长期限、降低计划发送速率、增加重试预算，或为有副作用的 Read 加通用重试。
 
+## 有界事后持久投影
+
+原三个服务全部停止、owned 工作排空后，只读取并复制原失败 `cluster/data-{1,2,3}`，再在独立工作副本上用冻结 `80c7659` 的已编译 Linux library 和 `DiskStore` 恢复 group2。原 cluster 全树 57 个文件、`7859253` B，复制前、复制后和检查后每个文件的 SHA 均相同；传输的 33 个 data 文件也先逐一核对 SHA，再以只读证据挂载提供给读取器。没有打开原 store、启动 Raft 服务或重新构建产品。
+
+三副本恢复出的下列应用投影字段完全一致，见[小型 postmortem JSON](wal-segments-performance/20261021-80c7659-postmortem-summary.json)。该核对覆盖 applied、membership 及尾日志引用分区的 producer counters／subscription diagnostics，没有比较完整应用字节：
+
+| 副本 | committed／applied | snapshot | purged |
+| --- | --- | --- | --- |
+| 1 | 5965／5965 | 4999 | 3975 |
+| 2 | 5965／5965 | 4999 | 3975 |
+| 3 | 5965／5965 | 4999 | 3975 |
+
+`5965` 是停止、owned 工作排空后的恢复状态；前述 `5931` 是停止前管理采样，两者没有混为失败瞬间的线性化点。latency partition 的 producer `committed_end=1024`；subscription 的持久 `acknowledged_before=received_before=1000`、`issued_before=next_delivery_offset=1001`，ACK holes 为 0，in-flight 为 1，下一重试指向 offset1000／attempt1。24 条未 ACK 中，有 1 个原尝试已持久签发但尚未被持久 received frontier 覆盖；其余 23 条处于恢复出的 issued frontier 之外。这些字段不证明客户端物理上是否收到过回包。
+
+读取窗口严格限制为 `[5710, 6222)`，每个副本返回 256 条 retained 日志；窗口内未见超过恢复 commit 的条目。共同最后五条为：
+
+| index | 命令 | 有界字段 |
+| --- | --- | --- |
+| 5961 | RecordDelivery | offset999 |
+| 5962 | ReceiveBarrier | received_before1000 |
+| 5963 | Ack | 3 个 token，仅记录数量 |
+| 5964 | RecordDelivery | offset1000；operation `d6871915-e2b8-41b7-2012-b7042526b469` |
+| 5965 | Producer | 仅记录命令类别，不输出消息体 |
+
+5964 的 payload `now_ms=1792548612544`，对应 UTC `02:10:12.544Z`。**这是命令携带的时间，不是 fsync／提交或成功回包时间。** 现有读取校验与三副本状态未显示快照／日志恢复造成的状态分歧；此事后投影不证明失败瞬间的 live quorum、排队原因、快照死锁或成功回包丢失，也没有据此修改 SDK 重试、deadline 或性能策略。
+
+完整脱敏投影、读取器与工具 hash 保留在 test worktree 的 ignored `target/performance-forensics-80c7659/`。完整 `recovered-state.json` SHA-256 为 `7859e9a1537d94eef5714dea3cb88eefce5f1599fd261f56cf50049110aebad9`；仅含安全投影、读取器与完整性证据的 `postmortem-80c7659-rf3-candidate1-safe.tgz` SHA-256 为 `eeddc1800f7873dd6188f491e968ba49a780c73463725ec3135b64f2e4561121`。仓库不提交大 JSON、消息体、token、签名密钥、私钥或原 WAL／snapshot 字节。读取器 profiles 与正式覆盖率 profiles 独立。
+
 ## 历史 cohort 分别保留
 
 `4f79a50` 的[原失败摘要](wal-segments-performance/20261021-4f79a50-failed-audit.json)属于 throughput：四个分区全部 committed256，ACK 分别为 7／256／6／6，三个分区收到 Unavailable／Unknown。它与本次 latency 的 1024／1000 超时分别记录。`426ff65` 只完成 prepared 构建、零测量试次；`799d57a` 在测试期限收紧前被替代，没有进入性能测量。没有把任一旧版的通过部分拼成新版本的完整 32 试次。
