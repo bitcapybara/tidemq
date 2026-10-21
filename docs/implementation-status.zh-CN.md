@@ -1,8 +1,8 @@
 # 实施状态
 
-2026-10-21：分段 WAL 已实现，包含唯一 manifest、有序 writer、引用检查点、有界段搬迁、快照 reader pin、失败关闭、物理容量采样与迁移预留；详见[当前存储设计](design/storage-recovery.zh-CN.md)。磁盘布局版本为 2，开发阶段使用全新数据目录，明确拒绝旧格式。冻结 `80c7659` 的 macOS／Linux 普通及 Linux 插桩 nextest 均为 356 passed／13 skipped，[精确覆盖率门禁](evidence/2026-10-21-wal-segments-coverage-80c7659.zh-CN.md)通过。该版[性能 cohort](evidence/2026-10-21-wal-segments-performance-80c7659.zh-CN.md)在 RF1 八对通过后，因 RF3 latency 的 1024 committed／1000 ACK 超时失败，完整性能尚未放行；原 `4f79a5` throughput 失败及 `426ff65` 插桩迁移失败分别保留，不由其他通过替代。
+2026-10-21：分段 WAL 已实现，包含唯一 manifest、有序 writer、引用检查点、有界段搬迁、快照 reader pin、失败关闭、物理容量采样与迁移预留；详见[当前存储设计](design/storage-recovery.zh-CN.md)。磁盘布局版本为 2，开发阶段使用全新数据目录，明确拒绝旧格式。冻结 `24471ce` 的 macOS／Linux 普通及 Linux 插桩 nextest 均为 **364 passed／13 skipped**；[精确覆盖率](evidence/2026-10-21-wal-segments-coverage-24471ce.zh-CN.md)和[新卷 Docker 十项／736 条持久 ACK](evidence/2026-10-21-wal-segments-linux-24471ce.zh-CN.md)通过，完整原始归档已回传并核验。该版 [macOS 性能](evidence/2026-10-21-wal-segments-performance-24471ce.zh-CN.md)完成全部 32 个试次，因 RF3 produce mean 精度不足为 **inconclusive**；独立 Linux 性能与最终 main CI 仍待验，基线未晋升。
 
-同日后续：已合入[有界热页复用](evidence/2026-10-21-live-read-hot-pages.zh-CN.md)、[热页元数据准入](evidence/2026-10-21-hot-read-admission.zh-CN.md)和[提交后错误源保留](evidence/2026-10-21-claim-postcommit-unknown.zh-CN.md)，原期限、配额、逐条持久签发及 wire Unknown 字段保持一致。单次 RF3 反馈完成 1024／1024 ACK；真实租约到期红绿回归保留原 Unknown 并恢复完整错误链。原 37／38 集成运行中的 Claim 首错原因仍未知，整体验收将使用合并后的新冻结源码；这些窄回归不替代完整测试、覆盖率、Docker 矩阵与 32 个性能试次。
+`24471ce` 包含[有界热页复用](evidence/2026-10-21-live-read-hot-pages.zh-CN.md)、[热页元数据准入](evidence/2026-10-21-hot-read-admission.zh-CN.md)和[提交后错误源保留](evidence/2026-10-21-claim-postcommit-unknown.zh-CN.md)，原期限、配额、逐条持久签发及 wire Unknown 字段保持一致。真实租约到期红绿回归保留原 Unknown 并恢复完整错误链。原 37／38 集成运行中的 Claim 首错原因仍未知；[80c 性能](evidence/2026-10-21-wal-segments-performance-80c7659.zh-CN.md)的 RF3 1024 committed／1000 ACK 超时、`4f79a5` throughput 失败及 `426ff65` 插桩迁移失败分别保留，新版本通过不反推这些现场的唯一原因。
 
 2026-10-21：按用户要求，仓库已设为 Public，并重跑远端 main `addf6d9` 的 [Rust](https://github.com/bitcapybara/tidemq/actions/runs/39419125570) 与 [Performance](https://github.com/bitcapybara/tidemq/actions/runs/39419125608)。runner 已实际执行；Rust 因超大 HELLO 拒绝断言和精确覆盖率下降失败，性能 build／measure／gate 通过，联合 promotion 因 Rust 失败而正确停止，见[完整 hosted 证据](evidence/2026-10-21-hosted-ci-addf6d9.zh-CN.md)。HELLO 已用真实 EOF 红绿回归修正测试，仍禁止任何成功帧。没有修改付款、负载、期限、比较策略或基线。
 
@@ -18,7 +18,7 @@
 | --- | --- | --- |
 | T00 基础与内存 | 四个 package、schema/codec/ID/边界、Snafu 错误、有限日志/指标、配置、应用许可与控制预留；默认 mimalloc，System/jemalloc 为互斥选项，实际二进制可识别；同 jemalloc 发布构建可符号化采样；Linux Docker 的 System/cgroup 与 RF1 受控 OOM 恢复已验 | 默认 mimalloc 的生产性能、Linux 分配栈与长稳待验 |
 | T01 QUIC | 实际 s2n-quic 1.91、TLS/mTLS、有限分类连接池/流/队列、独立读写、单请求取消、原生新包 ACK 活性探测；空闲 sibling 不关闭活跃连接，半帧仍有限组装；原期限内关闭 owned I/O 并释放端口；大块唯一所有 payload 分段发送、容量计费与末引用许可；有限 2/4 lane 同预算对照 | 真实 LB/NAT/CID、混合连接/短流/公平性与完整规模矩阵待验；codec 探针不能代替服务性能结论 |
-| T02 持久化 | 分段 fsync WAL/vote/log/commit、唯一 manifest、refs-only 检查点、有界搬迁、具名快照与 reader pin；官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 发布屏障、实际文件写失败与失败关闭；80c 完整覆盖率通过 | 80c 完整性能失败待修复；完整应用快照仍有 O(状态) 成本，真实掉电、跨区和长稳待验 |
+| T02 持久化 | 分段 fsync WAL/vote/log/commit、唯一 manifest、refs-only 检查点、有界搬迁、具名快照与 reader pin；官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 发布屏障、实际文件写失败与失败关闭；24471ce 完整覆盖率及 Docker 矩阵通过 | 24471ce macOS 性能精度不足，Linux 性能待验；完整应用快照仍有 O(状态) 成本，真实掉电、跨区和长稳待验 |
 | T03 控制与所有权 | 独立元数据组、CRUD 容量与永久身份、grant/fence/recover/activate、有限 TTL；真实 Broker 强杀后自动接管、旧身份拒绝及元数据少数派停授权 | 未 Active 的原 grant 目标同时死亡时保守阻塞；三区与长期故障组合待验 |
 | T04 生产 | 同组持久 producer/epoch/sequence/摘要/原结果、显式注册、固定过期、owned 提交；稳定版本 key 路由 helper | 无持久 outbox；有限原结果窗口届满不能自动以新身份重发 |
 | T05 订阅 | 同组持久 attempt/token/ACK、连续前沿/ACK 洞、seek/代次、冷读 H/接收屏障与 B 重试、窗口硬上限；部分冷页提交后丢响应、尾部先 ACK 和重启补投 | 外部业务副作用仍需幂等；高压力和长稳待验 |
@@ -28,8 +28,8 @@
 | T09 保留与配额 | 同 apply 年龄/ACK/CAS floor、有界时间索引、独立逻辑/物理/共享滞后/RSS 水位、真实磁盘/RSS 采样、cgroup v2 可见祖先 headroom、已有 ACK/control/GC 保留准入；Linux 384 MiB→6 MiB 真实 OOM、恢复原限额/原 Pending 与持久 ACK 已验 | 默认限额自然压力、持续归档中断和高压力下隔离待验 |
 | T10 运行时 | serve、组合/独立角色、实际内外 QUIC、管理健康/就绪/指标/诊断、TLS/静态授权、正常关闭；兼容 LibreSSL 的配置生成器；真实 RF1/RF3 热冷路径、独立 OS 进程故障与原 SDK 恢复；Linux 独立 Docker 项目、UID/卷/cgroup/无宿主端口实际核验 | 真实生产部署、跨区及长期压力待验 |
 | T11 弹性 | 私有稳定成员证明、learner/joint/stable、真实 Raft 迁移、独立修复预算、真实容量/CPU/网络/连接/ACK 评分；owned ticker 驱动显式/自动 Storage 修复及 Broker 移交 | 冷却/长期均衡、高压力及跨区容量待验 |
-| T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；独立 RF3 CLI 与 Linux Docker 的 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启、RF1 真 OOM；`077004e` 十个 Docker case 合计 736 条完整唯一交付和持久 ACK；`d7c913e` Linux workspace 284 passed/12 ignored、34 个 suite | 历史 RustFS ignored 与当前普通门禁分开计数；Linux 官方 Collector ignored 未执行；生产 LB/三区、掉电与长稳待验 |
-| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；`693f9bd` 完整 32 试次通过，`d38fb80` 本地审计记录性能／覆盖率数值基线 | 原 RF3 两项 p99 仍 imprecise；历史计费失败与公开后的真实重跑分别保留。新分段 WAL 版的完整性能仍待验；高吞吐低延迟、长稳和三区目标未放行 |
+| T12 故障 | 有限参考模型、实际磁盘/QUIC/RF3/SDK/RustFS；`24471ce` Linux Docker 十项／736 条持久 ACK，覆盖 Storage/Broker 强杀、Metadata/Storage 多数派中断、Gateway 冷重启与 RF1 受控 OOM；普通及插桩 workspace 各 364 passed／13 skipped，真实 RustFS 另行十项通过 | RustFS 与普通门禁分开计数；受控 OOM 为原容器 384 MiB→6 MiB 后恢复原限额；Linux 官方 Collector ignored、生产 LB/三区、掉电与长稳待验 |
+| T13 性能 | 冻结 `1398353` 的 17 项有限 RF1 报告；三 allocator、日志三档、2/4 lane 与 1% 服务 OTLP；真实 RF1/三进程 RF3、受保护策略和原始逐消息延迟；`693f9bd` 接受基线；`24471ce` macOS 完整 32 试次、64 份报告与节点正常退出已审计 | 24471ce RF3 produce mean 精度不足，整体 inconclusive，Linux 同源完整比较待验；p99 的 imprecise 和历史失败分别保留，基线未晋升；高吞吐低延迟、长稳和三区目标未放行 |
 | T14 文档 | 各任务使用/设计/排障文档、有限指标、模块看板告警；可选 OTLP 有界导出、实际四角色关联、Collector 多故障隔离；统一导航、84 条覆盖、Linux Docker 构建/隔离/故障脚本与真实命令证据 | Linux 分配栈、生产命令与浏览器画面仍按对应环境验收 |
 
 ## 证据口径

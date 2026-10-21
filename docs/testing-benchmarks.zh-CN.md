@@ -22,7 +22,9 @@ PR 从 base commit 读取比较器、测试范围、nextest 配置与既有基�
 
 2026-10-21 已按用户要求把仓库设为 Public，并重新触发远端 main `addf6d9` 的 Rust／Performance。Rust 已实际运行并失败：Linux 默认与 jemalloc 的超大 HELLO 断言失败，插桩测试 310／310 通过但 lines／functions／regions 精确计数均下降；原门禁未放宽。这次重跑与历史付款阻塞分别记录。公开后实际查询 main 的 `protected=false`，尚未配置平台强制的 required checks；待设置的稳定名称为 `Rust gate` 和 `Performance gate (RF1 and RF3)`。
 
-分段 WAL 的 [Linux 覆盖率记录](evidence/2026-10-21-wal-segments-coverage.zh-CN.md)保留源码、工具、原始整数、失败 cohort 和 cache-phase 因果对照。`4f79a5` 的通过报告只对应该版；`426ff65` 普通两平台各 351 passed／13 skipped，而其插桩流程的迁移 Unknown 失败单独保留，不能用普通回归替代。测试与性能全部通过前不晋升基线。
+分段 WAL 冻结 `24471ce` 的 macOS／Linux 普通及 Linux 插桩 nextest 各 364 passed／13 skipped；[完整覆盖率](evidence/2026-10-21-wal-segments-coverage-24471ce.zh-CN.md)为行 30412／37896、函数 2824／3947、region 42135／54060，原精确比较通过。[新卷 Docker 矩阵](evidence/2026-10-21-wal-segments-linux-24471ce.zh-CN.md)十项／736 条持久 ACK 通过。完整归档已下载并核验，未复用旧版 profiles 或结果；[macOS 完整性能](evidence/2026-10-21-wal-segments-performance-24471ce.zh-CN.md)仍因 RF3 produce mean 精度不足为 inconclusive，独立 Linux 性能待验。测试与性能全部通过前不晋升基线。
+
+[历史 Linux 覆盖率记录](evidence/2026-10-21-wal-segments-coverage.zh-CN.md)保留各版源码、工具、原始整数、失败 cohort 和 cache-phase 因果对照。`4f79a5` 的通过报告只对应该版；`426ff65` 普通两平台各 351 passed／13 skipped，而其插桩流程的迁移 Unknown 失败单独保留，不能用普通回归替代。
 
 2026-10-20 合流后的实际命令、246 项普通测试、九项真实后端 ignored、默认 credit 下 512 条 Read 与空闲 sibling lane 的红绿回归、SDK/allocator feature 和原生观测结果见[本地统一验收记录](evidence/2026-10-20-local-validation.zh-CN.md)。冻结 `1398353` 的 17 项短 RF1 负载、全部持久 ACK、三分配器/日志档位/2 与 4 lane/OTLP 对照见[本地性能报告](evidence/2026-10-20-local-performance.zh-CN.md)，小消息消费约 60 条/秒，不能作为生产性能目标已达成的结论。
 
