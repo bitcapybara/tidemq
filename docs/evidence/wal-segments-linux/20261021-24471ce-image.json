@@ -1,0 +1,22 @@
+{
+  "source_sha": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+  "tree": "062cacc15ac04a59bc5c38002fce2a17f8f9e2c1",
+  "tag": "tidemq-wal-segments:24471ce-xnfbxhby",
+  "image_id": "sha256:b6d450aba5f13096a429d20a2a7f25a6870902ede04dce39bf2ba3cb9aabbc8c",
+  "created": "2026-10-21T12:23:51.711294706+08:00",
+  "architecture": "amd64",
+  "base": "debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587",
+  "user": "10001:10001",
+  "binaries_sha256": {
+    "tidemq": "4ecd9ddaa6d1f833dcb9744a2e0750d9a1d838d12a703b713aa92ece30c9bac8",
+    "deploy_validation": "c371e2c1fe459d307d69843b5f34ac3a9310cc114fe8eaf5f9f079c7a0472fb2"
+  },
+  "runtime_build_exit": 0,
+  "binary_inside_image_matches": true,
+  "default_allocator_probe_backend": "mimalloc",
+  "default_allocator_probe_scope": "service_binary",
+  "mimalloc_native_version": "30302",
+  "allocator_probe_exit": 0,
+  "image_verification_exit": 0,
+  "verified_at": "2026-10-21T04:24:15.835112+00:00"
+}
