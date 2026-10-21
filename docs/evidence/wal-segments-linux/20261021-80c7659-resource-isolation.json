@@ -1,0 +1,27 @@
+{
+  "observed_at": "2026-10-21T02:26:15.315582+00:00",
+  "source_sha": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+  "original_container_count": 68,
+  "original_ids_found": 68,
+  "changes_since_before80c": [],
+  "changes_since_original_inventory": [],
+  "owned_completed_projects": [
+    {
+      "mode": "rf1",
+      "project": "tidemq-validation-rf1-be8202d8d74cd0ba",
+      "containers": 7,
+      "running": 0,
+      "retained_named_volume_count": 3,
+      "all_mounted_named_volumes_exist": true
+    },
+    {
+      "mode": "rf3",
+      "project": "tidemq-validation-rf3-57e8e7e74a3f8c78",
+      "containers": 20,
+      "running": 0,
+      "retained_named_volume_count": 12,
+      "all_mounted_named_volumes_exist": true
+    }
+  ],
+  "original_full_identity_projections_private": true
+}

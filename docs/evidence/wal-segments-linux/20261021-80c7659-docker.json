@@ -1,0 +1,225 @@
+{
+  "source_sha": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+  "tree": "0c8073e9372202e5206d0b74f1340c965219e655",
+  "image_id": "sha256:3a804d8432b4ceb1b80e260edba7437bfdd225250f016f8b4d106e34afc78139",
+  "image_tag": "tidemq-wal-segments:80c7659-xnfbxhby",
+  "started_at": "2026-10-21T02:11:40.417375+00:00",
+  "cases": [
+    {
+      "mode": "rf1",
+      "case": "smoke",
+      "exit": 0,
+      "status": "passed",
+      "expected": 64,
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf1-80c7659/evidence/smoke.UDYyEEW9",
+      "validator": "75cc99c2be6e094306b8fa4203fff279d83a63f2cca64418832d5eab66cde28f",
+      "started_at": "2026-10-21T02:11:52.349601+00:00",
+      "ended_at": "2026-10-21T02:12:00.383056+00:00"
+    },
+    {
+      "mode": "rf1",
+      "case": "replay",
+      "exit": 0,
+      "status": "passed",
+      "expected": 64,
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf1-80c7659/evidence/replay.Ns6iBA1W",
+      "validator": "7078731585f9e14e5f6f799f01408c666384dbaabde6af0b1b73115584c63f93",
+      "started_at": "2026-10-21T02:12:00.384782+00:00",
+      "ended_at": "2026-10-21T02:12:15.189958+00:00"
+    },
+    {
+      "mode": "rf1",
+      "case": "oom",
+      "exit": 0,
+      "status": "passed",
+      "expected": 80,
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf1-80c7659/evidence/oom.f9aZT327",
+      "validator": "cab9a63f81524e1fe11b7f12524efc10c347b14ef3fca8b4a65507015e6ac310",
+      "started_at": "2026-10-21T02:12:15.192050+00:00",
+      "ended_at": "2026-10-21T02:12:43.888927+00:00"
+    },
+    {
+      "mode": "rf3",
+      "case": "smoke",
+      "exit": 0,
+      "status": "passed",
+      "expected": 64,
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf3-80c7659/evidence/smoke.XxboTMMK",
+      "validator": "5036c637e9c0d3a40630b0ed370db0c00cef507ca21ff4562fec2c8e1ef26261",
+      "started_at": "2026-10-21T02:13:16.297386+00:00",
+      "ended_at": "2026-10-21T02:14:14.019752+00:00"
+    },
+    {
+      "mode": "rf3",
+      "case": "replay",
+      "exit": 0,
+      "status": "passed",
+      "expected": 64,
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf3-80c7659/evidence/replay.2KMZG5Ry",
+      "validator": "29585569f3957312160b45502b17fdbff1acb127e55a21a94d09bfcf8f782f86",
+      "started_at": "2026-10-21T02:14:14.020887+00:00",
+      "ended_at": "2026-10-21T02:15:18.535903+00:00"
+    },
+    {
+      "mode": "rf3",
+      "case": "storage-kill",
+      "exit": 0,
+      "status": "passed",
+      "expected": 80,
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf3-80c7659/evidence/storage-kill.7Q2cPZD5",
+      "validator": "a46e369e740444218d98edadc26b1ba2ef9c5884003269603eede49dadbabb5e",
+      "started_at": "2026-10-21T02:15:18.537987+00:00",
+      "ended_at": "2026-10-21T02:17:07.319840+00:00"
+    },
+    {
+      "mode": "rf3",
+      "case": "broker-kill",
+      "exit": 0,
+      "status": "passed",
+      "expected": 80,
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf3-80c7659/evidence/broker-kill.qG5VHqpP",
+      "validator": "50f74e1f235f43ffc12921dd0e08a5af890e092d3902f57881a1e96f448d0229",
+      "started_at": "2026-10-21T02:17:07.321063+00:00",
+      "ended_at": "2026-10-21T02:18:50.397218+00:00"
+    },
+    {
+      "mode": "rf3",
+      "case": "metadata-quorum",
+      "exit": 0,
+      "status": "passed",
+      "expected": 80,
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf3-80c7659/evidence/metadata-quorum.6vj9pEKK",
+      "validator": "c3ca1b73fcada729e7b10b739724ca8454781a9394db1a8ca0ac913ee0575e73",
+      "started_at": "2026-10-21T02:18:50.398467+00:00",
+      "ended_at": "2026-10-21T02:20:29.711239+00:00"
+    },
+    {
+      "mode": "rf3",
+      "case": "storage-quorum",
+      "exit": 0,
+      "status": "passed",
+      "expected": 80,
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf3-80c7659/evidence/storage-quorum.0QS7793D",
+      "validator": "0b025d5aaec9e8c90c2a41b8cb1860fda9abd2ed973294e41500d50bc00ddb4c",
+      "started_at": "2026-10-21T02:20:29.713529+00:00",
+      "ended_at": "2026-10-21T02:22:17.096091+00:00"
+    },
+    {
+      "mode": "rf3",
+      "case": "gateway-kill",
+      "exit": 0,
+      "status": "passed",
+      "expected": 80,
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "evidence": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf3-80c7659/evidence/gateway-kill.2yF7BfZO",
+      "validator": "78f713c364cb57b2d53b535a98879ef983178fb87e17785c2f68e77b2cda24d4",
+      "started_at": "2026-10-21T02:22:17.098545+00:00",
+      "ended_at": "2026-10-21T02:23:54.998357+00:00"
+    }
+  ],
+  "projects": [
+    {
+      "mode": "rf1",
+      "project": "tidemq-validation-rf1-be8202d8d74cd0ba",
+      "initial_containers": 0,
+      "initial_volumes": 0,
+      "initial_networks": 0,
+      "all_cases_passed": true,
+      "case_count": 3,
+      "stopped": {
+        "mode": "rf1",
+        "project": "tidemq-validation-rf1-be8202d8d74cd0ba",
+        "containers": 7,
+        "running": 0,
+        "all_volumes_preserved": true
+      }
+    },
+    {
+      "mode": "rf3",
+      "project": "tidemq-validation-rf3-57e8e7e74a3f8c78",
+      "initial_containers": 0,
+      "initial_volumes": 0,
+      "initial_networks": 0,
+      "all_cases_passed": true,
+      "case_count": 7,
+      "stopped": {
+        "mode": "rf3",
+        "project": "tidemq-validation-rf3-57e8e7e74a3f8c78",
+        "containers": 20,
+        "running": 0,
+        "all_volumes_preserved": true
+      }
+    }
+  ],
+  "status": "passed",
+  "ended_at": "2026-10-21T02:24:01.710009+00:00"
+}

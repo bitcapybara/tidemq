@@ -1,0 +1,11 @@
+--- driver-before-fix.py.txt
++++ driver.py
+@@ -98,7 +98,7 @@
+     created=set((state/'evidence').glob(case+'.*'))-before
+     if len(created)!=1: raise RuntimeError('Case did not produce one unique evidence directory')
+     evidence=next(iter(created)); hp=evidence/'harness-report.json'; rp=evidence/'report.json'; harness=json.loads(hp.read_text()) if hp.exists() else {}; report=json.loads(rp.read_text()) if rp.exists() else {}
+-    record={'mode':mode,'case':case,'exit':code,'status':harness.get('status','missing'),'expected':64 if case in ['smoke','replay'] else80,'ledger':report.get('ledger'),'evidence':str(evidence),'validator':harness.get('validator'),'started_at':started,'ended_at':now()}; summary['cases'].append(record); save()
++    record={'mode':mode,'case':case,'exit':code,'status':harness.get('status','missing'),'expected':64 if case in ['smoke','replay'] else 80,'ledger':report.get('ledger'),'evidence':str(evidence),'validator':harness.get('validator'),'started_at':started,'ended_at':now()}; summary['cases'].append(record); save()
+     expected_count=record['expected']; ledger=record['ledger'] or {}
+     if code or harness.get('status')!='passed' or report.get('status')!='passed' or harness.get('project')!=project or harness.get('case')!=case or harness.get('image_id')!=image['image_id'] or set(ledger)!=set(['expected','committed','received','acknowledged','frontier']) or any(x!=expected_count for x in ledger.values()): raise RuntimeError('Case terminal status/ledger/source validation failed; not retried')
+     project_report['case_count']+=1; save(); print('Passed exact80c Docker case',mode,case,ledger,flush=True)

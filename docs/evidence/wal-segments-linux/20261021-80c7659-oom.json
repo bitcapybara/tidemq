@@ -1,0 +1,33 @@
+{
+  "source_sha": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+  "case": "rf1/oom",
+  "exact_container_id_before_and_after": "2d5f9fe6151512a9da4a9f86cf35e56772fef8cfbf2de38934f50e0893361a4e",
+  "original_memory_limit_bytes": 402653184,
+  "forced_memory_limit_bytes": 6291456,
+  "forced_memory_swap_limit_bytes": 6291456,
+  "observed_state": {
+    "Status": "exited",
+    "Running": false,
+    "OOMKilled": true,
+    "ExitCode": 137,
+    "StartedAt": "2026-10-21T02:11:50.515902305Z",
+    "FinishedAt": "2026-10-21T02:12:22.244158173Z"
+  },
+  "restored_memory_limit_bytes": 402653184,
+  "restored_memory_swap_limit_bytes": 402653184,
+  "after_running": true,
+  "after_oom_killed": false,
+  "ledger": {
+    "expected": 80,
+    "committed": 80,
+    "received": 80,
+    "acknowledged": 80,
+    "frontier": 80
+  },
+  "raw_source_files": [
+    "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf1-80c7659/evidence/oom.f9aZT327/before-node-1-state.json",
+    "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf1-80c7659/evidence/oom.f9aZT327/oom-lowered-state.json",
+    "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf1-80c7659/evidence/oom.f9aZT327/oom-killed-state.json",
+    "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/rf1-80c7659/evidence/oom.f9aZT327/after-node-1-state.json"
+  ]
+}

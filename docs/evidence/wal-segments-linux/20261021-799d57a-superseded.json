@@ -1,0 +1,27 @@
+{
+  "classification": "operator-superseded",
+  "source_sha": "799d57a7064c00f1116ed05ed877d0d27dcadbb0",
+  "archive": "normal-799d57a-operator-superseded.tar.gz",
+  "sha256": "4c52ba5afd5011a0e0dcbe500dbd248cc1e45581f85593603b40d2d1f87ae862",
+  "members": 33,
+  "product_failure": false,
+  "full_gate_pass": false,
+  "partial_preflight_exits": {
+    "production-audit": 0,
+    "generated-diff": 0,
+    "versions": 0,
+    "clear-workspace": 0,
+    "fmt": 0,
+    "clippy": 0,
+    "format-generated": 0
+  },
+  "container_exit": 137,
+  "oom_killed": false,
+  "harness_unchanged": true,
+  "source_label_matches": false,
+  "actual_readonly_source_sha": "799d57a7064c00f1116ed05ed877d0d27dcadbb0",
+  "actual_readonly_source_tree": "c5113e6d20bf7aa29ae938a23bcb5d835468f947",
+  "actual_readonly_source_tracked_clean": true,
+  "tests_started": false,
+  "release_started": false
+}
