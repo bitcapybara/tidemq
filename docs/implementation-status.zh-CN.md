@@ -2,6 +2,8 @@
 
 2026-10-21：分段 WAL 已实现，包含唯一 manifest、有序 writer、引用检查点、有界段搬迁、快照 reader pin、失败关闭、物理容量采样与迁移预留；详见[当前存储设计](design/storage-recovery.zh-CN.md)。磁盘布局版本为 2，开发阶段使用全新数据目录，明确拒绝旧格式。冻结 `80c7659` 的 macOS／Linux 普通及 Linux 插桩 nextest 均为 356 passed／13 skipped，[精确覆盖率门禁](evidence/2026-10-21-wal-segments-coverage-80c7659.zh-CN.md)通过。该版[性能 cohort](evidence/2026-10-21-wal-segments-performance-80c7659.zh-CN.md)在 RF1 八对通过后，因 RF3 latency 的 1024 committed／1000 ACK 超时失败，完整性能尚未放行；原 `4f79a5` throughput 失败及 `426ff65` 插桩迁移失败分别保留，不由其他通过替代。
 
+同日后续：已合入[有界热页复用](evidence/2026-10-21-live-read-hot-pages.zh-CN.md)、[热页元数据准入](evidence/2026-10-21-hot-read-admission.zh-CN.md)和[提交后错误源保留](evidence/2026-10-21-claim-postcommit-unknown.zh-CN.md)，原期限、配额、逐条持久签发及 wire Unknown 字段保持一致。单次 RF3 反馈完成 1024／1024 ACK；真实租约到期红绿回归保留原 Unknown 并恢复完整错误链。原 37／38 集成运行中的 Claim 首错原因仍未知，整体验收将使用合并后的新冻结源码；这些窄回归不替代完整测试、覆盖率、Docker 矩阵与 32 个性能试次。
+
 2026-10-21：按用户要求，仓库已设为 Public，并重跑远端 main `addf6d9` 的 [Rust](https://github.com/bitcapybara/tidemq/actions/runs/39419125570) 与 [Performance](https://github.com/bitcapybara/tidemq/actions/runs/39419125608)。runner 已实际执行；Rust 因超大 HELLO 拒绝断言和精确覆盖率下降失败，性能 build／measure／gate 通过，联合 promotion 因 Rust 失败而正确停止，见[完整 hosted 证据](evidence/2026-10-21-hosted-ci-addf6d9.zh-CN.md)。HELLO 已用真实 EOF 红绿回归修正测试，仍禁止任何成功帧。没有修改付款、负载、期限、比较策略或基线。
 
 2026-10-20 历史重构：Rust 已固定为 1.99.1，配置仅接受当前按角色拆分的格式。源码 `693f9bd` 的 Rust CI 8／8 job 成功，Linux／macOS workspace 各 310 passed／12 skipped，文档各 4 passed；System／jemalloc 各 250 passed／11 skipped，全 target 严格 Clippy 与生产 panic／索引审计通过。无效参数、错误日志位置、共享身份字符串及 multipart 许可生命周期已整理；SDK 可选 OpenTelemetry 指标复用宿主 provider。该轮仅完成 WAL [分析](research/wal-segments.zh-CN.md)，后续实现以上述新布局为准。
