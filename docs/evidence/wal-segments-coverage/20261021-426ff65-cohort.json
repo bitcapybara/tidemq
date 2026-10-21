@@ -1,0 +1,80 @@
+{
+  "source_commit": "426ff6598c7b6a4337cc07ca79ac70d51d12b413",
+  "source_tree": "773e9d7f261087fb9d1585cb8bc069e3445ba68c",
+  "cohort": "coverage-426-cohort3-original",
+  "full_gate_status": "failed",
+  "original_script_exit": 100,
+  "tests": {
+    "run": 351,
+    "passed": 350,
+    "failed": 1,
+    "skipped": 13,
+    "duration_seconds": 226.28
+  },
+  "original_failure": {
+    "test": "native_runtime_scaling_explicit_replacement_preserves_original_sdk_traffic_and_ack",
+    "phase": "complete metadata",
+    "code": 6,
+    "outcome": 3,
+    "retryable": true,
+    "timestamp": "2026-10-20T18:10:34.316+00:00",
+    "duration_seconds": 3.501,
+    "fixture": "tidemq-runtime-81fa7042-5c67-490c-96c6-6ff04d69286b"
+  },
+  "standalone_coverage_comparison": {
+    "status": "passed",
+    "exported_after_original_full_test_failure_before_feedback": true,
+    "replaces_failed_test_gate": false,
+    "baseline_promoted": false
+  },
+  "original_profile_file_count": 512,
+  "archive": {
+    "file": "coverage-426-cohort3-original-failed.tgz",
+    "sha256": "835f64d6af2393e2924b40c14bc2e337f7701be675df6b97d8f2a4133c35e6a0",
+    "includes_raw_profiles": true,
+    "includes_fixture_credentials_keys_or_wal": false
+  },
+  "postmortem": {
+    "live_quorum_proof": false,
+    "original_fixture_read_only_and_hash_unchanged": true,
+    "recovered_copy_options": "StorageOptions::default()",
+    "plan_operation": "3fc40343-398c-8457-8b58-5151d5270845",
+    "metadata_nodes": [
+      11,
+      12,
+      13
+    ],
+    "metadata_committed_and_last_retained_index": 19,
+    "metadata_last_action": "PrepareMembership",
+    "metadata_completion": "absent_from_committed_state_and_all_retained_logs",
+    "data_stable_nodes": [
+      21,
+      22,
+      24
+    ],
+    "data_stable_membership_index": 18,
+    "removed_node": 23,
+    "removed_node_joint_membership_index": 17,
+    "exact_original_server_error_source": "not_captured_generic_runtime_operation_maps_to_unavailable_unknown"
+  },
+  "feedback": [
+    {
+      "kind": "unchanged_original_binary_single_case",
+      "product_changed": false,
+      "test_binary_sha256": "2ff22f41fa1d11a9eaeec2f9bba2229916eaf39d4686935fcd2d1daa570be9c8",
+      "exit": 101,
+      "duration_seconds": 2.32,
+      "failure_phase": "prepare membership",
+      "same_as_original_failure_phase": false
+    },
+    {
+      "kind": "test_setup_warn_subscriber_only",
+      "product_changed": false,
+      "inserted_test_setup_lines": 5,
+      "exit": 0,
+      "duration_seconds": 3.73,
+      "replaces_original_failed_cohort": false,
+      "exact_original_server_error_source_captured": false
+    }
+  ]
+}

@@ -24,6 +24,8 @@ mod broker_failover;
 mod combined;
 #[path = "runtime_support/read_batches.rs"]
 mod read_batches;
+#[path = "runtime_support/scaling.rs"]
+mod scaling;
 #[path = "runtime_support/tracing.rs"]
 mod tracing_tests;
 
@@ -1240,14 +1242,31 @@ async fn exercise_runtime_scaling(automatic: bool) {
             wait_scaling_diagnostic(&fixture, 21, scaling_group_is_replaced).await;
             None
         } else {
-            Some(
+            // This fresh fixture bootstraps generation one; freeze the canonical identity once.
+            let original = tidemq::scaling::MembershipPlan::new(
                 fixture
-                    .running
+                    .configs
                     .get(&11)
                     .unwrap()
-                    .replace_replica(2, 23, 24, Instant::now() + Duration::from_secs(30))
-                    .await
+                    .cluster_id
+                    .parse()
                     .unwrap(),
+                &tidemq::metadata::DataGroup {
+                    group_id: 2,
+                    generation: 1,
+                    voters: [21, 22, 23].into(),
+                },
+                [21, 22, 24].into(),
+            )
+            .unwrap();
+            let node = fixture.running.get(&11).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(30);
+            Some(
+                scaling::replace_original(&original, deadline, |deadline| {
+                    node.replace_replica(2, 23, 24, deadline)
+                })
+                .await
+                .unwrap(),
             )
         }
     };

@@ -196,16 +196,29 @@ impl Rpc for Client {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_semantics_reconcile_native_quic_groups_with_distinct_leaders_and_measured_copy_bounds()
  {
-    exercise(false).await;
+    exercise(Scenario::Explicit).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn automatic_tick_waits_for_capacity_then_moves_one_native_replica_and_reconciles_original_plan()
  {
-    exercise(true).await;
+    exercise(Scenario::Automatic).await;
 }
 
-async fn exercise(automatic: bool) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_plan_resumes_after_stable_proof_reply_is_lost_before_metadata_completion() {
+    exercise(Scenario::LostPendingProof).await;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scenario {
+    Explicit,
+    Automatic,
+    LostPendingProof,
+}
+
+async fn exercise(scenario: Scenario) {
+    let automatic = scenario == Scenario::Automatic;
     let cluster = Id::random().unwrap();
     let data =
         Cluster::<State>::with_identity(&[1, 2, 3, 4], cluster, GROUP, GroupRole::Data).await;
@@ -240,8 +253,10 @@ async fn exercise(automatic: bool) {
         .await
         .unwrap();
     let meta = scaling_support::metadata(cluster).await;
-    // Only the data group loses node 1; metadata still has its real leader on node 1.
-    data.isolated.write().await.insert(1);
+    if scenario != Scenario::LostPendingProof {
+        // Only the data group loses node 1; metadata still has its real leader on node 1.
+        data.isolated.write().await.insert(1);
+    }
     let router = Arc::new(Router::default());
     let available = Arc::new(AtomicBool::new(!automatic));
     let constrained = Arc::new(AtomicBool::new(true));
@@ -308,7 +323,11 @@ async fn exercise(automatic: bool) {
         sender: 1,
     });
     let leader = client.leader(GROUP, Instant::now() + WAIT).await.unwrap();
-    assert_ne!(leader, 1);
+    if scenario == Scenario::LostPendingProof {
+        assert_eq!(leader, 1, "The proof-loss scenario keeps its data leader");
+    } else {
+        assert_ne!(leader, 1);
+    }
     let group = meta
         .node(1)
         .state
@@ -438,10 +457,45 @@ async fn exercise(automatic: bool) {
             plan,
             "Restoring capacity must retain the original canonical plan"
         );
-        let first = driver.execute(&plan, Instant::now() + WAIT).await;
-        if first.is_err() {
-            // Retiring the joint leader requires discovering its successor before final proof.
-            driver.execute(&plan, Instant::now() + WAIT).await.unwrap();
+        if scenario == Scenario::LostPendingProof {
+            let deadline = Instant::now() + WAIT;
+            router.drop_proof_reply.store(true, Ordering::Release);
+            assert!(matches!(
+                driver.execute(&plan, deadline).await,
+                Err(Error::Unknown)
+            ));
+            assert!(!router.drop_proof_reply.load(Ordering::Acquire));
+            let pending = meta.node(1).state.application().await;
+            let record = pending.membership_change(GROUP).unwrap();
+            assert_eq!(record.plan, plan);
+            assert!(!record.is_complete());
+            assert_eq!(pending.group(GROUP).unwrap().voters, *plan.previous());
+            let leader = client.leader(GROUP, deadline).await.unwrap();
+            assert_eq!(
+                data.node(leader)
+                    .state
+                    .try_with_membership(|_, applied, membership| {
+                        let applied = applied.expect("The stable native change must be applied");
+                        let membership_log = membership
+                            .log_id()
+                            .expect("The stable membership must have a real log position");
+                        assert!(applied.index >= membership_log.index);
+                        membership.membership().get_joint_config().clone()
+                    })
+                    .await
+                    .unwrap(),
+                vec![plan.target().clone()],
+                "The native change is stable while metadata still retains the pending plan"
+            );
+            let recovered = driver.plan(cluster, GROUP, 3, 4, deadline).await.unwrap();
+            assert_eq!(recovered, plan);
+            driver.execute(&recovered, deadline).await.unwrap();
+        } else {
+            let first = driver.execute(&plan, Instant::now() + WAIT).await;
+            if first.is_err() {
+                // Retiring the joint leader requires discovering its successor before final proof.
+                driver.execute(&plan, Instant::now() + WAIT).await.unwrap();
+            }
         }
     }
     assert_eq!(
