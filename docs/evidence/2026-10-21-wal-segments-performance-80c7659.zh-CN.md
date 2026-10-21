@@ -43,7 +43,7 @@ macOS nextest 为 356／356、13 skipped、37 binaries、175.349 秒，另有文
 
 三个样本的成功 receive 调用均值约为 324–326 ms。对应 Produce／Commit 服务阶段均值约为 45–49 ms，ACK 服务阶段均值约为 45–48 ms；Sync 约为 7.3–7.7 ms。候选各只有一次约 64–67 ms 的 WAL checkpoint。[阶段直方图原始计数差分](wal-segments-performance/20261021-80c7659-stage-delta.json)按各自 measured 前后 Prometheus 文本计算；新旧 WalQueue 的记录时点需核对，不能仅用其数值差判断排队回退。
 
-这些观测支持“处理速度和排队累积接近固定 phase 期限”的待验证方向，没有证明快照死锁。失败服务最终 group2 committed／applied 均为 index5931，snapshot4999，purged3975；快照 publication pending／uncertain 均为 false，reader 为 0。配额四项均未阻塞，容器限额在 macOS 为 Unsupported、未阻塞，RSS 约 85 MB。一次快照事件与超时相邻，不足以建立因果；事后持久状态也不能证明失败瞬间的线性化点或成功回包丢失。
+这些观测支持“处理速度和排队累积接近固定 phase 期限”的待验证方向，没有证明快照死锁。停止前管理诊断采样中的 group2 committed／applied 均为 index5931，snapshot4999，purged3975；快照 publication pending／uncertain 均为 false，reader 为 0。该采样早于 owned 任务排空，不能当作关闭后最终持久投影。配额四项均未阻塞，容器限额在 macOS 为 Unsupported、未阻塞，RSS 约 85 MB。一次快照事件与超时相邻，不足以建立因果；事后持久状态也不能证明失败瞬间的线性化点或成功回包丢失。
 
 后续只通过保留原条件的独立反馈和具体路径的正确性回归验证优化；不延长期限、降低计划发送速率、增加重试预算，或为有副作用的 Read 加通用重试。
 
