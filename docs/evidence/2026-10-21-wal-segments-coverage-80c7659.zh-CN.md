@@ -72,4 +72,4 @@ cohort6 仅修复私有环境准备：启动前创建并实际验证 control 及
 
 cohort6 归档包含 517 个正式 raw profiles、merged profdata、JUnit、LLVM full／summary、LCOV、HTML、原 compare、日志、资源原始采样、环境／源码／容器身份以及阶段握手和 harness。profile 导出、独立核验均已退出 0，没有追加诊断负载或测试。归档不含 fixture 凭据、私钥或 WAL。
 
-Mac 性能测量期间仅取回小型 JSON 和文本：799 归档已在测量开始前下载至 ignored target 并复核；两个 80c 大归档先留 Linux，已生成远端 SHA，尚未进行本地副本复核。
+Mac 性能测量期间仅取回小型 JSON 和文本。性能测量终态后，两个 80c 完整归档均已下载到本 test worktree 的 ignored `target/wal-coverage-20261020/`，SHA 与远端索引完全一致，tar 成员可读；accepted 归档中的原 cohort、compare、LLVM summary、audit SHA 也与仓库小型证据一致。799 归档已在测量开始前下载并核验。本次仅补齐制品保留状态，没有改写原测试结果、覆盖率计数或 baseline。

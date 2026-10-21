@@ -14,13 +14,13 @@
       "file": "coverage-80c-cohort5-missing-control-directory.tgz",
       "sha256": "bd7602de661b28e3288c41a78005e0f2ba9fc1f5c6c99a1ceb037c39e43ec3fa",
       "status": "harness-precondition-failed",
-      "local_ignored_copy_verified": false
+      "local_ignored_copy_verified": true
     },
     {
       "file": "coverage-80c-cohort6-accepted.tgz",
       "sha256": "bac9c5cf595d3af9f56cf3b09ac4c25b847df1776345d5055dd13354ef567b79",
       "status": "passed",
-      "local_ignored_copy_verified": false
+      "local_ignored_copy_verified": true
     }
   ],
   "raw_reports": {
@@ -28,5 +28,7 @@
     "original_compare": "e21f4819e8eafb7e98e063cb172109584ce38142e9bf091f80556ed94048737c",
     "audit": "5ed5ae4522afa1a54bfd564303556a886be4ab8224a546fd368912e96c43d7bf",
     "cohort": "2a2e20c8785a9cf77b60d11c34222d1c080f1041036ac6ede742108c111a231b"
-  }
+  },
+  "large_artifact_transfer_resumed_after_mac_performance_terminated": true,
+  "local_archive_verified_at": "2026-10-21T02:18:45.043Z"
 }
