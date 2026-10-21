@@ -58,4 +58,6 @@ helper 错误 0，raw `memory.current` 从 `8186028032` 降至 `26722304` B，�
 | 完整 LLVM JSON | `3ea483f6a53b839c01f8607c6cba90e96fe26e0121a0983a07fd54e38fafa618` |
 | 原 compare | `2b96743605bfa2f91671639f3289c0e906dc25325cdedebe29a9f24813b6576f` |
 
-Mac 正在进行独立的 32 次性能测量，本轮仅取回小型 JSON/文本；大归档仍在远端，本地完整归档核验待该测量终态后进行。当前没有把远端归档冒称为已在本地完整核验。
+Mac 独立 32 次性能测量期间先仅取回小型 JSON/文本。收到测量终态、窗口释放后，已将 52,617,051 字节完整归档下载到本 test worktree 的 ignored `target/wal-segments-coverage-24471ce/`，本地 SHA 与上述远端 SHA 一致，251 个 tar 成员及内层 525 个 raw profiles 均可读。
+
+本地再次核验归档内的 LLVM full/summary、原 compare 和已提交的小型报告：三项精确计数、原整数交叉乘积、源码 commit/tree、policy 与未变更 baseline 全部一致，JUnit/LCOV SHA、原 profiles 和 harness SHA 也通过核对。后验事实记录在[制品索引](wal-segments-coverage/20261021-24471ce-artifacts.json)的 `local_large_archive_verified=true` 与 `local_verification`；原 cohort metadata 保留运行结束时的状态，没有重写原报告、重跑覆盖率或改动计数与 baseline。
