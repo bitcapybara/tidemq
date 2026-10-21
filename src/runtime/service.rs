@@ -935,8 +935,9 @@ impl WireService for Service {
         match result {
             Ok(frame) => Ok(Some(frame)),
             Err(error) => {
-                super::telemetry::log_unknown_error(frame, &error, &self.dispatch_metrics);
-                wire::error_response(frame, &error, &self.config.protocol).map(Some)
+                let response = wire::error_response(frame, &error, &self.config.protocol).map(Some);
+                super::telemetry::log_unknown_error(frame, error, &self.dispatch_metrics);
+                response
             }
         }
         }, span, deadline.into_std()).await

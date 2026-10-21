@@ -271,11 +271,11 @@ impl Drop for EventWriter {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[derive(Clone)]
-    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    pub(crate) struct Buffer(pub(crate) Arc<Mutex<Vec<u8>>>);
     impl Write for Buffer {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.0.lock().unwrap().extend_from_slice(bytes);

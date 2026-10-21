@@ -13,8 +13,8 @@ use tidemq_protocol::common::{Frame, FrameKind, Outcome};
 
 use crate::server::DispatchMetrics;
 
-pub(super) fn log_unknown_error(frame: &Frame, error: &super::Error, health: &DispatchMetrics) {
-    let Some(diagnostic) = unknown_diagnostic(error, health, std::time::Instant::now()) else {
+pub(super) fn log_unknown_error(frame: &Frame, error: super::Error, health: &DispatchMetrics) {
+    let Some(diagnostic) = unknown_diagnostic(&error, health, std::time::Instant::now()) else {
         return;
     };
     let command_kind = FrameKind::try_from(frame.kind)
@@ -26,6 +26,7 @@ pub(super) fn log_unknown_error(frame: &Frame, error: &super::Error, health: &Di
     let operation_id = tidemq_protocol::Id::from_slice(&frame.operation_id)
         .map(|id| id.to_string())
         .unwrap_or_else(|_| "invalid".into());
+    let error = anyhow::Error::new(error);
     tracing::warn!(
         event_code = "runtime_request_unknown",
         stage = "runtime_error",
@@ -36,6 +37,7 @@ pub(super) fn log_unknown_error(frame: &Frame, error: &super::Error, health: &Di
         operation = diagnostic.operation,
         code = diagnostic.code,
         outcome = "Unknown",
+        error = %format_args!("{error:#}"),
         "Runtime returned an unknown operation result"
     );
 }
@@ -286,6 +288,78 @@ impl Drop for OwnershipTimer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_error_log_retains_nested_source_chain_and_wire_failure() {
+        use tidemq_protocol::common::{ErrorCode, ErrorReply, TrafficClass};
+        use tidemq_protocol::framing::{decode_payload, new_frame};
+
+        let identity = tidemq_protocol::Id::random().unwrap();
+        let path = std::env::temp_dir()
+            .join(format!("tidemq-runtime-source-{identity}"))
+            .join("metadata.wal");
+        let source = std::fs::File::open(&path).unwrap_err();
+        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        let leaf = source.to_string();
+        let error = super::super::Error::operation(
+            "complete metadata",
+            crate::Error::Io {
+                operation: "open missing metadata log",
+                path: path.clone(),
+                source,
+            },
+        );
+        let limits = tidemq_protocol::ProtocolLimits::default();
+        let request = new_frame(
+            FrameKind::CreateTopic,
+            TrafficClass::Control,
+            identity,
+            identity,
+            &tidemq_protocol::public::CreateTopic {
+                name: "diagnostic".into(),
+                partitions: 1,
+            },
+            1000,
+            &limits,
+        )
+        .unwrap();
+        let response = super::super::wire::error_response(&request, &error, &limits).unwrap();
+        let failure: ErrorReply = decode_payload(response.payload, &limits).unwrap();
+        assert_eq!(failure.code, i32::from(ErrorCode::Unavailable));
+        assert_eq!(failure.outcome, i32::from(Outcome::Unknown));
+        assert!(failure.retryable);
+
+        let buffer = crate::observability::logging::tests::Buffer(Arc::default());
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            log_unknown_error(&request, error, &DispatchMetrics::default());
+        });
+        let event: serde_json::Value = serde_json::from_slice(&buffer.0.lock().unwrap()).unwrap();
+        let fields = &event["fields"];
+        assert_eq!(event["level"], "WARN");
+        assert_eq!(fields["event_code"], "runtime_request_unknown");
+        assert_eq!(fields["stage"], "runtime_error");
+        assert_eq!(fields["command_kind"], "CREATE_TOPIC");
+        assert_eq!(fields["request_id"], identity.to_string());
+        assert_eq!(fields["operation_id"], identity.to_string());
+        assert_eq!(fields["error_kind"], "runtime_operation_unknown");
+        assert_eq!(fields["operation"], "complete metadata");
+        assert_eq!(fields["code"], failure.code);
+        assert_eq!(fields["outcome"], "Unknown");
+        let chain = fields["error"].as_str().unwrap_or_default();
+        assert!(
+            chain.contains(&leaf),
+            "The runtime warning must retain the nested leaf source: {event}"
+        );
+        assert!(chain.contains("Runtime operation failed: complete metadata"));
+        assert!(chain.contains("Failed to open missing metadata log"));
+        assert!(chain.contains(path.to_str().unwrap()));
+    }
 
     #[test]
     fn unknown_diagnostics_classify_typed_causes_without_error_text() {
