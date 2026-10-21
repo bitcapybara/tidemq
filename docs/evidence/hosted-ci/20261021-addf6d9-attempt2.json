@@ -1,0 +1,429 @@
+{
+  "schema_version": 1,
+  "source_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+  "scope": "Hosted attempt 2 for the previous main only; not acceptance of subsequent segmented WAL commits.",
+  "collected_at_utc": "2026-10-21T01:37:35.718Z",
+  "repository": {
+    "default_branch": "main",
+    "full_name": "bitcapybara/tidemq",
+    "html_url": "https://github.com/bitcapybara/tidemq",
+    "private": false,
+    "visibility": "public"
+  },
+  "workflows": {
+    "rust": {
+      "id": 39419125570,
+      "attempt": 2,
+      "event": "push",
+      "conclusion": "failure",
+      "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570",
+      "jobs": [
+        {
+          "id": 118791851245,
+          "name": "Allocator (allocator-system)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118791851245",
+          "failed_steps": []
+        },
+        {
+          "id": 118791851493,
+          "name": "Coverage baseline (Linux)",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118791851493",
+          "failed_steps": [
+            {
+              "number": 9,
+              "name": "Run instrumented nextest and compare exact LLVM counts"
+            }
+          ]
+        },
+        {
+          "id": 118791851537,
+          "name": "Validate (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118791851537",
+          "failed_steps": []
+        },
+        {
+          "id": 118791851560,
+          "name": "Validate (ubuntu-24.04)",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118791851560",
+          "failed_steps": [
+            {
+              "number": 10,
+              "name": "Run unit, integration and target test harnesses with nextest"
+            }
+          ]
+        },
+        {
+          "id": 118791851591,
+          "name": "Allocator (allocator-jemalloc)",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118791851591",
+          "failed_steps": [
+            {
+              "number": 8,
+              "name": "Run cargo nextest run -p tidemq --all-targets --locked --no-default-features --features allocator-jemalloc --profile ci"
+            }
+          ]
+        },
+        {
+          "id": 118791851615,
+          "name": "Heap profile (ubuntu-24.04)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118791851615",
+          "failed_steps": []
+        },
+        {
+          "id": 118791851651,
+          "name": "Heap profile (macos-latest)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118791851651",
+          "failed_steps": []
+        },
+        {
+          "id": 118799156441,
+          "name": "Rust gate",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125570/job/118799156441",
+          "failed_steps": [
+            {
+              "number": 2,
+              "name": "Require every validation and coverage job to pass"
+            }
+          ]
+        }
+      ]
+    },
+    "performance": {
+      "id": 39419125608,
+      "attempt": 2,
+      "event": "push",
+      "conclusion": "failure",
+      "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125608",
+      "jobs": [
+        {
+          "id": 118791866776,
+          "name": "Build fixed performance binaries",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125608/job/118791866776",
+          "failed_steps": []
+        },
+        {
+          "id": 118799300582,
+          "name": "Measure RF1 and RF3 on a fresh runner",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125608/job/118799300582",
+          "failed_steps": []
+        },
+        {
+          "id": 118817292967,
+          "name": "Performance gate (RF1 and RF3)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125608/job/118817292967",
+          "failed_steps": []
+        },
+        {
+          "id": 118817351138,
+          "name": "Record successful main performance and coverage baselines",
+          "status": "completed",
+          "conclusion": "failure",
+          "url": "https://github.com/bitcapybara/tidemq/actions/runs/39419125608/job/118817351138",
+          "failed_steps": [
+            {
+              "number": 4,
+              "name": "Promote only the validated current main source"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "test_results": {
+    "linux": {
+      "run": 310,
+      "passed": 309,
+      "failed": 1,
+      "skipped": 12
+    },
+    "jemalloc": {
+      "run": 250,
+      "passed": 249,
+      "failed": 1,
+      "skipped": 11
+    },
+    "coverage": {
+      "run": 310,
+      "passed": 310,
+      "failed": 0,
+      "skipped": 12
+    },
+    "failed_test": "oversized_unclassified_hello_is_rejected_without_body_allocation",
+    "failed_assertion": "timeout(Duration::from_secs(2), stream.receive()).await.unwrap().is_err()",
+    "hosted_receive_value_recorded": false
+  },
+  "coverage": {
+    "status": "regressed",
+    "artifact_id": 12286229209,
+    "artifact_digest": "sha256:dcaa6c54ebac23a8042f962a97782e435b997269d51ec545a4ef7a6fb9442d40",
+    "source_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+    "baseline_source_commit": "693f9bd91a570758f7891f15edb2e95fdcf47864",
+    "policy_sha256": "ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57",
+    "previous_baseline_sha256": "638b8e963abe9e8936c7df0f2571093c0244b83946a4a173d5df7c7bf15fb2ee",
+    "llvm_report_sha256_verified_locally": "d3f8db2ccaf207ba9831f4d1e3310d0b62b75b546df08ac0388fbd95d40693f4",
+    "metrics": {
+      "lines": {
+        "status": "regressed",
+        "baseline": {
+          "count": 35176,
+          "covered": 27907
+        },
+        "candidate": {
+          "count": 35176,
+          "covered": 27895
+        },
+        "covered_delta": -12
+      },
+      "functions": {
+        "status": "regressed",
+        "baseline": {
+          "count": 3637,
+          "covered": 2576
+        },
+        "candidate": {
+          "count": 3637,
+          "covered": 2572
+        },
+        "covered_delta": -4
+      },
+      "regions": {
+        "status": "regressed",
+        "baseline": {
+          "count": 49848,
+          "covered": 38365
+        },
+        "candidate": {
+          "count": 49848,
+          "covered": 38350
+        },
+        "covered_delta": -15
+      }
+    }
+  },
+  "performance": {
+    "status": "passed",
+    "summary_sha256": "2af6d730c7db16e75f9189602436dff2f2bda0f366b93250a90b6f6e04f37bda",
+    "artifact_id": 12288874860,
+    "artifact_digest_from_github": "sha256:492b5dfdc9e19457b36046aff22eb82fc2ef0dc82b4c7c0ef4fe964370131b5e",
+    "complete_archive_digest_locally_verified": false,
+    "baseline_manifest_sha256": "fa569a62bad1fcb8b65cf2be8296ca743e26f8609a9b376984ef1550684c1b54",
+    "prepared_manifest_sha256": "786356cb5531e9ecd25169fc203d7d63e5c5cf5415ba11d1c41eae1d74ea89a3",
+    "trusted_tools_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+    "baseline_service": {
+      "source_commit": "693f9bd91a570758f7891f15edb2e95fdcf47864",
+      "cargo_lock_sha256": "d4c609c32697a3d04f3b9b235bb746943804a7fac9fc63c51da4db6f2e90d63e",
+      "service_binary_sha256": "1e3f7302aa05794ce11874855272a7bb9471c960992f74d2855dcf8611eabdf1",
+      "allocator_feature": "allocator-mimalloc",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "host": "linux x64 7.0.0-1017-azure",
+      "profile": "release",
+      "tracked_source_clean": true
+    },
+    "candidate_service": {
+      "source_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+      "cargo_lock_sha256": "d4c609c32697a3d04f3b9b235bb746943804a7fac9fc63c51da4db6f2e90d63e",
+      "service_binary_sha256": "bfca6a7ada7d9b5426e3dc05e246d88e7768c260c00c59c94e66e59f865ce245",
+      "allocator_feature": "allocator-mimalloc",
+      "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+      "host": "linux x64 7.0.0-1017-azure",
+      "profile": "release",
+      "tracked_source_clean": true
+    },
+    "workload_binaries": {
+      "baseline": {
+        "source_commit": "693f9bd91a570758f7891f15edb2e95fdcf47864",
+        "harness_source_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+        "sdk_source_commit": "693f9bd91a570758f7891f15edb2e95fdcf47864",
+        "generator_allocator": "system",
+        "binary_sha256": "1223d60ca6b7e2d38da207e697a6e4ff50dc8899d96d77ec45ffb0c74ada565c"
+      },
+      "candidate": {
+        "source_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+        "harness_source_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+        "sdk_source_commit": "addf6d9ef48e5c04eb3a6223b348958a0a6e88d4",
+        "generator_allocator": "system",
+        "binary_sha256": "829f133cd4b40b3b1134519c4e158303a8b4e006d2f7fde73111127caf791bd3"
+      }
+    },
+    "environment": {
+      "platform": "linux",
+      "arch": "x64",
+      "cpu_model": "AMD EPYC 7763 64-Core Processor",
+      "logical_cpus": 4,
+      "total_memory_bytes": 16766414848,
+      "compilation_performed_in_measurement_phase": false,
+      "same_host_paired_trials": true,
+      "physical_availability_zone_validation": false
+    },
+    "topologies": {
+      "rf1": {
+        "status": "passed",
+        "pairs": 8,
+        "inference": {
+          "method": "bonferroni",
+          "confidence": 0.95,
+          "comparisons": 10,
+          "per_metric_confidence": 0.995,
+          "degrees_of_freedom": 7,
+          "critical_t": 4.029337177642459
+        },
+        "metrics": {
+          "durable_messages_per_second": {
+            "status": "passed",
+            "geometric_slowdown_ratio": 0.995326941408158,
+            "slowdown_ci_adjusted": [
+              0.9894771971057855,
+              1.001211269133477
+            ],
+            "precision_required": true,
+            "log_ci_half_width": 0.005894547604608265
+          },
+          "produce_mean_ns": {
+            "status": "passed",
+            "geometric_slowdown_ratio": 1.029890795898828,
+            "slowdown_ci_adjusted": [
+              0.9676895080587788,
+              1.0960902672230834
+            ],
+            "precision_required": true,
+            "log_ci_half_width": 0.06229677251790831
+          },
+          "produce_p99_upper_ns": {
+            "status": "diagnostic",
+            "geometric_slowdown_ratio": 1.0144040482335142,
+            "slowdown_ci_adjusted": [
+              0.9620830862732145,
+              1.0695703809310289
+            ],
+            "precision_required": false,
+            "log_ci_half_width": 0.05295575923791823
+          },
+          "offered_to_durable_ack_mean_ns": {
+            "status": "passed",
+            "geometric_slowdown_ratio": 1.0096815801057297,
+            "slowdown_ci_adjusted": [
+              0.9948955952902532,
+              1.0246873119459177
+            ],
+            "precision_required": true,
+            "log_ci_half_width": 0.014752490609503878
+          },
+          "offered_to_durable_ack_p99_upper_ns": {
+            "status": "diagnostic",
+            "geometric_slowdown_ratio": 1.0087726066872136,
+            "slowdown_ci_adjusted": [
+              0.9819664677673795,
+              1.036310511005741
+            ],
+            "precision_required": false,
+            "log_ci_half_width": 0.02693246903250401
+          }
+        }
+      },
+      "rf3-combined": {
+        "status": "passed",
+        "pairs": 8,
+        "inference": {
+          "method": "bonferroni",
+          "confidence": 0.95,
+          "comparisons": 10,
+          "per_metric_confidence": 0.995,
+          "degrees_of_freedom": 7,
+          "critical_t": 4.029337177642459
+        },
+        "metrics": {
+          "durable_messages_per_second": {
+            "status": "passed",
+            "geometric_slowdown_ratio": 1.01025193406281,
+            "slowdown_ci_adjusted": [
+              0.9815447341218718,
+              1.0397987323427749
+            ],
+            "precision_required": true,
+            "log_ci_half_width": 0.02882742841669244
+          },
+          "produce_mean_ns": {
+            "status": "passed",
+            "geometric_slowdown_ratio": 0.9856482196709948,
+            "slowdown_ci_adjusted": [
+              0.9336688948145958,
+              1.0405213436327645
+            ],
+            "precision_required": true,
+            "log_ci_half_width": 0.05417764272348091
+          },
+          "produce_p99_upper_ns": {
+            "status": "diagnostic",
+            "geometric_slowdown_ratio": 0.9934584043721127,
+            "slowdown_ci_adjusted": [
+              0.9445343719214335,
+              1.0449165541851555
+            ],
+            "precision_required": false,
+            "log_ci_half_width": 0.05050011540912736
+          },
+          "offered_to_durable_ack_mean_ns": {
+            "status": "passed",
+            "geometric_slowdown_ratio": 0.9978921530324806,
+            "slowdown_ci_adjusted": [
+              0.9770659720577147,
+              1.0191622444763422
+            ],
+            "precision_required": true,
+            "log_ci_half_width": 0.021091032479617862
+          },
+          "offered_to_durable_ack_p99_upper_ns": {
+            "status": "diagnostic",
+            "geometric_slowdown_ratio": 0.9901005858508822,
+            "slowdown_ci_adjusted": [
+              0.9230578112281661,
+              1.0620127560568848
+            ],
+            "precision_required": false,
+            "log_ci_half_width": 0.07011467324565396
+          }
+        }
+      }
+    }
+  },
+  "joint_promotion": {
+    "job_id": 118817351138,
+    "step_number": 4,
+    "status": "blocked_by_failed_rust_run",
+    "command": "gh run watch \"$rust_run_id\" --exit-status --interval 30",
+    "observed_refusal": "Run Rust (39419125570) has already completed with 'failure'",
+    "exit_code": 1,
+    "promotion_script_reached": false,
+    "baseline_commit_or_push_reached": false
+  },
+  "evidence": {
+    "raw_manifest_sha256": "973c802228cf87a185ec79f4dcf525d0a14cd3b3505a7e94dbd3c7ac100be882",
+    "raw_evidence_directory": "target/evidence/hosted-addf6d9-attempt2/",
+    "summary_entry_crc32_verified": true,
+    "transferred_archive_bytes": 112115,
+    "complete_archive_bytes": 7963855,
+    "per_message_reports_downloaded": false
+  }
+}
