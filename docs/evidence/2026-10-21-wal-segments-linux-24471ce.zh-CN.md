@@ -72,6 +72,8 @@
 
 相邻 venv Python 为 3.12.3，以上私有 Python 工具仅依赖 stdlib，实际执行前均 `py_compile` 通过。旧 4f79/426/799/80c 的失败和结果仍分别保留，均不冒认本轮源码验收。
 
-远端私有根为 `/root/tidemq-validation/wal-segments-20261020.xnfbxhby/`。`linux-docker-24471ce-evidence.tar.gz` 已封存，SHA-256 为 `2009438f18d2f735d7cd010189602be051f63033db7cfc96351844a66dc537f2`，3,016,943 B / 1,494 members；远端重新打开并逐一核验了 1,493 份文件 manifest 条目的大小与 SHA。24 种真实 secret 表示及 3 种私钥标记扫描均零匹配；凭据目录、registry、编译 target、二进制及 venv 未进入归档。Mac 独占性能测量期间未下载大归档，[远端回读核验](wal-segments-linux/20261021-24471ce-archive-verification.json)明确区分此状态。
+远端私有根为 `/root/tidemq-validation/wal-segments-20261020.xnfbxhby/`。`linux-docker-24471ce-evidence.tar.gz` 已封存，SHA-256 为 `2009438f18d2f735d7cd010189602be051f63033db7cfc96351844a66dc537f2`，3,016,943 B / 1,494 members；远端重新打开并逐一核验了 1,493 份文件 manifest 条目的大小与 SHA。24 种真实 secret 表示及 3 种私钥标记扫描均零匹配；凭据目录、registry、编译 target、二进制及 venv 未进入归档。Mac 独占性能测量期间未下载大归档；原 sealed metadata 保留封存时尚未回传的历史状态，[归档回读核验](wal-segments-linux/20261021-24471ce-archive-verification.json)另行记录后续状态。
+
+Mac 窗口释放后，本地已下载至被 Git 忽略的 `target/wal-linux-20261020/raw-24471ce/`，并用相邻 stdlib venv 的 Python 完成[本地独立回读](wal-segments-linux/20261021-24471ce-local-verification.json)：归档 SHA、gzip CRC、全部 1,494 个成员的唯一/普通文件/安全路径属性，以及内嵌 1,493 个条目共 39,565,178 B 的大小与 SHA 全部一致。内嵌同源终态记录仍为 364/364、十项/736 ACK；没有重跑产品测试。独立 Mac 32 次配对性能整体为 inconclusive，本次归档核验不改变性能结论或晋升基线。
 
 同版[完整受保护覆盖率](2026-10-21-wal-segments-coverage-24471ce.zh-CN.md)由独立流程记录。本证据不替代独立 RF1/RF3 配对性能、最终 main 对应 SHA 的远端 CI，亦不代表三可用区、LB、真实掉电或长期压力验证。System/jemalloc/heap-profiling 新版本完整矩阵本轮未追加；本提交仅更新证据，没有晋升基线。

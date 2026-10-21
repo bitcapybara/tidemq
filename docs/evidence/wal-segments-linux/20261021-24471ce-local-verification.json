@@ -1,0 +1,20 @@
+{
+  "source_sha": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+  "archive_sha256": "2009438f18d2f735d7cd010189602be051f63033db7cfc96351844a66dc537f2",
+  "archive_bytes": 3016943,
+  "members": 1494,
+  "manifest_entries_verified": 1493,
+  "manifest_sha256": "7fe5ead0b6ffaf5c5aa410f258f27534e10375f0ce259d6c1144c29d0f8714c4",
+  "member_bytes_verified": 39565178,
+  "uncompressed_gzip_bytes": 42444800,
+  "gzip_crc_verified": true,
+  "tar_members_unique_regular_and_safe": true,
+  "all_manifest_sizes_and_hashes_match": true,
+  "archived_workspace_tests_passed": 364,
+  "archived_docker_cases_passed": 10,
+  "archived_acknowledged_messages": 736,
+  "product_tests_rerun": false,
+  "local_archive": "target/wal-linux-20261020/raw-24471ce/linux-docker-24471ce-evidence.tar.gz",
+  "verifier_sha256": "fd47298cc35b06bfbb517e6397e7f3330eb5d10f9c8bab3cce7e07ceb6574a5c",
+  "verified_at": "2026-10-21T05:12:40.711694+00:00"
+}

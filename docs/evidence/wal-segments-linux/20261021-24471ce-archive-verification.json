@@ -4,6 +4,9 @@
   "members": 1494,
   "manifest_entries_verified": 1493,
   "remote_archive_readback_verified": true,
-  "local_download_performed": false,
-  "first_case_after_complete_preflight": true
+  "local_download_performed": true,
+  "first_case_after_complete_preflight": true,
+  "local_archive_readback_verified": true,
+  "local_verification_report": "20261021-24471ce-local-verification.json",
+  "local_verified_at": "2026-10-21T05:12:40.711694+00:00"
 }
