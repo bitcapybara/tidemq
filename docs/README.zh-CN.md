@@ -1,8 +1,10 @@
 # 文档导航
 
+当前性能安排：[暂停自动性能测量与基线晋升，保留手动入口](performance-policy.zh-CN.md)。功能与覆盖率 CI 继续执行。
+
 新增入口：[分段 WAL 当前设计](design/storage-recovery.zh-CN.md)、[24471ce Linux／Docker](evidence/2026-10-21-wal-segments-linux-24471ce.zh-CN.md)、[24471ce 完整覆盖率](evidence/2026-10-21-wal-segments-coverage-24471ce.zh-CN.md)、[24471ce macOS 性能精度不足](evidence/2026-10-21-wal-segments-performance-24471ce.zh-CN.md)、[历史 Linux／Docker 记录](evidence/2026-10-21-wal-segments-linux.zh-CN.md)、[80c 性能失败与原始计数](evidence/2026-10-21-wal-segments-performance-80c7659.zh-CN.md)、[公开后旧 main 的 hosted CI 结果](evidence/2026-10-21-hosted-ci-addf6d9.zh-CN.md)、[CI 重构与实际失败修复](evidence/2026-10-20-ci-refactor.zh-CN.md)、[SDK 总期限与取消](guide/rust-sdk.zh-CN.md)、[RF1/RF3 CI 性能门禁与基线](performance.zh-CN.md)、[rkyv / FlatBuffers / FlexBuffers 适用边界](research/zero-copy-formats.zh-CN.md)、[WAL 分段与容量管理评估](research/wal-segments.zh-CN.md)。
 
-本轮读取与诊断回归：[有界热页复用](evidence/2026-10-21-live-read-hot-pages.zh-CN.md)、[消息槽位准入](evidence/2026-10-21-hot-read-admission.zh-CN.md)、[Claim 提交后的 Unknown 错误链](evidence/2026-10-21-claim-postcommit-unknown.zh-CN.md)。24471ce 完整功能、覆盖率及 Docker 矩阵通过；macOS 完整性能为 inconclusive，独立 Linux 性能待验。旧失败保留，基线未晋升。
+本轮读取与诊断回归：[有界热页复用](evidence/2026-10-21-live-read-hot-pages.zh-CN.md)、[消息槽位准入](evidence/2026-10-21-hot-read-admission.zh-CN.md)、[Claim 提交后的 Unknown 错误链](evidence/2026-10-21-claim-postcommit-unknown.zh-CN.md)。24471ce 完整功能、覆盖率及 Docker 矩阵通过；macOS 完整性能为 inconclusive，Linux 已按要求主动中止，后续手动安排。旧失败保留，基线未晋升。[旧 main 评审复核](reviews/2026-10-21-addf6d9-assessment.zh-CN.md)记录后续正确性和优化优先级。
 
 先读[实施状态](implementation-status.zh-CN.md)和[要求覆盖](requirements-coverage.zh-CN.md)：已运行的本地证据、候选性能目标和外部待验条件分别记录。历史[架构草案](architecture.zh-CN.md)保留原始要求，当前行为以设计、配置、测试和使用指南为准。
 

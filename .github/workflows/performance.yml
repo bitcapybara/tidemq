@@ -1,9 +1,6 @@
 name: Performance
 on:
-  pull_request:
-  push:
-    branches: [main]
-    paths-ignore: ['**/*.md', 'LICENSE']
+  # Performance measurements are scheduled manually while baseline policy is deferred.
   workflow_dispatch:
 
 permissions:
@@ -165,6 +162,7 @@ jobs:
 
   promote-baseline:
     name: Record successful main performance and coverage baselines
+    # Manual dispatch never satisfies this condition; automatic promotion is paused.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: performance
     runs-on: ubuntu-24.04

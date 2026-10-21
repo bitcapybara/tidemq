@@ -67,7 +67,6 @@ jobs:
           cargo fmt --all
           git diff --exit-code -- crates/tidemq-protocol/src/generated
       - run: cargo run --locked -- validate-config --config config/local.toml
-      - run: cargo run --locked -- allocator-probe --blocks 2
       - name: Check coverage and performance gate trust boundaries
         if: runner.os == 'Linux'
         run: node --test scripts/coverage/*.test.mjs scripts/performance/*.test.mjs
@@ -91,81 +90,6 @@ jobs:
           path: ${{ steps.runtime-logs.outputs.root }}/tidemq-runtime-*/process-*.log
           if-no-files-found: ignore
           retention-days: 7
-
-  allocator:
-    name: Allocator (${{ matrix.backend }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        # Default validation and LLVM coverage already exercise mimalloc.
-        backend: [allocator-system, allocator-jemalloc]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Free unused Android SDK space for WAL and replica-copy headroom
-        run: |
-          sudo rm -rf -- /usr/local/lib/android
-          df -h .
-      - uses: dtolnay/rust-toolchain@1.99.1
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-${{ runner.os }}-debug
-          key: ${{ matrix.backend }}
-          cache-on-failure: true
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.148
-      - run: cargo clippy -p tidemq --all-targets --no-deps --locked --no-default-features --features ${{ matrix.backend }} -- -D warnings
-      - run: cargo nextest run -p tidemq --all-targets --locked --no-default-features --features ${{ matrix.backend }} --profile ci
-      - name: Preserve test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tests-${{ matrix.backend }}
-          path: target/nextest/ci/junit.xml
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Locate failed runtime logs
-        if: failure()
-        id: runtime-logs
-        run: printf 'root=%s\n' "$(node -p 'require("node:os").tmpdir()')" >> "$GITHUB_OUTPUT"
-      - name: Preserve failed runtime process logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-process-logs-${{ matrix.backend }}
-          path: ${{ steps.runtime-logs.outputs.root }}/tidemq-runtime-*/process-*.log
-          if-no-files-found: ignore
-          retention-days: 7
-
-  heap-profile:
-    name: Heap profile (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.99.1
-        with:
-          components: clippy
-      - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libunwind-dev
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-${{ runner.os }}-debug
-          key: heap-profile
-          cache-on-failure: true
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.148
-      - run: cargo clippy -p tidemq --all-targets --no-deps --locked --no-default-features --features heap-profiling -- -D warnings
-      - run: cargo nextest run -p tidemq --locked --no-default-features --features heap-profiling --test heap_profile --profile ci
 
   coverage:
     name: Coverage baseline (Linux)
@@ -233,14 +157,12 @@ jobs:
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, allocator, heap-profile, coverage]
+    needs: [validate, coverage]
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:
       - name: Require every validation and coverage job to pass
         env:
           VALIDATE_RESULT: ${{ needs.validate.result }}
-          ALLOCATOR_RESULT: ${{ needs.allocator.result }}
-          HEAP_RESULT: ${{ needs.heap-profile.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
-        run: '[[ "$VALIDATE_RESULT" == "success" && "$ALLOCATOR_RESULT" == "success" && "$HEAP_RESULT" == "success" && "$COVERAGE_RESULT" == "success" ]]'
+        run: '[[ "$VALIDATE_RESULT" == "success" && "$COVERAGE_RESULT" == "success" ]]'

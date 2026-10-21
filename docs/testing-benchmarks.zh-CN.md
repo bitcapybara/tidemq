@@ -4,7 +4,9 @@
 
 ## CI 门禁与覆盖率基线
 
-[Rust 工作流](../.github/workflows/rust.yml) 固定 Rust 1.99.1，仅 main push、PR 和手动 dispatch 触发，避免同时推送 feature/main 时重复构建。Linux/macOS 均先执行 fmt，再对 workspace 的 `--all-targets` 执行严格 Clippy，覆盖 lib、bin、单元测试、集成测试、example、benchmark 和构建脚本；同时启用 SDK 的 metrics、OpenTelemetry 与协议 codegen。Linux 另验 SDK 未启用可选 instrumentation 的代码路径。生产 lib/bin 另保留 panic、unwrap、expect、todo、unimplemented、unreachable 和越界索引审计。默认验证/覆盖率使用 mimalloc，另有 System/jemalloc 矩阵，heap-profiling 在 Linux/macOS 另验，不对这些互斥 feature 使用 `--all-features`。
+2026-10-21 当前调整：性能工作流仅手动 dispatch，提交前不运行性能测试，自动基线晋升暂停；现有基线不改。独立 allocator／heap profiling job 和 allocator probe 步骤移出 CI。fmt／Clippy／nextest／LLVM 覆盖率门禁继续运行，覆盖率仍严格比较既有基线。原联合晋升机制保留但不触发，详见[性能暂缓策略](performance-policy.zh-CN.md)。下文的自动性能与联合晋升描述作为保留的原机制说明。
+
+[Rust 工作流](../.github/workflows/rust.yml) 固定 Rust 1.99.1，仅 main push、PR 和手动 dispatch 触发，避免同时推送 feature/main 时重复构建。Linux/macOS 均先执行 fmt，再对 workspace 的 `--all-targets` 执行严格 Clippy，覆盖 lib、bin、单元测试、集成测试、example、benchmark 和构建脚本；同时启用 SDK 的 metrics、OpenTelemetry 与协议 codegen。Linux 另验 SDK 未启用可选 instrumentation 的代码路径。生产 lib/bin 另保留 panic、unwrap、expect、todo、unimplemented、unreachable 和越界索引审计。默认验证/覆盖率使用 mimalloc；System/jemalloc 与 heap-profiling 的专项 CI 已移除，可按需在本地运行，不对这些互斥 feature 使用 `--all-features`。
 
 普通测试使用固定 cargo-nextest 0.9.148，配置见 [nextest.toml](../.config/nextest.toml)。`ci` profile 不重试失败项，逐测试进程执行，保留 JUnit；测试并发为 1，避免同时启动多个 Raft fixture 争用宿主资源，测试内部原有业务并发不变。稳定 Rust 的 doctest 另外用 `cargo test --doc` 运行；nextest 不运行 doctest，稳定 LLVM 覆盖率也不把这些 doctest 纳入分母。依赖 RustFS/官方 Collector 的 ignored 场景仍需按下文显式运行，不能由默认 CI 通过推断其结果。
 
