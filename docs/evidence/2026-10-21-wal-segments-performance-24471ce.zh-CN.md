@@ -42,6 +42,6 @@ RF1 两项 p99 和 RF3 produce p99 为 `imprecise`；RF3 ACK p99 为 `diagnostic
 
 新 Linux 完整测试、覆盖率及 Docker 十项故障验证分别保留自己的源码和制品身份；这些通过不替代本次性能结论。原 `80c7659` 的 RF3 latency deadline 失败、`4f79a5` 的 throughput 失败，以及原 37/38 Claim 原因未知记录继续保留。本轮全部候选消息均完成持久 ACK，不把它改写为历史失败原因已被唯一确认。
 
-后续先对固定 40 ms offered schedule 附近的调度迟到、实际 RPC 和 WAL sync 证据进行有界核对。已授权的 `ssh dev` Docker 环境可用于独立声明的 Linux 测量；构建与测量使用不同容器、同一份冻结源码和原策略，首轮非通过数据完整保留。新环境的结论需等待真实完整 cohort，不能预报通过或反复运行至成功。
+已对固定 40 ms offered schedule 附近的迟到、调度后到完成时间及 WAL 阶段指标完成[有界分解](2026-10-21-performance-24471ce-queue-amplification.zh-CN.md)：约 96%–99% 的原 produce 均值来自计划发送迟到，支持串行排队放大机制，但不足以唯一归因于 fsync 或宿主调度噪声。已授权的 `ssh dev` Docker 环境用于独立声明的一组 Linux 测量；构建与测量使用不同容器、同一份冻结源码和原策略。Mac 非通过数据完整保留，新环境结论仍须等待真实完整 cohort，不能预报通过或反复运行至成功。
 
 完整原始数据保留于被 Git 忽略的 `target/wal-segments-performance-{build,result}-24471ce/`，汇总、命令日志及审计脚本的 SHA-256 见[制品摘要](wal-segments-performance/20261021-24471ce-artifacts.json)。本文及小型摘要不含集群配置、凭据、TLS 私钥或 WAL 正文。
