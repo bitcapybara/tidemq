@@ -1,0 +1,31 @@
+{
+  "source_commit": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+  "cohort": "coverage-24471ce-cohort7-accepted",
+  "remote_root": "/root/tidemq-validation/wal-coverage-20261020.fwMOj3b7",
+  "report_directory": "report-cohort7-24471ce",
+  "archive": "coverage-24471ce-cohort7-accepted.tgz",
+  "archive_bytes": 52617051,
+  "archive_tar_members": 251,
+  "archive_sha256": "b95000e90669aff74b725cc483633a2e2d0558e46da7881a1f28092fdbb857cc",
+  "remote_tar_members_verified": true,
+  "local_large_archive_verified": false,
+  "local_verification_deferred_until": "Independent Mac performance cohort termination",
+  "small_json_locally_verified": true,
+  "small_report_sha256": {
+    "cohort": "e49cd614d9a46aa677eabfb18f1990f7ebb2ce8a303ad39bdd0e74390cb8f03d",
+    "original_compare": "2b96743605bfa2f91671639f3289c0e906dc25325cdedebe29a9f24813b6576f",
+    "llvm_summary": "3024dcc8083c98de1f8897c0242e534d15633d617abf0a6233fba6619ae0274c",
+    "audit": "943b25fc247b73c52e72ad518f5f51d4f38c0789dbd1bec5268a8ffa97e8c4b7",
+    "source": "028639a8109d920c4ef0ac4f92aa2ce93fdf5c5767723ab6f72f8ef0866b54bf"
+  },
+  "large_raw_artifacts_preserved_remotely": [
+    "llvm-full.json",
+    "lcov.info",
+    "html/html/index.html",
+    "junit.xml",
+    "work-cohort7-24471ce.profdata",
+    "profraw-cohort7-244.tgz",
+    "resources-244/coverage-continuous-244-b8ac.jsonl"
+  ],
+  "contains_original_fixture_data_credentials_private_keys_or_wal": false
+}
