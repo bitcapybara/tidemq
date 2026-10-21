@@ -1,0 +1,26 @@
+{
+  "source_sha": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+  "py_compile_exit": 0,
+  "ten_original_cases": [
+    "smoke",
+    "replay",
+    "oom",
+    "smoke",
+    "replay",
+    "storage-kill",
+    "broker-kill",
+    "metadata-quorum",
+    "storage-quorum",
+    "gateway-kill"
+  ],
+  "case_timeout_seconds": 720,
+  "startup_timeout_seconds": 120,
+  "original_case_parameters_unchanged": true,
+  "old_driver_sha256": "2e1924b92dab1a79997202579ad07e7510d2007b5ca8a4eb47f2194c6fe3672b",
+  "new_driver_sha256": "866647d0a53bd7d25e2351e3674de0dbf2e933fab6c3b4c00e356ef001893ec0",
+  "only_five_identity_and_log_constant_replacements": true,
+  "script_readonly": true,
+  "venv_python": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/matrix-harness-24471ce/.venv/bin/python",
+  "dependencies": "stdlib only",
+  "workloads_started": false
+}

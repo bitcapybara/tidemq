@@ -1,0 +1,7 @@
+{
+  "phase": "host driver preparation before driver file or workload",
+  "exit": 1,
+  "error": "RuntimeError: Original case driver identity occurrence changed",
+  "cause": "Single quotes in the SSH command altered the inline literal; no driver was written and zero Docker cases started",
+  "corrective_action": "Pass the complete Python program as one properly shell-quoted argument"
+}

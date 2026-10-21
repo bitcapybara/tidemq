@@ -46,7 +46,7 @@ docker build -f "$REPO/deploy/docker/Dockerfile.builder" \
   --build-arg RUST_IMAGE="$RUST_IMAGE" -t "$BUILDER_IMAGE" "$REPO/deploy/docker"
 ```
 
-在受限 builder 容器中编译。只读挂载确定的源码快照，输出写入独立 staging 目录；服务二进制跟随仓库默认启用 mimalloc。System 或 jemalloc 对照构建须显式传入 `--no-default-features --features allocator-system` 或 `allocator-jemalloc`，详见[分配器构建与诊断](../../docs/operations/memory-troubleshooting.zh-CN.md)。实际验证应记录源码 SHA、Cargo.lock SHA、镜像 ID 和二进制 SHA，不能把不同快照的结果混用。早期 Linux 验证使用 System；`80c7659` 的默认 mimalloc 服务二进制已完成普通 Linux 门禁及新卷 RF1/RF3 十项功能验证，完整身份、独立性能失败及未验边界见[分段 WAL Linux 证据](../../docs/evidence/2026-10-21-wal-segments-linux-80c7659.zh-CN.md)。后续提交必须使用自己的验证结果。
+在受限 builder 容器中编译。只读挂载确定的源码快照，输出写入独立 staging 目录；服务二进制跟随仓库默认启用 mimalloc。System 或 jemalloc 对照构建须显式传入 `--no-default-features --features allocator-system` 或 `allocator-jemalloc`，详见[分配器构建与诊断](../../docs/operations/memory-troubleshooting.zh-CN.md)。实际验证应记录源码 SHA、Cargo.lock SHA、镜像 ID 和二进制 SHA，不能把不同快照的结果混用。`24471ce` 已用默认 mimalloc 完成新的 Linux 完整门禁、release/镜像核验与全新 RF1/RF3 十项功能验证（736 持久 ACK），见[本轮 Linux 证据](../../docs/evidence/2026-10-21-wal-segments-linux-24471ce.zh-CN.md)。[80c 历史结果及独立性能失败](../../docs/evidence/2026-10-21-wal-segments-linux-80c7659.zh-CN.md)继续保留；早期 Linux 验证使用 System。后续提交必须使用自己的验证结果。
 
 ```bash
 docker run --rm --cpus 4 --memory 8g --memory-swap 8g --pids-limit 512 \

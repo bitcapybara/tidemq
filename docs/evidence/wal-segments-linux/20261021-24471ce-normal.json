@@ -1,0 +1,208 @@
+{
+  "source": {
+    "source_sha": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+    "tree": "062cacc15ac04a59bc5c38002fce2a17f8f9e2c1",
+    "archive_sha256": "e3a9ded3546ed99680fbce69a402a1614ace40c9619f34686cbfd96eef319e2f",
+    "bundle_sha256": "062a5df79cf813169090b2244d892260e7273593839f067db07a47f2d0510ee5",
+    "lock_sha256": "d4c609c32697a3d04f3b9b235bb746943804a7fac9fc63c51da4db6f2e90d63e",
+    "path": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/source-24471ce",
+    "tracked_clean": true
+  },
+  "container_id": "5aa2763ffb674ec21e687f3588db02f3ad5dc2c286dc49d3aef61b51bc5ed19b",
+  "complete_exit": 0,
+  "steps": {
+    "allocator-probe": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:15:00Z",
+        "2026-10-21T04:15:01Z"
+      ],
+      "log_sha256": "5e57c1c582839fe15c8b324d7d96aeb3c8f29443d8e1b1685e3c195522590adc"
+    },
+    "clear-workspace": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:01:52Z",
+        "2026-10-21T04:01:53Z"
+      ],
+      "log_sha256": "08f57c47be069448397b91fa36d6a7097ed45e75b49ebe0871f67efd1e21e332"
+    },
+    "clippy": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:01:53Z",
+        "2026-10-21T04:02:25Z"
+      ],
+      "log_sha256": "5c866d3eabead65a47fe96dd93b14dbecbfc900889f3d14d91ca5cfa2ce14827"
+    },
+    "doctests": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:13:05Z",
+        "2026-10-21T04:13:12Z"
+      ],
+      "log_sha256": "f34166fb54908f9783f0e6c4e1b9889c4e84b171fa173e53ded0faf8e92f01e2"
+    },
+    "fmt": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:01:51Z",
+        "2026-10-21T04:01:52Z"
+      ],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "format-generated": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:02:25Z",
+        "2026-10-21T04:02:25Z"
+      ],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "generated-diff": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:02:25Z",
+        "2026-10-21T04:02:25Z"
+      ],
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "nextest": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:02:48Z",
+        "2026-10-21T04:13:05Z"
+      ],
+      "log_sha256": "0ed679e42ec0dbb6851502e9570333dc748d593d999145bf41846b235076064d"
+    },
+    "production-audit": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:02:25Z",
+        "2026-10-21T04:02:48Z"
+      ],
+      "log_sha256": "7aa0592e12144b88762a6102c0ef1e881c16f05755884fdeb6cca4e3466d1a5c"
+    },
+    "release": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:18:55Z",
+        "2026-10-21T04:22:44Z"
+      ],
+      "log_sha256": "1855ed3b21d65ccc316679ce0c649871be275702ffd3f7e5c787b8bcb3db410d"
+    },
+    "rustfs": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:15:04Z",
+        "2026-10-21T04:18:55Z"
+      ],
+      "log_sha256": "23e24bb07fba8d6af6980108c5b27da816355f95de4f66c7b61cea9b6cfd6de8"
+    },
+    "sdk-clippy": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:13:12Z",
+        "2026-10-21T04:13:17Z"
+      ],
+      "log_sha256": "8484e55686e6b4b32b7c52f2029c30386ba4324a0c8e1596a77f5cde5cc8d533"
+    },
+    "sdk-nextest": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:13:17Z",
+        "2026-10-21T04:13:50Z"
+      ],
+      "log_sha256": "f887c593c2fb046337996a8990c052fb848523659a6f02591eed37bb374d209c"
+    },
+    "trust-boundaries": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:15:01Z",
+        "2026-10-21T04:15:04Z"
+      ],
+      "log_sha256": "2f6b0602c156fa83826bd178fa89084b369861d76bedaa7e546f8338c02ce0d6"
+    },
+    "validate-config": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:13:50Z",
+        "2026-10-21T04:15:00Z"
+      ],
+      "log_sha256": "210db7d71f26ac090f052028e3a5d4197e72a8fc9ba630d8ac6d17b108872554"
+    },
+    "versions": {
+      "exit": 0,
+      "time": [
+        "2026-10-21T04:01:50Z",
+        "2026-10-21T04:01:51Z"
+      ],
+      "log_sha256": "130806612272e6c8a83386f238dcd0c78c3f70bd0a70a78b2ae35956b77270f0"
+    }
+  },
+  "workspace_nextest": {
+    "tests": 364,
+    "passed": 364,
+    "skipped": 13,
+    "seconds": 213.679
+  },
+  "sdk_nextest": {
+    "tests": 37,
+    "passed": 37,
+    "skipped": 0,
+    "seconds": 10.973
+  },
+  "rustfs_nextest": {
+    "tests": 10,
+    "passed": 10,
+    "skipped": 153,
+    "seconds": 38.4
+  },
+  "doctests_passed": 4,
+  "node_tests_passed": 44,
+  "source_tracked_clean_after": true,
+  "generated_matches_frozen_after": true,
+  "harness_sha256": "6fb225bf7aad8a4669e6b234e343f2833768335df082a53dc96e4334468bad61",
+  "harness_unchanged": true,
+  "launcher_sha256": "f70b84ea8fc05cb6dea5221d04c24616d18f4caa1d57bd7db487adc8101328bf",
+  "raw_resources": {
+    "container_id": "5aa2763ffb674ec21e687f3588db02f3ad5dc2c286dc49d3aef61b51bc5ed19b",
+    "samples": 619,
+    "max_sampled_memory_current": 8589881344,
+    "max_memory_peak": 8589934592,
+    "max_oom_kill": 0,
+    "finished_at": "2026-10-21T04:22:48.251865+00:00",
+    "terminal_observed": true
+  },
+  "limits": {
+    "Memory": 8589934592,
+    "MemorySwap": 8589934592,
+    "NanoCpus": 4000000000,
+    "PidsLimit": 512
+  },
+  "started_at": "2026-10-21T04:01:50Z",
+  "ended_at": "2026-10-21T04:22:44Z",
+  "private_target_only_cache_phases": [
+    {
+      "report": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/normal-v3/harness/results/normal-24471ce-build-boundary-1.json",
+      "sha256": "80936877362f07cb019a2102b18c70748dff6c9d448c460de9112d04882a2569",
+      "before_current": 7860387840,
+      "after_current": 299204608,
+      "errors": 0
+    },
+    {
+      "report": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/normal-v3/harness/results/normal-24471ce-build-boundary-2.json",
+      "sha256": "45c06215ce136e9115a053a936692727515243b066487f80ca9249d3ebdfce53",
+      "before_current": 2213097472,
+      "after_current": 576270336,
+      "errors": 0
+    },
+    {
+      "report": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/normal-v3/harness/results/normal-24471ce-build-boundary-3.json",
+      "sha256": "c5c97bf44738aae33bbb826d8497c3c72ab34b27b68f9f409a41fb0d95096fa5",
+      "before_current": 7756722176,
+      "after_current": 823664640,
+      "errors": 0
+    }
+  ]
+}

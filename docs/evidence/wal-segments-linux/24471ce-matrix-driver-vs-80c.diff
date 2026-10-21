@@ -1,0 +1,37 @@
+--- 80c-driver
++++ 244-driver
+@@ -1,6 +1,6 @@
+ from pathlib import Path
+ import subprocess,json,os,re,datetime,time,hashlib,sys,tempfile
+-root=Path('/root/tidemq-validation/wal-segments-20261020.xnfbxhby'); short='80c7659'; sha='80c7659c39b3429b185c4e6bfc3436c8e892917e'; source=root/f'source-{short}'; out=root/f'docker-matrix-{short}'; out.mkdir(mode=0o700)
++root=Path('/root/tidemq-validation/wal-segments-20261020.xnfbxhby'); short='24471ce'; sha='24471ce18f26739eefc47af63fdd0c183e9a787c'; source=root/f'source-{short}'; out=root/f'docker-matrix-{short}'; out.mkdir(mode=0o700)
+ image=json.loads((root/f'runtime-image-{short}-metadata.json').read_text()); prepared=json.loads((root/f'deployment-prepared-{short}.json').read_text()); rustfs='/root/tidemq-validation/tidemq-yyx-20261020-4354e95-c6c399/tools/rustfs'
+ if image['source_sha']!=sha or not image['binary_inside_image_matches'] or image['image_verification_exit']!=0: raise SystemExit('New runtime image not verified')
+ if hashlib.sha256(Path(rustfs).read_bytes()).hexdigest()!='c14fd1216f99efba9cac4bb469a5fa31ea9e461b82b79a28b69280e057613c93': raise SystemExit('RustFS identity changed')
+@@ -8,7 +8,7 @@
+ if actual_image['Id']!=image['image_id'] or (actual_image['Config'].get('Labels') or {}).get('io.tidemq.validation.source')!=sha: raise SystemExit('Exact image tag/source identity mismatch')
+ env=os.environ.copy(); env.update(TIDEMQ_IMAGE=image['tag'],RUSTFS_BINARY=rustfs,COMPOSE_PROFILES=''); env.pop('COMPOSE_PROJECT_NAME',None)
+ steps=[]; counter=0
+-summary={'source_sha':sha,'tree':'0c8073e9372202e5206d0b74f1340c965219e655','image_id':image['image_id'],'image_tag':image['tag'],'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'cases':[],'projects':[],'status':'running'}
++summary={'source_sha':sha,'tree':'062cacc15ac04a59bc5c38002fce2a17f8f9e2c1','image_id':image['image_id'],'image_tag':image['tag'],'started_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'cases':[],'projects':[],'status':'running'}
+ def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat()
+ def save():
+  data=(json.dumps(summary,indent=2)+'\n').encode(); fd,tmp=tempfile.mkstemp(prefix='.summary-',dir=out)
+@@ -93,7 +93,7 @@
+    (out/f'{mode}-actual-isolation.json').write_text(json.dumps({'source_sha':sha,'project':project,'containers':projected,'networks':[{'Id':n['Id'],'Internal':n['Internal'],'Driver':n['Driver']} for n in nets]},indent=2)+'\n')
+    cases=['smoke','replay','oom'] if mode=='rf1' else ['smoke','replay','storage-kill','broker-kill','metadata-quorum','storage-quorum','gateway-kill']
+    for case in cases:
+-    before=set((state/'evidence').glob(case+'.*')) if (state/'evidence').exists() else set(); started=now(); print('Starting exact80c fresh Docker case',mode,case,flush=True)
++    before=set((state/'evidence').glob(case+'.*')) if (state/'evidence').exists() else set(); started=now(); print('Starting exact24471ce fresh Docker case',mode,case,flush=True)
+     code=run(mode+'-'+case,['bash',str(source/'scripts/docker-validate.sh'),str(state),case],720,True)
+     created=set((state/'evidence').glob(case+'.*'))-before
+     if len(created)!=1: raise RuntimeError('Case did not produce one unique evidence directory')
+@@ -101,7 +101,7 @@
+     record={'mode':mode,'case':case,'exit':code,'status':harness.get('status','missing'),'expected':64 if case in ['smoke','replay'] else 80,'ledger':report.get('ledger'),'evidence':str(evidence),'validator':harness.get('validator'),'started_at':started,'ended_at':now()}; summary['cases'].append(record); save()
+     expected_count=record['expected']; ledger=record['ledger'] or {}
+     if code or harness.get('status')!='passed' or report.get('status')!='passed' or harness.get('project')!=project or harness.get('case')!=case or harness.get('image_id')!=image['image_id'] or set(ledger)!=set(['expected','committed','received','acknowledged','frontier']) or any(x!=expected_count for x in ledger.values()): raise RuntimeError('Case terminal status/ledger/source validation failed; not retried')
+-    project_report['case_count']+=1; save(); print('Passed exact80c Docker case',mode,case,ledger,flush=True)
++    project_report['case_count']+=1; save(); print('Passed exact24471ce Docker case',mode,case,ledger,flush=True)
+    project_report['all_cases_passed']=True; save()
+   finally:
+    project_report['stopped']=safe_stop(item,dc); save()

@@ -1,0 +1,71 @@
+{
+  "source_sha": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+  "archive": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/linux-docker-24471ce-evidence.tar.gz",
+  "archive_sha256": "2009438f18d2f735d7cd010189602be051f63033db7cfc96351844a66dc537f2",
+  "archive_bytes": 3016943,
+  "members": 1494,
+  "file_manifest_sha256": "7fe5ead0b6ffaf5c5aa410f258f27534e10375f0ce259d6c1144c29d0f8714c4",
+  "secret_scan": {
+    "source_sha": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+    "files_checked": 1492,
+    "secret_representations": 24,
+    "private_key_markers": 3,
+    "matches": 0,
+    "excluded": "all init/run/client/rustfs credential directories, cargo registry, compiled targets, binaries and venvs"
+  },
+  "raw_preserved_remote": true,
+  "downloaded_to_mac": false,
+  "normal_complete_exit": 0,
+  "matrix_complete_exit": 0,
+  "docker_cases": 10,
+  "acknowledged_messages_across_independent_cases": 736,
+  "original_resource_comparison": {
+    "source_sha": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+    "original_count": 68,
+    "before_after_changed_count": 0,
+    "original_80c_before_changed_count": 0,
+    "full_identity_projections_kept_private": true,
+    "before_sha256": "2536957f90968ca759f8cfadd7483572287316b77caa2bc3a7a2848544f6612d",
+    "after_sha256": "2536957f90968ca759f8cfadd7483572287316b77caa2bc3a7a2848544f6612d",
+    "checked_at": "2026-10-21T04:38:21.801185+00:00"
+  },
+  "volume_preservation": [
+    {
+      "mode": "rf1",
+      "project": "tidemq-validation-rf1-917044c655fb5531",
+      "containers": 7,
+      "running": 0,
+      "named_volumes": 3,
+      "all_named_volumes_exist": true,
+      "all_named_volumes_own_project": true
+    },
+    {
+      "mode": "rf3",
+      "project": "tidemq-validation-rf3-c24f19b9f1d664f7",
+      "containers": 20,
+      "running": 0,
+      "named_volumes": 12,
+      "all_named_volumes_exist": true,
+      "all_named_volumes_own_project": true
+    }
+  ],
+  "oom": {
+    "container_id_before": "a75306f7c945bb9d9c2cc259c41887afd6a458384dc306bf306edcfac7c5587a",
+    "container_id_after": "a75306f7c945bb9d9c2cc259c41887afd6a458384dc306bf306edcfac7c5587a",
+    "same_container": true,
+    "original_memory": 402653184,
+    "lowered_memory": 6291456,
+    "restored_memory": 402653184,
+    "oom_killed_observed": true,
+    "oom_exit_code": 137,
+    "ledger": {
+      "expected": 80,
+      "committed": 80,
+      "received": 80,
+      "acknowledged": 80,
+      "frontier": 80
+    },
+    "controlled_limit_reduction": true
+  },
+  "sealed_at": "2026-10-21T04:38:24.359558+00:00"
+}
