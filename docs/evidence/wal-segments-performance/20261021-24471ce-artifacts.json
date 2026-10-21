@@ -1,0 +1,42 @@
+{
+  "source_commit": "24471ce18f26739eefc47af63fdd0c183e9a787c",
+  "tree": "062cacc15ac04a59bc5c38002fce2a17f8f9e2c1",
+  "status": "inconclusive",
+  "measure_exit_code": 1,
+  "independent_auditor_exit_code": 1,
+  "all_counts_and_recomputed_metrics_match": true,
+  "performance_baseline_promoted": false,
+  "coverage_baseline_promoted": false,
+  "artifacts": [
+    {
+      "file": "target/wal-segments-performance-build-24471ce/manifest.json",
+      "bytes": 3417,
+      "sha256": "025f2b3adb57bf99496af58f37a332b32f8a811fca7a792997fec94bfbf2d928"
+    },
+    {
+      "file": "target/wal-segments-performance-result-24471ce/summary.json",
+      "bytes": 168566,
+      "sha256": "781b3411ae676ac64b57df14c0769e44fa3d2c7bb04c8474ec08f95309ba0d38"
+    },
+    {
+      "file": "target/wal-segments-performance-24471ce-prepare.log",
+      "bytes": 81,
+      "sha256": "da8259ee2f66ce77524cd6bcd4028be88224b045171429ba8048a62d513241ad"
+    },
+    {
+      "file": "target/wal-segments-performance-24471ce-measure.log",
+      "bytes": 2028,
+      "sha256": "04773d0ea288e29b95d07be6c438ae9fd848d91dd27f1d30ed838b29fc8112f2"
+    },
+    {
+      "file": "target/wal-segments-final-evidence/performance-24471ce-audit.json",
+      "bytes": 9234,
+      "sha256": "a4637b493ff45b99a7fe8a84d2c2d10d444cddfe047321fd4c5f4ee853f388bc"
+    },
+    {
+      "file": "target/wal-segments-final-evidence/audit-performance-24471ce.mjs",
+      "bytes": 3289,
+      "sha256": "95a379bf2ef030c73b528a904a9ae2c38ae663c4d126db21ae45e2559b32c67e"
+    }
+  ]
+}
