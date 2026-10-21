@@ -1,0 +1,467 @@
+{
+  "schema": 1,
+  "original": {
+    "compiled_head": "bb27a7fd74f11b3225ef8ed2e5a0e5adc12bf349",
+    "compiled_dirty_patch_sha256": "dfd0fd9697839bf2cf0e2dd775a025e44bc3d83a8d898039ccb75db6d21e3207",
+    "equivalent_committed_product": "e3b110f5fe7e7236f6ba2e51202050fb58761f8e",
+    "test_binary_sha256": "d5869f0f5fda275209fbf2210bee2da4d5e39c92c8a3913f45638fb463887351",
+    "nextest_run": "fa3ad1fa-5776-4aa1-8055-fc8ba9fe46c1",
+    "result": {
+      "exit": 100,
+      "run": 38,
+      "passed": 37,
+      "failed": 1,
+      "duration_seconds": 107.316
+    },
+    "failing_test_seconds": 4.834,
+    "failure_site": "tests/runtime_queue.rs:984 Consumer::claim",
+    "failure": {
+      "code": 6,
+      "outcome": 3,
+      "retryable": true
+    },
+    "claim_specific_source_available": false,
+    "cause_resolved": false
+  },
+  "one_warn_probe": {
+    "product_dependencies": "Exact original Cargo dependency artifacts",
+    "change": "WARN test subscriber only",
+    "result": {
+      "exit": 0,
+      "passed": 1,
+      "seconds": 13.04
+    },
+    "binary_sha256": "079bcabb4d91eab4e18821cf525d99e34c437fc6abd04fb573b13acc87f2181b",
+    "original_claim_failure_reproduced": false,
+    "observed_internal_metadata_warning_is_original_claim_cause": false
+  },
+  "postmortem": {
+    "reader_source": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+    "view_kind": "postmortem_recovered_copy_without_live_quorum_barrier",
+    "original_files": 16,
+    "original_bytes": 14323,
+    "original_file_content_sha256_unchanged": true,
+    "original_fixture_manifest_sha256": "2b3baefd62e0d66d60a068ec5b25f04b2088001d6b41700a272b8f43469ff9f5",
+    "read_only_evidence_sha256_unchanged": true,
+    "data": {
+      "applied": {
+        "index": 15,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "committed_index": 15,
+      "snapshot_index": 13,
+      "partition": "d31974f9-5707-4126-9da7-e57ed24b9d7e/0",
+      "fence": {
+        "fence_generation": 1,
+        "grant": {
+          "cluster_id": "5fa87952-a9f4-4a26-a829-2a5cb04fa841",
+          "epoch": 1,
+          "expected_route_generation": 0,
+          "group_id": 2,
+          "metadata_revision": 5,
+          "operation_id": "6190e8e0-77d5-8469-a32d-a12330766ac5",
+          "owner_node": 1,
+          "partition": "d31974f9-5707-4126-9da7-e57ed24b9d7e/0"
+        }
+      },
+      "producer": {
+        "committed_end": 2,
+        "hot_message_count": 0,
+        "retained_floor": 0,
+        "revision": 4
+      },
+      "subscription": {
+        "state": {
+          "diagnostics": {
+            "acknowledged_before": 0,
+            "acknowledged_holes": 0,
+            "blocked": null,
+            "cold_before": 2,
+            "generations": {
+              "assignment": 1,
+              "cursor": 1
+            },
+            "in_flight_bytes": 0,
+            "in_flight_messages": 0,
+            "issued_before": 0,
+            "next_delivery_offset": 0,
+            "next_retry": null,
+            "phase": "ColdReplay",
+            "received_before": 0,
+            "subscription_id": "227732e5-95c2-425e-8114-c75dafe3f2ac",
+            "total_in_flight_bytes": 0,
+            "total_window_slots": 0,
+            "window_slots": 0
+          }
+        },
+        "subscription_id": "227732e5-95c2-425e-8114-c75dafe3f2ac"
+      },
+      "claim_index": 15,
+      "no_record_delivery_or_read_observed": true
+    },
+    "metadata": {
+      "applied": {
+        "index": 14,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "data_group": {
+        "generation": 1,
+        "group_id": 2,
+        "voters": [
+          1
+        ]
+      },
+      "grant": {
+        "cluster_id": "5fa87952-a9f4-4a26-a829-2a5cb04fa841",
+        "epoch": 1,
+        "expected_route_generation": 0,
+        "group_id": 2,
+        "metadata_revision": 5,
+        "operation_id": "6190e8e0-77d5-8469-a32d-a12330766ac5",
+        "owner_node": 1,
+        "partition": "d31974f9-5707-4126-9da7-e57ed24b9d7e/0"
+      },
+      "membership": {
+        "log_id": {
+          "index": 0,
+          "leader_id": {
+            "node_id": 0,
+            "term": 0
+          }
+        },
+        "membership": {
+          "configs": [
+            [
+              1
+            ]
+          ],
+          "nodes": {
+            "1": {
+              "addr": "127.0.0.1:42683"
+            }
+          }
+        }
+      },
+      "revision": 13,
+      "route": {
+        "epoch": 1,
+        "generation": 1,
+        "group_id": 2,
+        "owner_node": 1,
+        "ownership_operation": "6190e8e0-77d5-8469-a32d-a12330766ac5",
+        "partition": "d31974f9-5707-4126-9da7-e57ed24b9d7e/0"
+      }
+    },
+    "limitation": "Recovered durable state is postmortem evidence; it does not recover the original process-local lease clock, RPC outcome source or reply delivery"
+  },
+  "diagnostic_fix": {
+    "regression_base": "84ce35f6625a88fb21d0180c675039f54984b69c",
+    "original_subscription_commit_seam_sha256": "3f92ce445f581e83819e0605288f0c465cf0a27913d9c19f54a2fcdea6f3dc83",
+    "scope": "Only post-client_write subscription fence read, missing fence and lease/finalization guard source context",
+    "red": {
+      "exit": 100,
+      "run": 1,
+      "failed": 1,
+      "skipped": 134,
+      "seconds": 4.449,
+      "nextest_run": "220511a8-f887-4d31-82d1-326473923d93",
+      "binary": {
+        "path": "/Users/yanyuxing/tidemq-workspace/tidemq.test-yyx-wal-segments-recovery-main/target/debug/deps/tidemq-224d25fced014da7",
+        "byte_len": 152472440,
+        "sha256": "77e6cd9dc8f718bd431963a17521edd0a7cbb7d7da968f5f1affd895d09764bd",
+        "mtime": "2026-10-21T03:38:25.905Z"
+      },
+      "raw_event": {
+        "fields": {
+          "code": 6,
+          "command_kind": "CLAIM_ASSIGNMENT",
+          "error": "Runtime operation was rejected: Failure { code: 6, outcome: 3, retryable: true, expected_sequence: None, expected_registration_epoch: None }",
+          "error_kind": "runtime_rejected_unknown",
+          "event_code": "runtime_request_unknown",
+          "message": "Runtime returned an unknown operation result",
+          "operation": "none",
+          "operation_id": "d780905e-38c6-4182-97e8-f2be08b9f575",
+          "outcome": "Unknown",
+          "request_id": "88eae9e1-1600-4f38-9e24-83c1ba4e9da5",
+          "stage": "runtime_error"
+        },
+        "level": "WARN",
+        "span": {
+          "frame_kind": 28,
+          "name": "tidemq.server.request",
+          "node_id": 1,
+          "role": "combined",
+          "traffic_class": 1
+        },
+        "spans": [
+          {
+            "frame_kind": 28,
+            "name": "tidemq.server.request",
+            "node_id": 1,
+            "role": "combined",
+            "traffic_class": 1
+          }
+        ],
+        "target": "tidemq::runtime::telemetry"
+      }
+    },
+    "green": {
+      "exit": 0,
+      "run": 2,
+      "passed": 2,
+      "skipped": 133,
+      "seconds": 4.49,
+      "nextest_run": "11e4a42e-808a-4ddd-b03b-94a6f4e890b1",
+      "binary": {
+        "path": "/Users/yanyuxing/tidemq-workspace/tidemq.test-yyx-wal-segments-recovery-main/target/debug/deps/tidemq-224d25fced014da7",
+        "byte_len": 152472424,
+        "sha256": "839e048d908798a65ebb105d1dbd31a00214561394f8e7d20446b0754d094c32"
+      },
+      "raw_event": {
+        "fields": {
+          "code": 6,
+          "command_kind": "CLAIM_ASSIGNMENT",
+          "error": "Runtime operation failed: verify committed subscription writer: Control authorization has expired",
+          "error_kind": "runtime_operation_unknown",
+          "event_code": "runtime_request_unknown",
+          "message": "Runtime returned an unknown operation result",
+          "operation": "verify committed subscription writer",
+          "operation_id": "b0848ac6-d2d6-42ba-9858-8c7b4f130d17",
+          "outcome": "Unknown",
+          "request_id": "6022c54c-77fa-48ed-a1c6-d41f54c6cd81",
+          "stage": "runtime_error"
+        },
+        "level": "WARN",
+        "span": {
+          "frame_kind": 28,
+          "name": "tidemq.server.request",
+          "node_id": 1,
+          "role": "combined",
+          "traffic_class": 1
+        },
+        "spans": [
+          {
+            "frame_kind": 28,
+            "name": "tidemq.server.request",
+            "node_id": 1,
+            "role": "combined",
+            "traffic_class": 1
+          }
+        ],
+        "target": "tidemq::runtime::telemetry"
+      }
+    },
+    "actual_service_handler_protobuf_and_raft": true,
+    "tested_claim_uses_native_quic": false,
+    "actual_claim_assignment_committed_before_original_lease_expiry": true,
+    "original_control_lease_ttl_ms": 3000,
+    "exact_existing_unknown_frame_unchanged": true,
+    "supplementary_fence_read_and_missing_fence_wire_comparisons_passed": true,
+    "original_failure_claimed_fixed": false
+  },
+  "checks": {
+    "fmt": 0,
+    "workspace_all_targets_clippy_deny_warnings": 0,
+    "production_panic_unwrap_expect_indexing_audit": 0,
+    "diff_check": 0
+  },
+  "artifact": {
+    "local_root": "target/claim-diagnosis-hot-page-20261021",
+    "raw_profiles_and_binary_files_tracked": false,
+    "safe_archive": "claim-evidence-safe.tgz",
+    "safe_archive_sha256": "44be7de781aabfdfeb6231fa9be2acd8b2a8ace3b21aad79da4f4078ffcbd586",
+    "raw_evidence": [
+      {
+        "path": "original-evidence/source-identity.json",
+        "bytes": 648,
+        "sha256": "b676d431d5dea54a3eccf9968e2e531d178120783305479462571a8bd955671c"
+      },
+      {
+        "path": "original-evidence/original-run.log",
+        "bytes": 6710,
+        "sha256": "64dbb2900f8c8690bcb571398dc999cefc501f0ad876b5c4778576ba1b2c7e3b"
+      },
+      {
+        "path": "original-evidence/compiled-source.patch",
+        "bytes": 12672,
+        "sha256": "dfd0fd9697839bf2cf0e2dd775a025e44bc3d83a8d898039ccb75db6d21e3207"
+      },
+      {
+        "path": "original-evidence/fixture-before.json",
+        "bytes": 2746,
+        "sha256": "2b3baefd62e0d66d60a068ec5b25f04b2088001d6b41700a272b8f43469ff9f5"
+      },
+      {
+        "path": "original-evidence/fixture-after-inspection.json",
+        "bytes": 2746,
+        "sha256": "2b3baefd62e0d66d60a068ec5b25f04b2088001d6b41700a272b8f43469ff9f5"
+      },
+      {
+        "path": "linux-inspector/recovered-state.json",
+        "bytes": 11289,
+        "sha256": "4d71269f7868700cc3d859aa765c0ff887d4d35acb775648f835a46a47e7e1a9"
+      },
+      {
+        "path": "linux-inspector/recovered-topology-state.json",
+        "bytes": 15505,
+        "sha256": "0ec746b8bb2038659c98054a386c92bf5f01e1ce8c330870ab5b12ecf135fce0"
+      },
+      {
+        "path": "linux-inspector/inspect-claim-copies.rs",
+        "bytes": 7707,
+        "sha256": "fe9bf15a15d7afec626dfe35622a9ce02669537897867f9f70c750a2ced6fdf4"
+      },
+      {
+        "path": "linux-inspector/inspect-claim-topology-copies.rs",
+        "bytes": 8737,
+        "sha256": "b6703d103203c0714152099664893c55aae35cae1c2101bf13cd09192bc96b27"
+      },
+      {
+        "path": "linux-inspector/run-inspector.sh",
+        "bytes": 2019,
+        "sha256": "d9b179fdcc3628fe240ebf8b2edcfb9df208a14bdb417cba654bb9016f930f29"
+      },
+      {
+        "path": "linux-inspector/run-topology-inspector.sh",
+        "bytes": 2037,
+        "sha256": "89893e22b479f002a84945a6b4c304ef1db590ae2134c0cf56e5ac2e0c95b0af"
+      },
+      {
+        "path": "linux-inspector/dependency-sha256.txt",
+        "bytes": 897,
+        "sha256": "9ed57aee92971b218921b8c7fda1f426f21a810333976c06a4cb6eb0eee37795"
+      },
+      {
+        "path": "linux-inspector/inspector-sha256.txt",
+        "bytes": 303,
+        "sha256": "0bcf72c00877903d6018426513f0dbe5e6f31b0d8c3579bb821a5bd489e768ec"
+      },
+      {
+        "path": "linux-inspector/evidence-before.sha256",
+        "bytes": 1198,
+        "sha256": "411238f970651f713955f4db7792b0e0efcb6b974c3a91b22f31697be65a7b99"
+      },
+      {
+        "path": "linux-inspector/evidence-after.sha256",
+        "bytes": 1198,
+        "sha256": "411238f970651f713955f4db7792b0e0efcb6b974c3a91b22f31697be65a7b99"
+      },
+      {
+        "path": "linux-inspector/topology-dependency-sha256.txt",
+        "bytes": 897,
+        "sha256": "9ed57aee92971b218921b8c7fda1f426f21a810333976c06a4cb6eb0eee37795"
+      },
+      {
+        "path": "linux-inspector/topology-inspector-sha256.txt",
+        "bytes": 312,
+        "sha256": "8a33525fa7a30aeff88036111f69aaabca4b23318e4372712c28ff0133ccb1f1"
+      },
+      {
+        "path": "linux-inspector/topology-evidence-before.sha256",
+        "bytes": 1198,
+        "sha256": "411238f970651f713955f4db7792b0e0efcb6b974c3a91b22f31697be65a7b99"
+      },
+      {
+        "path": "linux-inspector/topology-evidence-after.sha256",
+        "bytes": 1198,
+        "sha256": "411238f970651f713955f4db7792b0e0efcb6b974c3a91b22f31697be65a7b99"
+      },
+      {
+        "path": "linux-inspector/topology-first-permission.log",
+        "bytes": 54,
+        "sha256": "9182cdd7a36a9128867e4adef0a4ba4e2bb067a08e24ba99b032ee06695c4312"
+      },
+      {
+        "path": "probe/feedback.log",
+        "bytes": 740,
+        "sha256": "1ede0805df047734d33f8c416b04706556622c4bd02360bd076f3acf70943aa1"
+      },
+      {
+        "path": "probe/feedback-terminal.json",
+        "bytes": 171,
+        "sha256": "4168f2a21eaf38c49d4bfefde446458edb7beb7e7ca1a23ec7656012f533bb8e"
+      },
+      {
+        "path": "probe/post-commit-source-red.log",
+        "bytes": 2422,
+        "sha256": "18c4508ae378d6d21035c8d8a8e96a7a768a042f2daabb8e62561b796bc2060c"
+      },
+      {
+        "path": "probe/post-commit-red-source.json",
+        "bytes": 560,
+        "sha256": "cc30612037305fd92ddb3cdaeac4dcf27d4313150c46703684ec1d196a2ded07"
+      },
+      {
+        "path": "probe/post-commit-red-binary.json",
+        "bytes": 279,
+        "sha256": "1d5fbdbf2a98488131d87fdb95bc71f700707039738eb6f0bc78a5fc436622b3"
+      },
+      {
+        "path": "probe/post-commit-red-junit.xml",
+        "bytes": 4461,
+        "sha256": "dffd456548f57bdbd5024de33a22ad04c42f965c31dfcc54b28c6caf86787235"
+      },
+      {
+        "path": "probe/subscription-commit-red-tests.rs",
+        "bytes": 7041,
+        "sha256": "2d90660588f51dd8a76502550118b159a55d2295216625131da59888ee8d3671"
+      },
+      {
+        "path": "probe/post-commit-red.patch",
+        "bytes": 1059,
+        "sha256": "b21377205fe8c3715f95e0b88ec129ea46b86c955927630ec5b187bae2fa5219"
+      },
+      {
+        "path": "probe/subscription-seam-identity.json",
+        "bytes": 356,
+        "sha256": "204260b39d427674b6fea6bf7142d1276e2c7a69ff8a06977b303dc8ae1eee11"
+      },
+      {
+        "path": "probe/post-commit-source-green.log",
+        "bytes": 2499,
+        "sha256": "6c51678e7cb9689c82a9dc8c61bf6dcc1056bc18933325a85b2a4dcdb3c0a492"
+      },
+      {
+        "path": "probe/post-commit-green-binary.json",
+        "bytes": 240,
+        "sha256": "73c563617ccb0c8c1f2819cabf60a593a82cf39ae6d242574c148be9523ed841"
+      },
+      {
+        "path": "probe/post-commit-green-event.json",
+        "bytes": 942,
+        "sha256": "393053b5b764335dceb00d0a1567f8f5a0b77bd71f550f30a6c9832e4793c362"
+      },
+      {
+        "path": "probe/post-commit-green-junit.xml",
+        "bytes": 777,
+        "sha256": "15d0590b08ce9dbb0f10eaba4a8bc7f3f5744471d35637ed37ddcc800448c57d"
+      },
+      {
+        "path": "probe/clippy-red-stage.log",
+        "bytes": 178,
+        "sha256": "b587aa652a76a88c580ef2bac7184ca773d7f4ee7b7526a4e997c6bca25e746c"
+      },
+      {
+        "path": "probe/clippy-green-stage.log",
+        "bytes": 178,
+        "sha256": "509bdadb34e99cb9762dad98b473d7e19a87ba11e58e8b17f5ef7247db0ac78a"
+      },
+      {
+        "path": "probe/clippy-final.log",
+        "bytes": 178,
+        "sha256": "f4281543a7f8584c9187214af08783eecfd632d57797fe236e2daf463af4ed14"
+      },
+      {
+        "path": "probe/production-audit.log",
+        "bytes": 1740,
+        "sha256": "281969934f2cd8c9d277b112c2fa53d4f321f81e0ad38426177c824c8343a56a"
+      }
+    ]
+  }
+}

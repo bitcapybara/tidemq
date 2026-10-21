@@ -473,6 +473,8 @@ impl Service {
         if matches!(response, DataResponse::Rejected(_)) {
             return Ok(response);
         }
+        #[cfg(test)]
+        reclaim_tests::subscription_commit_tests::after_commit(partition, lease.expires_at()).await;
         let current = replica
             .state
             .try_with_application(|state| {
@@ -482,14 +484,22 @@ impl Service {
                     .cloned()
             })
             .await
-            .map_err(|_| Error::unknown())?
-            .ok_or_else(Error::unknown)?;
+            .map_err(|source| Error::operation("read committed subscription writer fence", source))?
+            .ok_or_else(|| {
+                Error::operation(
+                    "read committed subscription writer fence",
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Committed subscription writer fence is absent",
+                    ),
+                )
+            })?;
         let valid = if let Some(finalization) = finalization {
             finalization.check(&current)
         } else {
             lease.check(&current, Work::ControlMutation)
         };
-        valid.map_err(|_| Error::unknown())?;
+        valid.map_err(|source| Error::operation("verify committed subscription writer", source))?;
         Ok(response)
     }
 
