@@ -1,0 +1,312 @@
+{
+  "source_commit": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+  "source_tree": "0c8073e9372202e5206d0b74f1340c965219e655",
+  "case": "rf3-combined/1-candidate/latency/measured",
+  "view_kind": "postmortem_recovered_copy_without_live_quorum_barrier",
+  "stage": "after_all_original_services_stopped_and_owned_work_drained",
+  "before_stop_management_sample_committed_index": 5931,
+  "services_stopped_cleanly_as_recorded_in_original_execution": true,
+  "replicas": [
+    {
+      "node_id": 1,
+      "committed_log": {
+        "index": 5965,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "applied_log": {
+        "index": 5965,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "snapshot_log": {
+        "index": 4999,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "purged_log": {
+        "index": 3975,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "retained_log_entries": 1990
+    },
+    {
+      "node_id": 2,
+      "committed_log": {
+        "index": 5965,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "applied_log": {
+        "index": 5965,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "snapshot_log": {
+        "index": 4999,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "purged_log": {
+        "index": 3975,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "retained_log_entries": 1990
+    },
+    {
+      "node_id": 3,
+      "committed_log": {
+        "index": 5965,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "applied_log": {
+        "index": 5965,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "snapshot_log": {
+        "index": 4999,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "purged_log": {
+        "index": 3975,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      },
+      "retained_log_entries": 1990
+    }
+  ],
+  "partition": {
+    "key": "f1c0ba7f-a4e7-4b89-a6ac-b96e59e14036/0",
+    "committed_end": 1024,
+    "hot_message_count": 1024,
+    "retained_floor": 0,
+    "revision": 1027,
+    "subscription": {
+      "acknowledged_before": 1000,
+      "acknowledged_holes": 0,
+      "blocked": null,
+      "cold_before": 0,
+      "generations": {
+        "assignment": 1,
+        "cursor": 1
+      },
+      "in_flight_bytes": 136,
+      "in_flight_messages": 1,
+      "issued_before": 1001,
+      "next_delivery_offset": 1001,
+      "next_retry": {
+        "attempt": 1,
+        "offset": 1000,
+        "retry_at_ms": 1792548642544
+      },
+      "phase": "Realtime",
+      "received_before": 1000,
+      "subscription_id": "b61951a9-440b-4df7-acc5-5ddea2a35839",
+      "total_in_flight_bytes": 136,
+      "total_window_slots": 1,
+      "window_slots": 1
+    }
+  },
+  "unacknowledged_breakdown": {
+    "committed_beyond_persisted_acknowledged_frontier": 24,
+    "issued_beyond_persisted_received_frontier": 1,
+    "committed_beyond_recovered_issued_frontier": 23
+  },
+  "last_five_committed_entries": [
+    {
+      "at_or_before_recovered_commit": true,
+      "command": {
+        "command": {
+          "expected_attempt": 0,
+          "kind": "RecordDelivery",
+          "now_ms": 1792548612409,
+          "offset": 999,
+          "operation_id": "b6f2ff9c-b27d-cefb-7737-fceaeb637541"
+        },
+        "kind": "Subscription",
+        "partition": "f1c0ba7f-a4e7-4b89-a6ac-b96e59e14036/0",
+        "subscription_id": "b61951a9-440b-4df7-acc5-5ddea2a35839"
+      },
+      "log_id": {
+        "index": 5961,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      }
+    },
+    {
+      "at_or_before_recovered_commit": true,
+      "command": {
+        "command": {
+          "kind": "ReceiveBarrier",
+          "received_before": 1000
+        },
+        "kind": "Subscription",
+        "partition": "f1c0ba7f-a4e7-4b89-a6ac-b96e59e14036/0",
+        "subscription_id": "b61951a9-440b-4df7-acc5-5ddea2a35839"
+      },
+      "log_id": {
+        "index": 5962,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      }
+    },
+    {
+      "at_or_before_recovered_commit": true,
+      "command": {
+        "command": {
+          "kind": "Ack",
+          "token_count": 3
+        },
+        "kind": "Subscription",
+        "partition": "f1c0ba7f-a4e7-4b89-a6ac-b96e59e14036/0",
+        "subscription_id": "b61951a9-440b-4df7-acc5-5ddea2a35839"
+      },
+      "log_id": {
+        "index": 5963,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      }
+    },
+    {
+      "at_or_before_recovered_commit": true,
+      "command": {
+        "command": {
+          "expected_attempt": 0,
+          "kind": "RecordDelivery",
+          "now_ms": 1792548612544,
+          "offset": 1000,
+          "operation_id": "d6871915-e2b8-41b7-2012-b7042526b469"
+        },
+        "kind": "Subscription",
+        "partition": "f1c0ba7f-a4e7-4b89-a6ac-b96e59e14036/0",
+        "subscription_id": "b61951a9-440b-4df7-acc5-5ddea2a35839"
+      },
+      "log_id": {
+        "index": 5964,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      }
+    },
+    {
+      "at_or_before_recovered_commit": true,
+      "command": {
+        "kind": "Producer",
+        "partition": "f1c0ba7f-a4e7-4b89-a6ac-b96e59e14036/0"
+      },
+      "log_id": {
+        "index": 5965,
+        "leader_id": {
+          "node_id": 1,
+          "term": 1
+        }
+      }
+    }
+  ],
+  "tail_scope": {
+    "range": {
+      "end_exclusive": 6222,
+      "start": 5710
+    },
+    "entries_per_replica": 256,
+    "uncommitted_entries_observed_in_range": [
+      0,
+      0,
+      0
+    ]
+  },
+  "last_record_delivery_payload_time": {
+    "now_ms": 1792548612544,
+    "iso": "2026-10-21T02:10:12.544Z",
+    "is_durability_timestamp": false
+  },
+  "original_integrity": {
+    "files": 57,
+    "bytes": 7859253,
+    "all_file_hashes_unchanged_after_copy_and_after_inspection": true,
+    "whole_tree_manifest_sha256": "71301034b1d888e88a525393744ef943e0b6d42abe8795338cb2c414fc45257b",
+    "after_copy_manifest_sha256": "71301034b1d888e88a525393744ef943e0b6d42abe8795338cb2c414fc45257b",
+    "after_inspection_manifest_sha256": "71301034b1d888e88a525393744ef943e0b6d42abe8795338cb2c414fc45257b",
+    "only_copied_stores_opened": true,
+    "linux_evidence_mount_read_only": true,
+    "transferred_regular_files_verified": {
+      "files": 33,
+      "bytes": 7845081,
+      "all_transferred_file_hashes_match_mac_original": true,
+      "unexpected_files": 0
+    }
+  },
+  "reader": {
+    "storage_options": "StorageOptions::default()",
+    "rust_version": "1.99.1",
+    "platform": "x86_64-unknown-linux-gnu",
+    "frozen_rlib_source_commit": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+    "tidemq_rlib_sha256": "ec4a567492f65cd82514f5325707fc1a85f7ee67e58602827c1a343544513895",
+    "formatted_source_sha256": "17f2849d9d5a8be5fada9dc7dc6351d512e023668acf9f8fcd8334147d63e644",
+    "binary_sha256": "a3c8c06616cf5170411e8ca4a36600e79bec7d5e590f8bb9f3c4d6fd8813605f",
+    "rustfmt_passed": true,
+    "standalone_clippy_driver_and_rustc_warnings_denied_passed": true,
+    "no_product_rebuild": true,
+    "no_mac_compilation": true,
+    "diagnostic_profiles_separate_from_formal_coverage": true
+  },
+  "limits": {
+    "live_quorum_proof": false,
+    "instantaneous_failure_cause_proven": false,
+    "snapshot_deadlock_proven": false,
+    "payload_time_is_durability_timestamp": false,
+    "body_signing_key_token_or_private_key_in_this_projection": false,
+    "complete_application_bytes_compared": false
+  },
+  "full_state_projection": {
+    "ignored_file": "target/performance-forensics-80c7659/recovered-state.json",
+    "sha256": "7859e9a1537d94eef5714dea3cb88eefce5f1599fd261f56cf50049110aebad9",
+    "safe_archive": "target/performance-forensics-80c7659/postmortem-80c7659-rf3-candidate1-safe.tgz",
+    "safe_archive_sha256": "eeddc1800f7873dd6188f491e968ba49a780c73463725ec3135b64f2e4561121",
+    "includes_original_wal_snapshot_bytes_or_message_bodies": false
+  },
+  "transfer_note": {
+    "first_tar_attempt_injected_appledouble_sidecars": true,
+    "storage_rejected_unknown_sidecar_files": true,
+    "first_attempt_is_not_evidence_of_product_corruption": true,
+    "final_input_copied_as_regular_files_with_complete_hash_match": true
+  },
+  "all_three_recovered_application_projections_identical": true,
+  "projection_scope": "Applied log, membership, and producer counters plus subscription diagnostics for the tail-referenced partition; complete application bytes were not compared."
+}

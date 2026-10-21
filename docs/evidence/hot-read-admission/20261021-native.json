@@ -1,0 +1,101 @@
+{
+  "base_commit": "84ce35f6625a88fb21d0180c675039f54984b69c",
+  "base_broker_runtime_git_blob": "9058a91472577935d2ca8ff134ae40e16d671949",
+  "validated_source_sha256": {
+    "src/broker/runtime.rs": "48b0487580b39c5f674eb44642de403a655d2cac64d60e835a472f7ad55dd3cf",
+    "src/broker/tests/hot_read.rs": "b96f98350046ab6d399d220e7cbe3c1b17f08578ce2e3b35444491a0159b8fe9"
+  },
+  "environment": {
+    "host": "aarch64-apple-darwin",
+    "rustc": "1.99.1",
+    "rustc_commit": "58cf8f9c35b355199727627d07ae34a4e2846d67",
+    "llvm": "23.1.1",
+    "cargo_build_jobs": 2,
+    "features": "default",
+    "worktree": "/Users/yanyuxing/tidemq-workspace/tidemq.feat-yyx-wal-segments-capacity-main",
+    "target_directory": "target",
+    "shell_command_proxy": "rtk proxy"
+  },
+  "raw_directory": "target/hot-read-admission-20261021",
+  "runs": [
+    {
+      "name": "red",
+      "command": "cargo test -p tidemq --locked --lib broker::tests::hot_read::hot_read_admission_covers_allocated_message_metadata_until_drop -- --exact --nocapture",
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 1,
+      "test_seconds": 0.18,
+      "returned_messages": 1,
+      "message_capacity": 1024,
+      "element_bytes": 64,
+      "metadata_bytes": 65536,
+      "charged_bytes": 513,
+      "raw_log": "red.log",
+      "raw_log_sha256": "51e5d0aa8c78985d5c6cc859ff461a7f4406907a22020e1e32904cf9417a9495"
+    },
+    {
+      "name": "green",
+      "command": "cargo test -p tidemq --locked --lib broker::tests::hot_read::hot_read_admission_covers_allocated_message_metadata_until_drop -- --exact --nocapture",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "test_seconds": 0.24,
+      "returned_messages": 1,
+      "message_capacity": 1024,
+      "element_bytes": 64,
+      "metadata_bytes": 65536,
+      "charged_bytes": 66048,
+      "raw_log": "green.log",
+      "raw_log_sha256": "65f92e9d797c0b63b72670cd0c30d45fe1bc9b8c30c466974b83e0e34f6be027"
+    },
+    {
+      "name": "boundaries",
+      "command": "cargo test -p tidemq --locked --lib broker::tests::hot_read:: -- --nocapture",
+      "exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "test_seconds": 0.51,
+      "small_vec_capacity": 4,
+      "small_vec_metadata_bytes": 256,
+      "small_vec_charged_bytes": 768,
+      "four_default_pages_charged_bytes": 4163584,
+      "fifth_page": "Capacity",
+      "released_page_reacquired": true,
+      "raw_log": "boundaries.log",
+      "raw_log_sha256": "0693d241abf102aef354d1bfff2de2a267c59bb012e5f1ea1b7d95dd7523dd51"
+    },
+    {
+      "name": "broker_regression",
+      "command": "cargo test -p tidemq --locked --lib broker::tests:: -- --nocapture",
+      "exit_code": 0,
+      "passed": 9,
+      "failed": 0,
+      "test_seconds": 1.12,
+      "raw_log": "broker-regression.log",
+      "raw_log_sha256": "94f6775bc0be60ffc1011e1730ad4be53924ea208c1e0d8e1d489b637e630c55"
+    },
+    {
+      "name": "clippy_tests",
+      "command": "cargo clippy -p tidemq --tests --no-deps --locked -- -D warnings",
+      "exit_code": 0,
+      "raw_log": "clippy-tests.log",
+      "raw_log_sha256": "a5f22f3b4177710b72cc143cc5c173dbbc2b1701e0b52b272701b0626a9bafed"
+    },
+    {
+      "name": "clippy_all_targets",
+      "command": "cargo clippy -p tidemq --all-targets --no-deps --locked -- -D warnings",
+      "exit_code": 0,
+      "raw_log": "clippy-all-targets.log",
+      "raw_log_sha256": "df8d900c6080ac87ad6d195d60f8c6b09cc5cec35bb483026b2c5ddc0d1ccf92"
+    },
+    {
+      "name": "production_audit",
+      "command": "cargo clippy -p tidemq --lib --bins --no-deps --locked -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unimplemented -D clippy::todo -D clippy::unreachable -D clippy::indexing_slicing",
+      "exit_code": 0,
+      "raw_log": "production-audit.log",
+      "raw_log_sha256": "5257e5b926c3ffa0faef9b5cdecad130974fae35d75690bff1049432b043e61d"
+    }
+  ],
+  "complete_frozen_version_validation": "pending",
+  "baseline_promoted": false
+}

@@ -1,5 +1,7 @@
 # 分段 WAL 的 Linux 与 Docker 验证证据
 
+本文保留 `4f79a50`、`426ff65` 的历史运行及当时的诊断状态。后续 `80c7659` 使用独立源码、镜像和新卷重新验证，见[本版 Linux / Docker 证据](2026-10-21-wal-segments-linux-80c7659.zh-CN.md)；结果按提交分别判断。
+
 ## 验收范围与版本
 
 本文按源码提交区分结果。`4f79a5012bbc5e4edd18663e84db1764bac99b15` 已完成下述 Linux 检查、真实 RustFS 测试以及新建 RF1/RF3 Docker 十项场景。各场景的 committed、received、acknowledged 和 frontier 均达到期望值，十项合计 736 条。该计数来自不同场景，不能解释为同一条全局消息流。

@@ -1,0 +1,48 @@
+{
+  "time": "2026-10-21T01:32:16.778130+00:00",
+  "container_id": "148df5c273aed721146de26d4bae8d9c7a455978610b8c60f5b4cc21677e3c17",
+  "checks": {
+    "exact_container_id": true,
+    "exact_name": true,
+    "exact_image": true,
+    "full_source_label": true,
+    "exact_owner": true,
+    "exact_limits": true,
+    "network_none": true,
+    "readonly_root": true,
+    "uid_gid_10001": true,
+    "readonly_source_mount": true,
+    "readonly_immutable_harness": true,
+    "source_head": true,
+    "source_tree": true,
+    "source_tracked_clean": true,
+    "source_lock": true
+  },
+  "actual_labels": {
+    "io.tidemq.validation.owner": "normal-80c7659-xnfbxhby",
+    "io.tidemq.validation.purpose": "segmented-wal-linux-gates",
+    "io.tidemq.validation.source": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+    "org.opencontainers.image.source": "https://github.com/rust-lang/docker-rust"
+  },
+  "source_mount": [
+    {
+      "Type": "bind",
+      "Source": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/source-80c7659",
+      "Destination": "/work",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    }
+  ],
+  "harness_mount": [
+    {
+      "Type": "bind",
+      "Source": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/normal-80c7659/run-gates.sh",
+      "Destination": "/stage/run-gates.sh",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    }
+  ],
+  "workload_started": false
+}
