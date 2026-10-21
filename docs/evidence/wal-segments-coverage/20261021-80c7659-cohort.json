@@ -1,0 +1,118 @@
+{
+  "source_commit": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+  "source_tree": "0c8073e9372202e5206d0b74f1340c965219e655",
+  "cohort": "coverage-80c-cohort6-accepted",
+  "full_gate_status": "passed",
+  "original_script_exit": 0,
+  "command": "bash /work/scripts/coverage-run.sh /work /report --require-baseline-unchanged",
+  "started_at": "2026-10-21T01:45:19Z",
+  "finished_at": "2026-10-21T01:56:03Z",
+  "tests": {
+    "run": 356,
+    "passed": 356,
+    "failed": 0,
+    "skipped": 13,
+    "duration_seconds": 177.315,
+    "junit_skipped": 0,
+    "profile": "ci",
+    "test_threads": 1,
+    "retries": 0
+  },
+  "features": [
+    "tidemq-sdk/metrics",
+    "tidemq-sdk/opentelemetry",
+    "tidemq-protocol/codegen"
+  ],
+  "source_guards": {
+    "tracked_diff_empty": true,
+    "generated_overlay_diff_empty": true,
+    "real_git_head_and_tree_verified": true,
+    "source_mount_read_only": true,
+    "source_label_present": false
+  },
+  "coverage": {
+    "status": "passed",
+    "counts": {
+      "lines": {
+        "count": 37856,
+        "covered": 30346
+      },
+      "functions": {
+        "count": 3942,
+        "covered": 2812
+      },
+      "regions": {
+        "count": 53995,
+        "covered": 42027
+      }
+    },
+    "baseline_promoted": false,
+    "scope": "Original protected workspace all-targets and build-script policy; stable doctests run separately.",
+    "raw_summary_full_and_original_comparison_agree": true
+  },
+  "profiles": {
+    "raw_file_count": 517,
+    "old_cohort_profiles_reused": false,
+    "raw_sha_unchanged_by_cache_phase": true,
+    "raw_sha_unchanged_by_report_exports": true,
+    "merged_profdata_preserved": true
+  },
+  "cache_phase": {
+    "operation": "POSIX_FADV_DONTNEED",
+    "errors": 0,
+    "before_memory_current": 7853785088,
+    "after_memory_current": 56954880,
+    "helper_sha256": "cfd83450414560684eae93301b2ef7e906600f845f46426afa7db651f9829e32",
+    "approval_sha256": "0fe06fa5009067e736be23b508813a4cf7d15744ebf490650d5ed98e86747a2f",
+    "original_product_watermarks_unchanged": true,
+    "global_cache_modified": false
+  },
+  "continuous_resources": {
+    "container_id": "160a4690020adb52d46de0c76988fda82935bdd858786cc4dc69969317774e20",
+    "name": "/tidemq-wal-coverage-80c7659-fwmo-cohort6-run-coverage",
+    "pid_at_start": 708581,
+    "cgroup_path": "/sys/fs/cgroup/system.slice/docker-160a4690020adb52d46de0c76988fda82935bdd858786cc4dc69969317774e20.scope",
+    "samples": 275,
+    "max_sampled_memory_current": 8589737984,
+    "file": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/normal-v3/harness/results/coverage-continuous-80c-160a.jsonl",
+    "ended_at": "2026-10-21T01:56:04.762634+00:00"
+  },
+  "related_test_durations_seconds": {
+    "native_runtime_scaling_explicit_replacement_preserves_original_sdk_traffic_and_ack": 3.967,
+    "pending_plan_resumes_after_stable_proof_reply_is_lost_before_metadata_completion": 2.179,
+    "remote_semantics_reconcile_native_quic_groups_with_distinct_leaders_and_measured_copy_bounds": 4.148,
+    "official_openraft_storage_v2_suite_passes_on_real_files": 9.724
+  },
+  "resources": {
+    "cpu": 2,
+    "memory_bytes": 8589934592,
+    "docker_memory_swap_total_bytes": 17179869184,
+    "additional_swap_bytes": 8589934592,
+    "pid_limit": 512,
+    "cargo_jobs": 2,
+    "network": "none",
+    "uid": 10001,
+    "allocator": "default mimalloc"
+  },
+  "artifact_retention": {
+    "raw_profiles": true,
+    "merged_profdata": true,
+    "llvm_summary": true,
+    "llvm_full_json": true,
+    "lcov": true,
+    "html": true,
+    "junit": true,
+    "original_compare": true,
+    "continuous_cgroup_raw": true,
+    "harness_and_hashes": true,
+    "fixture_credentials_keys_or_wal_in_archive": false
+  },
+  "sha256": {
+    "llvm_summary": "37d413291969e2a11ecf4c607e23bf4c914f97a28e7edb4614f36cfb9a6cac55",
+    "llvm_full": "543fbc47a34871e9b6f10690f71e3848c3178c5d6c489afaf11b7f15d38e8fb4",
+    "original_compare_summary": "e21f4819e8eafb7e98e063cb172109584ce38142e9bf091f80556ed94048737c",
+    "policy": "ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57",
+    "unchanged_baseline": "638b8e963abe9e8936c7df0f2571093c0244b83946a4a173d5df7c7bf15fb2ee",
+    "junit": "fc9f72d59a8a3678828a89e084f76ac7984a3ebec7e48c9dbefb74e9a320e5f9"
+  }
+}

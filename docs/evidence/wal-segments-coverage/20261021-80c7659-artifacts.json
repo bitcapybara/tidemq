@@ -1,0 +1,32 @@
+{
+  "source_commit": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
+  "archive_root": "/root/tidemq-validation/wal-coverage-20261020.fwMOj3b7",
+  "baseline_promoted": false,
+  "large_artifact_transfer_deferred_during_mac_performance": true,
+  "archives": [
+    {
+      "file": "coverage-799-cohort4-operator-superseded.tgz",
+      "sha256": "cca3c6cc971b10a71aada051376b11e0f3f784cc658b0b88797b7082f7dfc892",
+      "status": "operator-superseded",
+      "local_ignored_copy_verified_before_mac_performance": true
+    },
+    {
+      "file": "coverage-80c-cohort5-missing-control-directory.tgz",
+      "sha256": "bd7602de661b28e3288c41a78005e0f2ba9fc1f5c6c99a1ceb037c39e43ec3fa",
+      "status": "harness-precondition-failed",
+      "local_ignored_copy_verified": false
+    },
+    {
+      "file": "coverage-80c-cohort6-accepted.tgz",
+      "sha256": "bac9c5cf595d3af9f56cf3b09ac4c25b847df1776345d5055dd13354ef567b79",
+      "status": "passed",
+      "local_ignored_copy_verified": false
+    }
+  ],
+  "raw_reports": {
+    "llvm_summary": "37d413291969e2a11ecf4c607e23bf4c914f97a28e7edb4614f36cfb9a6cac55",
+    "original_compare": "e21f4819e8eafb7e98e063cb172109584ce38142e9bf091f80556ed94048737c",
+    "audit": "5ed5ae4522afa1a54bfd564303556a886be4ab8224a546fd368912e96c43d7bf",
+    "cohort": "2a2e20c8785a9cf77b60d11c34222d1c080f1041036ac6ede742108c111a231b"
+  }
+}
