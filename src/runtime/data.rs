@@ -1042,9 +1042,16 @@ impl Service {
             .brokers
             .get(&(group, route.owner_node))
             .ok_or_else(Error::unavailable)?;
+        let context = RequestContext {
+            operation_id: wire::id(&frame.operation_id)?,
+            request_id: wire::id(&frame.request_id)?,
+            attempt: 1,
+            deadline: deadline.into_std(),
+        };
         let mut recorded_delivery = false;
         let result = async {
             let mut deliveries = Vec::new();
+            let mut hot_page: Option<broker::HotRead> = None;
             let mut cold_page: Option<crate::lifecycle::GuardedPage> = None;
             let mut read_budget: Option<ReadBudget> = None;
             let mut bytes = 0usize;
@@ -1062,21 +1069,36 @@ impl Service {
                     }
                     break;
                 }
-                let read = broker
-                    .hot_read(
-                        lease,
-                        RequestContext {
-                            operation_id: wire::id(&frame.operation_id)?,
-                            request_id: wire::id(&frame.request_id)?,
-                            attempt: 1,
-                            deadline: deadline.into_std(),
-                        },
-                        partition,
-                        offset,
-                        1,
-                        request.max_bytes,
-                    )
-                    .await;
+                let read = async {
+                    if let Some(read) = &hot_page {
+                        let page = read.page();
+                        if let Some(message) = offset
+                            .checked_sub(page.first_offset)
+                            .and_then(|relative| usize::try_from(relative).ok())
+                            .and_then(|index| page.messages.get(index))
+                        {
+                            return Ok(Some(message.clone()));
+                        }
+                    }
+                    // Retain exactly one charged page; every delivery still commits current fences.
+                    hot_page = None;
+                    let read = broker
+                        .hot_read(
+                            lease,
+                            context,
+                            partition,
+                            offset,
+                            request.max_messages as usize,
+                            request.max_bytes,
+                        )
+                        .await?;
+                    #[cfg(test)]
+                    reclaim_tests::observe_hot_page(partition);
+                    let message = read.page().messages.first().cloned();
+                    hot_page = Some(read);
+                    Ok::<_, broker::Error>(message)
+                }
+                .await;
                 #[cfg(test)]
                 let read = if read.is_ok() && reclaim_tests::reject_hot_read(partition, offset) {
                     Err(broker::Error::Draining)
@@ -1084,12 +1106,8 @@ impl Service {
                     read
                 };
                 let (message, proof, prepared_page) = match read {
-                    Ok(read) => {
-                        let Some(message) = read.page().messages.first().cloned() else {
-                            break;
-                        };
-                        (message, None, None)
-                    }
+                    Ok(Some(message)) => (message, None, None),
+                    Ok(None) => break,
                     Err(broker::Error::Rejected {
                         reason:
                             DataRejection::Producer(crate::producer::Rejection::OffsetExpired {
@@ -1237,6 +1255,7 @@ impl Service {
                         self.require_retained_offset(group, partition, offset, deadline)
                             .await?;
                         self.runtime_metrics.hot_delivery_reclaimed();
+                        hot_page = None;
                         // Reclamation changed no delivery state. Keep the original identity and slice.
                         if !deliveries.is_empty() {
                             break;
