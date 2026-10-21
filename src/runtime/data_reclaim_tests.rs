@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
@@ -40,6 +41,7 @@ struct HotDeliveryHook {
     partition: PartitionKey,
     offset: u64,
     point: HookPoint,
+    hot_pages: AtomicUsize,
     ready: Notify,
     resume: Notify,
 }
@@ -49,6 +51,7 @@ enum HookPoint {
     BeforeHotDelivery,
     AfterDurableDelivery,
     RejectHotRead,
+    CountHotPages,
 }
 
 struct InstalledHook(Arc<HotDeliveryHook>);
@@ -59,6 +62,7 @@ impl InstalledHook {
             partition,
             offset,
             point,
+            hot_pages: AtomicUsize::new(0),
             ready: Notify::new(),
             resume: Notify::new(),
         });
@@ -105,6 +109,203 @@ pub(super) fn lose_delivery_reply(partition: PartitionKey, offset: u64) -> bool 
 
 pub(super) fn reject_hot_read(partition: PartitionKey, offset: u64) -> bool {
     take_hook(partition, offset, HookPoint::RejectHotRead).is_some()
+}
+
+pub(super) fn observe_hot_page(partition: PartitionKey) {
+    if let Some(hook) = HOOK
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|hook| hook.partition == partition && hook.point == HookPoint::CountHotPages)
+    {
+        hook.hot_pages.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_read_reuses_its_bounded_hot_page_and_preserves_durable_ack_identity() {
+    let _serial = SERIAL.lock().await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Combined),
+            (2, Role::Combined),
+            (3, Role::Combined),
+        ],
+        &[1, 2, 3],
+        &[1, 2, 3],
+    )
+    .await;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let partition = PartitionKey {
+        topic_id: topic,
+        partition: 0,
+    };
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+        .await
+        .unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+    )
+    .await
+    .unwrap();
+    producer
+        .produce(
+            (0_u64..8)
+                .map(|identity| public::Message {
+                    key: Bytes::copy_from_slice(&identity.to_be_bytes()),
+                    body: Bytes::from_static(b"bounded-hot-page"),
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let hook = InstalledHook::new(partition, 0, HookPoint::CountHotPages);
+    let started = Instant::now();
+    let first_count = consumer.fill().await.unwrap();
+    let first_elapsed = started.elapsed();
+    let hot_pages = hook.0.hot_pages.load(Ordering::Relaxed);
+    drop(hook);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut frontier = 0;
+    for _ in 0..8 {
+        let mut pending = Vec::new();
+        while let Some(delivery) = consumer.next().await.unwrap() {
+            assert_eq!(delivery.key(), &delivery.offset().to_be_bytes());
+            assert_eq!(delivery.body(), b"bounded-hot-page");
+            assert!(seen.insert(delivery.offset()));
+            pending.push(delivery);
+        }
+        if !pending.is_empty() {
+            frontier = consumer
+                .ack_many(&pending)
+                .await
+                .unwrap()
+                .acknowledged_before;
+        }
+        if seen.len() == 8 {
+            break;
+        }
+        consumer.fill().await.unwrap();
+    }
+    let assignment = client
+        .admin()
+        .subscription_status(topic, 0, subscription)
+        .await
+        .unwrap()
+        .assignment
+        .unwrap();
+    client.close().await;
+    drop(consumer);
+    drop(producer);
+    fixture.close().await;
+    assert!(first_count > 1);
+    assert_eq!(seen, (0..8).collect());
+    assert_eq!(frontier, 8);
+    assert_eq!(assignment.acknowledged_before, 8);
+    assert_eq!(assignment.cold_before, 0);
+    eprintln!(
+        "Original live Read returned {first_count} deliveries in {first_elapsed:?} using {hot_pages} successful quorum-backed hot pages"
+    );
+    assert_eq!(
+        hot_pages, 2,
+        "A bounded data page and the original empty probe must share the same Read"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_read_retains_page_charge_until_its_owned_work_finishes() {
+    let _serial = SERIAL.lock().await;
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let (topic, subscription) = create(&client).await;
+    let partition = PartitionKey {
+        topic_id: topic,
+        partition: 0,
+    };
+    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+        .await
+        .unwrap();
+    let consumer = Consumer::claim(
+        client.clone(),
+        topic,
+        0,
+        subscription,
+        ConsumerConfig::default(),
+    )
+    .await
+    .unwrap();
+    producer
+        .produce(vec![public::Message {
+            key: Bytes::new(),
+            body: Bytes::from_static(b"cancelled-hot-page"),
+        }])
+        .await
+        .unwrap();
+    let service = fixture.running.get(&1).unwrap().service.clone();
+    let broker = service.brokers.get(&(2, 1)).unwrap().clone();
+    let before = service.budget.available_data_bytes();
+    let hook = InstalledHook::new(partition, 0, HookPoint::BeforeHotDelivery);
+    let until = deadline();
+    let cancellation = tidemq_sdk::CancellationToken::new();
+    let context = tidemq_sdk::RequestContext::new(until, cancellation.clone());
+    let filling = consumer.clone();
+    let pending = tokio::spawn(async move { context.scope(filling.fill()).await });
+    tokio::time::timeout_at(until, hook.0.ready.notified())
+        .await
+        .unwrap();
+    let page_charge = service.config.protocol.max_frame_bytes as usize - 8192 + 512;
+    assert!(service.budget.available_data_bytes() <= before - page_charge);
+    let mut draining = Box::pin(broker.drain(until.into_std()));
+    let still_held = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(draining.as_mut(), cx).is_pending())
+    })
+    .await;
+    assert!(
+        still_held,
+        "The page must retain its original admission while paused"
+    );
+    cancellation.cancel();
+    let result = pending.await.unwrap();
+    assert!(
+        matches!(&result, Err(tidemq_sdk::Error::RequestUnknown { source })
+            if matches!(source.as_ref(), tidemq_sdk::Error::Cancelled)),
+        "Cancellation after submission must retain its unknown outcome: {result:?}"
+    );
+    // Caller cancellation does not require an already owned request to stop immediately.
+    hook.0.resume.notify_one();
+    tokio::time::timeout_at(until, draining)
+        .await
+        .expect("Finishing owned work must release the page within the original deadline")
+        .unwrap();
+    // The lane and memory permits have the same Admission owner, now released by cancellation.
+    drop(hook);
+    let issued = service
+        .data
+        .get(&2)
+        .unwrap()
+        .state
+        .with_application(|state| {
+            state
+                .subscriptions(partition)
+                .unwrap()
+                .diagnostics(subscription)
+                .unwrap()
+                .next_delivery_offset
+        })
+        .await;
+    client.close().await;
+    drop(consumer);
+    drop(producer);
+    drop(service);
+    fixture.close().await;
+    assert!(issued <= 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
