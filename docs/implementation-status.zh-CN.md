@@ -1,8 +1,8 @@
 # 实施状态
 
-2026-10-21：分段 WAL 已实现，包含唯一 manifest、有序 writer、引用检查点、有界段搬迁、快照 reader pin、失败关闭、物理容量采样与迁移预留；详见[当前存储设计](design/storage-recovery.zh-CN.md)。磁盘布局版本为 2，开发阶段使用全新数据目录，明确拒绝旧格式。源码 `426ff65` 的 macOS／Linux 普通 nextest 均为 351 passed／13 skipped；该版 Linux 插桩回归另有一项迁移 Unknown 失败，仍在定位，不由普通通过替代。`4f79a5` 的[完整 Linux 覆盖率](evidence/2026-10-21-wal-segments-coverage.zh-CN.md)及独立 Docker 十项矩阵通过，但其完整性能 cohort 在 RF3 持久 ACK 校验失败；新版本完整性能与覆盖率仍待验收，旧结果不冒认后续源码。
+2026-10-21：分段 WAL 已实现，包含唯一 manifest、有序 writer、引用检查点、有界段搬迁、快照 reader pin、失败关闭、物理容量采样与迁移预留；详见[当前存储设计](design/storage-recovery.zh-CN.md)。磁盘布局版本为 2，开发阶段使用全新数据目录，明确拒绝旧格式。冻结 `80c7659` 的 macOS／Linux 普通及 Linux 插桩 nextest 均为 356 passed／13 skipped，[精确覆盖率门禁](evidence/2026-10-21-wal-segments-coverage-80c7659.zh-CN.md)通过。该版[性能 cohort](evidence/2026-10-21-wal-segments-performance-80c7659.zh-CN.md)在 RF1 八对通过后，因 RF3 latency 的 1024 committed／1000 ACK 超时失败，完整性能尚未放行；原 `4f79a5` throughput 失败及 `426ff65` 插桩迁移失败分别保留，不由其他通过替代。
 
-2026-10-21：按用户要求，仓库已设为 Public，并重跑远端 main `addf6d9` 的 [Rust](https://github.com/bitcapybara/tidemq/actions/runs/39419125570) 与 [Performance](https://github.com/bitcapybara/tidemq/actions/runs/39419125608)。runner 已实际执行；Rust 重跑因超大 HELLO 拒绝断言和精确覆盖率下降失败，不能继续记作计费未启动。HELLO 已用真实 EOF 红绿回归修正测试，仍禁止任何成功帧；性能重跑的最终结果另行记录。没有修改付款、负载、期限、比较策略或基线。
+2026-10-21：按用户要求，仓库已设为 Public，并重跑远端 main `addf6d9` 的 [Rust](https://github.com/bitcapybara/tidemq/actions/runs/39419125570) 与 [Performance](https://github.com/bitcapybara/tidemq/actions/runs/39419125608)。runner 已实际执行；Rust 因超大 HELLO 拒绝断言和精确覆盖率下降失败，性能 build／measure／gate 通过，联合 promotion 因 Rust 失败而正确停止，见[完整 hosted 证据](evidence/2026-10-21-hosted-ci-addf6d9.zh-CN.md)。HELLO 已用真实 EOF 红绿回归修正测试，仍禁止任何成功帧。没有修改付款、负载、期限、比较策略或基线。
 
 2026-10-20 历史重构：Rust 已固定为 1.99.1，配置仅接受当前按角色拆分的格式。源码 `693f9bd` 的 Rust CI 8／8 job 成功，Linux／macOS workspace 各 310 passed／12 skipped，文档各 4 passed；System／jemalloc 各 250 passed／11 skipped，全 target 严格 Clippy 与生产 panic／索引审计通过。无效参数、错误日志位置、共享身份字符串及 multipart 许可生命周期已整理；SDK 可选 OpenTelemetry 指标复用宿主 provider。该轮仅完成 WAL [分析](research/wal-segments.zh-CN.md)，后续实现以上述新布局为准。
 
@@ -16,7 +16,7 @@
 | --- | --- | --- |
 | T00 基础与内存 | 四个 package、schema/codec/ID/边界、Snafu 错误、有限日志/指标、配置、应用许可与控制预留；默认 mimalloc，System/jemalloc 为互斥选项，实际二进制可识别；同 jemalloc 发布构建可符号化采样；Linux Docker 的 System/cgroup 与 RF1 受控 OOM 恢复已验 | 默认 mimalloc 的生产性能、Linux 分配栈与长稳待验 |
 | T01 QUIC | 实际 s2n-quic 1.91、TLS/mTLS、有限分类连接池/流/队列、独立读写、单请求取消、原生新包 ACK 活性探测；空闲 sibling 不关闭活跃连接，半帧仍有限组装；原期限内关闭 owned I/O 并释放端口；大块唯一所有 payload 分段发送、容量计费与末引用许可；有限 2/4 lane 同预算对照 | 真实 LB/NAT/CID、混合连接/短流/公平性与完整规模矩阵待验；codec 探针不能代替服务性能结论 |
-| T02 持久化 | 分段 fsync WAL/vote/log/commit、唯一 manifest、refs-only 检查点、有界搬迁、具名快照与 reader pin；官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 发布屏障、实际文件写失败与失败关闭 | 新冻结版本的完整覆盖率／性能仍待验；完整应用快照仍有 O(状态) 成本，真实掉电、跨区和长稳待验 |
+| T02 持久化 | 分段 fsync WAL/vote/log/commit、唯一 manifest、refs-only 检查点、有界搬迁、具名快照与 reader pin；官方 OpenRaft storage-v2 Suite、RF1/RF3 quorum、真实 QUIC 换主/快照/丢回包、SIGKILL 发布屏障、实际文件写失败与失败关闭；80c 完整覆盖率通过 | 80c 完整性能失败待修复；完整应用快照仍有 O(状态) 成本，真实掉电、跨区和长稳待验 |
 | T03 控制与所有权 | 独立元数据组、CRUD 容量与永久身份、grant/fence/recover/activate、有限 TTL；真实 Broker 强杀后自动接管、旧身份拒绝及元数据少数派停授权 | 未 Active 的原 grant 目标同时死亡时保守阻塞；三区与长期故障组合待验 |
 | T04 生产 | 同组持久 producer/epoch/sequence/摘要/原结果、显式注册、固定过期、owned 提交；稳定版本 key 路由 helper | 无持久 outbox；有限原结果窗口届满不能自动以新身份重发 |
 | T05 订阅 | 同组持久 attempt/token/ACK、连续前沿/ACK 洞、seek/代次、冷读 H/接收屏障与 B 重试、窗口硬上限；部分冷页提交后丢响应、尾部先 ACK 和重启补投 | 外部业务副作用仍需幂等；高压力和长稳待验 |

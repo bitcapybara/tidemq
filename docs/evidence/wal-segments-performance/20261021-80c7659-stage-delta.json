@@ -1,0 +1,272 @@
+{
+  "0-baseline": [
+    {
+      "stage": "Control/Replicate",
+      "count": 18119,
+      "total_ms": 78776.54663800032,
+      "mean_ms": 4.347731477344242
+    },
+    {
+      "stage": "Produce/Total",
+      "count": 1024,
+      "total_ms": 47897.621576999714,
+      "mean_ms": 46.77502107128878
+    },
+    {
+      "stage": "Produce/Commit",
+      "count": 1024,
+      "total_ms": 47846.701247999976,
+      "mean_ms": 46.725294187499976
+    },
+    {
+      "stage": "Read/Total",
+      "count": 156,
+      "total_ms": 44097.40913199994,
+      "mean_ms": 282.6756995641022
+    },
+    {
+      "stage": "Produce/Sync",
+      "count": 4712,
+      "total_ms": 35636.113083,
+      "mean_ms": 7.562842335101867
+    },
+    {
+      "stage": "Produce/CommitPersist",
+      "count": 2356,
+      "total_ms": 23122.988956000056,
+      "mean_ms": 9.81451144142617
+    },
+    {
+      "stage": "Produce/WalQueue",
+      "count": 4712,
+      "total_ms": 10500.692199000016,
+      "mean_ms": 2.228500042232601
+    },
+    {
+      "stage": "Control/Total",
+      "count": 1306,
+      "total_ms": 7115.241273999835,
+      "mean_ms": 5.448117361408756
+    },
+    {
+      "stage": "Ack/Total",
+      "count": 154,
+      "total_ms": 7062.729794999996,
+      "mean_ms": 45.86188178571426
+    },
+    {
+      "stage": "Produce/Append",
+      "count": 4712,
+      "total_ms": 108.46059100000029,
+      "mean_ms": 0.023017952249575615
+    },
+    {
+      "stage": "Produce/Apply",
+      "count": 2356,
+      "total_ms": 22.247565000000122,
+      "mean_ms": 0.009442939303904975
+    },
+    {
+      "stage": "Produce/Queue",
+      "count": 1024,
+      "total_ms": 7.939772000000007,
+      "mean_ms": 0.0077536835937500066
+    },
+    {
+      "stage": "Produce/Admission",
+      "count": 1024,
+      "total_ms": 4.15642299999996,
+      "mean_ms": 0.004059006835937461
+    },
+    {
+      "stage": "Produce/WalAdmission",
+      "count": 4712,
+      "total_ms": 3.3573200000000853,
+      "mean_ms": 0.0007125042444821913
+    }
+  ],
+  "0-candidate": [
+    {
+      "stage": "Control/Replicate",
+      "count": 17725,
+      "total_ms": 75270.60605799894,
+      "mean_ms": 4.246578621043664
+    },
+    {
+      "stage": "Produce/Total",
+      "count": 1024,
+      "total_ms": 46245.11608099972,
+      "mean_ms": 45.16124617285129
+    },
+    {
+      "stage": "Produce/Commit",
+      "count": 1024,
+      "total_ms": 46194.656192999515,
+      "mean_ms": 45.11196893847609
+    },
+    {
+      "stage": "Produce/WalQueue",
+      "count": 4696,
+      "total_ms": 44945.411913999924,
+      "mean_ms": 9.57099912989777
+    },
+    {
+      "stage": "Read/Total",
+      "count": 151,
+      "total_ms": 42864.18728800008,
+      "mean_ms": 283.86878998675553
+    },
+    {
+      "stage": "Produce/Sync",
+      "count": 4697,
+      "total_ms": 34164.25533299988,
+      "mean_ms": 7.2736332410048705
+    },
+    {
+      "stage": "Produce/CommitPersist",
+      "count": 2348,
+      "total_ms": 22803.62573600004,
+      "mean_ms": 9.711936003407173
+    },
+    {
+      "stage": "Ack/Total",
+      "count": 150,
+      "total_ms": 6730.050204999973,
+      "mean_ms": 44.867001366666486
+    },
+    {
+      "stage": "Control/Total",
+      "count": 1268,
+      "total_ms": 6515.688611999981,
+      "mean_ms": 5.138555687697146
+    },
+    {
+      "stage": "Produce/WalCheckpoint",
+      "count": 1,
+      "total_ms": 67.277666,
+      "mean_ms": 67.277666
+    },
+    {
+      "stage": "Produce/Append",
+      "count": 4696,
+      "total_ms": 47.364368999999705,
+      "mean_ms": 0.010086109241907944
+    },
+    {
+      "stage": "Produce/Apply",
+      "count": 2348,
+      "total_ms": 19.308661999999813,
+      "mean_ms": 0.00822345059625205
+    },
+    {
+      "stage": "Produce/WalAdmission",
+      "count": 4696,
+      "total_ms": 13.454723000000007,
+      "mean_ms": 0.0028651454429301547
+    },
+    {
+      "stage": "Produce/Queue",
+      "count": 1024,
+      "total_ms": 7.606014000000008,
+      "mean_ms": 0.007427748046875008
+    },
+    {
+      "stage": "Produce/Admission",
+      "count": 1024,
+      "total_ms": 4.054173999999989,
+      "mean_ms": 0.003959154296874989
+    }
+  ],
+  "1-candidate": [
+    {
+      "stage": "Control/Replicate",
+      "count": 18083,
+      "total_ms": 83614.13196900122,
+      "mean_ms": 4.62390819935858
+    },
+    {
+      "stage": "Produce/Total",
+      "count": 1024,
+      "total_ms": 50448.14577000032,
+      "mean_ms": 49.26576735351594
+    },
+    {
+      "stage": "Produce/Commit",
+      "count": 1024,
+      "total_ms": 50387.71419800001,
+      "mean_ms": 49.206752146484384
+    },
+    {
+      "stage": "Produce/WalQueue",
+      "count": 4682,
+      "total_ms": 47407.070597999795,
+      "mean_ms": 10.125388850491198
+    },
+    {
+      "stage": "Read/Total",
+      "count": 161,
+      "total_ms": 45493.7907920001,
+      "mean_ms": 282.57012914285775
+    },
+    {
+      "stage": "Produce/Sync",
+      "count": 4683,
+      "total_ms": 35939.86468699991,
+      "mean_ms": 7.674538690369402
+    },
+    {
+      "stage": "Produce/CommitPersist",
+      "count": 2341,
+      "total_ms": 23648.43376299993,
+      "mean_ms": 10.101851244339997
+    },
+    {
+      "stage": "Ack/Total",
+      "count": 158,
+      "total_ms": 7607.538623999996,
+      "mean_ms": 48.148978632911366
+    },
+    {
+      "stage": "Control/Total",
+      "count": 1358,
+      "total_ms": 7258.605120000084,
+      "mean_ms": 5.345070044182683
+    },
+    {
+      "stage": "Produce/WalCheckpoint",
+      "count": 1,
+      "total_ms": 64.476334,
+      "mean_ms": 64.476334
+    },
+    {
+      "stage": "Produce/Append",
+      "count": 4682,
+      "total_ms": 51.16657199999994,
+      "mean_ms": 0.010928357966680893
+    },
+    {
+      "stage": "Produce/Apply",
+      "count": 2341,
+      "total_ms": 23.88451499999998,
+      "mean_ms": 0.010202697565143092
+    },
+    {
+      "stage": "Produce/WalAdmission",
+      "count": 4682,
+      "total_ms": 17.799640999999866,
+      "mean_ms": 0.003801717428449352
+    },
+    {
+      "stage": "Produce/Queue",
+      "count": 1024,
+      "total_ms": 8.728956999999932,
+      "mean_ms": 0.008524372070312434
+    },
+    {
+      "stage": "Produce/Admission",
+      "count": 1024,
+      "total_ms": 6.028457000000013,
+      "mean_ms": 0.0058871650390625125
+    }
+  ]
+}
