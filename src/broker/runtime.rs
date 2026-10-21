@@ -11,7 +11,7 @@ use crate::metadata::PartitionKey;
 use crate::observability::metrics::{OperationMetrics, Stage};
 use crate::ownership::{ControlLease, FenceRecord, Work};
 use crate::producer::{
-    AppendBatch, BatchResult, ProducerLimits, ReadPage, RegisterProducer, SessionInfo,
+    AppendBatch, BatchResult, MessageData, ProducerLimits, ReadPage, RegisterProducer, SessionInfo,
 };
 use crate::replication::{DiskStateMachine, Raft};
 
@@ -327,7 +327,16 @@ impl Broker {
         max_bytes: u32,
     ) -> Result<HotRead> {
         context.check()?;
-        let bytes = max_bytes.checked_add(512).ok_or(Error::InvalidRequest)?;
+        // The page clones shared Bytes; reserve for at least four Vec slots.
+        let metadata = max_messages
+            .max(4)
+            .checked_mul(std::mem::size_of::<MessageData>())
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .ok_or(Error::InvalidRequest)?;
+        let bytes = max_bytes
+            .max(metadata)
+            .checked_add(512)
+            .ok_or(Error::InvalidRequest)?;
         let admission = self.read.admit(bytes, &self.memory)?;
         self.read_barrier(context).await?;
         self.authorize(lease, context, partition, Work::Deliver)
