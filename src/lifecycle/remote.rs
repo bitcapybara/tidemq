@@ -969,7 +969,7 @@ mod tests {
 
     #[test]
     fn remote_proof_requires_exact_target_and_never_downgrades_three_voters() {
-        let cluster = Id::random().unwrap();
+        let cluster = Id::new_v7().unwrap();
         let mut proof = proof(cluster);
         let remote = RemoteMetadata {
             rpc: Arc::new(NoRpc),
@@ -980,7 +980,7 @@ mod tests {
         };
         remote.verify(2, &proof).unwrap();
         assert!(remote.verify(1, &proof).is_err());
-        proof.cluster_id = Id::random().unwrap();
+        proof.cluster_id = Id::new_v7().unwrap();
         assert!(remote.verify(2, &proof).is_err());
         proof.cluster_id = cluster;
         let production = RemoteMetadata {
@@ -998,8 +998,8 @@ mod tests {
         assert!(encode(&vec![b'x'; MAX_BODY]).is_err());
         assert!(decode::<Reply>(&vec![b' '; MAX_BODY + 1]).is_err());
         assert!(decode::<Reply>(br#"{"Unknown":null}"#).is_err());
-        let id = Id::random().unwrap();
-        let other = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
+        let other = Id::new_v7().unwrap();
         assert!(matches_mutation(
             &CatalogCommand::Deleted { object_id: id },
             &Mutation::Object(id)
@@ -1016,6 +1016,6 @@ mod tests {
             objects: vec![(id, super::super::ObjectPhase::Deleted)],
             next_after: Some(id),
         });
-        assert!(validate_view(&query, &page, Id::random().unwrap(), 9).is_err());
+        assert!(validate_view(&query, &page, Id::new_v7().unwrap(), 9).is_err());
     }
 }

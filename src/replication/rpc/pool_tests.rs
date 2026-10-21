@@ -112,7 +112,7 @@ impl Peer {
             client,
             peers: BTreeMap::from([(2, target)]),
             credentials: ClientCredentials::External {
-                session_id: Id::random().unwrap(),
+                session_id: Id::new_v7().unwrap(),
                 access_token: token.into(),
             },
             slots: Mutex::new(BTreeMap::new()),
@@ -131,7 +131,7 @@ impl Peer {
     }
 
     fn frame(&self, deadline: Instant) -> Frame {
-        let id = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
         self.pool
             .frame(
                 FrameKind::Diagnose,
@@ -239,7 +239,7 @@ async fn quota_rejection_keeps_shared_rpc_open_but_identity_corruption_closes_it
         )
         .await
         .unwrap();
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     let frame = new_frame(
         FrameKind::Error,
         TrafficClass::Control,
@@ -272,7 +272,7 @@ async fn quota_rejection_keeps_shared_rpc_open_but_identity_corruption_closes_it
         "Valid backpressure must preserve the shared RPC"
     );
     let mut corrupted = frame;
-    corrupted.operation_id = Bytes::copy_from_slice(Id::random().unwrap().as_bytes());
+    corrupted.operation_id = Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes());
     let result = receive_response::<bool>(
         &rpc,
         &corrupted,
@@ -356,7 +356,7 @@ async fn unknown_outcomes_permanent_rejections_and_nonquota_errors_are_not_retri
 #[test]
 fn raft_result_inner_identity_and_invalid_error_codes_remain_strict() {
     let limits = ProtocolLimits::default();
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     let bytes = Bytes::copy_from_slice(id.as_bytes());
     let frame = new_frame(
         FrameKind::RaftResult,
@@ -364,7 +364,7 @@ fn raft_result_inner_identity_and_invalid_error_codes_remain_strict() {
         id,
         id,
         &RaftResult {
-            rpc_id: Bytes::copy_from_slice(Id::random().unwrap().as_bytes()),
+            rpc_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
             encoded_result: codec::encode(&true, 64).unwrap(),
         },
         1000,

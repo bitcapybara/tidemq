@@ -59,44 +59,88 @@ impl Default for TracingConfig {
 impl TracingConfig {
     pub fn validate(&self) -> Result<()> {
         self.url()?;
-        if self.sample_per_mille > 1_000
-            || !(1..=1_024).contains(&self.spans_per_second)
-            || !(1..=1_024).contains(&self.queue_spans)
-            || self.batch_spans == 0
-            || self.batch_spans > 32
-            || self.batch_spans > self.queue_spans
-            || !(100..=5_000).contains(&self.export_interval_ms)
-            || !(50..=1_000).contains(&self.export_timeout_ms)
-        {
-            return Err(invalid("Trace export budgets are invalid"));
+        for (valid, reason) in [
+            (
+                self.sample_per_mille <= 1_000,
+                "tracing.sample_per_mille must not exceed 1000",
+            ),
+            (
+                (1..=1_024).contains(&self.spans_per_second),
+                "tracing.spans_per_second must be between 1 and 1024",
+            ),
+            (
+                (1..=1_024).contains(&self.queue_spans),
+                "tracing.queue_spans must be between 1 and 1024",
+            ),
+            (
+                (1..=32).contains(&self.batch_spans),
+                "tracing.batch_spans must be between 1 and 32",
+            ),
+            (
+                self.batch_spans <= self.queue_spans,
+                "tracing.batch_spans must not exceed tracing.queue_spans",
+            ),
+            (
+                (100..=5_000).contains(&self.export_interval_ms),
+                "tracing.export_interval_ms must be between 100 and 5000",
+            ),
+            (
+                (50..=1_000).contains(&self.export_timeout_ms),
+                "tracing.export_timeout_ms must be between 50 and 1000",
+            ),
+        ] {
+            if !valid {
+                return Err(invalid(reason));
+            }
         }
         Ok(())
     }
 
     fn url(&self) -> Result<reqwest::Url> {
         if self.endpoint.len() > 512 {
-            return Err(invalid("Trace endpoint exceeds its byte budget"));
+            return Err(invalid("tracing.endpoint must not exceed 512 bytes"));
         }
         let url = reqwest::Url::parse(&self.endpoint)
-            .map_err(|_| invalid("Trace endpoint must be an absolute HTTP URL"))?;
+            .map_err(|_| invalid("tracing.endpoint must be an absolute HTTP or HTTPS URL"))?;
         let address = url.host_str().and_then(|host| {
             host.trim_matches(['[', ']'])
                 .parse::<std::net::IpAddr>()
                 .ok()
         });
         let loopback = address.is_some_and(|address| address.is_loopback());
-        if !url.username().is_empty()
-            || url.password().is_some()
-            || url.query().is_some()
-            || url.fragment().is_some()
-            || url.host_str().is_none()
-            || address.is_none()
-            || url.path() != "/v1/traces"
-            || !(url.scheme() == "https" || (url.scheme() == "http" && loopback))
-        {
-            return Err(invalid(
-                "Trace endpoint requires a literal IP, TLS or loopback HTTP, without credentials or query",
-            ));
+        for (valid, reason) in [
+            (
+                url.username().is_empty() && url.password().is_none(),
+                "tracing.endpoint must not contain user credentials",
+            ),
+            (
+                url.query().is_none(),
+                "tracing.endpoint must not contain query parameters",
+            ),
+            (
+                url.fragment().is_none(),
+                "tracing.endpoint must not contain a fragment",
+            ),
+            (
+                url.host_str().is_some(),
+                "tracing.endpoint must contain a host",
+            ),
+            (
+                address.is_some(),
+                "tracing.endpoint host must be a literal IP address",
+            ),
+            (
+                url.path() == "/v1/traces",
+                "tracing.endpoint path must be /v1/traces",
+            ),
+            (
+                url.scheme() == "https" || (url.scheme() == "http" && loopback),
+                "tracing.endpoint must use HTTPS; HTTP is allowed only for loopback IPs",
+            ),
+        ] {
+            if !valid {
+                return Err(invalid(reason));
+            }
         }
         Ok(url)
     }
@@ -119,7 +163,7 @@ impl Tracing {
         reject_environment()?;
         let health = TraceHealth::default();
         let mut exporter = exporter(config, health.clone())?;
-        let instance_id = tidemq_protocol::Id::random()
+        let instance_id = tidemq_protocol::Id::new_v7()
             .map_err(|source| Error::Protocol { source })?
             .to_string();
         let resource = Resource::builder_empty()
@@ -233,7 +277,9 @@ fn exporter(
         .with_retry_policy(opentelemetry_otlp::RetryPolicy::disabled())
         .with_max_request_body_size(MAX_REQUEST_BYTES)
         .build()
-        .map_err(|_| invalid("Failed to initialize bounded OTLP exporter"))
+        .map_err(|source| Error::TraceExporter {
+            source: Box::new(source),
+        })
 }
 
 fn reject_environment() -> Result<()> {

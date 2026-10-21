@@ -45,10 +45,14 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     fn producer_bytes(&self) -> Result<usize> {
-        let total = usize::try_from(self.max_pending_bytes).map_err(|_| Error::Admission)?;
+        let total = usize::try_from(self.max_pending_bytes).map_err(|_| Error::Configuration {
+            reason: "max_pending_bytes must fit the platform's address space",
+        })?;
         let one_delivery = (self.protocol.max_message_bytes as usize)
             .checked_add(crate::consumer::delivery_overhead())
-            .ok_or(Error::Admission)?;
+            .ok_or(Error::Configuration {
+                reason: "protocol.max_message_bytes plus delivery overhead exceeds the address space",
+            })?;
         total
             .checked_sub((total / 4).max(one_delivery))
             .filter(|available| *available > 256)
@@ -75,42 +79,115 @@ impl ClientConfig {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.endpoint.is_empty()
-            || self.endpoint.len() > 512
-            || self.endpoint.contains(char::is_whitespace)
-            || self.request_timeout_ms == 0
-            || self.request_timeout_ms > tidemq_protocol::framing::MAX_TIMEOUT_MS
-            || self.max_pending_requests == 0
-            || self.max_pending_requests > 65_536
-            || self.max_pending_bytes < u64::from(self.protocol.max_frame_bytes)
-            || self.max_pending_bytes > u64::from(u32::MAX)
-            || usize::try_from(self.max_pending_bytes)
-                .ok()
-                .is_none_or(|bytes| bytes > Semaphore::MAX_PERMITS)
-            || self.max_reconnect_attempts == 0
-            || self.max_reconnect_attempts > 16
-            || self.request_lanes == 0
-            || self.request_lanes > self.transport.max_streams
-            || self.request_lanes > 64
-            || self.retry_backoff.is_zero()
-            || self.retry_backoff > Duration::from_secs(5)
-            || self.liveness_timeout < Duration::from_millis(100)
-            || self.liveness_timeout > Duration::from_secs(10)
-        {
-            return Err(Error::Configuration {
-                reason: "endpoint, deadline, queue or retry bound is invalid",
-            });
-        }
+        self.validate_endpoint()?;
         self.protocol.validate()?;
-        self.producer_bytes()?;
         self.transport.validate()?;
+        self.validate_queues()?;
+        for (valid, reason) in [
+            (
+                (1..=tidemq_protocol::framing::MAX_TIMEOUT_MS).contains(&self.request_timeout_ms),
+                "request_timeout_ms must be between 1 and 300000 milliseconds",
+            ),
+            (
+                (1..=16).contains(&self.max_reconnect_attempts),
+                "max_reconnect_attempts must be between 1 and 16",
+            ),
+            (
+                !self.retry_backoff.is_zero() && self.retry_backoff <= Duration::from_secs(5),
+                "retry_backoff must be greater than zero and at most 5 seconds",
+            ),
+            (
+                (Duration::from_millis(100)..=Duration::from_secs(10))
+                    .contains(&self.liveness_timeout),
+                "liveness_timeout must be between 100 milliseconds and 10 seconds",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
+        }
+        self.producer_bytes()?;
         MemoryBudget::new(MemoryLimits {
             total_bytes: self.transport_memory_bytes,
             control_reserved_bytes: self.transport_control_reserved_bytes,
         })
-        .map_err(|_| Error::Configuration {
-            reason: "transport memory bounds are invalid",
+        .map_err(|source| Error::Memory { source })?;
+        Ok(())
+    }
+
+    fn validate_endpoint(&self) -> Result<()> {
+        for (valid, reason) in [
+            (!self.endpoint.is_empty(), "endpoint must not be empty"),
+            (
+                self.endpoint.len() <= 512,
+                "endpoint must not exceed 512 bytes",
+            ),
+            (
+                !self.endpoint.contains(char::is_whitespace),
+                "endpoint must not contain whitespace",
+            ),
+            (
+                !self.endpoint.contains('@'),
+                "endpoint must not contain user credentials",
+            ),
+            (
+                !self.endpoint.chars().any(char::is_control),
+                "endpoint must not contain control characters",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
+        }
+        let (host, port) = self.endpoint.rsplit_once(':').ok_or(Error::Configuration {
+            reason: "endpoint must contain a host and port, for example localhost:7443",
         })?;
+        if host.trim_matches(['[', ']']).is_empty() {
+            return Err(Error::Configuration {
+                reason: "endpoint host must not be empty",
+            });
+        }
+        if port.parse::<u16>().ok().is_none_or(|port| port == 0) {
+            return Err(Error::Configuration {
+                reason: "endpoint port must be an integer between 1 and 65535",
+            });
+        }
+        Ok(())
+    }
+
+    fn validate_queues(&self) -> Result<()> {
+        for (valid, reason) in [
+            (
+                (1..=65_536).contains(&self.max_pending_requests),
+                "max_pending_requests must be between 1 and 65536",
+            ),
+            (
+                self.max_pending_bytes >= u64::from(self.protocol.max_frame_bytes),
+                "max_pending_bytes must be at least protocol.max_frame_bytes",
+            ),
+            (
+                self.max_pending_bytes <= u64::from(u32::MAX),
+                "max_pending_bytes must not exceed 4294967295 bytes",
+            ),
+            (
+                usize::try_from(self.max_pending_bytes)
+                    .ok()
+                    .is_some_and(|bytes| bytes <= Semaphore::MAX_PERMITS),
+                "max_pending_bytes must fit the platform's semaphore capacity",
+            ),
+            (
+                (1..=64).contains(&self.request_lanes),
+                "request_lanes must be between 1 and 64",
+            ),
+            (
+                self.request_lanes <= self.transport.max_streams,
+                "request_lanes must not exceed transport.max_streams",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
+        }
         Ok(())
     }
 }
@@ -182,11 +259,16 @@ impl Client {
         let addresses = timeout_at(deadline, tokio::net::lookup_host(config.endpoint.as_str()))
             .await
             .map_err(|_| Error::Deadline)?
-            .map_err(|source| Error::Resolve { source })?;
+            .map_err(|source| Error::Resolve {
+                endpoint: config.endpoint.clone(),
+                source,
+            })?;
         let mut candidates = Vec::new();
         candidates
             .try_reserve_exact(32)
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "DNS candidate address allocation",
+            })?;
         candidates.extend(addresses.take(32));
         let address = candidates
             .iter()
@@ -263,9 +345,7 @@ impl Client {
             total_bytes: config.transport_memory_bytes,
             control_reserved_bytes: config.transport_control_reserved_bytes,
         })
-        .map_err(|_| Error::Configuration {
-            reason: "transport memory bounds are invalid",
-        })?;
+        .map_err(|source| Error::Memory { source })?;
         let transport =
             tidemq_transport::Client::bind(bind, tls, config.transport.clone(), budget)?;
         let client = Self {
@@ -276,7 +356,7 @@ impl Client {
                 config,
                 transport,
                 credentials: ClientCredentials::External {
-                    session_id: Id::random()?,
+                    session_id: Id::new_v7()?,
                     access_token,
                 },
                 target,
@@ -470,7 +550,7 @@ impl Client {
     ) -> Result<R> {
         let _timer = self.inner.metrics.timer();
         for attempt in 0..self.inner.config.max_reconnect_attempts {
-            let frame = self.frame(kind, class, Id::random()?, operation, payload, deadline)?;
+            let frame = self.frame(kind, class, Id::new_v7()?, operation, payload, deadline)?;
             self.inner.metrics.record_request();
             let response = if kind == FrameKind::AckBatch {
                 self.ack_attempt(frame, deadline).await
@@ -530,10 +610,15 @@ impl Client {
             .receive(deadline)
             .await?
             .ok_or(Error::Closed)?;
-        if response.frame().request_id != frame.request_id
-            || response.frame().operation_id != frame.operation_id
-        {
-            return Err(Error::ResponseMismatch);
+        if response.frame().request_id != frame.request_id {
+            return Err(Error::ResponseMismatch {
+                reason: "ACK response request_id differs from the request".into(),
+            });
+        }
+        if response.frame().operation_id != frame.operation_id {
+            return Err(Error::ResponseMismatch {
+                reason: "ACK response operation_id differs from the request".into(),
+            });
         }
         Ok(response)
     }
@@ -547,13 +632,30 @@ impl Client {
         if frame.kind == i32::from(FrameKind::Error) {
             let reply: ErrorReply =
                 decode_payload(frame.payload.clone(), &self.inner.config.protocol)?;
-            let code = ErrorCode::try_from(reply.code).map_err(|_| Error::ResponseMismatch)?;
-            let outcome = Outcome::try_from(reply.outcome).map_err(|_| Error::ResponseMismatch)?;
-            if code == ErrorCode::Unspecified || outcome == Outcome::Unspecified {
-                return Err(Error::ResponseMismatch);
+            let code = ErrorCode::try_from(reply.code).map_err(|_| Error::ResponseMismatch {
+                reason: format!("error reply code {} is not recognized", reply.code),
+            })?;
+            let outcome =
+                Outcome::try_from(reply.outcome).map_err(|_| Error::ResponseMismatch {
+                    reason: format!("error reply outcome {} is not recognized", reply.outcome),
+                })?;
+            if code == ErrorCode::Unspecified {
+                return Err(Error::ResponseMismatch {
+                    reason: "error reply code must not be unspecified".into(),
+                });
+            }
+            if outcome == Outcome::Unspecified {
+                return Err(Error::ResponseMismatch {
+                    reason: "error reply outcome must not be unspecified".into(),
+                });
             }
             return Err(Error::Remote {
                 code,
+                message: if reply.message.is_empty() {
+                    "The server omitted a diagnostic message".into()
+                } else {
+                    reply.message
+                },
                 outcome,
                 retryable: reply.retryable,
                 expected_sequence: reply.expected_sequence,
@@ -562,7 +664,13 @@ impl Client {
             });
         }
         if frame.kind != i32::from(expected) {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch {
+                reason: format!(
+                    "expected {}, received frame.kind {}",
+                    expected.as_str_name(),
+                    frame.kind
+                ),
+            });
         }
         Ok(decode_payload(
             frame.payload.clone(),
@@ -576,20 +684,7 @@ impl Client {
         attempt: u32,
         deadline: Instant,
     ) -> Result<()> {
-        let jitter = operation
-            .as_bytes()
-            .first()
-            .copied()
-            .map(u64::from)
-            .unwrap_or(0)
-            % 17;
-        let delay = self
-            .inner
-            .config
-            .retry_backoff
-            .saturating_mul(1_u32.checked_shl(attempt).unwrap_or(u32::MAX))
-            .min(Duration::from_secs(1))
-            .saturating_add(Duration::from_millis(jitter));
+        let delay = backoff_delay(self.inner.config.retry_backoff, operation, attempt);
         let wake = Instant::now().checked_add(delay).ok_or(Error::Deadline)?;
         if wake >= deadline {
             return Err(Error::Deadline);
@@ -608,8 +703,8 @@ impl Client {
         let frame = self.frame(
             FrameKind::Cancel,
             TrafficClass::Control,
-            Id::random()?,
-            Id::random()?,
+            Id::new_v7()?,
+            Id::new_v7()?,
             &tidemq_protocol::common::CancelRequest {
                 request_id: Bytes::copy_from_slice(request_id.as_bytes()),
             },
@@ -660,3 +755,20 @@ pub(crate) fn affinity(value: &impl std::hash::Hash) -> u64 {
     value.hash(&mut hash);
     hash.finish()
 }
+
+fn backoff_delay(base: Duration, operation: Id, attempt: u32) -> Duration {
+    // UUID v7 prefixes encode time; random tail bytes spread retries created together.
+    let jitter = operation
+        .as_bytes()
+        .last()
+        .copied()
+        .map(u64::from)
+        .unwrap_or(0)
+        % 17;
+    base.saturating_mul(1_u32.checked_shl(attempt).unwrap_or(u32::MAX))
+        .min(Duration::from_secs(1))
+        .saturating_add(Duration::from_millis(jitter))
+}
+
+#[cfg(test)]
+mod tests;

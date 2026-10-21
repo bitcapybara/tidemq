@@ -320,7 +320,7 @@ impl FrameReceiver {
         }
         if assembly_timeout.is_zero() || Instant::now().checked_add(assembly_timeout).is_none() {
             return Err(Error::Configuration {
-                reason: "frame assembly timeout is invalid",
+                reason: "frame assembly timeout must be greater than zero and at most 300 seconds",
             });
         }
         match read_first(&mut self.stream).await {

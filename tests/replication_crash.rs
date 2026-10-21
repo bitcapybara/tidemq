@@ -166,7 +166,7 @@ async fn crash_writer_child() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn killed_process_recovers_committed_state_snapshot_and_incomplete_tail_without_drop() {
     let directory = Directory::new().await;
-    let cluster = Id::random().unwrap();
+    let cluster = Id::new_v7().unwrap();
     for mode in [
         "committed",
         "snapshot",

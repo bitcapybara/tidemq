@@ -41,7 +41,7 @@ async fn seed(
     count: usize,
 ) -> (PartitionKey, ControlLease) {
     let partition = PartitionKey {
-        topic_id: Id::random().unwrap(),
+        topic_id: Id::new_v7().unwrap(),
         partition: partition_number,
     };
     let grant = cluster.grant(partition, 1);
@@ -53,7 +53,7 @@ async fn seed(
             context(),
             partition,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )

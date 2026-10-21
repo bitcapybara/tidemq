@@ -316,7 +316,7 @@ impl<A: Application> DiskStateMachine<A> {
             ensure_application_available(&applied)?;
             applied.clone()
         };
-        let identity = tidemq_protocol::Id::random().map_err(|error| Error::Writer {
+        let identity = tidemq_protocol::Id::new_v7().map_err(|error| Error::Writer {
             reason: error.to_string(),
         })?;
         let meta = SnapshotMeta {
@@ -369,7 +369,7 @@ impl<A: Application> DiskStateMachine<A> {
         bytes: Vec<u8>,
         checksum: [u8; 32],
     ) -> Result<std::sync::Arc<super::snapshot_registry::SnapshotAsset>> {
-        let id = tidemq_protocol::Id::random().map_err(|error| Error::Writer {
+        let id = tidemq_protocol::Id::new_v7().map_err(|error| Error::Writer {
             reason: error.to_string(),
         })?;
         let reference = SnapshotRef {

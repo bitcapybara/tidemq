@@ -22,7 +22,7 @@ pub fn budget() -> MemoryBudget {
 }
 
 pub fn pack(budget: &MemoryBudget, record_bytes: usize, count: usize) -> Pack {
-    pack_in_cluster(budget, Id::random().unwrap(), record_bytes, count)
+    pack_in_cluster(budget, Id::new_v7().unwrap(), record_bytes, count)
 }
 
 pub fn pack_in_cluster(
@@ -41,13 +41,13 @@ pub fn pack_in_cluster(
     let identity = PackIdentity {
         cluster_id,
         group_id: 9,
-        object_id: Id::random().unwrap(),
+        object_id: Id::new_v7().unwrap(),
     };
     Pack::build(
         identity,
         &[CommittedPartition {
             group_id: 9,
-            topic_id: Id::random().unwrap(),
+            topic_id: Id::new_v7().unwrap(),
             partition_id: 4,
             offsets: OffsetRange::new(3, 3 + count as u64).unwrap(),
             committed_end: 3 + count as u64,

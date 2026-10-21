@@ -95,7 +95,7 @@ impl PeerRpc {
         deadline: Instant,
         affinity: u64,
     ) -> Result<Pending> {
-        let request_id = Id::random()
+        let request_id = Id::new_v7()
             .map_err(|source| Error::operation("allocate internal request identity", source))?;
         let payload = InternalCommand {
             group_id: group,
@@ -145,7 +145,7 @@ impl PeerRpc {
         request: Request,
         deadline: Instant,
     ) -> Result<Bytes> {
-        let operation = Id::random()
+        let operation = Id::new_v7()
             .map_err(|source| Error::operation("allocate control operation identity", source))?;
         self.submit(
             target,
@@ -272,12 +272,10 @@ pub(crate) fn error_response(
             code: failure.code,
             outcome: failure.outcome,
             retryable: failure.retryable,
-            message:
-                "Operation did not complete; use its typed error and original business identity"
-                    .into(),
+            message: failure.message,
             expected_sequence: failure.expected_sequence,
             expected_registration_epoch: failure.expected_registration_epoch,
-            retry_after_ms: None,
+            retry_after_ms: failure.retry_after_ms,
         },
         limits,
     )
@@ -286,19 +284,148 @@ pub(crate) fn error_response(
 fn decode_error(frame: &Frame, limits: &ProtocolLimits) -> Result<Error> {
     let error: ErrorReply = decode_payload(frame.payload.clone(), limits)
         .map_err(|source| Error::operation("decode internal failure", source))?;
-    ErrorCode::try_from(error.code).map_err(|_| Error::invalid("Unknown internal error code"))?;
-    Outcome::try_from(error.outcome).map_err(|_| Error::invalid("Unknown internal outcome"))?;
+    let code = ErrorCode::try_from(error.code)
+        .map_err(|_| Error::invalid("Internal error reply code is not recognized"))?;
+    if code == ErrorCode::Unspecified {
+        return Err(Error::invalid(
+            "Internal error reply code must not be unspecified",
+        ));
+    }
+    let outcome = Outcome::try_from(error.outcome)
+        .map_err(|_| Error::invalid("Internal error reply outcome is not recognized"))?;
+    if outcome == Outcome::Unspecified {
+        return Err(Error::invalid(
+            "Internal error reply outcome must not be unspecified",
+        ));
+    }
     Ok(Error::Rejected {
         failure: Failure {
+            message: error.message,
             code: error.code,
             outcome: error.outcome,
             retryable: error.retryable,
             expected_sequence: error.expected_sequence,
             expected_registration_epoch: error.expected_registration_epoch,
+            retry_after_ms: error.retry_after_ms,
         },
     })
 }
 
 pub(crate) fn id(value: &[u8]) -> Result<Id> {
     Id::from_slice(value).map_err(|source| Error::operation("validate business identity", source))
+}
+
+#[cfg(test)]
+pub(crate) fn assert_unknown_response_contract(
+    actual: &Frame,
+    expected: &Frame,
+    limits: &ProtocolLimits,
+    stage: &str,
+) {
+    let actual_error: ErrorReply = decode_payload(actual.payload.clone(), limits).unwrap();
+    assert!(
+        actual_error.message.contains(stage),
+        "Diagnostic must identify {stage}: {}",
+        actual_error.message
+    );
+    assert!(actual_error.message.contains("outcome is unknown"));
+    assert!(actual_error.message.contains("original operation identity"));
+    let mut expected_error: ErrorReply = decode_payload(expected.payload.clone(), limits).unwrap();
+    expected_error.message = actual_error.message;
+    let mut expected = expected.clone();
+    let class = TrafficClass::try_from(expected.traffic_class).unwrap();
+    expected.payload = encode_payload(&expected_error, frame_limit(class, limits)).unwrap();
+    assert_eq!(
+        actual, &expected,
+        "Only the diagnostic message may change the unknown reply"
+    );
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    fn request() -> Frame {
+        Frame {
+            protocol_version: 1,
+            request_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
+            operation_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
+            traffic_class: TrafficClass::Control.into(),
+            kind: FrameKind::CreateTopic.into(),
+            remaining_timeout_ms: 1_000,
+            ..Frame::default()
+        }
+    }
+
+    #[test]
+    fn internal_error_forwarding_preserves_message_and_recovery_hints() {
+        let limits = ProtocolLimits::default();
+        let message = "Producer requires sequence 42";
+        let mut original =
+            Error::reject_with(ErrorCode::SequenceGap, Outcome::Rejected, false, message);
+        if let Error::Rejected { failure } = &mut original {
+            failure.expected_sequence = Some(42);
+            failure.expected_registration_epoch = Some(7);
+            failure.retry_after_ms = Some(250);
+        }
+        let request = request();
+        let first = error_response(&request, &original, &limits).unwrap();
+        let forwarded = decode_error(&first, &limits).unwrap();
+        let second = error_response(&request, &forwarded, &limits).unwrap();
+        assert_eq!(first.payload, second.payload);
+        let reply: ErrorReply = decode_payload(second.payload, &limits).unwrap();
+        assert_eq!(reply.message, message);
+        assert_eq!(reply.expected_sequence, Some(42));
+        assert_eq!(reply.expected_registration_epoch, Some(7));
+        assert_eq!(reply.retry_after_ms, Some(250));
+        assert_eq!(reply.outcome, i32::from(Outcome::Rejected));
+    }
+
+    #[test]
+    fn input_constraints_are_public_but_local_io_details_stay_in_the_source_chain() {
+        let limits = ProtocolLimits::default();
+        let request = request();
+        let invalid = Error::invalid("CreateTopic.partitions must be greater than zero");
+        let reply = error_response(&request, &invalid, &limits).unwrap();
+        let reply: ErrorReply = decode_payload(reply.payload, &limits).unwrap();
+        assert_eq!(
+            reply.message,
+            "CreateTopic.partitions must be greater than zero"
+        );
+        let private_path = "data/private-replica/metadata.wal";
+        let error = Error::operation("open metadata WAL", std::io::Error::other(private_path));
+        let reply = error_response(&request, &error, &limits).unwrap();
+        let reply: ErrorReply = decode_payload(reply.payload, &limits).unwrap();
+        assert!(reply.message.contains("open metadata WAL"));
+        assert!(!reply.message.contains(private_path));
+        assert_eq!(reply.outcome, i32::from(Outcome::Unknown));
+        let report = format!("{:#}", anyhow::Error::new(error));
+        assert!(report.contains(private_path));
+    }
+
+    #[test]
+    fn invalid_internal_error_fields_report_code_and_outcome_separately() {
+        let limits = ProtocolLimits::default();
+        let request = request();
+        for (code, outcome, field) in [
+            (0, 1, "code"),
+            (999, 1, "code"),
+            (1, 0, "outcome"),
+            (1, 999, "outcome"),
+        ] {
+            let frame = response(
+                &request,
+                FrameKind::Error,
+                &ErrorReply {
+                    code,
+                    outcome,
+                    ..ErrorReply::default()
+                },
+                &limits,
+            )
+            .unwrap();
+            let error = decode_error(&frame, &limits).unwrap_err();
+            assert!(error.to_string().contains(field));
+        }
+    }
 }

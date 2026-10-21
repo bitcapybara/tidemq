@@ -20,11 +20,13 @@ git diff -- crates/tidemq-protocol/src/generated
 
 ## 身份与错误
 
-Id 使用 fallible entropy 生成 UUID v4，拒绝 nil 与错误长度；不使用可能因 RNG 失败 panic 的 Uuid::new_v4。Topic/producer/订阅等角色身份还需在对应权威状态中验证。
+普通业务身份使用 `Id::new_v7() -> Result<Id>`：先通过 `getrandom::fill` 获取 10 字节随机输入，再交给 `uuid::Builder::from_unix_timestamp_millis` 编码，不自行实现 UUID 格式，不引入全局计数器、锁或时钟回拨等待。熵源失败、系统时间早于 Unix epoch、毫秒值超过 48 位均返回错误；不调用默认 RNG 失败时会 panic 的 `Uuid::new_v7` / `Uuid::now_v7`。`Id::random()` 保留为不携带时间的 UUID v4，供确需随机输入的用途使用。两种生成方式都保持 16 字节表示；解析仍拒绝 nil 与错误长度，Topic/producer/订阅等角色身份还需在对应权威状态中验证。
+
+v7 只提供毫秒级时间排序：同一毫秒的随机尾部、跨节点时钟偏差与时钟回拨都不构成全局单调顺序。消息顺序和 fencing 仍由 offset、sequence、epoch 与 Raft 提交位置决定；业务重试复用原 operation ID，每次网络尝试才创建新的 request ID。重试抖动从随机尾部取值，不能使用相近时间创建的 ID 共有的时间前缀。这里选择无额外协调状态的实现以保持简单；未据此宣称生成吞吐或消息吞吐改善。
 
 cluster_id、topic/producer/subscription/operation 身份使用 Id；node_id 与 group_id 使用非零 u64。group_id 在集群内分配且不可复用，metadata_group_id 单独保留，数据组不能占用它；磁盘与内部网络使用同一组身份，不另建 UUID 到 wire ID 的隐式映射。
 
-错误使用固定 ErrorCode、retryable 和 Outcome；明确 rejected、committed、unknown，SDK 不匹配错误文本决定重试。expected_sequence、expected_registration_epoch 和 retry_after_ms 是可选结构化提示，不能据此把未知结果改为拒绝。敏感 token/body 不进入日志或 instrument 参数。取消按 request_id 处理，不能为取消一个请求 RESET 整条复用流。
+错误使用固定 ErrorCode、可读 message、retryable 和 Outcome；明确 rejected、committed、unknown，SDK 不匹配错误文本决定重试。expected_sequence、expected_registration_epoch 和 retry_after_ms 是可选结构化提示，不能据此把未知结果改为拒绝。敏感 token/body 不进入日志或 instrument 参数。取消按 request_id 处理，不能为取消一个请求 RESET 整条复用流。
 
 traceparent 只接受有界 W3C version 00；无效上下文在帧总额内丢弃，不改变业务身份。它不参与去重摘要、授权或持久状态机，不绑定共享 connection，不默认传任意 baggage。
 
@@ -35,3 +37,5 @@ traceparent 只接受有界 W3C version 00；无效上下文在帧总额内丢�
 消费 ClaimAssignment 显式分配会话，替换已有会话需要 replace_session_id 与代次 CAS。assignment_generation 同时充当 delivery_generation，wire 两字段必须一致；seek、owner fence 和新分配使旧投递失效。DeliveryBatch 携带完整 topic/partition/subscription/session/cursor/assignment/delivery 绑定，issued_before 限制本代次连续签发范围，acknowledged_ranges 只表示持久 ACK 洞。SDK 必须按成功入队的消息和已验证洞区间连续推进 received_before；最大收到 offset、QUIC ACK 或业务 ACK 都不能代替冷热接收屏障。
 
 schema 包含注册/状态/退役、分配/状态/seek/删除和按名称查询，均走 Control 类别；生产走 Produce，冷热消息分别走 Delivery/Bulk。运行时已经接入 TLS/mTLS、有界业务分派及真实 SDK。网络收包、收到正文、Producer 持久成功、业务持久 ACK 和对象发布分别保留其完成口径。
+
+`message` 保留具体校验约束和类型化业务拒绝原因，并经内部节点转发到 SDK；SDK 的 `Error::Remote` 保留该文本和结构化重试提示。诊断文本不参与重试判断。内部 IO/存储故障对外提供失败阶段，完整错误链留给关联 request_id / operation_id 的日志。错误枚举的 `display` 只描述本层上下文，不拼接 `source`；需要完整链时用 `anyhow::Error::new(err)` 包装，再用 `"{err:#}"` 输出。详见[错误诊断约定](../operations/error-diagnostics.zh-CN.md)。

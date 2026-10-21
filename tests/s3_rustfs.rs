@@ -105,7 +105,7 @@ impl Fixture {
         let directory = std::env::current_dir()
             .unwrap()
             .join("target/s3-rustfs")
-            .join(Id::random().unwrap().to_string());
+            .join(Id::new_v7().unwrap().to_string());
         fs::create_dir_all(&directory).unwrap();
         #[cfg(unix)]
         {
@@ -250,7 +250,7 @@ async fn actual_sdk_checks_immutable_ranges_corruption_multipart_and_abort() {
     );
     assert!(reader.cached_bytes().await > 0);
     let mut foreign = pack.descriptor().clone();
-    foreign.identity.cluster_id = Id::random().unwrap();
+    foreign.identity.cluster_id = Id::new_v7().unwrap();
     assert!(
         reader
             .read_partition(&foreign, index.topic_id, index.partition_id)
@@ -258,7 +258,7 @@ async fn actual_sdk_checks_immutable_ranges_corruption_multipart_and_abort() {
             .is_err()
     );
     foreign.identity = pack.descriptor().identity;
-    foreign.identity.object_id = Id::random().unwrap();
+    foreign.identity.object_id = Id::new_v7().unwrap();
     assert!(
         reader
             .read_partition(&foreign, index.topic_id, index.partition_id)

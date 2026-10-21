@@ -24,6 +24,16 @@ let subscription = client.admin().create_subscription(
 
 `Admin` 提供创建、按名称查询 Topic/Subscription，查询生产会话和订阅分配，以及带期望代次和 operation ID 的分区订阅删除。创建操作的自动网络重试保持 operation ID；最终结果未知时，按唯一资源名查询并核对配置。删除某个分区不代表所有分区均已删除，积压保护的全局解除由服务端协调。
 
+## 身份与错误诊断
+
+普通 producer、operation、request、session 身份使用 `Id::new_v7()?`。生成保留 `Result`，传播熵源或时间错误；使用 `uuid` 的标准 Builder，不为同毫秒顺序增加全局锁或计数器。v7 不能替代 sequence、epoch 或消息 offset；未知结果继续复用原业务身份，不能重新生成一个 ID 绕过未决结果。
+
+`ClientConfig::validate` 按具体字段返回约束，例如 `request_lanes must not exceed transport.max_streams`。嵌套的协议、传输和内存校验保留原错误链；消费队列、资源名及响应校验也返回各自原因。`Admission { resource }` 说明具体预算或分配位置，`ResponseMismatch { reason }` 指出响应中不符合约定的字段。
+
+`Error::Remote` 保留服务端 `message`，同时保留 code、outcome、retryable、expected_sequence、expected_registration_epoch 和 retry_after_ms；服务端明确拒绝与结果未知不能混淆。文本用于解释问题，程序仍通过枚举和结构化字段决定重试。收到缺少 message 的错误回复时，SDK 明确说明服务端未提供诊断文本，不悄悄丢弃错误码。
+
+每层错误的 `display` 只说明本层上下文，不直接拼接 source。宿主需要打印完整底层链时，先执行 `let err = anyhow::Error::new(err)`，再以 `"{err:#}"` 格式输出；`err.to_string()` 仅适合顶层提示。SDK 不额外安装日志设施，也不增加运行时 anyhow 依赖。更多边界、日志字段与排查步骤见[错误诊断约定](../operations/error-diagnostics.zh-CN.md)。
+
 ## 总期限与主动取消
 
 默认网络操作使用 `ClientConfig::request_timeout_ms`，期限在操作入口计算一次，排队、连接、发送、重试与退避共同消耗这个预算；公共 API 不再要求传入 `Instant`，也不再提供 `client.deadline()`。

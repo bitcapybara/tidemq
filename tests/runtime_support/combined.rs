@@ -33,7 +33,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
             .await
             .unwrap();
         let subscription = Id::from_slice(&subscription.subscription_id).unwrap();
-        let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+        let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
             .await
             .unwrap();
         let consumer = Consumer::claim(

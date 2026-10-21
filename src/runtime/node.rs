@@ -673,7 +673,7 @@ pub(crate) fn data_config(
 }
 
 pub(crate) fn random_id() -> Result<Id> {
-    Id::random().map_err(|source| Error::operation("allocate operation identity", source))
+    Id::new_v7().map_err(|source| Error::operation("allocate operation identity", source))
 }
 
 pub(crate) fn roles(role: crate::config::Role) -> BTreeSet<NodeRole> {

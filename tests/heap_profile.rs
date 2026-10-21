@@ -7,7 +7,7 @@ use std::process::Command;
 fn actual_binary_requires_startup_opt_in_and_records_live_then_released_allocations() {
     let directory = std::env::temp_dir().join(format!(
         "tidemq-profile-test-{}",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
     std::fs::DirBuilder::new()
         .mode(0o700)

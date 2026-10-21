@@ -11,7 +11,7 @@ use super::support::{Cluster, batch, context, lease, writer};
 async fn a_new_fence_requires_recovery_preserves_original_results_and_freezes_its_checkpoint() {
     let cluster = Cluster::new(&[1]).await;
     let partition = PartitionKey {
-        topic_id: Id::random().unwrap(),
+        topic_id: Id::new_v7().unwrap(),
         partition: 7,
     };
     let first = cluster.grant(partition, 1);
@@ -24,7 +24,7 @@ async fn a_new_fence_requires_recovery_preserves_original_results_and_freezes_it
             context(),
             partition,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )

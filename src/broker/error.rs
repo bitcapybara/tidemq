@@ -35,7 +35,7 @@ pub enum Error {
     },
     #[snafu(display("The broker memory budget rejected admission"))]
     Memory { source: crate::budget::Error },
-    #[snafu(display("The data application rejected the request: {reason:?}"))]
+    #[snafu(display("The data application rejected the request: {reason}"))]
     Rejected { reason: DataRejection },
     #[snafu(display(
         "The append result is unknown for operation {operation_id}, request {request_id}"

@@ -47,7 +47,7 @@ impl MemoryBudget {
             .total_bytes
             .checked_sub(config.control_reserved_bytes)
             .ok_or(Error::Configuration {
-                reason: "control reservation exceeds total memory",
+                reason: "control_reserved_bytes must not exceed total_bytes",
             })?;
         let total = usize::try_from(config.total_bytes).map_err(|_| Error::Configuration {
             reason: "total memory does not fit the platform",
@@ -69,12 +69,12 @@ impl MemoryBudget {
             })?;
         if core == 0 || handshake == 0 {
             return Err(Error::Configuration {
-                reason: "core and handshake reservations must be nonzero",
+                reason: "control_reserved_bytes must be at least 4 bytes to reserve core and handshake capacity",
             });
         }
-        if total > Semaphore::MAX_PERMITS || data > Semaphore::MAX_PERMITS {
+        if total > Semaphore::MAX_PERMITS {
             return Err(Error::Configuration {
-                reason: "memory budget exceeds semaphore capacity",
+                reason: "total_bytes exceeds the platform's semaphore capacity",
             });
         }
         Ok(Self {
@@ -87,9 +87,14 @@ impl MemoryBudget {
     }
 
     pub fn try_reserve(&self, class: TrafficClass, bytes: u32) -> Result<MemoryPermit> {
-        if class == TrafficClass::Unspecified || bytes == 0 {
+        if class == TrafficClass::Unspecified {
             return Err(Error::Configuration {
-                reason: "admission requires a traffic class and nonzero bytes",
+                reason: "admission traffic_class must not be unspecified",
+            });
+        }
+        if bytes == 0 {
+            return Err(Error::Configuration {
+                reason: "admission bytes must be greater than zero",
             });
         }
         let data = if class == TrafficClass::Control {

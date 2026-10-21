@@ -80,7 +80,7 @@ impl<A: Application> QuicNetwork<A> {
         deadline: Instant,
     ) -> Result<Frame> {
         let permit = self.pool.reserve(class)?;
-        let id = Id::random().map_err(|source| Error::Protocol { source })?;
+        let id = Id::new_v7().map_err(|source| Error::Protocol { source })?;
         let payload = RaftRequest {
             group_id: self.group_id,
             rpc_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
@@ -183,7 +183,7 @@ impl<A: Application> RaftNetwork<TypeConfig<A>> for QuicNetwork<A> {
         let deadline = pool::deadline(option.hard_ttl()).map_err(unreachable)?;
         let class = TrafficClass::Bulk;
         let permit = self.pool.reserve(class).map_err(unreachable)?;
-        let id = Id::random().map_err(|source| unreachable(Error::Protocol { source }))?;
+        let id = Id::new_v7().map_err(|source| unreachable(Error::Protocol { source }))?;
         let payload = SnapshotChunk {
             group_id: self.group_id,
             snapshot_id: bytes::Bytes::copy_from_slice(id.as_bytes()),

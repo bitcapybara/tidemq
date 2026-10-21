@@ -5,7 +5,7 @@ fn request(kind: FrameKind, operation: Id, payload: &impl prost::Message) -> Fra
     tidemq_protocol::framing::new_frame(
         kind,
         tidemq_protocol::common::TrafficClass::Control,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         operation,
         payload,
         10_000,
@@ -23,7 +23,7 @@ async fn replayed_topic_creation_preserves_the_original_result() {
         .access
         .delegated("runtime-test", "*", FrameKind::CreateTopic)
         .unwrap();
-    let operation = Id::random().unwrap();
+    let operation = Id::new_v7().unwrap();
     let payload = public::CreateTopic {
         name: "replayed-topic".into(),
         partitions: 1,
@@ -84,7 +84,7 @@ async fn replayed_subscription_creation_preserves_the_original_result() {
         .access
         .delegated("runtime-test", "*", FrameKind::CreateSubscription)
         .unwrap();
-    let operation = Id::random().unwrap();
+    let operation = Id::new_v7().unwrap();
     let payload = public::CreateSubscription {
         topic_id: topic.topic_id,
         name: "replayed-subscription".into(),
@@ -143,7 +143,7 @@ async fn a_cached_rejection_cannot_become_an_applied_creation() {
         .access
         .delegated("runtime-test", "*", FrameKind::CreateTopic)
         .unwrap();
-    let operation = Id::random().unwrap();
+    let operation = Id::new_v7().unwrap();
     let payload = public::CreateTopic {
         name: "rejected-topic".into(),
         partitions: 1,

@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     )
     .await?;
     let topic: Id = env::var("TIDEMQ_TOPIC_ID")?.parse()?;
-    let producer_id = Id::random()?;
+    let producer_id = Id::new_v7()?;
     let producer = Producer::open(client.clone(), topic, 0, producer_id).await?;
     let result = producer
         .produce(vec![Message {

@@ -40,13 +40,23 @@ pub struct DataBoundaries {
 
 impl DataBoundaries {
     pub fn validate(&self) -> Result<()> {
-        if self.local_reclaim_end > self.object_published_end
-            || self.object_published_end > self.committed_end
-            || self.retained_floor > self.committed_end
-        {
-            return Err(Error::Invalid {
-                reason: "data boundaries violate commit or publication order",
-            });
+        for (valid, reason) in [
+            (
+                self.local_reclaim_end <= self.object_published_end,
+                "local_reclaim_end must not exceed object_published_end",
+            ),
+            (
+                self.object_published_end <= self.committed_end,
+                "object_published_end must not exceed committed_end",
+            ),
+            (
+                self.retained_floor <= self.committed_end,
+                "retained_floor must not exceed committed_end",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Invalid { reason });
+            }
         }
         Ok(())
     }

@@ -157,7 +157,7 @@ impl Cluster {
     async fn new(ids: &[u64]) -> Self {
         let mut cluster = Self {
             directory: Directory::new().await,
-            cluster_id: Id::random().unwrap(),
+            cluster_id: Id::new_v7().unwrap(),
             group_id: 1,
             router: Router::default(),
             nodes: BTreeMap::new(),

@@ -320,7 +320,7 @@ impl Coordinator {
         if ranges.is_empty() || ranges.len() > MAX_PARTITIONS || replaces.len() > 64 {
             return Err(Error::Configuration);
         }
-        let object_id = Id::random().map_err(|_| Error::Configuration)?;
+        let object_id = Id::new_v7().map_err(|source| Error::Identity { source })?;
         let (grants, expected_generations) = match self
             .meta_query(Query::Prepare(ranges.clone()), deadline)
             .await?
@@ -525,9 +525,6 @@ impl Coordinator {
         };
         if result.is_err() {
             self.0.metrics.failed.inc();
-            if self.0.metrics.may_warn() {
-                tracing::warn!(event = "object_reconcile_blocked", %object_id, "Object lifecycle reconciliation did not finish; query its authoritative blocker");
-            }
         }
         result
     }
@@ -854,7 +851,7 @@ impl Coordinator {
         }
         let started = Instant::now();
         let record = PinRecord {
-            id: Id::random().map_err(|_| Error::Configuration)?,
+            id: Id::new_v7().map_err(|source| Error::Identity { source })?,
             group_id: self.0.data_group,
             objects,
             ttl_millis: u64::try_from(ttl.as_millis()).map_err(|_| Error::Configuration)?,

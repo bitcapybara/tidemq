@@ -47,17 +47,30 @@ pub struct TlsIdentity {
 
 impl TlsIdentity {
     pub fn new(certificate_pem: Bytes, private_key_pem: Bytes) -> Result<Self> {
-        if certificate_pem.is_empty()
-            || certificate_pem.len() > 65_536
-            || private_key_pem.is_empty()
-            || private_key_pem.len() > 16_384
-        {
-            return Err(Error::Configuration {
-                reason: "TLS PEM identity is empty or excessive",
-            });
+        for (valid, reason) in [
+            (
+                !certificate_pem.is_empty(),
+                "TLS certificate PEM must not be empty",
+            ),
+            (
+                certificate_pem.len() <= 65_536,
+                "TLS certificate PEM must not exceed 65536 bytes",
+            ),
+            (
+                !private_key_pem.is_empty(),
+                "TLS private key PEM must not be empty",
+            ),
+            (
+                private_key_pem.len() <= 16_384,
+                "TLS private key PEM must not exceed 16384 bytes",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
         }
-        pem_text(&certificate_pem)?;
-        pem_text(&private_key_pem)?;
+        pem_text(&certificate_pem, "TLS certificate PEM must be UTF-8 text")?;
+        pem_text(&private_key_pem, "TLS private key PEM must be UTF-8 text")?;
         Ok(Self {
             certificate: certificate_pem,
             private_key: private_key_pem,
@@ -279,8 +292,14 @@ impl Server {
             .with_application_protocols([ALPN])
             .map_err(|source| setup("set server ALPN", source))?
             .with_certificate(
-                pem_text(&tls.identity.certificate)?,
-                pem_text(&tls.identity.private_key)?,
+                pem_text(
+                    &tls.identity.certificate,
+                    "TLS certificate PEM must be UTF-8 text",
+                )?,
+                pem_text(
+                    &tls.identity.private_key,
+                    "TLS private key PEM must be UTF-8 text",
+                )?,
             )
             .map_err(|source| setup("load server identity", source))?;
         if authorization.internal() {
@@ -291,7 +310,10 @@ impl Server {
             tls_builder = tls_builder
                 .with_empty_trust_store()
                 .map_err(|source| setup("clear server trust", source))?
-                .with_trusted_certificate(pem_text(&roots)?)
+                .with_trusted_certificate(pem_text(
+                    &roots,
+                    "TLS client trust roots PEM must be UTF-8 text",
+                )?)
                 .map_err(|source| setup("load client trust roots", source))?
                 .with_client_authentication()
                 .map_err(|source| setup("require mutual TLS", source))?;
@@ -447,13 +469,22 @@ impl Client {
             .map_err(|source| setup("set client ALPN", source))?
             .with_empty_trust_store()
             .map_err(|source| setup("clear client trust", source))?
-            .with_certificate(pem_text(&tls.trust_roots)?)
+            .with_certificate(pem_text(
+                &tls.trust_roots,
+                "TLS server trust roots PEM must be UTF-8 text",
+            )?)
             .map_err(|source| setup("load server trust roots", source))?;
         if let Some(identity) = tls.identity {
             tls_builder = tls_builder
                 .with_client_identity(
-                    pem_text(&identity.certificate)?,
-                    pem_text(&identity.private_key)?,
+                    pem_text(
+                        &identity.certificate,
+                        "TLS client certificate PEM must be UTF-8 text",
+                    )?,
+                    pem_text(
+                        &identity.private_key,
+                        "TLS client private key PEM must be UTF-8 text",
+                    )?,
                 )
                 .map_err(|source| setup("load client identity", source))?;
         }
@@ -794,9 +825,14 @@ async fn accept_connection(
         .map_err(|_| Error::Authentication {
             reason: "TLS evidence context unavailable",
         })?;
-    if !evidence.completed || connection.application_protocol().ok().as_deref() != Some(ALPN) {
+    if !evidence.completed {
         return Err(Error::Authentication {
-            reason: "TLS handshake or ALPN not verified",
+            reason: "TLS handshake has not completed",
+        });
+    }
+    if connection.application_protocol().ok().as_deref() != Some(ALPN) {
+        return Err(Error::Authentication {
+            reason: "TLS ALPN does not match the TideMQ protocol",
         });
     }
     let stream = connection
@@ -886,9 +922,14 @@ fn verify_server(
         .map_err(|_| Error::Authentication {
             reason: "server TLS evidence unavailable",
         })?;
-    if !evidence.completed || connection.application_protocol().ok().as_deref() != Some(ALPN) {
+    if !evidence.completed {
         return Err(Error::Authentication {
-            reason: "server handshake or ALPN not verified",
+            reason: "server TLS handshake has not completed",
+        });
+    }
+    if connection.application_protocol().ok().as_deref() != Some(ALPN) {
+        return Err(Error::Authentication {
+            reason: "server TLS ALPN does not match the TideMQ protocol",
         });
     }
     if credentials.internal() {
@@ -928,24 +969,47 @@ fn validate_hello_result(
     session: Id,
     config: &TransportConfig,
 ) -> Result<()> {
-    if FrameKind::try_from(frame.kind).ok() != Some(FrameKind::HelloResult)
-        || frame.request_id != hello.request_id
-        || frame.operation_id != hello.operation_id
-    {
-        return Err(Error::Authentication {
-            reason: "HELLO result binding is invalid",
-        });
+    for (valid, reason) in [
+        (
+            FrameKind::try_from(frame.kind).ok() == Some(FrameKind::HelloResult),
+            "HELLO response kind must be HELLO_RESULT",
+        ),
+        (
+            frame.request_id == hello.request_id,
+            "HELLO response request_id differs from the request",
+        ),
+        (
+            frame.operation_id == hello.operation_id,
+            "HELLO response operation_id differs from the request",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::Authentication { reason });
+        }
     }
     let result: HelloResult = decode_payload(frame.payload.clone(), &config.protocol)
         .map_err(|source| Error::Protocol { source })?;
-    if result.session_id.as_ref() != session.as_bytes()
-        || result.max_frame_bytes == 0
-        || result.max_batch_messages == 0
-        || result.max_in_flight_bytes == 0
-    {
-        return Err(Error::Authentication {
-            reason: "HELLO limits or session are invalid",
-        });
+    for (valid, reason) in [
+        (
+            result.session_id.as_ref() == session.as_bytes(),
+            "HELLO response session_id differs from the requested session",
+        ),
+        (
+            result.max_frame_bytes > 0,
+            "HELLO response max_frame_bytes must be greater than zero",
+        ),
+        (
+            result.max_batch_messages > 0,
+            "HELLO response max_batch_messages must be greater than zero",
+        ),
+        (
+            result.max_in_flight_bytes > 0,
+            "HELLO response max_in_flight_bytes must be greater than zero",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::Authentication { reason });
+        }
     }
     Ok(())
 }
@@ -970,12 +1034,17 @@ fn remaining_ms(deadline: Instant) -> Result<u64> {
     })
 }
 fn validate_roots(roots: &[u8]) -> Result<()> {
-    if roots.is_empty() || roots.len() > 1_048_576 {
+    if roots.is_empty() {
         return Err(Error::Configuration {
-            reason: "trust roots are empty or excessive",
+            reason: "TLS trust roots must not be empty",
         });
     }
-    pem_text(roots)?;
+    if roots.len() > 1_048_576 {
+        return Err(Error::Configuration {
+            reason: "TLS trust roots must not exceed 1048576 bytes",
+        });
+    }
+    pem_text(roots, "TLS trust roots PEM must be UTF-8 text")?;
     Ok(())
 }
 
@@ -987,8 +1056,6 @@ pub(super) fn recovery_snapshot(
         .map_err(|_| Error::Closed)
 }
 
-fn pem_text(bytes: &[u8]) -> Result<&str> {
-    std::str::from_utf8(bytes).map_err(|_| Error::Configuration {
-        reason: "TLS PEM input must be UTF-8 text",
-    })
+fn pem_text<'a>(bytes: &'a [u8], reason: &'static str) -> Result<&'a str> {
+    std::str::from_utf8(bytes).map_err(|_| Error::Configuration { reason })
 }

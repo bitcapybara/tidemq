@@ -26,29 +26,40 @@ impl TokenGrant {
         allowed_kinds: Vec<FrameKind>,
     ) -> Result<Self> {
         validate_token(token)?;
-        if principal.is_empty()
-            || principal.len() > 128
-            || scope.is_empty()
-            || scope.len() > 128
-            || allowed_kinds.is_empty()
-            || allowed_kinds.len() > 32
-            || allowed_kinds.iter().any(|kind| {
-                matches!(
-                    kind,
-                    FrameKind::RaftVote
-                        | FrameKind::RaftAppend
-                        | FrameKind::RaftSnapshot
-                        | FrameKind::RaftResult
-                        | FrameKind::InternalCommand
-                        | FrameKind::InternalResult
-                        | FrameKind::Unspecified
-                        | FrameKind::Hello
-                        | FrameKind::HelloResult
-                )
-            })
-        {
+        for (valid, reason) in [
+            (
+                !principal.is_empty() && principal.len() <= 128,
+                "token principal must contain between 1 and 128 bytes",
+            ),
+            (
+                !scope.is_empty() && scope.len() <= 128,
+                "token scope must contain between 1 and 128 bytes",
+            ),
+            (
+                !allowed_kinds.is_empty() && allowed_kinds.len() <= 32,
+                "token allowed_kinds must contain between 1 and 32 operations",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
+        }
+        if allowed_kinds.iter().any(|kind| {
+            matches!(
+                kind,
+                FrameKind::RaftVote
+                    | FrameKind::RaftAppend
+                    | FrameKind::RaftSnapshot
+                    | FrameKind::RaftResult
+                    | FrameKind::InternalCommand
+                    | FrameKind::InternalResult
+                    | FrameKind::Unspecified
+                    | FrameKind::Hello
+                    | FrameKind::HelloResult
+            )
+        }) {
             return Err(Error::Configuration {
-                reason: "token grant is empty, excessive, or grants internal operations",
+                reason: "token allowed_kinds must contain only public operations; internal and HELLO operations cannot be granted",
             });
         }
         Ok(Self {
@@ -78,24 +89,42 @@ impl NodeGrant {
     }
 
     pub(super) fn validate(&self) -> Result<()> {
-        if self.node_id == 0
-            || self.certificate_name.is_empty()
-            || self.certificate_name.len() > 253
-            || !self
-                .certificate_name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
-            || self.role.is_empty()
-            || self.role.len() > 32
-            || self.allowed_groups.len() > 4_096
-            || self.allowed_groups.contains(&0)
-            || self.allowed_classes.is_empty()
-            || self.allowed_classes.len() > 5
-            || self.allowed_classes.contains(&TrafficClass::Unspecified)
-        {
-            return Err(Error::Configuration {
-                reason: "node authorization is invalid",
-            });
+        for (valid, reason) in [
+            (self.node_id != 0, "node grant node_id must be nonzero"),
+            (
+                !self.certificate_name.is_empty() && self.certificate_name.len() <= 253,
+                "node grant certificate_name must contain between 1 and 253 bytes",
+            ),
+            (
+                self.certificate_name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-')),
+                "node grant certificate_name must contain only ASCII letters, digits, dots, and hyphens",
+            ),
+            (
+                !self.role.is_empty() && self.role.len() <= 32,
+                "node grant role must contain between 1 and 32 bytes",
+            ),
+            (
+                self.allowed_groups.len() <= 4_096,
+                "node grant allowed_groups must not exceed 4096 entries",
+            ),
+            (
+                !self.allowed_groups.contains(&0),
+                "node grant allowed_groups must not contain group zero",
+            ),
+            (
+                !self.allowed_classes.is_empty() && self.allowed_classes.len() <= 5,
+                "node grant allowed_classes must contain between 1 and 5 traffic classes",
+            ),
+            (
+                !self.allowed_classes.contains(&TrafficClass::Unspecified),
+                "node grant allowed_classes must not include unspecified",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
         }
         Ok(())
     }
@@ -131,8 +160,11 @@ impl ServerAuthorization {
             Self::Internal(grants) if !grants.is_empty() && grants.len() <= 4_096 => {
                 validate_node_grants(grants)
             }
-            _ => Err(Error::Configuration {
-                reason: "authorization table is empty or excessive",
+            Self::External(_) => Err(Error::Configuration {
+                reason: "external authorization must contain between 1 and 1024 token grants",
+            }),
+            Self::Internal(_) => Err(Error::Configuration {
+                reason: "internal authorization must contain between 1 and 4096 node grants",
             }),
         }
     }
@@ -343,7 +375,7 @@ impl ClientCredentials {
         timeout_ms: u64,
         limits: &ProtocolLimits,
     ) -> Result<Frame> {
-        let request = Id::random().map_err(|source| Error::Protocol { source })?;
+        let request = Id::new_v7().map_err(|source| Error::Protocol { source })?;
         let session = self.session();
         let frame = match self {
             Self::External { access_token, .. } => {
@@ -387,9 +419,14 @@ impl ClientCredentials {
 }
 
 fn validate_token(token: &str) -> Result<()> {
-    if !(32..=256).contains(&token.len()) || !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+    if !(32..=256).contains(&token.len()) {
         return Err(Error::Authentication {
-            reason: "access token length or encoding is invalid",
+            reason: "access token must contain between 32 and 256 bytes",
+        });
+    }
+    if !token.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return Err(Error::Authentication {
+            reason: "access token must contain only printable ASCII characters without whitespace",
         });
     }
     Ok(())

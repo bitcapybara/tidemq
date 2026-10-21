@@ -13,6 +13,10 @@ pub enum Error {
     Overflow { name: &'static str },
     #[snafu(display("Failed to obtain identity entropy"))]
     Entropy { source: getrandom::Error },
+    #[snafu(display("Cannot generate UUID v7: system clock is before the Unix epoch"))]
+    IdentityClock { source: std::time::SystemTimeError },
+    #[snafu(display("Cannot generate UUID v7: timestamp {millis} ms exceeds the 48-bit limit"))]
+    IdentityTimestamp { millis: u128 },
     #[snafu(display("Invalid UUID"))]
     Uuid { source: uuid::Error },
     #[snafu(display("Failed to reserve protocol buffer"))]

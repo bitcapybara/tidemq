@@ -164,7 +164,7 @@ async fn raw_raft_rpc_rejects_forged_sender_group_and_nonempty_control_body() {
         .await
         .clone()
         .unwrap();
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     let peer = Authorization::Internal(NodeGrant {
         certificate_pin: [1; 32],
         certificate_name: "node-1.local".into(),

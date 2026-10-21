@@ -33,7 +33,7 @@ impl Native {
         let metrics = address();
         let directory = std::env::temp_dir().join(format!(
             "tidemq-collector-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         tokio::fs::create_dir(&directory).await.unwrap();
         let source = include_str!("../../deploy/observability/collector.yaml")

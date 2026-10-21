@@ -29,19 +29,19 @@ fn ack_metadata_retains_holes_without_charging_message_bodies() {
 
 impl Fixture {
     fn new(limits: Limits, cold_before: u64) -> Self {
-        let id = Id::random().unwrap();
-        let session = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
+        let session = Id::new_v7().unwrap();
         let context = DataContext {
             committed_end: 100_000,
             retained_floor: 0,
         };
-        let mut state = SubscriptionState::new(Id::random().unwrap(), 7, limits).unwrap();
+        let mut state = SubscriptionState::new(Id::new_v7().unwrap(), 7, limits).unwrap();
         state
             .apply(
                 context,
                 Command::Create {
                     subscription_id: id,
-                    operation_id: Id::random().unwrap(),
+                    operation_id: Id::new_v7().unwrap(),
                     start_offset: 0,
                     signing_key: SigningKey::try_from([71; 32]).unwrap(),
                 },
@@ -97,7 +97,7 @@ impl Fixture {
             subscription_id: self.id,
             generations: self.generations,
             session_id: self.session,
-            operation_id: Id::random().unwrap(),
+            operation_id: Id::new_v7().unwrap(),
             offset,
             expected_attempt: attempt,
             body_bytes: 10,
@@ -143,7 +143,7 @@ impl Fixture {
     }
 
     fn replace(&mut self, cold_before: u64) -> Assignment {
-        let next_session = Id::random().unwrap();
+        let next_session = Id::new_v7().unwrap();
         let Outcome::Assigned(assignment) = self
             .apply(Command::Claim {
                 subscription_id: self.id,
@@ -303,7 +303,7 @@ fn assignment_claim_requires_explicit_compare_and_replace_and_reissues_unacknowl
         f.apply(Command::Claim {
             subscription_id: f.id,
             expected: f.generations,
-            session_id: Id::random().unwrap(),
+            session_id: Id::new_v7().unwrap(),
             replace_session_id: None,
             cold_before: 0,
         }),
@@ -328,7 +328,7 @@ fn backwards_seek_changes_cursor_and_assignment_and_retries_return_original_seek
     f.ack(vec![old.token.clone()]).unwrap();
     let command = Command::Seek {
         subscription_id: f.id,
-        operation_id: Id::random().unwrap(),
+        operation_id: Id::new_v7().unwrap(),
         expected_cursor_generation: f.generations.cursor,
         offset: 0,
     };
@@ -370,7 +370,7 @@ fn retention_floor_and_subscription_mutations_share_authoritative_ordering() {
     assert_eq!(
         f.apply(Command::Seek {
             subscription_id: f.id,
-            operation_id: Id::random().unwrap(),
+            operation_id: Id::new_v7().unwrap(),
             expected_cursor_generation: f.generations.cursor,
             offset: 0
         }),
@@ -385,7 +385,7 @@ fn retention_floor_and_subscription_mutations_share_authoritative_ordering() {
     assert_eq!(
         f.apply(Command::Create {
             subscription_id: f.id,
-            operation_id: Id::random().unwrap(),
+            operation_id: Id::new_v7().unwrap(),
             start_offset: 1,
             signing_key: SigningKey::try_from([99; 32]).unwrap()
         }),
@@ -639,16 +639,16 @@ fn aggregate_byte_admission_is_bounded_across_subscriptions_and_ack_releases_it(
     let original_id = f.id;
     let original_session = f.session;
     let first = f.deliver(0, 0, 0, DeliveryLane::Realtime);
-    let second_id = Id::random().unwrap();
+    let second_id = Id::new_v7().unwrap();
     f.apply(Command::Create {
         subscription_id: second_id,
-        operation_id: Id::random().unwrap(),
+        operation_id: Id::new_v7().unwrap(),
         start_offset: 0,
         signing_key: SigningKey::try_from([87; 32]).unwrap(),
     })
     .unwrap();
     f.id = second_id;
-    f.session = Id::random().unwrap();
+    f.session = Id::new_v7().unwrap();
     f.apply(Command::Claim {
         subscription_id: f.id,
         expected: Generations {
@@ -703,8 +703,8 @@ fn retired_identities_consume_the_finite_fence_budget_and_claim_retries_keep_the
     .unwrap();
     assert_eq!(
         f.apply(Command::Create {
-            subscription_id: Id::random().unwrap(),
-            operation_id: Id::random().unwrap(),
+            subscription_id: Id::new_v7().unwrap(),
+            operation_id: Id::new_v7().unwrap(),
             start_offset: 0,
             signing_key: SigningKey::try_from([87; 32]).unwrap()
         }),

@@ -465,7 +465,7 @@ mod tests {
     ) {
         let directory = std::env::temp_dir().join(format!(
             "tidemq-snapshot-io-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         tokio::fs::create_dir(&directory).await.unwrap();
         for name in ["identity.bin", "manifest.bin"] {
@@ -473,7 +473,7 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let segment = format!("segment-{}.wal", tidemq_protocol::Id::random().unwrap());
+        let segment = format!("segment-{}.wal", tidemq_protocol::Id::new_v7().unwrap());
         tokio::fs::write(directory.join(segment), [2; 11])
             .await
             .unwrap();
@@ -501,7 +501,7 @@ mod tests {
 
     fn reference(bytes: &[u8]) -> SnapshotRef {
         SnapshotRef {
-            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::random().unwrap()),
+            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::new_v7().unwrap()),
             byte_len: bytes.len() as u64,
             checksum: *blake3::hash(bytes).as_bytes(),
         }
@@ -608,7 +608,7 @@ mod tests {
     async fn buffered_snapshot_io_preserves_seek_and_write_boundaries() {
         let directory = std::env::temp_dir().join(format!(
             "tidemq-snapshot-seek-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         tokio::fs::create_dir(&directory).await.unwrap();
         let mut file = SnapshotFile::open(&directory.join("file.bin"), 4, true, None)

@@ -15,7 +15,7 @@ use super::support::{Cluster, batch, context, lease, writer};
 async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retirement() {
     let mut cluster = Cluster::new(&[1]).await;
     let partition = PartitionKey {
-        topic_id: Id::random().unwrap(),
+        topic_id: Id::new_v7().unwrap(),
         partition: 0,
     };
     let grant = cluster.grant(partition, 1);
@@ -28,7 +28,7 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
             context(),
             partition,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )
@@ -49,7 +49,7 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
         .await
         .unwrap();
 
-    let subscription_id = Id::random().unwrap();
+    let subscription_id = Id::new_v7().unwrap();
     let command = |command| DataCommand::Subscription {
         partition,
         writer: writer(&grant),
@@ -59,7 +59,7 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
         cluster
             .write(command(subscription::Command::Create {
                 subscription_id,
-                operation_id: Id::random().unwrap(),
+                operation_id: Id::new_v7().unwrap(),
                 start_offset: 0,
                 signing_key: SigningKey::try_from([7; 32]).unwrap(),
             }))
@@ -73,7 +73,7 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
                 cursor: 1,
                 assignment: 0,
             },
-            session_id: Id::random().unwrap(),
+            session_id: Id::new_v7().unwrap(),
             replace_session_id: None,
             cold_before: 0,
         }))
@@ -88,7 +88,7 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
             subscription_id,
             generations: assignment.generations,
             session_id: assignment.session_id,
-            operation_id: Id::random().unwrap(),
+            operation_id: Id::new_v7().unwrap(),
             offset: 0,
             expected_attempt: 0,
             body_bytes: bytes,
@@ -155,7 +155,7 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
         cluster
             .write(command(subscription::Command::Seek {
                 subscription_id,
-                operation_id: Id::random().unwrap(),
+                operation_id: Id::new_v7().unwrap(),
                 expected_cursor_generation: assignment.generations.cursor,
                 offset: 0
             }))
@@ -253,7 +253,7 @@ async fn rf1_snapshot_reopen_preserves_producer_results_ack_authority_and_retire
 async fn rf3_lost_quorum_and_caller_cancel_hold_budget_until_the_original_commit_finishes() {
     let cluster = Cluster::new(&[1, 2, 3]).await;
     let partition = PartitionKey {
-        topic_id: Id::random().unwrap(),
+        topic_id: Id::new_v7().unwrap(),
         partition: 1,
     };
     let grant = cluster.grant(partition, 1);
@@ -269,7 +269,7 @@ async fn rf3_lost_quorum_and_caller_cancel_hold_budget_until_the_original_commit
             context(),
             partition,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )
@@ -326,7 +326,7 @@ async fn rf3_lost_quorum_and_caller_cancel_hold_budget_until_the_original_commit
 async fn ordered_submissions_pipeline_without_waiting_for_previous_durable_results() {
     let cluster = Cluster::new(&[1, 2, 3]).await;
     let partition = PartitionKey {
-        topic_id: Id::random().unwrap(),
+        topic_id: Id::new_v7().unwrap(),
         partition: 2,
     };
     let grant = cluster.grant(partition, 1);
@@ -342,7 +342,7 @@ async fn ordered_submissions_pipeline_without_waiting_for_previous_durable_resul
             context(),
             partition,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )

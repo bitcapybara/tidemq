@@ -26,6 +26,8 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Object lifecycle identity generation failed"))]
+    Identity { source: tidemq_protocol::Error },
     #[snafu(display("Object lifecycle configuration is invalid"))]
     Configuration,
     #[snafu(display("Object lifecycle operation exceeded its deadline"))]
@@ -34,7 +36,7 @@ pub enum Error {
         "Object lifecycle consensus outcome is unknown; reconcile the original object identity"
     ))]
     Unknown,
-    #[snafu(display("Object lifecycle operation is blocked: {reason:?}"))]
+    #[snafu(display("Object lifecycle operation is blocked: {reason}"))]
     Rejected { reason: Rejection },
     #[snafu(display("Object lifecycle consensus operation failed: {reason}"))]
     Consensus { reason: String },

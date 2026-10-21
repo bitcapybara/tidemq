@@ -263,6 +263,66 @@ pub enum Rejection {
     Lifecycle(crate::lifecycle::Rejection),
 }
 
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::Uninitialized => "Metadata group has not been bootstrapped",
+            Self::AlreadyInitialized => "Metadata group has already been bootstrapped",
+            Self::InvalidLimit => "Metadata request exceeds its configured item or byte limit",
+            Self::InvalidName => {
+                "Resource name must contain 1 to 255 bytes without control characters"
+            }
+            Self::InvalidNode => {
+                "Node configuration violates the node identity or role constraints"
+            }
+            Self::InvalidGroup => {
+                "Data group configuration violates the group identity or replica constraints"
+            }
+            Self::InvalidSubscription => {
+                "Subscription configuration violates its topic or delivery mode constraints"
+            }
+            Self::InvalidEvidence => {
+                "Ownership or recovery evidence does not match the committed state"
+            }
+            Self::InvalidCommand => {
+                "Metadata command does not match the requested state transition"
+            }
+            Self::Capacity => "Metadata identity or operation-result capacity is exhausted",
+            Self::RevisionConflict => {
+                "Metadata revision changed; reread the current revision before retrying"
+            }
+            Self::GenerationConflict => {
+                "Resource generation changed; reread the current resource before retrying"
+            }
+            Self::OperationConflict => {
+                "Operation identity was already used for a different metadata command"
+            }
+            Self::IdentityRetired => "Resource identity has been retired and cannot be reused",
+            Self::NameInUse => {
+                "Resource name is already assigned to a different immutable identity"
+            }
+            Self::NotFound => "The requested metadata resource does not exist",
+            Self::NodeInUse => "Node still hosts a group and cannot be removed",
+            Self::NotSchedulable => "Selected node is not schedulable",
+            Self::PlacementViolation => {
+                "Replica placement violates the configured replication or zone constraints"
+            }
+            Self::Superseded => "Operation was superseded by a newer committed operation",
+            Self::RecoveryRequired => {
+                "Group recovery must complete before this transition can proceed"
+            }
+            Self::CounterExhausted => "Metadata counter cannot advance without overflow",
+            Self::Lifecycle(reason) => {
+                return write!(
+                    formatter,
+                    "Object lifecycle rejected the metadata transition: {reason}"
+                );
+            }
+        };
+        formatter.write_str(reason)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
     Bootstrapped,

@@ -306,18 +306,69 @@ impl S3Store {
 }
 
 fn validate_config(config: &S3Config, limits: Limits) -> Result<()> {
-    let endpoint = &config.endpoint;
-    let valid_https = endpoint.starts_with("https://") && endpoint.len() > 8;
-    let valid_http = config.allow_http_loopback
-        && endpoint.strip_prefix("http://").is_some_and(|address| {
-            address
-                .parse::<std::net::SocketAddr>()
-                .is_ok_and(|socket| socket.ip().is_loopback() && socket.port() != 0)
-        });
-    if !(valid_https || valid_http) || endpoint.contains(['@', '?', '#']) || endpoint.len() > 2048 {
+    if config.endpoint.len() > 2_048 {
         return Err(Error::Configuration {
-            reason: "endpoint requires HTTPS or explicit loopback HTTP without credentials or query parameters",
+            reason: "endpoint must not exceed 2048 bytes",
         });
+    }
+    if config
+        .endpoint
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(Error::Configuration {
+            reason: "endpoint must not contain whitespace or control characters",
+        });
+    }
+    let endpoint = reqwest::Url::parse(&config.endpoint).map_err(|_| Error::Configuration {
+        reason: "endpoint must be an absolute HTTP or HTTPS URL with a valid host and port",
+    })?;
+    for (valid, reason) in [
+        (
+            endpoint.username().is_empty() && endpoint.password().is_none(),
+            "endpoint must not contain user credentials",
+        ),
+        (
+            endpoint.query().is_none(),
+            "endpoint must not contain query parameters",
+        ),
+        (
+            endpoint.fragment().is_none(),
+            "endpoint must not contain a fragment",
+        ),
+        (
+            endpoint.host_str().is_some(),
+            "endpoint must contain a host",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::Configuration { reason });
+        }
+    }
+    if endpoint.scheme() != "https" {
+        if endpoint.scheme() != "http" {
+            return Err(Error::Configuration {
+                reason: "endpoint scheme must be HTTPS or explicit loopback HTTP",
+            });
+        }
+        if !config.allow_http_loopback {
+            return Err(Error::Configuration {
+                reason: "allow_http_loopback must be enabled to use an HTTP endpoint",
+            });
+        }
+        let loopback = config
+            .endpoint
+            .strip_prefix("http://")
+            .is_some_and(|address| {
+                address
+                    .parse::<std::net::SocketAddr>()
+                    .is_ok_and(|socket| socket.ip().is_loopback() && socket.port() != 0)
+            });
+        if !loopback {
+            return Err(Error::Configuration {
+                reason: "HTTP endpoint must contain a literal loopback IP and an explicit nonzero port",
+            });
+        }
     }
     if !(3..=63).contains(&config.bucket.len())
         || !config
@@ -336,39 +387,76 @@ fn validate_config(config: &S3Config, limits: Limits) -> Result<()> {
             .is_some_and(|byte| byte.is_ascii_alphanumeric())
     {
         return Err(Error::Configuration {
-            reason: "bucket requires a fixed DNS-compatible name",
+            reason: "bucket must contain 3 to 63 lowercase letters, digits, or hyphens and begin and end with a letter or digit",
         });
     }
-    if config.prefix.is_empty()
-        || config.prefix.len() > 128
-        || !config
-            .prefix
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_'))
-        || config.prefix.starts_with('/')
-        || config.prefix.ends_with('/')
-        || config.prefix.contains("//")
-        || config.region.is_empty()
-        || config.region.len() > 64
-    {
-        return Err(Error::Configuration {
-            reason: "prefix or region is invalid",
-        });
+    for (valid, reason) in [
+        (
+            !config.prefix.is_empty() && config.prefix.len() <= 128,
+            "prefix must contain between 1 and 128 bytes",
+        ),
+        (
+            config
+                .prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_')),
+            "prefix must contain only ASCII letters, digits, slashes, hyphens, and underscores",
+        ),
+        (
+            !config.prefix.starts_with('/')
+                && !config.prefix.ends_with('/')
+                && !config.prefix.contains("//"),
+            "prefix must not have leading, trailing, or consecutive slashes",
+        ),
+        (
+            !config.region.is_empty() && config.region.len() <= 64,
+            "region must contain between 1 and 64 bytes",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::Configuration { reason });
+        }
     }
-    if !(2..=128).contains(&limits.max_in_flight)
-        || limits.max_object_bytes == 0
-        || limits.max_object_bytes > 512 * 1024 * 1024
-        || limits.max_range_bytes == 0
-        || limits.max_range_bytes > limits.max_object_bytes
-        || limits.bytes_per_second == 0
-        || limits.bytes_per_second > 16 * 1024 * 1024 * 1024
-        || limits.request_timeout.is_zero()
-        || limits.request_timeout > Duration::from_secs(300)
-        || !(5 * 1024 * 1024..=64 * 1024 * 1024).contains(&limits.part_bytes)
-    {
-        return Err(Error::Configuration {
-            reason: "operation, byte, rate, timeout, or multipart limits are invalid",
-        });
+    validate_limits(limits)
+}
+
+fn validate_limits(limits: Limits) -> Result<()> {
+    for (valid, reason) in [
+        (
+            (2..=128).contains(&limits.max_in_flight),
+            "max_in_flight must be between 2 and 128",
+        ),
+        (
+            limits.max_object_bytes > 0 && limits.max_object_bytes <= 512 * 1024 * 1024,
+            "max_object_bytes must be between 1 and 536870912 bytes",
+        ),
+        (
+            limits.max_range_bytes > 0,
+            "max_range_bytes must be greater than zero",
+        ),
+        (
+            limits.max_range_bytes <= limits.max_object_bytes,
+            "max_range_bytes must not exceed max_object_bytes",
+        ),
+        (
+            limits.bytes_per_second > 0 && limits.bytes_per_second <= 16 * 1024 * 1024 * 1024,
+            "bytes_per_second must be between 1 and 17179869184",
+        ),
+        (
+            !limits.request_timeout.is_zero() && limits.request_timeout <= Duration::from_secs(300),
+            "request_timeout must be greater than zero and at most 300 seconds",
+        ),
+        (
+            (5 * 1024 * 1024..=64 * 1024 * 1024).contains(&limits.part_bytes),
+            "part_bytes must be between 5 MiB and 64 MiB",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::Configuration { reason });
+        }
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod diagnostic_tests;

@@ -7,14 +7,14 @@ use snafu::Snafu;
 pub enum Error {
     #[snafu(display("Invalid storage configuration: {reason}"))]
     Configuration { reason: &'static str },
-    #[snafu(display("Storage IO failed for {}: {source}", path.display()))]
+    #[snafu(display("Storage IO failed for {}", path.display()))]
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[snafu(display("Storage encoding failed: {source}"))]
+    #[snafu(display("Storage encoding failed"))]
     Encode { source: postcard::Error },
-    #[snafu(display("Storage decoding failed: {source}"))]
+    #[snafu(display("Storage decoding failed"))]
     Decode { source: postcard::Error },
     #[snafu(display("Corrupt journal at byte {offset}: {reason}"))]
     Corrupt { offset: u64, reason: &'static str },

@@ -4,7 +4,7 @@ use tidemq_protocol::Id;
 use super::*;
 
 fn state(limits: ProducerLimits) -> ProducerState {
-    ProducerState::new(Id::random().unwrap(), 3, limits).unwrap()
+    ProducerState::new(Id::new_v7().unwrap(), 3, limits).unwrap()
 }
 
 fn register(state: &mut ProducerState, now: u64) -> SessionInfo {
@@ -13,7 +13,7 @@ fn register(state: &mut ProducerState, now: u64) -> SessionInfo {
         .register(
             now,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: epoch,
             },
         )
@@ -103,7 +103,7 @@ fn registration_cas_retirement_and_fixed_expiry_need_no_unbounded_tombstones() {
     };
     assert_eq!(state.register(101, retry.clone()).unwrap(), first);
     let collision = RegisterProducer {
-        producer_id: Id::random().unwrap(),
+        producer_id: Id::new_v7().unwrap(),
         expected_registration_epoch: first.producer_epoch,
     };
     assert_eq!(
@@ -112,7 +112,7 @@ fn registration_cas_retirement_and_fixed_expiry_need_no_unbounded_tombstones() {
     );
     let second = register(&mut state, 101);
     let blocked = RegisterProducer {
-        producer_id: Id::random().unwrap(),
+        producer_id: Id::new_v7().unwrap(),
         expected_registration_epoch: state.next_registration_epoch(),
     };
     assert_eq!(

@@ -474,7 +474,7 @@ async fn produce_all(
 }
 
 async fn open(client: &Client, topic: Id) -> Result<Producer> {
-    let producer = Id::random()?;
+    let producer = Id::new_v7()?;
     match Producer::open(client.clone(), topic, 0, producer).await {
         Ok(producer) => Ok(producer),
         Err(tidemq_sdk::Error::RegistrationUnknown {
@@ -928,13 +928,13 @@ mod tests {
     use super::*;
     #[test]
     fn payload_round_trip_preserves_identity_and_rejects_foreign_or_truncated_data() {
-        let run = Id::random().unwrap();
+        let run = Id::new_v7().unwrap();
         let messages = messages(128, 3, 20, 2, run, 5_000).unwrap();
         assert_eq!(
             decode(&messages.first().unwrap().body, run).unwrap(),
             (20, 5_000)
         );
-        assert!(decode(&messages.first().unwrap().body, Id::random().unwrap()).is_err());
+        assert!(decode(&messages.first().unwrap().body, Id::new_v7().unwrap()).is_err());
         assert!(decode(b"TIDEPF01", run).is_err());
         assert_eq!(messages.len(), 2);
     }

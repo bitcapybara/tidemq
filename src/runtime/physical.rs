@@ -117,7 +117,7 @@ mod tests {
     async fn real_file_lengths_include_all_segments_staging_and_unreferenced_snapshots() {
         let directory = std::env::temp_dir().join(format!(
             "tidemq-physical-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         let group = directory.join("group-2");
         tokio::fs::create_dir_all(&group).await.unwrap();
@@ -125,12 +125,12 @@ mod tests {
             tokio::fs::write(group.join(name), [0; 5]).await.unwrap();
         }
         for _ in 0..20 {
-            let id = tidemq_protocol::Id::random().unwrap();
+            let id = tidemq_protocol::Id::new_v7().unwrap();
             tokio::fs::write(group.join(format!("segment-{id}.wal")), [0; 31])
                 .await
                 .unwrap();
         }
-        let staging = format!(".replace-{}", tidemq_protocol::Id::random().unwrap());
+        let staging = format!(".replace-{}", tidemq_protocol::Id::new_v7().unwrap());
         tokio::fs::write(group.join(staging), [0; 7]).await.unwrap();
         let sampler = PhysicalSampler::new(directory.clone());
         let deadline = Instant::now() + std::time::Duration::from_secs(1);
@@ -140,12 +140,12 @@ mod tests {
         );
         assert!(sampler.sample(vec![(2, true)], deadline).await.is_err());
         for _ in 0..2 {
-            let id = tidemq_protocol::Id::random().unwrap();
+            let id = tidemq_protocol::Id::new_v7().unwrap();
             tokio::fs::write(group.join(format!("snapshot-{id}.bin")), [0; 11])
                 .await
                 .unwrap();
         }
-        let checkpoint = format!("checkpoint-{}.bin", tidemq_protocol::Id::random().unwrap());
+        let checkpoint = format!("checkpoint-{}.bin", tidemq_protocol::Id::new_v7().unwrap());
         tokio::fs::write(group.join(checkpoint), [0; 13])
             .await
             .unwrap();
@@ -182,11 +182,11 @@ mod tests {
     fn directory_entry_limit_includes_orphans_and_staging_files() {
         let directory = replica_directory();
         for _ in 3..MAX_SEGMENTED_DIRECTORY_ENTRIES {
-            let id = tidemq_protocol::Id::random().unwrap();
+            let id = tidemq_protocol::Id::new_v7().unwrap();
             std::fs::write(directory.join(format!(".replace-{id}")), [0; 1]).unwrap();
         }
         assert!(replica_bytes(&directory, false).is_ok());
-        let id = tidemq_protocol::Id::random().unwrap();
+        let id = tidemq_protocol::Id::new_v7().unwrap();
         std::fs::write(directory.join(format!("checkpoint-{id}.bin")), [0; 1]).unwrap();
         assert!(replica_bytes(&directory, false).is_err());
         std::fs::remove_dir_all(directory).unwrap();
@@ -200,7 +200,7 @@ mod tests {
         std::fs::create_dir(&nested).unwrap();
         assert!(replica_bytes(&directory, false).is_err());
         std::fs::remove_dir(nested).unwrap();
-        let id = tidemq_protocol::Id::random().unwrap();
+        let id = tidemq_protocol::Id::new_v7().unwrap();
         let link = directory.join(format!("snapshot-{id}.bin"));
         std::os::unix::fs::symlink(directory.join("identity.bin"), &link).unwrap();
         assert!(replica_bytes(&directory, false).is_err());
@@ -215,12 +215,12 @@ mod tests {
     fn replica_directory() -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
             "tidemq-physical-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         std::fs::create_dir(&directory).unwrap();
         std::fs::write(directory.join("identity.bin"), [0; 5]).unwrap();
         std::fs::write(directory.join("manifest.bin"), [0; 7]).unwrap();
-        let id = tidemq_protocol::Id::random().unwrap();
+        let id = tidemq_protocol::Id::new_v7().unwrap();
         std::fs::write(directory.join(format!("segment-{id}.wal")), [0; 11]).unwrap();
         directory
     }

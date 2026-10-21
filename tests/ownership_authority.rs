@@ -81,7 +81,7 @@ struct Directory(PathBuf);
 
 impl Directory {
     async fn new() -> Self {
-        let path = std::env::temp_dir().join(format!("tidemq-ownership-{}", Id::random().unwrap()));
+        let path = std::env::temp_dir().join(format!("tidemq-ownership-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir(&path).await.unwrap();
         Self(path)
     }

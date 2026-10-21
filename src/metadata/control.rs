@@ -68,7 +68,9 @@ fn derived_id(hash: blake3::Hash) -> Result<Id, Rejection> {
 }
 
 pub(super) fn is_random_operation_id(id: Id) -> bool {
-    id.as_bytes().get(6).is_some_and(|byte| byte >> 4 == 4)
+    id.as_bytes()
+        .get(6)
+        .is_some_and(|byte| matches!(byte >> 4, 4 | 7))
         && id.as_bytes().get(8).is_some_and(|byte| byte & 0xc0 == 0x80)
 }
 
@@ -336,5 +338,18 @@ impl MetadataState {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_operations_accept_v7_but_reject_derived_control_ids() {
+        assert!(is_random_operation_id(Id::new_v7().unwrap()));
+        assert!(is_random_operation_id(Id::random().unwrap()));
+        let control = derived_id(blake3::hash(b"ownership-control-identity")).unwrap();
+        assert!(!is_random_operation_id(control));
     }
 }

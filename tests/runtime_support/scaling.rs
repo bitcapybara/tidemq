@@ -67,7 +67,7 @@ mod tests {
 
     fn plan() -> MembershipPlan {
         MembershipPlan::new(
-            Id::random().unwrap(),
+            Id::new_v7().unwrap(),
             &DataGroup {
                 group_id: 2,
                 generation: 1,

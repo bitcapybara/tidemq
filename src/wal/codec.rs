@@ -201,7 +201,7 @@ pub(crate) async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     })?;
     let temporary = parent.join(format!(
         ".replace-{}",
-        uuid::Uuid::from(tidemq_protocol::Id::random().map_err(|e| {
+        uuid::Uuid::from(tidemq_protocol::Id::new_v7().map_err(|e| {
             Error::Writer {
                 reason: e.to_string(),
             }

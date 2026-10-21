@@ -57,7 +57,7 @@ fn plan_range(object_id: Id, replaces: Vec<Id>, generation: u64, offset: u64) ->
             cluster_id: cluster,
             partition,
             group_id: 9,
-            operation_id: Id::random().unwrap(),
+            operation_id: Id::new_v7().unwrap(),
             epoch: 1,
             owner_node: 1,
             expected_route_generation: 0,
@@ -70,7 +70,7 @@ fn plan_range(object_id: Id, replaces: Vec<Id>, generation: u64, offset: u64) ->
 
 #[test]
 fn canceled_unseen_intent_cannot_be_authorized_after_snapshot_roundtrip() {
-    let plan = plan(Id::random().unwrap(), vec![], 0);
+    let plan = plan(Id::new_v7().unwrap(), vec![], 0);
     let id = plan.descriptor.identity.object_id;
     let mut catalog = Catalog::default();
     let mut data = DataState::default();
@@ -107,7 +107,7 @@ fn canceled_unseen_intent_cannot_be_authorized_after_snapshot_roundtrip() {
     );
     assert_eq!(
         catalog.apply(CatalogCommand::Pin(PinRecord {
-            id: Id::random().unwrap(),
+            id: Id::new_v7().unwrap(),
             group_id: 9,
             objects: vec![id],
             ttl_millis: 50
@@ -120,7 +120,7 @@ fn canceled_unseen_intent_cannot_be_authorized_after_snapshot_roundtrip() {
 
 #[test]
 fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
-    let object = plan(Id::random().unwrap(), vec![], 0);
+    let object = plan(Id::new_v7().unwrap(), vec![], 0);
     let object_id = object.descriptor.identity.object_id;
     let mut catalog = Catalog::default();
     catalog.apply(CatalogCommand::Register(object)).unwrap();
@@ -133,7 +133,7 @@ fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
     let mut pins = Vec::new();
     for _ in 0..3 {
         let pin = PinRecord {
-            id: Id::random().unwrap(),
+            id: Id::new_v7().unwrap(),
             group_id: 9,
             objects: vec![object_id],
             ttl_millis: 10,
@@ -158,7 +158,7 @@ fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
     assert_eq!(catalog.capacity_usage_for(9).read_pins, 3);
     assert_eq!(catalog.pins_page(9, None, 65), Err(Rejection::Capacity));
     let mut wrong = pins.first().unwrap().clone();
-    wrong.id = Id::random().unwrap();
+    wrong.id = Id::new_v7().unwrap();
     wrong.group_id = 10;
     assert_eq!(
         catalog.apply(CatalogCommand::Pin(wrong)),
@@ -177,7 +177,7 @@ fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
 
 #[test]
 fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
-    let original = plan(Id::random().unwrap(), vec![], 0);
+    let original = plan(Id::new_v7().unwrap(), vec![], 0);
     let old_id = original.descriptor.identity.object_id;
     let partition = *original.expected_generations.keys().next().unwrap();
     let mut catalog = Catalog::default();
@@ -199,13 +199,13 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
     })
     .unwrap();
     let pin = PinRecord {
-        id: Id::random().unwrap(),
+        id: Id::new_v7().unwrap(),
         group_id: 9,
         objects: vec![old_id],
         ttl_millis: 1_000,
     };
     catalog.apply(CatalogCommand::Pin(pin.clone())).unwrap();
-    let replacement = plan(Id::random().unwrap(), vec![old_id], 1);
+    let replacement = plan(Id::new_v7().unwrap(), vec![old_id], 1);
     let new_id = replacement.descriptor.identity.object_id;
     catalog
         .apply(CatalogCommand::Register(replacement.clone()))
@@ -247,7 +247,7 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
         .unwrap();
     assert_eq!(
         catalog.apply(CatalogCommand::Pin(PinRecord {
-            id: Id::random().unwrap(),
+            id: Id::new_v7().unwrap(),
             group_id: 9,
             objects: vec![old_id],
             ttl_millis: 50
@@ -262,12 +262,12 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
 #[test]
 fn local_reclaim_preserves_logical_floor_original_results_and_append_admission_atomicity() {
     let mut producer =
-        ProducerState::new(Id::random().unwrap(), 0, ProducerLimits::default()).unwrap();
+        ProducerState::new(Id::new_v7().unwrap(), 0, ProducerLimits::default()).unwrap();
     let session = producer
         .register(
             1,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )
@@ -318,7 +318,7 @@ fn local_reclaim_preserves_logical_floor_original_results_and_append_admission_a
 
 #[test]
 fn retained_floor_retires_refs_without_skipping_the_next_data_publication_sequence() {
-    let first = plan(Id::random().unwrap(), vec![], 0);
+    let first = plan(Id::new_v7().unwrap(), vec![], 0);
     let id = first.descriptor.identity.object_id;
     let partition = *first.expected_generations.keys().next().unwrap();
     let mut catalog = Catalog::default();
@@ -365,7 +365,7 @@ fn retained_floor_retires_refs_without_skipping_the_next_data_publication_sequen
         catalog.capacity_usage().reclaim_lag_upper_bytes,
         first.descriptor.total_bytes
     );
-    let second = plan_range(Id::random().unwrap(), vec![], 2, 1);
+    let second = plan_range(Id::new_v7().unwrap(), vec![], 2, 1);
     let second_id = second.descriptor.identity.object_id;
     catalog
         .apply(CatalogCommand::Register(second.clone()))
@@ -421,12 +421,12 @@ fn retained_floor_retires_refs_without_skipping_the_next_data_publication_sequen
 #[test]
 fn archive_reader_can_finish_publishing_logically_expired_hot_data() {
     let mut producer =
-        ProducerState::new(Id::random().unwrap(), 0, ProducerLimits::default()).unwrap();
+        ProducerState::new(Id::new_v7().unwrap(), 0, ProducerLimits::default()).unwrap();
     let session = producer
         .register(
             1,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )
@@ -527,7 +527,7 @@ fn shared_plan(id: Id, ranges: &[(u32, u64, u64)], replaces: Vec<Id>) -> Plan {
 
 #[test]
 fn shared_compaction_requires_all_live_ranges_and_keeps_registered_sources_durable() {
-    let source = shared_plan(Id::random().unwrap(), &[(0, 0, 3), (1, 0, 3)], vec![]);
+    let source = shared_plan(Id::new_v7().unwrap(), &[(0, 0, 3), (1, 0, 3)], vec![]);
     let old_id = source.descriptor.identity.object_id;
     let first = key(source.descriptor.partitions.first().unwrap());
     let second = key(source.descriptor.partitions.get(1).unwrap());
@@ -548,7 +548,7 @@ fn shared_compaction_requires_all_live_ranges_and_keeps_registered_sources_durab
         generations: BTreeMap::from([(first, 1), (second, 1)]),
     })
     .unwrap();
-    let bad = shared_plan(Id::random().unwrap(), &[(0, 1, 3)], vec![old_id]);
+    let bad = shared_plan(Id::new_v7().unwrap(), &[(0, 1, 3)], vec![old_id]);
     assert_eq!(
         catalog.apply(CatalogCommand::Register(bad.clone())),
         Err(Rejection::InvalidRange)
@@ -592,7 +592,7 @@ fn shared_compaction_requires_all_live_ranges_and_keeps_registered_sources_durab
         selected.get(1).unwrap().offsets,
         OffsetRange::new(0, 3).unwrap()
     );
-    let missing_live = shared_plan(Id::random().unwrap(), &[(0, 1, 3)], vec![old_id]);
+    let missing_live = shared_plan(Id::new_v7().unwrap(), &[(0, 1, 3)], vec![old_id]);
     assert_eq!(
         catalog.apply(CatalogCommand::Register(missing_live.clone())),
         Err(Rejection::InvalidRange)
@@ -601,7 +601,7 @@ fn shared_compaction_requires_all_live_ranges_and_keeps_registered_sources_durab
         data.apply(DataCommand::Authorize(missing_live)),
         Err(Rejection::InvalidRange)
     );
-    let replacement = shared_plan(Id::random().unwrap(), &[(0, 1, 3), (1, 0, 3)], vec![old_id]);
+    let replacement = shared_plan(Id::new_v7().unwrap(), &[(0, 1, 3), (1, 0, 3)], vec![old_id]);
     let new_id = replacement.descriptor.identity.object_id;
     catalog
         .apply(CatalogCommand::Register(replacement.clone()))
@@ -611,7 +611,7 @@ fn shared_compaction_requires_all_live_ranges_and_keeps_registered_sources_durab
         Some(new_id)
     );
     assert!(catalog.compaction_ranges(old_id).unwrap().is_none());
-    let other = shared_plan(Id::random().unwrap(), &[(0, 1, 3), (1, 0, 3)], vec![old_id]);
+    let other = shared_plan(Id::new_v7().unwrap(), &[(0, 1, 3), (1, 0, 3)], vec![old_id]);
     assert_eq!(
         catalog.apply(CatalogCommand::Register(other)),
         Err(Rejection::References)

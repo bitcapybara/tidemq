@@ -153,11 +153,11 @@ impl Fixture {
     }
     pub async fn with_partitions(partitions: usize) -> Self {
         let directory =
-            std::env::temp_dir().join(format!("tidemq-lifecycle-{}", Id::random().unwrap()));
+            std::env::temp_dir().join(format!("tidemq-lifecycle-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir(&directory).await.unwrap();
-        let cluster = Id::random().unwrap();
+        let cluster = Id::new_v7().unwrap();
         let partition = PartitionKey {
-            topic_id: Id::random().unwrap(),
+            topic_id: Id::new_v7().unwrap(),
             partition: 0,
         };
         let metadata = Node::open(&directory.join("meta"), cluster, 77, true).await;
@@ -184,7 +184,7 @@ impl Fixture {
     async fn bootstrap(&self, partitions: usize) {
         assert!(
             self.meta_write(Command::bootstrap(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 self.cluster,
                 77,
                 DeploymentMode::LocalRf1,
@@ -195,7 +195,7 @@ impl Fixture {
         );
         assert!(
             self.meta_write(Command::put_node(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 self.revision().await,
                 NodeSpec {
                     node_id: 1,
@@ -215,7 +215,7 @@ impl Fixture {
         );
         assert!(
             self.meta_write(Command::create_group(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 self.revision().await,
                 9,
                 BTreeSet::from([1])
@@ -225,7 +225,7 @@ impl Fixture {
         );
         assert!(
             self.meta_write(Command::create_topic(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 self.revision().await,
                 self.partition.topic_id,
                 "events".into(),
@@ -383,7 +383,7 @@ impl Fixture {
         self.produce_partition(self.partition, count).await
     }
     pub async fn produce_partition(&self, partition: PartitionKey, count: u64) -> AppendBatch {
-        let producer_id = Id::random().unwrap();
+        let producer_id = Id::new_v7().unwrap();
         let epoch = self
             .data
             .state

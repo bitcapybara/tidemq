@@ -294,7 +294,7 @@ mod tests {
         use tidemq_protocol::common::{ErrorCode, ErrorReply, TrafficClass};
         use tidemq_protocol::framing::{decode_payload, new_frame};
 
-        let identity = tidemq_protocol::Id::random().unwrap();
+        let identity = tidemq_protocol::Id::new_v7().unwrap();
         let path = std::env::temp_dir()
             .join(format!("tidemq-runtime-source-{identity}"))
             .join("metadata.wal");

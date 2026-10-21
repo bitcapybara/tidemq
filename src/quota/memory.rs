@@ -330,7 +330,7 @@ mod tests {
     fn visible_ancestor_pressure_includes_siblings_and_never_becomes_a_leaf_only_limit() {
         let root = std::env::temp_dir().join(format!(
             "tidemq-cgroup-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         let parent = root.join("parent");
         let leaf = parent.join("service");

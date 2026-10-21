@@ -13,7 +13,7 @@ pub struct Directory(PathBuf);
 impl Directory {
     pub async fn new() -> Self {
         let path =
-            std::env::temp_dir().join(format!("tidemq-replication-{}", Id::random().unwrap()));
+            std::env::temp_dir().join(format!("tidemq-replication-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir(&path).await.unwrap();
         Self(path)
     }

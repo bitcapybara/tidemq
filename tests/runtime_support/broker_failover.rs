@@ -105,7 +105,7 @@ impl<'a> Observer<'a> {
                         node_id: Some(target),
                     },
                     &ClientCredentials::Internal {
-                        session_id: Id::random().unwrap(),
+                        session_id: Id::new_v7().unwrap(),
                         cluster_id: cluster,
                         node_id: self.node,
                         role: config.role.name().into(),
@@ -121,11 +121,11 @@ impl<'a> Observer<'a> {
             self.rpcs.insert(target, rpc);
         }
         let limits = ProtocolLimits::default();
-        let operation = Id::random().unwrap();
+        let operation = Id::new_v7().unwrap();
         let frame = new_frame(
             FrameKind::InternalCommand,
             TrafficClass::Control,
-            Id::random().unwrap(),
+            Id::new_v7().unwrap(),
             operation,
             &InternalCommand {
                 group_id: group,
@@ -232,12 +232,12 @@ async fn assert_old_broker_fenced(fixture: &Fixture, partition: PartitionKey, ep
     let inner = new_frame(
         FrameKind::OpenProducer,
         TrafficClass::Control,
-        Id::random().unwrap(),
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
+        Id::new_v7().unwrap(),
         &public::OpenProducer {
             topic_id: Bytes::copy_from_slice(partition.topic_id.as_bytes()),
             partition_id: partition.partition,
-            producer_id: Bytes::copy_from_slice(Id::random().unwrap().as_bytes()),
+            producer_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
             expected_registration_epoch: 0,
             owner_epoch: epoch,
         },
@@ -300,7 +300,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     assert_eq!(durable_produce(&producer, b"before-broker-crash").await, 0);

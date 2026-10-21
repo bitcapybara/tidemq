@@ -182,7 +182,7 @@ impl MetadataBackend for LocalMetadata {
             for _ in 0..3 {
                 let started = Instant::now();
                 let revision = self.read(0, Query::Health, deadline).await?.revision;
-                let operation_id = Id::random().map_err(|_| Error::Configuration)?;
+                let operation_id = Id::new_v7().map_err(|source| Error::Identity { source })?;
                 self.state
                     .try_with_application(|state| {
                         MetadataOperation {

@@ -27,7 +27,7 @@ pub(super) async fn commit_first_ack(
         })
         .await;
     lease.check(&fence, Work::ControlMutation).unwrap();
-    let subscription_id = Id::random().unwrap();
+    let subscription_id = Id::new_v7().unwrap();
     let command = |command| DataCommand::Subscription {
         partition: grant.partition,
         writer: writer(grant),
@@ -37,7 +37,7 @@ pub(super) async fn commit_first_ack(
         cluster
             .write(command(subscription::Command::Create {
                 subscription_id,
-                operation_id: Id::random().unwrap(),
+                operation_id: Id::new_v7().unwrap(),
                 start_offset: 0,
                 signing_key: SigningKey::try_from([7; 32]).unwrap(),
             }))
@@ -51,7 +51,7 @@ pub(super) async fn commit_first_ack(
                 cursor: 1,
                 assignment: 0,
             },
-            session_id: Id::random().unwrap(),
+            session_id: Id::new_v7().unwrap(),
             replace_session_id: None,
             cold_before: 0,
         }))
@@ -66,7 +66,7 @@ pub(super) async fn commit_first_ack(
             subscription_id,
             generations: assignment.generations,
             session_id: assignment.session_id,
-            operation_id: Id::random().unwrap(),
+            operation_id: Id::new_v7().unwrap(),
             offset: 0,
             expected_attempt: 0,
             body_bytes: logical_bytes,

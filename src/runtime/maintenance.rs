@@ -350,12 +350,13 @@ impl Service {
                 }
                 continue;
             }
-            if coordinator
-                .reconcile(id, deadline.into_std())
-                .await
-                .is_err()
-            {
+            if let Err(source) = coordinator.reconcile(id, deadline.into_std()).await {
                 progress.blocked = true;
+                if coordinator.metrics().may_warn() {
+                    let err = anyhow::Error::new(source);
+                    tracing::warn!(event = "object_reconcile_blocked", object_id = %id,
+                        error = %format_args!("{err:#}"), "Object lifecycle reconciliation failed");
+                }
             }
         }
         progress.objects = page.next_after;
@@ -613,13 +614,13 @@ mod tests {
 
     fn producer(partition: u32, count: usize, message_bytes: usize) -> ProducerState {
         let mut state =
-            ProducerState::new(Id::random().unwrap(), partition, ProducerLimits::default())
+            ProducerState::new(Id::new_v7().unwrap(), partition, ProducerLimits::default())
                 .unwrap();
         let session = state
             .register(
                 1,
                 RegisterProducer {
-                    producer_id: Id::random().unwrap(),
+                    producer_id: Id::new_v7().unwrap(),
                     expected_registration_epoch: 1,
                 },
             )

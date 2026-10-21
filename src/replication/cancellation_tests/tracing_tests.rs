@@ -62,9 +62,9 @@ impl tracing::field::Visit for DurableEvent {
 async fn request_span_survives_caller_cancellation_and_reaches_wal_durability() {
     let path = std::env::temp_dir().join(format!(
         "tidemq-owned-tracing-{}",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
-    let identity = StorageIdentity::new::<Ledger>(tidemq_protocol::Id::random().unwrap(), 1, 1);
+    let identity = StorageIdentity::new::<Ledger>(tidemq_protocol::Id::new_v7().unwrap(), 1, 1);
     let storage = DiskStore::<Ledger>::open(&path, identity, StorageOptions::default(), None)
         .await
         .unwrap();

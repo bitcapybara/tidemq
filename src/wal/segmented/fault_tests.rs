@@ -238,7 +238,7 @@ async fn kill_at_boundary(path: &Path, phase: &str, scenario: &str) {
 async fn sigkill_at_each_publication_boundary_recovers_one_complete_authority() {
     let directory = std::env::temp_dir().join(format!(
         "tidemq-segment-boundaries-{}",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
     tokio::fs::create_dir(&directory).await.unwrap();
     let phases = [
@@ -302,7 +302,7 @@ async fn directory_contents(directory: &Path) -> std::collections::BTreeMap<Path
 async fn sigkill_during_initialization_never_reinterprets_unpublished_segments() {
     let directory = std::env::temp_dir().join(format!(
         "tidemq-segment-initialization-{}",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
     tokio::fs::create_dir(&directory).await.unwrap();
     for phase in [
@@ -347,7 +347,7 @@ async fn sigkill_during_initialization_never_reinterprets_unpublished_segments()
 async fn real_file_size_limit_never_acknowledges_the_failed_or_subsequent_write() {
     let directory = std::env::temp_dir().join(format!(
         "tidemq-segment-file-size-{}",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
     tokio::fs::create_dir(&directory).await.unwrap();
     let path = directory.join("journal");
@@ -371,7 +371,7 @@ async fn real_file_size_limit_never_acknowledges_the_failed_or_subsequent_write(
 async fn sigkill_during_bounded_relocation_keeps_acknowledged_payloads_and_checkpoint_authority() {
     let directory = std::env::temp_dir().join(format!(
         "tidemq-segment-relocation-{}",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
     tokio::fs::create_dir(&directory).await.unwrap();
     for phase in [

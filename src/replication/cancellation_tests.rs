@@ -84,12 +84,12 @@ fn entry(index: u64) -> LogEntry<Ledger> {
 async fn cancelling_callers_after_enqueue_and_publication_keeps_memory_and_disk_consistent() {
     let directory = std::env::temp_dir().join(format!(
         "tidemq-storage-cancellation-{}",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
     tokio::fs::create_dir(&directory).await.unwrap();
     for operation in ["truncate_queued", "purge_published", "snapshot_published"] {
         let path = directory.join(operation);
-        let identity = StorageIdentity::new::<Ledger>(tidemq_protocol::Id::random().unwrap(), 1, 1);
+        let identity = StorageIdentity::new::<Ledger>(tidemq_protocol::Id::new_v7().unwrap(), 1, 1);
         let mut storage =
             DiskStore::<Ledger>::open(&path, identity.clone(), StorageOptions::default(), None)
                 .await

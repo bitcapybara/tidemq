@@ -25,6 +25,22 @@ pub enum FenceRejection {
     InvalidRecovery,
 }
 
+impl std::fmt::Display for FenceRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidIdentity => {
+                "Fence identity does not match this cluster, group, or partition"
+            }
+            Self::Capacity => "Fence partition capacity is exhausted",
+            Self::StaleEpoch => "Fence epoch is older than the committed epoch",
+            Self::EpochConflict => "Fence epoch is already bound to a different ownership grant",
+            Self::CounterExhausted => "Fence generation cannot advance without overflow",
+            Self::RecoveryRequired => "Ownership recovery must complete before writes are admitted",
+            Self::InvalidRecovery => "Recovery evidence does not match the committed fence",
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum FenceResponse {
     Installed(FenceRecord),

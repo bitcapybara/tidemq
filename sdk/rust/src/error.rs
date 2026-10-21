@@ -15,33 +15,44 @@ pub enum Error {
     Rpc {
         source: tidemq_transport::rpc::Error,
     },
-    #[snafu(display("Endpoint resolution failed"))]
-    Resolve { source: std::io::Error },
+    #[snafu(display("Endpoint resolution failed for {endpoint}"))]
+    Resolve {
+        endpoint: String,
+        source: std::io::Error,
+    },
     #[snafu(display("Client deadline exceeded"))]
     Deadline,
     #[snafu(display("Client request cancelled"))]
     Cancelled,
     #[snafu(display("Request interrupted after submission; its outcome is unknown"))]
     RequestUnknown { source: Box<Error> },
-    #[snafu(display("Client admission budget exhausted"))]
-    Admission,
-    #[snafu(display("Server rejected the operation: {code:?}; outcome: {outcome:?}"))]
+    #[snafu(display("Client admission failed for {resource}"))]
+    Admission { resource: &'static str },
+    #[snafu(display("Invalid client transport memory budget"))]
+    Memory {
+        source: tidemq_transport::budget::Error,
+    },
+    #[snafu(display(
+        "Server returned {}: {message}; outcome: {}; retryable: {retryable}",
+        code.as_str_name(), outcome.as_str_name()
+    ))]
     Remote {
         code: ErrorCode,
+        message: String,
         outcome: Outcome,
         retryable: bool,
         expected_sequence: Option<u64>,
         expected_registration_epoch: Option<u64>,
         retry_after_ms: Option<u64>,
     },
-    #[snafu(display("The server response does not match the current operation"))]
-    ResponseMismatch,
+    #[snafu(display("Invalid server response: {reason}"))]
+    ResponseMismatch { reason: String },
     #[snafu(display("Producer has unresolved batches; retry their original identities first"))]
     ProducerBlocked,
     #[snafu(display("Producer session has expired; unresolved outcomes cannot be recreated"))]
     SessionExpired,
     #[snafu(display(
-        "Producer registration result is unknown for {producer_id:?} at epoch {registration_epoch}"
+        "Producer registration result is unknown for {producer_id} at epoch {registration_epoch}"
     ))]
     RegistrationUnknown {
         producer_id: tidemq_protocol::Id,

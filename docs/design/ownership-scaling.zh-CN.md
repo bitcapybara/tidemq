@@ -18,7 +18,7 @@ zone 是受权配置中的放置声明。同机标记三个 zone 的测试不能
 
 普通 CRUD 账本保存规范序列化命令的 BLAKE3 摘要和原 Response。相同操作、相同内容返回原结果；变更内容或预期 revision 后重用操作 ID 会冲突。已记录的 CRUD 拒绝也返回原拒绝，调用者修改前置条件时应生成新操作。未通过形状/长度校验的输入不进入账本。
 
-接管有独立于 CRUD 的固定容量：每个已有分区只保存当前接管的 Grant/Fence/Recovery/Activate 四个决策槽，更高 epoch 安全替换旧槽，永久保留 epoch 高水位。接管操作 ID 规范派生自 cluster/分区/目标 epoch/owner/预期路由；阶段 ID 绑定 grant 和 stage，调用者不能把旧身份改为新 epoch 再执行。CRUD 使用 UUID v4 操作身份，内部规范派生身份使用 UUID v8，避免退休控制身份被拿去当普通 CRUD 重建。原结果窗口外，`lookup_operation` 明确返回 `UnknownOrRetired`。
+接管有独立于 CRUD 的固定容量：每个已有分区只保存当前接管的 Grant/Fence/Recovery/Activate 四个决策槽，更高 epoch 安全替换旧槽，永久保留 epoch 高水位。接管操作 ID 规范派生自 cluster/分区/目标 epoch/owner/预期路由；阶段 ID 绑定 grant 和 stage，调用者不能把旧身份改为新 epoch 再执行。CRUD 默认使用 UUID v7 操作身份，显式随机 UUID v4 仍可作为普通操作身份；内部规范派生身份使用 UUID v8，避免退休控制身份被拿去当普通 CRUD 重建。原结果窗口外，`lookup_operation` 明确返回 `UnknownOrRetired`。
 
 接管成功后的原结果可用刷新后的尝试 revision 和更高读取屏障幂等查询。逻辑摘要绑定冻结 grant/fence/checkpoint，不包含会前移的 `CommitPosition` 或尝试 `expected_revision`；新的证据仍需合法提交位置且不能早于原屏障。未满足前置条件的接管尝试不占决策槽，允许以同一逻辑身份刷新 revision 重试。CRUD 满表不会消耗现有分区的接管容量。
 

@@ -174,7 +174,7 @@ mod tests {
     async fn private_atomic_outputs_reject_reuse_and_oversized_or_symlink_markers() {
         let path = std::env::temp_dir().join(format!(
             "tidemq-deploy-output-{}",
-            tidemq_sdk::Id::random().unwrap()
+            tidemq_sdk::Id::new_v7().unwrap()
         ));
         let output = Output::create(&path).await.unwrap();
         assert!(Output::create(&path).await.is_err());

@@ -287,9 +287,10 @@ fn error_kind(error: &Error) -> &'static str {
         Error::Deadline => "deadline",
         Error::Cancelled => "cancelled",
         Error::RequestUnknown { .. } => "request_unknown",
-        Error::Admission => "admission",
+        Error::Admission { .. } => "admission",
+        Error::Memory { .. } => "memory_configuration",
         Error::Remote { .. } => "remote",
-        Error::ResponseMismatch => "response_mismatch",
+        Error::ResponseMismatch { .. } => "response_mismatch",
         Error::ProducerBlocked => "producer_blocked",
         Error::SessionExpired => "session_expired",
         Error::RegistrationUnknown { .. } => "registration_unknown",
@@ -321,6 +322,7 @@ mod tests {
     fn rejected(code: ErrorCode, retryable: bool) -> Error {
         Error::Remote {
             code,
+            message: "test service rejection".into(),
             outcome: Outcome::Rejected,
             retryable,
             expected_sequence: None,
@@ -335,7 +337,9 @@ mod tests {
         assert!(retry_allowed(&rejected(ErrorCode::Fenced, true)));
         assert!(!retry_allowed(&rejected(ErrorCode::Unavailable, false)));
         assert!(!retry_allowed(&Error::SessionExpired));
-        assert!(!retry_allowed(&Error::ResponseMismatch));
+        assert!(!retry_allowed(&Error::ResponseMismatch {
+            reason: "test response binding differs".into()
+        }));
         assert!(!retry_allowed(&Error::Deadline));
         let unknown = Error::ProduceUnknown {
             source: Box::new(Error::Closed),

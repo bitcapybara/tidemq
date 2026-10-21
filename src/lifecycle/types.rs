@@ -57,6 +57,29 @@ pub enum Rejection {
     InvalidSnapshot,
 }
 
+impl std::fmt::Display for Rejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Identity => "Object identity does not match the registered descriptor",
+            Self::Capacity => "Object lifecycle item or byte capacity is exhausted",
+            Self::Conflict => "Lifecycle operation conflicts with the committed object state",
+            Self::NotFound => "Object or lifecycle intent does not exist",
+            Self::InvalidRange => "Object offsets do not match the authorized partition range",
+            Self::StaleGeneration => "Object or partition generation changed",
+            Self::CancelRequested => "Object cancellation was requested; publication is blocked",
+            Self::Aborted => "Object operation was durably aborted",
+            Self::AlreadyPublished => "Object has already been published",
+            Self::NotPublished => "Object must be published before this transition",
+            Self::References => "Published manifest references still protect the object",
+            Self::Pinned => "Active read pins still protect the object",
+            Self::RecoveryDependency => "Recovery dependencies still protect the object",
+            Self::CheckpointRequired => "A durable replacement checkpoint is required",
+            Self::Membership => "Replica membership does not match the lifecycle authority",
+            Self::InvalidSnapshot => "Lifecycle snapshot violates its state invariants",
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectPhase {

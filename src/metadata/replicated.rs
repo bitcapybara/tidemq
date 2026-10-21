@@ -13,8 +13,7 @@ impl Application for MetadataState {
     }
 
     fn validate(&self) -> std::io::Result<()> {
-        self.validate_snapshot().map_err(|reason| {
-            std::io::Error::other(format!("Invalid metadata snapshot: {reason:?}"))
-        })
+        self.validate_snapshot()
+            .map_err(|reason| std::io::Error::other(format!("Invalid metadata snapshot: {reason}")))
     }
 }

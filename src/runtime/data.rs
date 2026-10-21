@@ -1456,13 +1456,33 @@ pub(crate) fn data_rejection(reason: DataRejection) -> Error {
     match reason {
         DataRejection::Producer(reason) => producer_error(reason),
         DataRejection::Subscription(reason) => subscription_error(reason),
-        DataRejection::Retention(_) | DataRejection::Lifecycle(_) => Error::unavailable(),
-        DataRejection::Fence(_) => Error::reject(ErrorCode::Fenced, Outcome::Rejected, true),
-        DataRejection::PartitionMissing | DataRejection::Uninitialized => Error::unavailable(),
-        DataRejection::PartitionCapacity => {
-            Error::reject(ErrorCode::QuotaExceeded, Outcome::Rejected, true)
+        reason @ (DataRejection::Retention(_) | DataRejection::Lifecycle(_)) => Error::reject_with(
+            ErrorCode::Unavailable,
+            Outcome::Rejected,
+            true,
+            reason.to_string(),
+        ),
+        reason @ DataRejection::Fence(_) => Error::reject_with(
+            ErrorCode::Fenced,
+            Outcome::Rejected,
+            true,
+            reason.to_string(),
+        ),
+        reason @ (DataRejection::PartitionMissing | DataRejection::Uninitialized) => {
+            Error::reject_with(
+                ErrorCode::Unavailable,
+                Outcome::Rejected,
+                true,
+                reason.to_string(),
+            )
         }
-        _ => Error::invalid("Data group configuration does not match this service"),
+        reason @ DataRejection::PartitionCapacity => Error::reject_with(
+            ErrorCode::QuotaExceeded,
+            Outcome::Rejected,
+            true,
+            reason.to_string(),
+        ),
+        reason => Error::invalid(reason.to_string()),
     }
 }
 fn broker_error(error: broker::Error) -> Error {
@@ -1501,7 +1521,12 @@ fn producer_error(reason: crate::producer::Rejection) -> Error {
         R::SequenceConflict | R::SessionConflict | R::DigestMismatch => ErrorCode::ContentConflict,
         _ => ErrorCode::InvalidRequest,
     };
-    let mut error = Error::reject(code, Outcome::Rejected, code == ErrorCode::QuotaExceeded);
+    let mut error = Error::reject_with(
+        code,
+        Outcome::Rejected,
+        code == ErrorCode::QuotaExceeded,
+        reason.to_string(),
+    );
     if let Error::Rejected { failure } = &mut error {
         match reason {
             R::SequenceGap { expected } => failure.expected_sequence = Some(expected),
@@ -1515,7 +1540,7 @@ fn producer_error(reason: crate::producer::Rejection) -> Error {
 }
 fn subscription_error(reason: subscription::Rejection) -> Error {
     use subscription::Rejection as R;
-    let code = match reason {
+    let code = match &reason {
         R::NotFound | R::Deleted => ErrorCode::NotFound,
         R::AssignmentBusy => ErrorCode::AssignmentBusy,
         R::StaleGeneration | R::SessionMismatch => ErrorCode::StaleGeneration,
@@ -1530,7 +1555,12 @@ fn subscription_error(reason: subscription::Rejection) -> Error {
         | R::CutoverPending => ErrorCode::QuotaExceeded,
         _ => ErrorCode::InvalidRequest,
     };
-    Error::reject(code, Outcome::Rejected, code == ErrorCode::QuotaExceeded)
+    Error::reject_with(
+        code,
+        Outcome::Rejected,
+        code == ErrorCode::QuotaExceeded,
+        reason.to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -1538,7 +1568,7 @@ mod broker_error_tests {
     use super::*;
 
     #[test]
-    fn unknown_broker_error_frames_keep_the_original_wire_fields() {
+    fn unknown_broker_errors_preserve_wire_semantics_and_identify_the_failed_stage() {
         let request = Frame {
             protocol_version: 1,
             request_id: Bytes::from_static(b"1111111111111111"),
@@ -1552,21 +1582,27 @@ mod broker_error_tests {
         let request_id = wire::id(&request.request_id).unwrap();
         let limits = ProtocolLimits::default();
         let previous = wire::error_response(&request, &Error::unknown(), &limits).unwrap();
-        for error in [
-            broker::Error::Unknown {
-                operation_id,
-                request_id,
-            },
-            broker::Error::Commit {
-                operation_id,
-                request_id,
-                source: Box::new(openraft::error::RaftError::Fatal(
-                    openraft::error::Fatal::Stopped,
-                )),
-            },
+        for (error, stage) in [
+            (
+                broker::Error::Unknown {
+                    operation_id,
+                    request_id,
+                },
+                "observe broker post-handoff result",
+            ),
+            (
+                broker::Error::Commit {
+                    operation_id,
+                    request_id,
+                    source: Box::new(openraft::error::RaftError::Fatal(
+                        openraft::error::Fatal::Stopped,
+                    )),
+                },
+                "commit authoritative broker operation",
+            ),
         ] {
             let current = wire::error_response(&request, &broker_error(error), &limits).unwrap();
-            assert_eq!(current, previous);
+            wire::assert_unknown_response_contract(&current, &previous, &limits, stage);
         }
     }
 }

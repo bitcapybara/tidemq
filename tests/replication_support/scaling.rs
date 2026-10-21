@@ -14,7 +14,7 @@ pub async fn metadata(cluster: Id) -> Cluster<MetadataState> {
         assert!(raft.client_write(command).await.unwrap().data.is_applied());
     };
     write(metadata::Command::bootstrap(
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         cluster,
         77,
         DeploymentMode::ThreeReplica,
@@ -35,7 +35,7 @@ pub async fn metadata(cluster: Id) -> Cluster<MetadataState> {
             schedulable: true,
         };
         write(metadata::Command::put_node(
-            Id::random().unwrap(),
+            Id::new_v7().unwrap(),
             revision,
             spec,
             0,
@@ -44,7 +44,7 @@ pub async fn metadata(cluster: Id) -> Cluster<MetadataState> {
     }
     let revision = meta.node(1).state.application().await.revision();
     write(metadata::Command::create_group(
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         revision,
         GROUP,
         BTreeSet::from([1, 2, 3]),

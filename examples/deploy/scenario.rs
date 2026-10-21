@@ -324,7 +324,7 @@ impl<'a> Queue<'a> {
 }
 
 async fn open(client: &Client, topic: Id, deadline: Instant) -> Result<Producer> {
-    let identity = Id::random()?;
+    let identity = Id::new_v7()?;
     match tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
         .scope(Producer::open(client.clone(), topic, 0, identity))
         .await

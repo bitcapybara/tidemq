@@ -134,89 +134,177 @@ impl RuntimeConfig {
                 "Archive interval must be between 100 and 60000 milliseconds",
             ));
         }
-        if let Some(objects) = &self.objects {
-            if config.memory.total_bytes < 201_326_592
-                || config.memory.control_reserved_bytes < 33_554_432
-                || self.capacity.process_memory.high
-                    < u64::from(config.memory.total_bytes).saturating_add(67_108_864)
-            {
-                return Err(Error::invalid(
-                    "Object storage requires at least 192 MiB application budget, 32 MiB control reserve and 64 MiB RSS headroom",
-                ));
-            }
-            if objects.endpoint.len() > 2_048
-                || objects.endpoint.contains('@')
-                || objects.endpoint.chars().any(char::is_whitespace)
-            {
-                return Err(Error::invalid(
-                    "Object endpoint contains unsupported identity or whitespace",
-                ));
+        self.validate_objects(config)?;
+        self.validate_peers(config)?;
+        self.validate_voters(&self.metadata_voters, config.replication_factor, true)?;
+        self.validate_groups(config.replication_factor)?;
+        if !self.peers.iter().any(|peer| peer.role.serves_broker()) {
+            return Err(Error::invalid(
+                "runtime.peers must include at least one broker or combined role",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_objects(&self, config: &Config) -> Result<()> {
+        let Some(objects) = &self.objects else {
+            return Ok(());
+        };
+        for (valid, reason) in [
+            (
+                config.memory.total_bytes >= 201_326_592,
+                "memory.total_bytes must be at least 192 MiB when runtime.objects is configured",
+            ),
+            (
+                config.memory.control_reserved_bytes >= 33_554_432,
+                "memory.control_reserved_bytes must be at least 32 MiB when runtime.objects is configured",
+            ),
+            (
+                self.capacity.process_memory.high
+                    >= u64::from(config.memory.total_bytes).saturating_add(67_108_864),
+                "runtime.capacity.process_memory.high must reserve at least 64 MiB beyond memory.total_bytes when runtime.objects is configured",
+            ),
+            (
+                objects.endpoint.len() <= 2_048,
+                "runtime.objects.endpoint must not exceed 2048 bytes",
+            ),
+            (
+                !objects.endpoint.contains('@'),
+                "runtime.objects.endpoint must not contain user credentials",
+            ),
+            (
+                !objects.endpoint.chars().any(char::is_whitespace),
+                "runtime.objects.endpoint must not contain whitespace",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::invalid(reason));
             }
         }
-        if self.peers.is_empty()
-            || self.peers.len() > 32
-            || self.groups.is_empty()
-            || self.groups.len() > 16
-            || self.metadata_group == 0
-            || config.role.serves_gateway() && self.internal_listen == config.listen
-            || self.internal_listen == config.management_listen
-        {
-            return Err(Error::invalid(
-                "Runtime topology or listener bounds are invalid",
-            ));
+        Ok(())
+    }
+
+    fn validate_peers(&self, config: &Config) -> Result<()> {
+        for (valid, reason) in [
+            (
+                (1..=32).contains(&self.peers.len()),
+                "runtime.peers must contain between 1 and 32 nodes",
+            ),
+            (
+                (1..=16).contains(&self.groups.len()),
+                "runtime.groups must contain between 1 and 16 data groups",
+            ),
+            (
+                self.metadata_group != 0,
+                "runtime.metadata_group must be nonzero",
+            ),
+            (
+                !config.role.serves_gateway() || self.internal_listen != config.listen,
+                "runtime.internal_listen must differ from listen for a gateway role",
+            ),
+            (
+                self.internal_listen != config.management_listen,
+                "runtime.internal_listen must differ from management_listen",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::invalid(reason));
+            }
         }
         let mut ids = BTreeSet::new();
         for peer in &self.peers {
-            if peer.node_id == 0
-                || !ids.insert(peer.node_id)
-                || peer.internal_address.port() == 0
-                || peer.server_name.is_empty()
-                || peer.server_name.len() > 253
-                || peer.zone.is_empty()
-                || peer.zone.len() > 64
-            {
-                return Err(Error::invalid(
-                    "Runtime peer identity is invalid or duplicated",
-                ));
-            }
-        }
-        let local = self.peer(config.node_id)?;
-        if local.role != config.role || local.internal_address != self.internal_listen {
-            return Err(Error::invalid(
-                "Local topology identity differs from process identity",
-            ));
-        }
-        self.validate_voters(&self.metadata_voters, config.replication_factor, true)?;
-        let mut groups = BTreeSet::from([self.metadata_group]);
-        for group in &self.groups {
-            if group.group_id == 0 || !groups.insert(group.group_id) {
-                return Err(Error::invalid("Group identity is invalid or duplicated"));
-            }
-            self.validate_voters(&group.voters, config.replication_factor, false)?;
-            let mut hosted: BTreeSet<_> = group.voters.iter().copied().collect();
-            if group.standby.len() > 16 {
-                return Err(Error::invalid("Standby replicas exceed their finite bound"));
-            }
-            for standby in &group.standby {
-                if !hosted.insert(*standby) || !self.peer(*standby)?.role.stores_data() {
-                    return Err(Error::invalid(
-                        "Standby identity is duplicated or has an invalid role",
-                    ));
+            for (valid, reason) in [
+                (peer.node_id != 0, "node_id must be nonzero"),
+                (ids.insert(peer.node_id), "node_id is duplicated"),
+                (
+                    peer.internal_address.port() != 0,
+                    "internal_address port must be nonzero",
+                ),
+                (
+                    !peer.server_name.is_empty() && peer.server_name.len() <= 253,
+                    "server_name must contain between 1 and 253 bytes",
+                ),
+                (
+                    !peer.zone.is_empty() && peer.zone.len() <= 64,
+                    "zone must contain between 1 and 64 bytes",
+                ),
+            ] {
+                if !valid {
+                    return Err(Error::invalid(format!(
+                        "runtime.peers node {}: {reason}",
+                        peer.node_id
+                    )));
                 }
             }
         }
-        if !self.peers.iter().any(|peer| peer.role.serves_broker()) {
-            return Err(Error::invalid("At least one configured Broker is required"));
+        let local = self.peer(config.node_id)?;
+        if local.role != config.role {
+            return Err(Error::invalid(format!(
+                "runtime.peers node {} role must match process role {}",
+                config.node_id,
+                config.role.name()
+            )));
+        }
+        if local.internal_address != self.internal_listen {
+            return Err(Error::invalid(format!(
+                "runtime.peers node {} internal_address must match runtime.internal_listen {}",
+                config.node_id, self.internal_listen
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_groups(&self, replication_factor: u8) -> Result<()> {
+        let mut groups = BTreeSet::from([self.metadata_group]);
+        for group in &self.groups {
+            if group.group_id == 0 {
+                return Err(Error::invalid("runtime.groups.group_id must be nonzero"));
+            }
+            if !groups.insert(group.group_id) {
+                return Err(Error::invalid(format!(
+                    "runtime.groups.group_id {} is duplicated or equals runtime.metadata_group",
+                    group.group_id
+                )));
+            }
+            self.validate_voters(&group.voters, replication_factor, false)?;
+            let mut hosted: BTreeSet<_> = group.voters.iter().copied().collect();
+            if group.standby.len() > 16 {
+                return Err(Error::invalid(format!(
+                    "runtime.groups group {} standby must not exceed 16 nodes",
+                    group.group_id
+                )));
+            }
+            for standby in &group.standby {
+                if !hosted.insert(*standby) {
+                    return Err(Error::invalid(format!(
+                        "runtime.groups group {} standby node {standby} duplicates a voter or standby",
+                        group.group_id
+                    )));
+                }
+                if !self.peer(*standby)?.role.stores_data() {
+                    return Err(Error::invalid(format!(
+                        "runtime.groups group {} standby node {standby} must have a storage or combined role",
+                        group.group_id
+                    )));
+                }
+            }
         }
         Ok(())
     }
 
     fn validate_voters(&self, voters: &[u64], factor: u8, metadata: bool) -> Result<()> {
         let unique: BTreeSet<_> = voters.iter().copied().collect();
-        if voters.len() != usize::from(factor) || unique.len() != voters.len() {
-            return Err(Error::invalid(
-                "Voters must match the explicit replication factor",
-            ));
+        let group_kind = if metadata { "metadata" } else { "data" };
+        if voters.len() != usize::from(factor) {
+            return Err(Error::invalid(format!(
+                "{group_kind} voters must contain exactly {factor} nodes, received {}",
+                voters.len()
+            )));
+        }
+        if unique.len() != voters.len() {
+            return Err(Error::invalid(format!(
+                "{group_kind} voters must not contain duplicate node IDs"
+            )));
         }
         let mut zones = BTreeSet::new();
         for voter in voters {
@@ -226,9 +314,10 @@ impl RuntimeConfig {
             } else {
                 peer.role.stores_data()
             }) {
-                return Err(Error::invalid(
-                    "Voter role does not store the selected group",
-                ));
+                return Err(Error::invalid(format!(
+                    "{group_kind} voter node {voter} has role {}, which cannot store this group",
+                    peer.role.name()
+                )));
             }
             zones.insert(&peer.zone);
         }
@@ -244,12 +333,14 @@ impl RuntimeConfig {
         self.peers
             .iter()
             .find(|peer| peer.node_id == node)
-            .ok_or_else(|| Error::invalid("Node is absent from trusted topology"))
+            .ok_or_else(|| Error::invalid(format!("Node {node} is absent from runtime.peers")))
     }
     pub fn group(&self, group: u64) -> Result<&GroupConfig> {
         self.groups
             .iter()
             .find(|entry| entry.group_id == group)
-            .ok_or_else(|| Error::invalid("Data group is absent from trusted topology"))
+            .ok_or_else(|| {
+                Error::invalid(format!("Data group {group} is absent from runtime.groups"))
+            })
     }
 }

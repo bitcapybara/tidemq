@@ -382,7 +382,7 @@ async fn missing_or_corrupt_recovery_authority_never_initializes_or_cleans_orpha
             .unwrap();
         let orphan = path.join(format!(
             "segment-{}.wal",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         tokio::fs::write(&orphan, b"unreferenced").await.unwrap();
         match target {
@@ -428,7 +428,7 @@ async fn valid_manifest_is_verified_before_unreferenced_files_are_reclaimed() {
     journal.close().await.unwrap();
     let orphan = path.join(format!(
         "segment-{}.wal",
-        tidemq_protocol::Id::random().unwrap()
+        tidemq_protocol::Id::new_v7().unwrap()
     ));
     tokio::fs::write(&orphan, b"unreferenced").await.unwrap();
     let before = support::directory_contents(&path).await;

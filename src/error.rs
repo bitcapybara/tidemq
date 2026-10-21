@@ -15,10 +15,15 @@ pub enum Error {
         path: PathBuf,
         source: std::io::Error,
     },
-    #[snafu(display("Failed to parse configuration"))]
-    ParseConfiguration { source: toml::de::Error },
+    #[snafu(display("Failed to parse configuration: {}", path.display()))]
+    ParseConfiguration {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
     #[snafu(display("Invalid protocol configuration or message"))]
     Protocol { source: tidemq_protocol::Error },
+    #[snafu(display("Invalid cluster_id configuration"))]
+    ClusterIdentity { source: tidemq_protocol::Error },
     #[snafu(display("Transport operation failed"))]
     Transport { source: tidemq_transport::Error },
     #[snafu(display("Admission budget is exhausted for {traffic_class}"))]
@@ -32,6 +37,10 @@ pub enum Error {
     },
     #[snafu(display("Trace export failed: {reason}"))]
     TraceExport { reason: &'static str },
+    #[snafu(display("Failed to initialize bounded OTLP exporter"))]
+    TraceExporter {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[snafu(display("Invalid log filter"))]
     LogFilter {
         source: tracing_subscriber::filter::ParseError,

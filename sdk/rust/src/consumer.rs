@@ -151,15 +151,7 @@ impl Consumer {
         config: ConsumerConfig,
         deadline: Instant,
     ) -> Result<Self> {
-        if config.max_buffered_messages == 0
-            || config.max_buffered_messages > 65_536
-            || config.max_buffered_bytes == 0
-            || u64::from(config.max_buffered_bytes) > client.inner.config.max_pending_bytes
-        {
-            return Err(Error::Configuration {
-                reason: "consumer queue bounds are invalid",
-            });
-        }
+        validate_consumer_config(&config, &client.inner.config)?;
         let ticket = ClaimTicket::reserve(client.clone(), (topic, partition, subscription))?;
         let slots = Arc::new(Semaphore::new(config.max_buffered_messages as usize));
         let byte_budget = Arc::new(Semaphore::new(config.max_buffered_bytes as usize));
@@ -168,13 +160,16 @@ impl Consumer {
             .admin()
             .subscription_status(topic, partition, subscription)
             .await?;
-        let previous = status.assignment.ok_or(Error::ResponseMismatch)?;
+        let previous = status.assignment.ok_or(Error::ResponseMismatch {
+            reason: "subscription status omitted assignment".into(),
+        })?;
         if status.assigned
             && previous.session_id.as_ref() != client.session_id().as_bytes()
             && config.replace_session_id.is_none()
         {
             return Err(Error::Remote {
                 code: ErrorCode::AssignmentBusy,
+                message: "subscription partition is owned by another session; set replace_session_id for an explicit takeover".into(),
                 outcome: tidemq_protocol::common::Outcome::Rejected,
                 retryable: false,
                 expected_sequence: None,
@@ -202,7 +197,7 @@ impl Consumer {
                 FrameKind::ClaimAssignment,
                 FrameKind::AssignmentResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &request,
                 deadline,
             )
@@ -215,7 +210,9 @@ impl Consumer {
             client.session_id(),
         )?;
         if assignment.received_before != assignment.acknowledged_before {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch {
+                reason: "new assignment received_before must equal acknowledged_before".into(),
+            });
         }
         let received_before = assignment.acknowledged_before;
         Ok(Self {
@@ -324,19 +321,27 @@ impl Consumer {
             bytes: self
                 .bytes
                 .clone()
-                .try_acquire_many_owned(
-                    u32::try_from(available_bytes).map_err(|_| Error::Admission)?,
-                )
-                .map_err(|_| Error::Admission)?,
+                .try_acquire_many_owned(u32::try_from(available_bytes).map_err(|_| {
+                    Error::Admission {
+                        resource: "consumer read byte count exceeds u32",
+                    }
+                })?)
+                .map_err(|_| Error::Admission {
+                    resource: "consumer max_buffered_bytes for read",
+                })?,
             client: self
                 .client
                 .inner
                 .bytes
                 .clone()
-                .try_acquire_many_owned(
-                    u32::try_from(available_bytes).map_err(|_| Error::Admission)?,
-                )
-                .map_err(|_| Error::Admission)?,
+                .try_acquire_many_owned(u32::try_from(available_bytes).map_err(|_| {
+                    Error::Admission {
+                        resource: "client read byte count exceeds u32",
+                    }
+                })?)
+                .map_err(|_| Error::Admission {
+                    resource: "client max_pending_bytes for read",
+                })?,
         };
         let (mut batch, class) = match self
             .read_batch(&state, available, payload_bytes, deadline)
@@ -359,7 +364,9 @@ impl Consumer {
             })
             .is_none_or(|sum| sum > payload_bytes)
         {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch {
+                reason: "delivery batch payload exceeds the requested byte credit".into(),
+            });
         }
         let incoming = self.admit_deliveries(
             std::mem::take(&mut batch.deliveries),
@@ -399,8 +406,12 @@ impl Consumer {
             assignment_generation: generation.assignment,
             delivery_generation: generation.assignment,
             session_id: bytes(generation.session),
-            max_messages: u32::try_from(available).map_err(|_| Error::Admission)?,
-            max_bytes: u32::try_from(available_bytes).map_err(|_| Error::Admission)?,
+            max_messages: u32::try_from(available).map_err(|_| Error::Admission {
+                resource: "read message credit exceeds u32",
+            })?,
+            max_bytes: u32::try_from(available_bytes).map_err(|_| Error::Admission {
+                resource: "read byte credit exceeds u32",
+            })?,
         };
         let batch = self
             .client
@@ -408,7 +419,7 @@ impl Consumer {
                 FrameKind::Read,
                 FrameKind::DeliveryBatch,
                 class,
-                Id::random()?,
+                Id::new_v7()?,
                 &request,
                 deadline,
                 crate::client::affinity(&(
@@ -430,18 +441,26 @@ impl Consumer {
         available: usize,
         available_bytes: usize,
     ) -> Result<()> {
-        if batch.deliveries.len() > available
-            || batch.deliveries.iter().any(|delivery| {
-                delivery
-                    .key
-                    .len()
-                    .checked_add(delivery.body.len())
-                    .is_none_or(|size| {
-                        size > self.client.inner.config.protocol.max_message_bytes as usize
-                    })
-            })
-        {
-            return Err(Error::ResponseMismatch);
+        if batch.deliveries.len() > available {
+            return Err(Error::ResponseMismatch {
+                reason: format!(
+                    "DeliveryBatch contains {} messages, exceeding requested credit {available}",
+                    batch.deliveries.len()
+                ),
+            });
+        }
+        if batch.deliveries.iter().any(|delivery| {
+            delivery
+                .key
+                .len()
+                .checked_add(delivery.body.len())
+                .is_none_or(|size| {
+                    size > self.client.inner.config.protocol.max_message_bytes as usize
+                })
+        }) {
+            return Err(Error::ResponseMismatch {
+                reason: "delivery key plus body exceeds protocol.max_message_bytes".into(),
+            });
         }
         let has_head = batch
             .deliveries
@@ -456,18 +475,24 @@ impl Consumer {
             .try_fold(0_usize, |total, delivery| {
                 total
                     .checked_add(delivery_charge(delivery)? as usize)
-                    .ok_or(Error::Admission)
+                    .ok_or(Error::Admission {
+                        resource: "delivery batch memory charge overflow",
+                    })
             })?;
         let reserve = (self.client.inner.config.protocol.max_message_bytes as usize)
             .checked_add(std::mem::size_of::<DeliveryData>() + 229)
-            .ok_or(Error::Admission)?;
+            .ok_or(Error::Admission {
+                resource: "key-serial head delivery reservation overflow",
+            })?;
         if self.config.ordering == DeliveryOrdering::KeySerial
             && !has_head
             && !batch.deliveries.is_empty()
             && (batch.deliveries.len() >= available
                 || available_bytes.saturating_sub(charged) < reserve)
         {
-            return Err(Error::Admission);
+            return Err(Error::Admission {
+                resource: "key-serial delivery needs space reserved for the blocked head",
+            });
         }
         Ok(())
     }
@@ -481,30 +506,36 @@ impl Consumer {
         let mut incoming = Vec::new();
         incoming
             .try_reserve_exact(deliveries.len())
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "delivery metadata allocation",
+            })?;
         for delivery in deliveries {
             let length = delivery_charge(&delivery)?;
-            let data = DeliveryData {
-                offset: delivery.offset,
-                key: delivery.key,
-                body: delivery.body,
-                token: delivery.delivery_token,
-                generation,
-                _bytes: credit
-                    .bytes
-                    .split(length as usize)
-                    .ok_or(Error::ResponseMismatch)?,
-                _client_bytes: credit
-                    .client
-                    .split(length as usize)
-                    .ok_or(Error::ResponseMismatch)?,
-                _slot: self
-                    .slots
-                    .clone()
-                    .try_acquire_owned()
-                    .map_err(|_| Error::Admission)?,
-                _charge: self.client.inner.metrics.charge(length, true),
-            };
+            let data =
+                DeliveryData {
+                    offset: delivery.offset,
+                    key: delivery.key,
+                    body: delivery.body,
+                    token: delivery.delivery_token,
+                    generation,
+                    _bytes: credit
+                        .bytes
+                        .split(length as usize)
+                        .ok_or(Error::ResponseMismatch {
+                            reason: "delivery exceeds reserved consumer byte credit".into(),
+                        })?,
+                    _client_bytes: credit.client.split(length as usize).ok_or(
+                        Error::ResponseMismatch {
+                            reason: "delivery exceeds reserved client byte credit".into(),
+                        },
+                    )?,
+                    _slot: self.slots.clone().try_acquire_owned().map_err(|_| {
+                        Error::Admission {
+                            resource: "consumer max_buffered_messages",
+                        }
+                    })?,
+                    _charge: self.client.inner.metrics.charge(length, true),
+                };
             incoming.push(Delivery {
                 inner: Arc::new(data),
             });
@@ -531,7 +562,9 @@ impl Consumer {
                 delivery
                     .offset()
                     .checked_add(1)
-                    .ok_or(Error::ResponseMismatch)?,
+                    .ok_or(Error::ResponseMismatch {
+                        reason: "delivery offset cannot advance beyond u64::MAX".into(),
+                    })?,
                 self.config.max_buffered_messages,
             )?;
             state.queue.insert(delivery.offset(), delivery);
@@ -583,7 +616,11 @@ impl Consumer {
             || response.received_before < state.received_before
             || response.cold_before != state.assignment.cold_before
         {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch {
+                reason:
+                    "receive barrier response changed the assignment or regressed received_before"
+                        .into(),
+            });
         }
         state.barrier_confirmed = state.received_before >= state.assignment.cold_before;
         state.assignment.received_before = state.received_before;
@@ -595,7 +632,7 @@ impl Consumer {
         request: &public::ReceiveBarrier,
         deadline: Instant,
     ) -> Result<public::AssignmentResult> {
-        let operation = Id::random()?;
+        let operation = Id::new_v7()?;
         for attempt in 0..self.client.inner.config.max_reconnect_attempts {
             let result = self
                 .client
@@ -726,7 +763,9 @@ impl Consumer {
             {
                 batch.delivery_tokens.pop();
                 if batch.delivery_tokens.is_empty() {
-                    return Err(Error::Admission);
+                    return Err(Error::Admission {
+                        resource: "one ACK token exceeds the control frame limit",
+                    });
                 }
                 self.flush_ack(&mut state, &batch, &admitted, &mut result, deadline)
                     .await?;
@@ -734,7 +773,9 @@ impl Consumer {
                 admitted.clear();
                 batch.delivery_tokens.push(delivery.inner.token.clone());
                 if !ack_fits(&self.client, &batch)? {
-                    return Err(Error::Admission);
+                    return Err(Error::Admission {
+                        resource: "one ACK token exceeds the control frame limit",
+                    });
                 }
             }
             admitted.push(delivery);
@@ -760,7 +801,7 @@ impl Consumer {
                 FrameKind::AckBatch,
                 FrameKind::AckResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 batch,
                 deadline,
             )
@@ -786,20 +827,27 @@ impl Consumer {
         if u64::from(response.accepted).checked_add(u64::from(response.already_acknowledged))
             != Some(deliveries.len() as u64)
         {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch {
+                reason: "ACK result counts do not match the submitted delivery count".into(),
+            });
         }
         for delivery in deliveries {
             release_key(state, delivery);
             clear_failure(state, delivery.offset());
         }
-        aggregate.accepted = aggregate
-            .accepted
-            .checked_add(response.accepted)
-            .ok_or(Error::ResponseMismatch)?;
+        aggregate.accepted =
+            aggregate
+                .accepted
+                .checked_add(response.accepted)
+                .ok_or(Error::ResponseMismatch {
+                    reason: "accumulated accepted ACK count overflows u32".into(),
+                })?;
         aggregate.already_acknowledged = aggregate
             .already_acknowledged
             .checked_add(response.already_acknowledged)
-            .ok_or(Error::ResponseMismatch)?;
+            .ok_or(Error::ResponseMismatch {
+                reason: "accumulated already_acknowledged count overflows u32".into(),
+            })?;
         aggregate.acknowledged_before = aggregate
             .acknowledged_before
             .max(response.acknowledged_before);
@@ -843,7 +891,9 @@ impl Consumer {
             if state.failed_offsets.len() >= self.config.max_buffered_messages as usize
                 && !state.failed_offsets.contains(&delivery.offset())
             {
-                return Err(Error::Admission);
+                return Err(Error::Admission {
+                    resource: "key-serial failed-offset capacity",
+                });
             }
             state.failed_offsets.insert(delivery.offset());
         }
@@ -934,7 +984,7 @@ impl Consumer {
         if response.cursor_generation <= generation.cursor
             || response.assignment_generation != response.delivery_generation
         {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch { reason: "seek response did not advance the cursor or has inconsistent delivery generation".into() });
         }
         let assignment: public::AssignmentResult = self
             .client
@@ -942,7 +992,7 @@ impl Consumer {
                 FrameKind::ClaimAssignment,
                 FrameKind::AssignmentResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::ClaimAssignment {
                     topic_id: bytes(generation.topic),
                     partition_id: generation.partition,
@@ -1004,7 +1054,9 @@ impl Consumer {
                 generation.subscription,
             )
             .await?;
-        let previous = status.assignment.ok_or(Error::ResponseMismatch)?;
+        let previous = status.assignment.ok_or(Error::ResponseMismatch {
+            reason: "subscription status omitted assignment during recovery".into(),
+        })?;
         let replacing =
             self.replacement_session(state, &previous, status.assigned, allow_takeover)?;
         let was_valid = state.valid;
@@ -1017,7 +1069,7 @@ impl Consumer {
                 FrameKind::ClaimAssignment,
                 FrameKind::AssignmentResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::ClaimAssignment {
                     topic_id: bytes(generation.topic),
                     partition_id: generation.partition,
@@ -1049,6 +1101,7 @@ impl Consumer {
         if !allow_takeover {
             return Err(Error::Remote {
                 code: ErrorCode::AssignmentBusy,
+                message: "subscription partition was reassigned to another session; request an explicit takeover to replace it".into(),
                 outcome: tidemq_protocol::common::Outcome::Rejected,
                 retryable: false,
                 expected_sequence: None,
@@ -1081,16 +1134,20 @@ fn install_assignment(
         || (new_generation.cursor == generation.cursor
             && new_generation.assignment < generation.assignment)
     {
-        return Err(Error::ResponseMismatch);
+        return Err(Error::ResponseMismatch {
+            reason: "recovered assignment generation moved backwards".into(),
+        });
     }
     if new_generation == generation {
         if assignment.cold_before != state.assignment.cold_before
             || assignment.received_before > state.received_before
         {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch { reason: "unchanged assignment changed cold_before or advanced beyond the receive barrier".into() });
         }
     } else if assignment.received_before != assignment.acknowledged_before {
-        return Err(Error::ResponseMismatch);
+        return Err(Error::ResponseMismatch {
+            reason: "new assignment must restart received_before at acknowledged_before".into(),
+        });
     }
     if new_generation != generation || !was_valid {
         state.queue.clear();
@@ -1171,7 +1228,9 @@ fn reserve_failures(
         config
             .max_buffered_messages
             .checked_mul(40)
-            .ok_or(Error::Admission)?
+            .ok_or(Error::Admission {
+                resource: "key-serial failure reservation overflow",
+            })?
     } else {
         0
     };
@@ -1184,13 +1243,17 @@ fn reserve_failures(
         bytes: bytes
             .clone()
             .try_acquire_many_owned(reserve)
-            .map_err(|_| Error::Admission)?,
+            .map_err(|_| Error::Admission {
+                resource: "consumer max_buffered_bytes for failed deliveries",
+            })?,
         client: client
             .inner
             .bytes
             .clone()
             .try_acquire_many_owned(reserve)
-            .map_err(|_| Error::Admission)?,
+            .map_err(|_| Error::Admission {
+                resource: "client max_pending_bytes for failed deliveries",
+            })?,
     })
 }
 
@@ -1231,16 +1294,22 @@ impl ClaimTicket {
                 .inner
                 .consumer_claims
                 .lock()
-                .map_err(|_| Error::Closed)?;
+                .map_err(|_| Error::Admission {
+                    resource: "consumer claim registry lock is poisoned; recreate the client",
+                })?;
             if claims.contains(&key) {
                 return Err(Error::Configuration {
                     reason: "this client already owns a consumer handle for the subscription partition",
                 });
             }
             if claims.len() >= client.inner.config.max_pending_requests as usize {
-                return Err(Error::Admission);
+                return Err(Error::Admission {
+                    resource: "consumer handle count reaches max_pending_requests",
+                });
             }
-            claims.try_reserve(1).map_err(|_| Error::Admission)?;
+            claims.try_reserve(1).map_err(|_| Error::Admission {
+                resource: "consumer claim table allocation",
+            })?;
             claims.insert(key);
         }
         Ok(Self { client, key })
@@ -1262,17 +1331,49 @@ fn validate_assignment(
     session: Id,
 ) -> Result<Generation> {
     // The frozen cold boundary does not cap progress after hot delivery starts.
-    if assignment.topic_id.as_ref() != topic.as_bytes()
-        || assignment.partition_id != partition
-        || assignment.subscription_id.as_ref() != subscription.as_bytes()
-        || assignment.session_id.as_ref() != session.as_bytes()
-        || assignment.cursor_generation == 0
-        || assignment.assignment_generation == 0
-        || assignment.assignment_generation != assignment.delivery_generation
-        || assignment.acknowledged_before > assignment.received_before
-        || assignment.received_before > assignment.issued_before
-    {
-        return Err(Error::ResponseMismatch);
+    for (valid, reason) in [
+        (
+            assignment.topic_id.as_ref() == topic.as_bytes(),
+            "assignment.topic_id differs from the requested topic",
+        ),
+        (
+            assignment.partition_id == partition,
+            "assignment.partition_id differs from the requested partition",
+        ),
+        (
+            assignment.subscription_id.as_ref() == subscription.as_bytes(),
+            "assignment.subscription_id differs from the requested subscription",
+        ),
+        (
+            assignment.session_id.as_ref() == session.as_bytes(),
+            "assignment.session_id differs from the client session",
+        ),
+        (
+            assignment.cursor_generation > 0,
+            "assignment.cursor_generation must be nonzero",
+        ),
+        (
+            assignment.assignment_generation > 0,
+            "assignment.assignment_generation must be nonzero",
+        ),
+        (
+            assignment.assignment_generation == assignment.delivery_generation,
+            "assignment.delivery_generation must equal assignment.assignment_generation",
+        ),
+        (
+            assignment.acknowledged_before <= assignment.received_before,
+            "assignment.acknowledged_before must not exceed assignment.received_before",
+        ),
+        (
+            assignment.received_before <= assignment.issued_before,
+            "assignment.received_before must not exceed assignment.issued_before",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::ResponseMismatch {
+                reason: reason.into(),
+            });
+        }
     }
     Ok(Generation {
         topic,
@@ -1307,7 +1408,10 @@ fn validate_batch(batch: &public::DeliveryBatch, state: &State, class: TrafficCl
             || (class == TrafficClass::Bulk && delivery.offset >= batch.cold_before)
             || (class == TrafficClass::Delivery && delivery.offset < batch.cold_before)
         {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch {
+                reason: "delivery identity, order, token length, or hot/cold boundary is invalid"
+                    .into(),
+            });
         }
         previous = Some(delivery.offset);
     }
@@ -1321,7 +1425,10 @@ fn validate_batch(batch: &public::DeliveryBatch, state: &State, class: TrafficCl
                 .iter()
                 .any(|delivery| delivery.offset >= range.start && delivery.offset < range.end)
         {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::ResponseMismatch {
+                reason: "skipped range is empty, out of order, or overlaps a delivered offset"
+                    .into(),
+            });
         }
         previous_end = range.end;
     }
@@ -1349,7 +1456,9 @@ fn cover(state: &mut State, start: u64, end: u64, limit: u32) -> Result<()> {
         state.received_before = state.received_before.max(end);
     } else {
         if state.coverage.len() >= limit as usize {
-            return Err(Error::Admission);
+            return Err(Error::Admission {
+                resource: "out-of-order delivery coverage reaches max_buffered_messages",
+            });
         }
         state.coverage.insert(start, end);
     }
@@ -1405,7 +1514,9 @@ fn delivery_charge(delivery: &public::Delivery) -> Result<u32> {
         .and_then(|bytes| bytes.checked_add(delivery.delivery_token.len()))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<DeliveryData>() + 128))
         .and_then(|bytes| u32::try_from(bytes).ok())
-        .ok_or(Error::Admission)
+        .ok_or(Error::Admission {
+            resource: "delivery memory charge exceeds u32",
+        })
 }
 
 struct ReadCredit {
@@ -1420,12 +1531,79 @@ pub(crate) fn delivery_overhead() -> usize {
 fn read_credit(slots: usize, bytes: usize, maximum_message: usize) -> Result<(usize, usize)> {
     let overhead = delivery_overhead();
     if slots == 0 || bytes <= overhead {
-        return Err(Error::Admission);
+        return Err(Error::Admission {
+            resource: "read needs at least one free message slot and bytes beyond delivery overhead",
+        });
     }
     let one_payload = maximum_message.min(bytes - overhead);
     let count = slots.min((bytes - one_payload) / overhead).max(1);
     let payload = bytes
-        .checked_sub(count.checked_mul(overhead).ok_or(Error::Admission)?)
-        .ok_or(Error::Admission)?;
+        .checked_sub(count.checked_mul(overhead).ok_or(Error::Admission {
+            resource: "read metadata reservation overflow",
+        })?)
+        .ok_or(Error::Admission {
+            resource: "read metadata exceeds available byte credit",
+        })?;
     Ok((count, payload))
+}
+
+fn validate_consumer_config(config: &ConsumerConfig, client: &crate::ClientConfig) -> Result<()> {
+    for (valid, reason) in [
+        (
+            (1..=65_536).contains(&config.max_buffered_messages),
+            "max_buffered_messages must be between 1 and 65536",
+        ),
+        (
+            config.max_buffered_bytes > 0,
+            "max_buffered_bytes must be greater than zero",
+        ),
+        (
+            u64::from(config.max_buffered_bytes) <= client.max_pending_bytes,
+            "max_buffered_bytes must not exceed client.max_pending_bytes",
+        ),
+        (
+            usize::try_from(config.max_buffered_bytes)
+                .ok()
+                .is_some_and(|bytes| bytes <= Semaphore::MAX_PERMITS),
+            "max_buffered_bytes must fit the platform's semaphore capacity",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::Configuration { reason });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn consumer_limits_identify_the_queue_field() {
+        let client = crate::ClientConfig::new("localhost:7443");
+        type Case = (&'static str, fn(&mut ConsumerConfig));
+        let cases: &[Case] = &[
+            ("max_buffered_messages", |c| c.max_buffered_messages = 0),
+            ("max_buffered_messages", |c| {
+                c.max_buffered_messages = 65_537
+            }),
+            ("max_buffered_bytes", |c| c.max_buffered_bytes = 0),
+            ("max_buffered_bytes", |c| c.max_buffered_bytes = u32::MAX),
+        ];
+        for &(field, mutate) in cases {
+            let mut config = ConsumerConfig::default();
+            mutate(&mut config);
+            let Error::Configuration { reason } =
+                validate_consumer_config(&config, &client).unwrap_err()
+            else {
+                panic!("Expected a consumer configuration error for {field}");
+            };
+            assert!(
+                reason.starts_with(field),
+                "Expected {field}, received {reason}"
+            );
+        }
+        validate_consumer_config(&ConsumerConfig::default(), &client).unwrap();
+    }
 }

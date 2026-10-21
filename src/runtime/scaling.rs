@@ -200,7 +200,7 @@ impl remote::Rpc for RuntimeRpc {
             scope: String::new(),
             hops: 0,
         };
-        let operation = Id::random().map_err(|source| scaling::Error::Remote {
+        let operation = Id::new_v7().map_err(|source| scaling::Error::Remote {
             source: Box::new(source),
         })?;
         let bytes = self

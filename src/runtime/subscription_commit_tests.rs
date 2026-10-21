@@ -63,13 +63,13 @@ pub(in crate::runtime::data) async fn after_commit(
 }
 
 #[test]
-fn post_commit_fence_contexts_preserve_the_exact_unknown_wire_response() {
+fn post_commit_fence_contexts_preserve_unknown_semantics_and_the_failed_stage() {
     let limits = ProtocolLimits::default();
     let request = new_frame(
         FrameKind::ClaimAssignment,
         TrafficClass::Control,
-        Id::random().unwrap(),
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
+        Id::new_v7().unwrap(),
         &public::ClaimAssignment::default(),
         10_000,
         &limits,
@@ -84,15 +84,17 @@ fn post_commit_fence_contexts_preserve_the_exact_unknown_wire_response() {
         ),
     ] {
         let error = Error::operation("read committed subscription writer fence", source);
-        assert_eq!(
-            wire::error_response(&request, &error, &limits).unwrap(),
-            expected
+        wire::assert_unknown_response_contract(
+            &wire::error_response(&request, &error, &limits).unwrap(),
+            &expected,
+            &limits,
+            "read committed subscription writer fence",
         );
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn committed_claim_expiry_retains_source_and_exact_unknown_wire_response() {
+async fn committed_claim_expiry_retains_source_and_unknown_wire_semantics() {
     let _serial = SERIAL.lock().await;
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
     fixture.start_all().await;
@@ -104,12 +106,12 @@ async fn committed_claim_expiry_retains_source_and_exact_unknown_wire_response()
         partition: 0,
     };
     let until = deadline();
-    let session = Id::random().unwrap();
+    let session = Id::new_v7().unwrap();
     let request = new_frame(
         FrameKind::ClaimAssignment,
         TrafficClass::Control,
-        Id::random().unwrap(),
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
+        Id::new_v7().unwrap(),
         &public::ClaimAssignment {
             topic_id: bytes_id(topic),
             partition_id: 0,
@@ -184,9 +186,11 @@ async fn committed_claim_expiry_retains_source_and_exact_unknown_wire_response()
     client.close().await;
     drop(client);
     fixture.close().await;
-    assert_eq!(
-        response, expected,
-        "The existing wire response must be unchanged"
+    wire::assert_unknown_response_contract(
+        &response,
+        &expected,
+        &service.config.protocol,
+        "verify committed subscription writer",
     );
     let failure: ErrorReply = decode_payload(response.payload, &service.config.protocol).unwrap();
     assert_eq!(failure.code, i32::from(ErrorCode::Unavailable));

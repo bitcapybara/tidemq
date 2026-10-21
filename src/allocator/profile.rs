@@ -128,7 +128,7 @@ fn set_active(value: bool) -> Result<()> {
 
 fn dump(directory: &Path, limit: u64, window: Duration) -> Result<Artifact> {
     validate_directory(directory, limit)?;
-    let id = tidemq_protocol::Id::random().map_err(|source| Error::Protocol { source })?;
+    let id = tidemq_protocol::Id::new_v7().map_err(|source| Error::Protocol { source })?;
     let target = directory.join(format!("heap-{id}"));
     std::fs::DirBuilder::new()
         .mode(0o700)

@@ -10,7 +10,7 @@ pub(super) struct Fixture {
 impl Fixture {
     pub(super) async fn new(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) -> Self {
         let directory =
-            std::env::temp_dir().join(format!("tidemq-runtime-{}", Id::random().unwrap()));
+            std::env::temp_dir().join(format!("tidemq-runtime-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir_all(&directory).await.unwrap();
         let ca_key = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -66,7 +66,7 @@ impl Fixture {
                 certificate_der: directory.join(format!("node-{node}.der")),
             });
         }
-        let cluster = Id::random().unwrap();
+        let cluster = Id::new_v7().unwrap();
         let configs = nodes
             .iter()
             .map(|(node, role)| {

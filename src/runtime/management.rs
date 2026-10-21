@@ -393,11 +393,11 @@ async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>
         Ok(path) if path.starts_with("/ownership/") => {
             ownership_response(&service, path, deadline).await?
         }
-        Ok(_) => (404, "application/json", "{\"error\":\"Not found\"}".into()),
-        Err(_) => (
+        Ok(_) => (404, "application/json", "{\"error\":\"Unknown management endpoint; use /healthz, /readyz, /metrics, /diagnostics, or /ownership/<topic>/<partition>\"}".into()),
+        Err(error) => (
             400,
             "application/json",
-            "{\"error\":\"A bounded GET request without a body is required\"}".into(),
+            serde_json::json!({"error": error.to_string()}).to_string(),
         ),
     };
     if body.len() > 262_144 {
@@ -432,11 +432,11 @@ async fn ownership_response(
 ) -> Result<(u16, &'static str, String)> {
     let key = match ownership_key(path) {
         Ok(key) => key,
-        Err(_) => {
+        Err(error) => {
             return Ok((
                 400,
                 "application/json",
-                "{\"error\":\"Invalid ownership key\"}".into(),
+                serde_json::json!({"error": error.to_string()}).to_string(),
             ));
         }
     };
@@ -444,7 +444,7 @@ async fn ownership_response(
         return Ok((
             404,
             "application/json",
-            "{\"error\":\"Metadata is not local\"}".into(),
+            "{\"error\":\"Ownership diagnostics require a metadata or combined node with a local metadata replica\"}".into(),
         ));
     };
     let diagnostic = timeout_at(
@@ -464,22 +464,28 @@ async fn ownership_response(
         Ok(Ok(None)) => Ok((
             404,
             "application/json",
-            "{\"error\":\"Partition is not local\"}".into(),
+            serde_json::json!({"error": "No ownership state exists for the requested partition", "topic_id": key.topic_id.to_string(), "partition_id": key.partition}).to_string(),
         )),
-        _ => Ok((
+        Err(_) => Ok((
             503,
             "application/json",
-            "{\"error\":\"Ownership diagnostic is unavailable\"}".into(),
+            "{\"error\":\"Ownership diagnostic exceeded the request deadline\"}".into(),
         )),
+        Ok(Err(source)) => {
+            let err = anyhow::Error::new(Error::operation("read ownership diagnostic state", source));
+            tracing::warn!(event_code = "ownership_diagnostic_failed", topic_id = %key.topic_id,
+                partition_id = key.partition, error = %format_args!("{err:#}"), "Ownership diagnostic state read failed");
+            Ok((503, "application/json", "{\"error\":\"Metadata state is unavailable; inspect the ownership_diagnostic_failed server log\"}".into()))
+        }
     }
 }
 
 fn ownership_key(path: &str) -> Result<crate::metadata::PartitionKey> {
     path.strip_prefix("/ownership/")
-        .ok_or_else(|| Error::invalid("Invalid ownership key"))?
+        .ok_or_else(|| Error::invalid("Ownership path must start with /ownership/"))?
         .to_owned()
         .try_into()
-        .map_err(|_| Error::invalid("Invalid ownership key"))
+        .map_err(|reason| Error::invalid(format!("Invalid ownership key: {reason}")))
 }
 
 fn parse_request(bytes: &[u8]) -> Result<&str> {
@@ -525,6 +531,28 @@ fn parse_request(bytes: &[u8]) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ownership_path_errors_retain_the_invalid_component() {
+        let topic = "f098986a-ecf4-4b23-b9ca-1475d2c51d75";
+        assert!(
+            ownership_key(&format!("/other/{topic}/0"))
+                .unwrap_err()
+                .to_string()
+                .contains("must start with /ownership/")
+        );
+        assert!(
+            ownership_key("/ownership/invalid/0")
+                .unwrap_err()
+                .to_string()
+                .contains("invalid topic identity")
+        );
+        assert!(
+            ownership_key(&format!("/ownership/{topic}/invalid"))
+                .unwrap_err()
+                .to_string()
+                .contains("invalid partition number")
+        );
+    }
     #[test]
     fn ownership_lookup_accepts_one_bounded_partition_key() {
         let topic = "f098986a-ecf4-4b23-b9ca-1475d2c51d75";

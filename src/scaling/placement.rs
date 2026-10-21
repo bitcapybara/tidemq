@@ -288,6 +288,28 @@ pub enum BlockReason {
     Unknown,
 }
 
+impl std::fmt::Display for BlockReason {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NoStandby => "No eligible standby replica is configured",
+            Self::Topology => "Replica placement violates the stable topology",
+            Self::MissingObservation => "Candidate has no capacity observation",
+            Self::ExpiredObservation => "Candidate capacity observation has expired",
+            Self::ReachabilityPending => "Candidate reachability has not been confirmed",
+            Self::FreeCapacity => "Candidate has insufficient free storage or memory capacity",
+            Self::Cpu => "Candidate CPU pressure exceeds the placement limit",
+            Self::ByteRate => "Candidate byte rate exceeds the placement limit",
+            Self::Connections => "Candidate connection pressure exceeds the placement limit",
+            Self::AckState => "Required durable ACK state is not ready for movement",
+            Self::Cooldown => "Placement cooldown has not elapsed",
+            Self::Balanced => "Current placement is balanced; no move is needed",
+            Self::Authority => "Required scaling authority is unavailable",
+            Self::Admission => "Scaling admission capacity is exhausted",
+            Self::Unknown => "Scaling operation outcome is unknown; reconcile the original plan",
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, serde::Serialize)]
 pub struct PlacementDiagnostic {
     pub group: Option<u64>,
@@ -344,7 +366,7 @@ mod tests {
             copy_bytes: 1 << 30,
             repair: false,
         };
-        let cluster = Id::random().unwrap();
+        let cluster = Id::new_v7().unwrap();
         assert!(
             placement
                 .replacement_in(cluster, &group, &nodes, request, &[report], now)

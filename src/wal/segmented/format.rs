@@ -155,7 +155,7 @@ where
 }
 
 pub(super) fn new_id() -> Result<[u8; 16]> {
-    tidemq_protocol::Id::random()
+    tidemq_protocol::Id::new_v7()
         .map(|id| *uuid::Uuid::from(id).as_bytes())
         .map_err(|e| Error::Writer {
             reason: e.to_string(),

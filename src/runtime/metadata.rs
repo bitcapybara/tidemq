@@ -856,7 +856,7 @@ impl Service {
 
 fn metadata_rejection(reason: metadata::Rejection) -> Error {
     use metadata::Rejection as R;
-    let (code, retryable) = match reason {
+    let (code, retryable) = match &reason {
         R::Capacity => (ErrorCode::QuotaExceeded, true),
         R::RevisionConflict | R::GenerationConflict | R::RecoveryRequired | R::Uninitialized => {
             (ErrorCode::Unavailable, true)
@@ -867,7 +867,7 @@ fn metadata_rejection(reason: metadata::Rejection) -> Error {
         }
         _ => (ErrorCode::InvalidRequest, false),
     };
-    Error::reject(code, Outcome::Rejected, retryable)
+    Error::reject_with(code, Outcome::Rejected, retryable, reason.to_string())
 }
 pub(crate) fn not_found() -> Error {
     Error::reject(ErrorCode::NotFound, Outcome::Rejected, false)

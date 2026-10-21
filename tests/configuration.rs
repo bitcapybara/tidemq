@@ -39,7 +39,7 @@ async fn validate_nodes(directory: &Path, nodes: &[u64]) {
 
 #[tokio::test]
 async fn generator_validates_only_canonical_role_configuration() {
-    let root = std::env::temp_dir().join(format!("tidemq-config-layout-{}", Id::random().unwrap()));
+    let root = std::env::temp_dir().join(format!("tidemq-config-layout-{}", Id::new_v7().unwrap()));
     tokio::fs::create_dir(&root).await.unwrap();
     for (mode, nodes) in [
         ("rf1", vec![1]),

@@ -138,6 +138,31 @@ pub enum DataRejection {
     Lifecycle(crate::lifecycle::Rejection),
 }
 
+impl fmt::Display for DataRejection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uninitialized => formatter.write_str("Data group has not been initialized"),
+            Self::InvalidConfiguration => formatter.write_str(
+                "Data group configuration violates its identity or capacity constraints",
+            ),
+            Self::ConfigurationConflict => {
+                formatter.write_str("Data group was initialized with a different configuration")
+            }
+            Self::PartitionCapacity => {
+                formatter.write_str("Data group partition capacity is exhausted")
+            }
+            Self::PartitionMissing => {
+                formatter.write_str("Requested partition is not hosted by this data group")
+            }
+            Self::Fence(reason) => write!(formatter, "{reason}"),
+            Self::Producer(reason) => write!(formatter, "{reason}"),
+            Self::Subscription(reason) => write!(formatter, "{reason}"),
+            Self::Retention(reason) => write!(formatter, "{reason}"),
+            Self::Lifecycle(reason) => write!(formatter, "{reason}"),
+        }
+    }
+}
+
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataResponse {
     #[default]
@@ -818,7 +843,7 @@ impl Application for DataApplication {
 
     fn validate(&self) -> std::io::Result<()> {
         self.validate_complete().map_err(|reason| {
-            std::io::Error::other(format!("Invalid data application snapshot: {reason:?}"))
+            std::io::Error::other(format!("Invalid data application snapshot: {reason}"))
         })
     }
 }

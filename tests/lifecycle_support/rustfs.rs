@@ -41,7 +41,7 @@ impl RustFs {
         let directory = std::env::current_dir()
             .unwrap()
             .join("target/s3-rustfs")
-            .join(Id::random().unwrap().to_string());
+            .join(Id::new_v7().unwrap().to_string());
         fs::create_dir_all(&directory).unwrap();
         #[cfg(unix)]
         {

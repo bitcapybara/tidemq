@@ -6,7 +6,7 @@ use snafu::ResultExt;
 use tidemq_protocol::{Id, ProtocolLimits};
 use tokio::io::AsyncReadExt;
 
-use crate::error::{IoSnafu, ParseConfigurationSnafu, ProtocolSnafu};
+use crate::error::{ClusterIdentitySnafu, IoSnafu, ParseConfigurationSnafu, ProtocolSnafu};
 use crate::{Error, Result};
 
 mod file;
@@ -81,31 +81,38 @@ impl Config {
                 reason: "configuration exceeds 64 KiB",
             });
         }
-        let config: Self = toml::from_str(&text).context(ParseConfigurationSnafu)?;
+        let config: Self = toml::from_str(&text).context(ParseConfigurationSnafu { path })?;
         config.validate()?;
         Ok(config)
     }
 
     pub fn validate(&self) -> Result<()> {
-        if self.node_id == 0 || self.data_dir.as_os_str().is_empty() {
+        if self.node_id == 0 {
             return Err(Error::Configuration {
-                reason: "node identity and data directory are required",
+                reason: "node_id must be nonzero",
             });
         }
-        self.cluster_id.parse::<Id>().context(ProtocolSnafu)?;
+        if self.data_dir.as_os_str().is_empty() {
+            return Err(Error::Configuration {
+                reason: "data_dir must not be empty",
+            });
+        }
+        self.cluster_id
+            .parse::<Id>()
+            .context(ClusterIdentitySnafu)?;
         if !matches!(self.replication_factor, 1 | 3) {
             return Err(Error::Configuration {
-                reason: "replication factor must be explicitly 1 or 3",
+                reason: "replication_factor must be explicitly 1 or 3",
             });
         }
         if !self.management_listen.ip().is_loopback() {
             return Err(Error::Configuration {
-                reason: "remote management requires a protected deployment proxy",
+                reason: "management_listen must use a loopback IP; expose remote management through a protected proxy",
             });
         }
         if self.role.serves_gateway() && self.listen == self.management_listen {
             return Err(Error::Configuration {
-                reason: "business and management addresses must differ",
+                reason: "listen must differ from management_listen for a gateway role",
             });
         }
         self.protocol.validate().context(ProtocolSnafu)?;
@@ -143,26 +150,37 @@ impl MemoryConfig {
         let minimum = frame_bytes.checked_mul(2).ok_or(Error::Configuration {
             reason: "frame budget overflow",
         })?;
-        if self.control_reserved_bytes < 65_536
-            || self
-                .total_bytes
-                .checked_sub(self.control_reserved_bytes)
-                .is_none_or(|bytes| bytes < minimum)
-        {
-            return Err(Error::Configuration {
-                reason: "memory budget must preserve control and data capacity",
-            });
-        }
-        if self.max_connections == 0
-            || self.max_connections > 4_096
-            || self.max_streams_per_connection < 2
-            || self.max_streams_per_connection > 4_096
-            || self.max_pending_requests == 0
-            || self.max_pending_requests > 65_536
-        {
-            return Err(Error::Configuration {
-                reason: "connection, stream, or request bounds are invalid",
-            });
+        for (valid, reason) in [
+            (
+                self.control_reserved_bytes >= 65_536,
+                "memory.control_reserved_bytes must be at least 65536 bytes",
+            ),
+            (
+                self.control_reserved_bytes <= self.total_bytes,
+                "memory.control_reserved_bytes must not exceed memory.total_bytes",
+            ),
+            (
+                self.total_bytes
+                    .checked_sub(self.control_reserved_bytes)
+                    .is_some_and(|bytes| bytes >= minimum),
+                "memory.total_bytes must reserve memory.control_reserved_bytes plus two maximum protocol frames",
+            ),
+            (
+                (1..=4_096).contains(&self.max_connections),
+                "memory.max_connections must be between 1 and 4096",
+            ),
+            (
+                (2..=4_096).contains(&self.max_streams_per_connection),
+                "memory.max_streams_per_connection must be between 2 and 4096",
+            ),
+            (
+                (1..=65_536).contains(&self.max_pending_requests),
+                "memory.max_pending_requests must be between 1 and 65536",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
         }
         Ok(())
     }
@@ -190,15 +208,23 @@ impl Default for LoggingConfig {
 
 impl LoggingConfig {
     pub fn validate(&self) -> Result<()> {
-        if self.queue_events == 0
-            || self.queue_events > 16_384
-            || self.max_event_bytes < 256
-            || self.max_event_bytes > 65_536
-            || self.filter.len() > 1_024
-        {
-            return Err(Error::Configuration {
-                reason: "logging budget or filter size is invalid",
-            });
+        for (valid, reason) in [
+            (
+                (1..=16_384).contains(&self.queue_events),
+                "logging.queue_events must be between 1 and 16384",
+            ),
+            (
+                (256..=65_536).contains(&self.max_event_bytes),
+                "logging.max_event_bytes must be between 256 and 65536",
+            ),
+            (
+                self.filter.len() <= 1_024,
+                "logging.filter must not exceed 1024 bytes",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
         }
         Ok(())
     }

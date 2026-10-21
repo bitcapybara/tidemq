@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn bounded_frame_round_trip_and_class_binding() {
         let limits = ProtocolLimits::default();
-        let id = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
         let body = CreateTopic {
             name: "events".into(),
             partitions: 4,
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn invalid_trace_metadata_is_ignored_inside_a_valid_frame() {
         let limits = ProtocolLimits::default();
-        let id = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
         let message = CreateTopic {
             name: "events".into(),
             partitions: 1,
@@ -475,7 +475,7 @@ mod tests {
             body: Bytes::from(vec![7; 64 * 1024]),
             ..Default::default()
         };
-        let id = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
         let frame = new_frame(
             FrameKind::ProduceBatch,
             TrafficClass::Produce,

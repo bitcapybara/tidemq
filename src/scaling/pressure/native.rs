@@ -167,7 +167,7 @@ mod tests {
     fn root_cpu_quota_is_optional_but_present_limits_and_child_errors_are_preserved() {
         let root = std::env::temp_dir().join(format!(
             "tidemq-cpu-quota-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         std::fs::create_dir(&root).unwrap();
         let child = root.join("child");

@@ -103,7 +103,7 @@ mod tests {
         assert!(DiskSampler::new(PathBuf::from("invalid\0path")).is_err());
         let missing = std::env::temp_dir().join(format!(
             "missing-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         assert!(
             DiskSampler::new(missing)

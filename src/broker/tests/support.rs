@@ -138,9 +138,9 @@ impl Cluster {
     }
 
     pub async fn new(ids: &[u64]) -> Self {
-        let cluster_id = Id::random().unwrap();
+        let cluster_id = Id::new_v7().unwrap();
         let directory =
-            std::env::temp_dir().join(format!("tidemq-producer-{}", Id::random().unwrap()));
+            std::env::temp_dir().join(format!("tidemq-producer-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir(&directory).await.unwrap();
         let mut cluster = Self {
             directory,
@@ -341,8 +341,8 @@ pub(super) fn lease(grant: &Grant) -> ControlLease {
 
 pub(super) fn context() -> RequestContext {
     RequestContext {
-        operation_id: Id::random().unwrap(),
-        request_id: Id::random().unwrap(),
+        operation_id: Id::new_v7().unwrap(),
+        request_id: Id::new_v7().unwrap(),
         attempt: 1,
         deadline: Instant::now() + Duration::from_secs(5),
     }

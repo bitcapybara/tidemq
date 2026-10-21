@@ -18,7 +18,7 @@ let client = Client::connect(ClientConfig::new("localhost:7443"), ca.into(),
     std::env::var("TIDEMQ_TOKEN")?).await?;
 let topic = client.admin().create_topic("events", 1).await?;
 let producer = Producer::open(client.clone(), Id::from_slice(&topic.topic_id)?, 0,
-    Id::random()?).await?;
+    Id::new_v7()?).await?;
 let receipt = producer.produce(vec![Message {
     key: Bytes::from_static(b"key"), body: Bytes::from_static(b"message"),
 }]).await?;
@@ -26,6 +26,10 @@ println!("Committed offset {}", receipt.first_offset);
 client.close().await;
 # Ok(()) }
 ```
+
+Generate ordinary producer and operation identities with `Id::new_v7()?`. Generation propagates entropy and clock errors through `Result`; it uses the UUID builder without a global monotonic counter. UUID ordering does not establish message or distributed operation order. Retries retain their original operation identities.
+
+Configuration errors name the failed field and its constraint. `Error::Remote` retains the server's diagnostic `message`, typed code, outcome, retryability and optional sequence/epoch hints. `Admission { resource }` identifies the exhausted budget; `ResponseMismatch { reason }` identifies the invalid response field. Nested errors preserve their `source` chain. When the host needs the complete chain, wrap the error with `anyhow::Error::new(err)` and render it with `"{err:#}"`; individual error displays describe only their own context. Retry decisions use typed fields, never message text. See [error diagnostics](../../docs/operations/error-diagnostics.zh-CN.md).
 
 Every network operation uses `ClientConfig::request_timeout_ms` by default, including admission queues, connection establishment, retries and backoff. Callers no longer create an `Instant` for every request. Set an explicit shared total budget and a Tokio cancellation parent with `RequestContext`:
 
@@ -39,7 +43,7 @@ let cancellation = context.cancellation_token();
 // Pass a clone of cancellation to the task that owns shutdown or user cancellation.
 context.scope(async {
     client.admin().topic("events").await?;
-    client.admin().subscription(tidemq_sdk::Id::random()?, "workers").await?;
+    client.admin().subscription(tidemq_sdk::Id::new_v7()?, "workers").await?;
     Ok(())
 }).await?;
 cancellation.cancel();

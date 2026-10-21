@@ -110,7 +110,7 @@ impl Producer {
                 FrameKind::ProducerStatus,
                 FrameKind::ProducerStatusResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::ProducerStatus {
                     topic_id: bytes(topic),
                     partition_id: partition,
@@ -162,7 +162,9 @@ impl Producer {
         deadline: Instant,
     ) -> Result<Self> {
         if expected_registration_epoch == 0 {
-            return Err(Error::ResponseMismatch);
+            return Err(Error::Configuration {
+                reason: "expected_registration_epoch must be nonzero",
+            });
         }
         crate::request::mark_registration(producer, expected_registration_epoch);
         let request = public::OpenProducer {
@@ -193,10 +195,18 @@ impl Producer {
                     error
                 }
             })?;
-        if response.producer_id.as_ref() != producer.as_bytes()
-            || response.producer_epoch != expected_registration_epoch
-        {
-            return Err(Error::ResponseMismatch);
+        if response.producer_id.as_ref() != producer.as_bytes() {
+            return Err(Error::ResponseMismatch {
+                reason: "open producer response producer_id differs from the request".into(),
+            });
+        }
+        if response.producer_epoch != expected_registration_epoch {
+            return Err(Error::ResponseMismatch {
+                reason: format!(
+                    "open producer response producer_epoch {} differs from expected_registration_epoch {expected_registration_epoch}",
+                    response.producer_epoch
+                ),
+            });
         }
         Ok(Self {
             slots: Arc::new(Semaphore::new(
@@ -284,7 +294,9 @@ impl Producer {
         }
         state.rpc = Some(rpc.clone());
         let first_sequence = state.next_sequence;
-        let count = u64::try_from(messages.len()).map_err(|_| Error::Admission)?;
+        let count = u64::try_from(messages.len()).map_err(|_| Error::Admission {
+            resource: "producer message count exceeds u64",
+        })?;
         let next_sequence = first_sequence
             .checked_add(count)
             .ok_or(Error::Configuration {
@@ -348,28 +360,34 @@ impl Producer {
             .and_then(|metadata| metadata.checked_add(payload.encoded_len()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Batch>() + 128))
             .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or(Error::Admission)?;
+            .ok_or(Error::Admission {
+                resource: "producer batch memory charge exceeds u32",
+            })?;
         let memory = self
             .client
             .inner
             .bytes
             .clone()
             .try_acquire_many_owned(size)
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "client max_pending_bytes for producer batch",
+            })?;
         let producer_memory = self
             .client
             .inner
             .producer_bytes
             .clone()
             .try_acquire_many_owned(size)
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "producer byte budget reserved beside delivery capacity",
+            })?;
         // Small caller-owned Bytes views may retain a much larger backing allocation.
         payload.messages = compact_messages(payload.messages)?;
-        let operation = Id::random()?;
+        let operation = Id::new_v7()?;
         let frame = self.client.frame(
             FrameKind::ProduceBatch,
             TrafficClass::Produce,
-            Id::random()?,
+            Id::new_v7()?,
             operation,
             &payload,
             deadline,
@@ -411,7 +429,9 @@ impl Producer {
         let mut output = Vec::new();
         output
             .try_reserve_exact(state.pending.len())
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "pending batch list allocation",
+            })?;
         output.extend(state.pending.values().cloned());
         Ok(output)
     }
@@ -502,7 +522,9 @@ impl Producer {
             .inner
             .in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "the same producer batch is already in flight",
+            })?;
         crate::request::mark_produce_pending();
         let guard = Attempt {
             batch: batch.clone(),
@@ -526,7 +548,7 @@ impl Producer {
                     self.client.frame(
                         FrameKind::ProduceBatch,
                         TrafficClass::Produce,
-                        Id::random()?,
+                        Id::new_v7()?,
                         batch.inner.operation,
                         &batch.inner.payload,
                         deadline,
@@ -562,7 +584,7 @@ impl Producer {
                 FrameKind::RetireProducer,
                 FrameKind::ProducerRetired,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::RetireProducer {
                     topic_id: bytes(self.topic),
                     partition_id: self.partition,
@@ -573,10 +595,18 @@ impl Producer {
                 deadline,
             )
             .await?;
-        if response.producer_id.as_ref() != self.id.as_bytes()
-            || response.producer_epoch != self.epoch
-        {
-            return Err(Error::ResponseMismatch);
+        if response.producer_id.as_ref() != self.id.as_bytes() {
+            return Err(Error::ResponseMismatch {
+                reason: "retire producer response producer_id differs from this producer".into(),
+            });
+        }
+        if response.producer_epoch != self.epoch {
+            return Err(Error::ResponseMismatch {
+                reason: format!(
+                    "retire producer response producer_epoch {} differs from this producer epoch {}",
+                    response.producer_epoch, self.epoch
+                ),
+            });
         }
         state.expired = true;
         Ok(())
@@ -594,18 +624,14 @@ impl Producer {
             Err(error) => Err(error),
         };
         let result = response.and_then(|response| {
-            self.client
-                .decode::<public::ProduceResult>(response, FrameKind::ProduceResult)
+            let result = self
+                .client
+                .decode::<public::ProduceResult>(response, FrameKind::ProduceResult)?;
+            validate_produce_result(&result, batch.inner.payload.messages.len())?;
+            Ok(result)
         });
         match result {
-            Ok(result)
-                if usize::try_from(result.message_count).ok()
-                    == Some(batch.inner.payload.messages.len())
-                    && result
-                        .first_offset
-                        .checked_add(u64::from(result.message_count))
-                        .is_some() =>
-            {
+            Ok(result) => {
                 self.state
                     .lock()
                     .await
@@ -618,12 +644,14 @@ impl Producer {
                     duplicate: result.duplicate,
                 })
             }
-            Err(Error::Remote {
-                code: ErrorCode::SessionExpired | ErrorCode::DeduplicationExpired,
-                ..
-            }) => {
+            Err(
+                error @ Error::Remote {
+                    code: ErrorCode::SessionExpired | ErrorCode::DeduplicationExpired,
+                    ..
+                },
+            ) => {
                 self.state.lock().await.expired = true;
-                Err(Error::SessionExpired)
+                Err(error)
             }
             Err(
                 error @ Error::Remote {
@@ -631,29 +659,14 @@ impl Producer {
                     ..
                 },
             ) => Err(error),
-            other => Err(Error::ProduceUnknown {
-                source: Box::new(other.err().unwrap_or(Error::ResponseMismatch)),
+            Err(source) => Err(Error::ProduceUnknown {
+                source: Box::new(source),
             }),
         }
     }
 
     fn validate_messages(&self, messages: &[public::Message]) -> Result<()> {
-        let limits = &self.client.inner.config.protocol;
-        if messages.is_empty()
-            || messages.len() > limits.max_batch_messages as usize
-            || messages.iter().any(|message| {
-                message
-                    .key
-                    .len()
-                    .checked_add(message.body.len())
-                    .is_none_or(|bytes| bytes > limits.max_message_bytes as usize)
-            })
-        {
-            return Err(Error::Configuration {
-                reason: "batch message limits exceeded",
-            });
-        }
-        Ok(())
+        validate_messages(messages, &self.client.inner.config.protocol)
     }
 }
 
@@ -661,7 +674,9 @@ fn compact_messages(messages: Vec<public::Message>) -> Result<Vec<public::Messag
     let mut compact = Vec::new();
     compact
         .try_reserve_exact(messages.len())
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::Admission {
+            resource: "producer message metadata allocation",
+        })?;
     for message in messages {
         compact.push(public::Message {
             key: copy_payload(&message.key)?,
@@ -674,7 +689,9 @@ fn compact_messages(messages: Vec<public::Message>) -> Result<Vec<public::Messag
 fn copy_payload(bytes: &[u8]) -> Result<bytes::Bytes> {
     let mut copy = Vec::new();
     copy.try_reserve_exact(bytes.len())
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::Admission {
+            resource: "producer payload allocation",
+        })?;
     copy.extend_from_slice(bytes);
     Ok(copy.into())
 }
@@ -689,5 +706,114 @@ impl Drop for Attempt {
             self.batch.inner.uncertain.store(true, Ordering::Release);
         }
         self.batch.inner.in_flight.store(false, Ordering::Release);
+    }
+}
+
+fn validate_produce_result(result: &public::ProduceResult, expected_messages: usize) -> Result<()> {
+    if usize::try_from(result.message_count).ok() != Some(expected_messages) {
+        return Err(Error::ResponseMismatch {
+            reason: format!(
+                "ProduceResult.message_count {} differs from submitted count {expected_messages}",
+                result.message_count
+            ),
+        });
+    }
+    if result
+        .first_offset
+        .checked_add(u64::from(result.message_count))
+        .is_none()
+    {
+        return Err(Error::ResponseMismatch {
+            reason: format!(
+                "ProduceResult.first_offset {} plus message_count {} overflows u64",
+                result.first_offset, result.message_count
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_messages(
+    messages: &[public::Message],
+    limits: &tidemq_protocol::ProtocolLimits,
+) -> Result<()> {
+    if messages.is_empty() {
+        return Err(Error::Configuration {
+            reason: "produce messages must not be empty",
+        });
+    }
+    if messages.len() > limits.max_batch_messages as usize {
+        return Err(Error::Configuration {
+            reason: "produce message count exceeds protocol.max_batch_messages",
+        });
+    }
+    if messages.iter().any(|message| {
+        message
+            .key
+            .len()
+            .checked_add(message.body.len())
+            .is_none_or(|bytes| bytes > limits.max_message_bytes as usize)
+    }) {
+        return Err(Error::Configuration {
+            reason: "produce message key plus body exceeds protocol.max_message_bytes",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn produce_input_limits_distinguish_empty_count_and_size() {
+        let limits = tidemq_protocol::ProtocolLimits::default();
+        assert!(
+            validate_messages(&[], &limits)
+                .unwrap_err()
+                .to_string()
+                .contains("must not be empty")
+        );
+        let messages = vec![public::Message::default(); limits.max_batch_messages as usize + 1];
+        assert!(
+            validate_messages(&messages, &limits)
+                .unwrap_err()
+                .to_string()
+                .contains("max_batch_messages")
+        );
+        let large = public::Message {
+            key: bytes::Bytes::new(),
+            body: bytes::Bytes::from(vec![0; limits.max_message_bytes as usize + 1]),
+        };
+        assert!(
+            validate_messages(&[large], &limits)
+                .unwrap_err()
+                .to_string()
+                .contains("max_message_bytes")
+        );
+        validate_messages(&[public::Message::default()], &limits).unwrap();
+    }
+
+    #[test]
+    fn invalid_produce_receipts_distinguish_count_from_offset_overflow() {
+        let mut receipt = public::ProduceResult {
+            first_offset: 0,
+            message_count: 1,
+            duplicate: false,
+        };
+        validate_produce_result(&receipt, 1).unwrap();
+        assert!(
+            validate_produce_result(&receipt, 2)
+                .unwrap_err()
+                .to_string()
+                .contains("message_count 1 differs from submitted count 2")
+        );
+        receipt.first_offset = u64::MAX;
+        assert!(
+            validate_produce_result(&receipt, 1)
+                .unwrap_err()
+                .to_string()
+                .contains("overflows u64")
+        );
     }
 }

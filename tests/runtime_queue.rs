@@ -107,7 +107,7 @@ async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() 
     let mut process = start_process(&fixture, 1).await;
     let client = fixture.client(1).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let message = || public::Message {
@@ -300,7 +300,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     }
     let client = fixture.client(41).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     for offset in 0..4 {
@@ -463,7 +463,7 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let receipt = producer
@@ -612,7 +612,7 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
     fixture.start_all().await;
     let client = fixture.client(41).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let mut work = tokio::task::JoinSet::new();
@@ -815,7 +815,7 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
     .await
     .unwrap();
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     for offset in 0..3 {
@@ -947,7 +947,7 @@ async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_recl
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     assert_eq!(durable_produce(&producer, b"expired-prefix").await, 0);
@@ -1023,7 +1023,7 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     fixture.start_all().await;
     let client = fixture.client(gateway).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     producer
@@ -1211,7 +1211,7 @@ async fn exercise_runtime_scaling(automatic: bool) {
     );
     let client = fixture.client(41).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let message = || public::Message {

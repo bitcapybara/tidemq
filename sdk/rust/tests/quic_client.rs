@@ -29,6 +29,7 @@ use tokio::{
 };
 
 const TOKEN: &str = "sdk-test-token-with-at-least-32-characters";
+const FENCED_MESSAGE: &str = "Assignment ownership changed; refresh the current assignment";
 fn id(byte: u8) -> Id {
     Id::from_slice(&[byte; 16]).unwrap()
 }
@@ -247,6 +248,7 @@ fn fenced(request: &Frame) -> Frame {
         request,
         FrameKind::Error,
         &tidemq_protocol::common::ErrorReply {
+            message: FENCED_MESSAGE.into(),
             code: tidemq_protocol::common::ErrorCode::Fenced.into(),
             outcome: tidemq_protocol::common::Outcome::Rejected.into(),
             retryable: true,
@@ -661,7 +663,7 @@ async fn unresolved_production_leaves_consumption_capacity_and_does_not_retain_h
                 body: Bytes::from(vec![b'x'; 262_144])
             }])
             .await,
-        Err(Error::Admission)
+        Err(Error::Admission { .. })
     ));
     assert!(third.pending_batches().await.unwrap().is_empty());
     peer.state.lock().unwrap().fill_credit = true;
@@ -1547,12 +1549,14 @@ async fn old_ack_is_not_rewritten_and_recv_recovers_from_the_durable_frontier() 
     consumer.ack(&first).await.unwrap();
     let old = consumer.next().await.unwrap().unwrap();
     advance_owner(&mut peer.state.lock().unwrap(), true);
+    let error = consumer.ack(&old).await.unwrap_err();
+    assert!(error.to_string().contains(FENCED_MESSAGE));
     assert!(matches!(
-        consumer.ack(&old).await,
-        Err(Error::Remote {
+        error,
+        Error::Remote {
             code: tidemq_protocol::common::ErrorCode::Fenced,
             ..
-        })
+        }
     ));
     let fresh = consumer.recv().await.unwrap().unwrap();
     assert_eq!(fresh.offset(), 1);
@@ -1689,7 +1693,7 @@ async fn gaps_do_not_cross_bulk_barrier_and_failed_keys_remain_blocked() {
     consumer.ack(&second).await.unwrap();
     let hot = consumer.next().await.unwrap().unwrap();
     assert_eq!(hot.offset(), 2);
-    consumer.seek(2, Id::random().unwrap()).await.unwrap();
+    consumer.seek(2, Id::new_v7().unwrap()).await.unwrap();
     assert!(matches!(
         consumer.ack(&hot).await,
         Err(Error::StaleDelivery)

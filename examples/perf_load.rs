@@ -275,7 +275,7 @@ async fn run(args: &Args) -> Result<Report> {
         credential.trim_end_matches(['\r', '\n']).into(),
     )
     .await?;
-    let nonce = Id::random()?;
+    let nonce = Id::new_v7()?;
     let warmup = if args.warmup_messages > 0 {
         Some(workload::group(&client, args, "warmup", nonce, args.warmup_messages).await?)
     } else {

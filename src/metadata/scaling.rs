@@ -243,8 +243,8 @@ mod tests {
         assert!(
             state
                 .apply(Command::bootstrap(
-                    Id::random().unwrap(),
-                    Id::random().unwrap(),
+                    Id::new_v7().unwrap(),
+                    Id::new_v7().unwrap(),
                     77,
                     DeploymentMode::ThreeReplica,
                     limits
@@ -262,7 +262,7 @@ mod tests {
             assert!(
                 state
                     .apply(Command::put_node(
-                        Id::random().unwrap(),
+                        Id::new_v7().unwrap(),
                         state.revision(),
                         spec,
                         0
@@ -273,7 +273,7 @@ mod tests {
         assert!(
             state
                 .apply(Command::create_group(
-                    Id::random().unwrap(),
+                    Id::new_v7().unwrap(),
                     state.revision(),
                     2,
                     BTreeSet::from([1, 2, 3])
@@ -283,9 +283,9 @@ mod tests {
         assert!(
             state
                 .apply(Command::create_topic(
-                    Id::random().unwrap(),
+                    Id::new_v7().unwrap(),
                     state.revision(),
-                    Id::random().unwrap(),
+                    Id::new_v7().unwrap(),
                     "orders".into(),
                     vec![2]
                 ))
@@ -419,7 +419,7 @@ mod tests {
         retired.roles.remove(&NodeRole::Storage);
         assert!(matches!(
             state.apply(Command::put_node(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 state.revision(),
                 retired,
                 1

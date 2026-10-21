@@ -31,7 +31,7 @@ async fn exercise_live_pages(client: &Client, until: Instant) {
             client.clone(),
             topic,
             0,
-            Id::random().unwrap(),
+            Id::new_v7().unwrap(),
         ))
         .await
         .unwrap();

@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn reordered_parallel_delivery_preserves_identity_uniqueness_and_contiguous_ack() {
-        let mut ledger = Ledger::new(3, 32, Id::random().unwrap()).unwrap();
+        let mut ledger = Ledger::new(3, 32, Id::new_v7().unwrap()).unwrap();
         let messages = ledger.messages(0, 3).unwrap();
         ledger.commit(0, 3).unwrap();
         for (offset, frontier) in [(2_u64, 0), (0, 1), (1, 3)] {
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn corruption_wrong_offsets_and_premature_ack_fail() {
-        let mut ledger = Ledger::new(2, 64, Id::random().unwrap()).unwrap();
+        let mut ledger = Ledger::new(2, 64, Id::new_v7().unwrap()).unwrap();
         let messages = ledger.messages(0, 2).unwrap();
         let message = messages.first().unwrap();
         assert!(ledger.observe(0, &message.key, &message.body).is_err());

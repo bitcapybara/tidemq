@@ -258,22 +258,40 @@ fn validate(config: &DispatchConfig) -> crate::Result<()> {
         .protocol
         .validate()
         .map_err(|source| crate::Error::Protocol { source })?;
-    if [
-        config.raft_handlers,
-        config.core_handlers,
-        config.ack_handlers,
-        config.data_handlers,
-        config.replies_per_stream,
-    ]
-    .iter()
-    .any(|limit| *limit == 0 || *limit > 4096)
-        || config.idle_timeout.is_zero()
-        || config.idle_timeout > Duration::from_secs(300)
-        || config.drain_timeout.is_zero()
-        || config.drain_timeout > Duration::from_secs(60)
-    {
+    for (value, reason) in [
+        (
+            config.raft_handlers,
+            "dispatch.raft_handlers must be between 1 and 4096",
+        ),
+        (
+            config.core_handlers,
+            "dispatch.core_handlers must be between 1 and 4096",
+        ),
+        (
+            config.ack_handlers,
+            "dispatch.ack_handlers must be between 1 and 4096",
+        ),
+        (
+            config.data_handlers,
+            "dispatch.data_handlers must be between 1 and 4096",
+        ),
+        (
+            config.replies_per_stream,
+            "dispatch.replies_per_stream must be between 1 and 4096",
+        ),
+    ] {
+        if !(1..=4096).contains(&value) {
+            return Err(crate::Error::Configuration { reason });
+        }
+    }
+    if config.idle_timeout.is_zero() || config.idle_timeout > Duration::from_secs(300) {
         return Err(crate::Error::Configuration {
-            reason: "wire dispatch limits are invalid",
+            reason: "dispatch.idle_timeout must be greater than zero and at most 300 seconds",
+        });
+    }
+    if config.drain_timeout.is_zero() || config.drain_timeout > Duration::from_secs(60) {
+        return Err(crate::Error::Configuration {
+            reason: "dispatch.drain_timeout must be greater than zero and at most 60 seconds",
         });
     }
     Ok(())
@@ -308,7 +326,15 @@ async fn execute<S: WireService>(
                 health.handler_errors.inc();
                 if health.may_log(std::time::Instant::now()) {
                     let error = anyhow::Error::new(error);
-                    tracing::warn!(event_code = "wire_handler_failed", error = %format_args!("{error:#}"));
+                    tracing::warn!(
+                        event_code = "wire_handler_failed",
+                        stage = "handler_execution",
+                        command_kind = FrameKind::try_from(frame.frame().kind).map(|kind| kind.as_str_name()).unwrap_or("UNSPECIFIED"),
+                        request_id = %Id::from_slice(&frame.frame().request_id).map(|id| id.to_string()).unwrap_or_else(|_| "invalid".into()),
+                        operation_id = %Id::from_slice(&frame.frame().operation_id).map(|id| id.to_string()).unwrap_or_else(|_| "invalid".into()),
+                        error = %format_args!("{error:#}"),
+                        "Wire request handler failed"
+                    );
                 }
                 failure(frame.frame(), &limits)
             }
@@ -356,6 +382,8 @@ fn log_unknown_reply(
         request_id,
         operation_id,
         code = error.code,
+        reason = error.message,
+        retryable = error.retryable,
         outcome = "Unknown",
         "Handler returned an unknown operation result"
     );
@@ -518,7 +546,11 @@ fn overload(request: &Frame, limits: &ProtocolLimits, code: ErrorCode) -> Option
         limits,
         code,
         Outcome::Rejected,
-        "Request was rejected before handler admission",
+        match code {
+            ErrorCode::DeadlineExceeded => "Request deadline expired before handler admission",
+            ErrorCode::QuotaExceeded => "Handler slots or memory admission capacity are exhausted",
+            _ => "Service stopped accepting requests before handler admission",
+        },
     )
 }
 fn failure(request: &Frame, limits: &ProtocolLimits) -> Option<Frame> {
@@ -563,7 +595,7 @@ mod tests {
     #[test]
     fn only_valid_unknown_error_replies_are_classified_for_logging() {
         let limits = ProtocolLimits::default();
-        let id = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
         let success = new_frame(
             FrameKind::TopicResult,
             TrafficClass::Control,

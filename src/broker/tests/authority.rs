@@ -124,7 +124,7 @@ impl Metadata {
         };
         assert!(
             meta.write(Command::bootstrap(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 meta.cluster_id,
                 group_id,
                 DeploymentMode::LocalRf1,
@@ -135,7 +135,7 @@ impl Metadata {
         );
         assert!(
             meta.write(Command::put_node(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 meta.revision().await,
                 NodeSpec {
                     node_id: 1,
@@ -155,7 +155,7 @@ impl Metadata {
         );
         assert!(
             meta.write(Command::create_group(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 meta.revision().await,
                 cluster.config.group_id,
                 BTreeSet::from([1])
@@ -177,7 +177,7 @@ impl Metadata {
     async fn grant(&self, cluster: &Cluster, partition: PartitionKey) -> Grant {
         assert!(
             self.write(Command::create_topic(
-                Id::random().unwrap(),
+                Id::new_v7().unwrap(),
                 self.revision().await,
                 partition.topic_id,
                 "orders".to_owned(),
@@ -301,7 +301,7 @@ async fn real_metadata_authority_activates_actual_producer_and_ack_state_through
     let mut cluster = Cluster::new(&[1]).await;
     let metadata = Metadata::new(&cluster).await;
     let partition = PartitionKey {
-        topic_id: Id::random().unwrap(),
+        topic_id: Id::new_v7().unwrap(),
         partition: 0,
     };
     let grant = metadata.grant(&cluster, partition).await;
@@ -313,7 +313,7 @@ async fn real_metadata_authority_activates_actual_producer_and_ack_state_through
             context(),
             partition,
             RegisterProducer {
-                producer_id: Id::random().unwrap(),
+                producer_id: Id::new_v7().unwrap(),
                 expected_registration_epoch: 1,
             },
         )

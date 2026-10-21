@@ -104,8 +104,8 @@ fn request<M: prost::Message>(kind: FrameKind, class: TrafficClass, payload: &M)
     new_frame(
         kind,
         class,
-        Id::random().unwrap(),
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
+        Id::new_v7().unwrap(),
         payload,
         5000,
         &ProtocolLimits::default(),
@@ -194,7 +194,7 @@ impl Fixture {
         )
         .unwrap();
         let credentials = ClientCredentials::External {
-            session_id: Id::random().unwrap(),
+            session_id: Id::new_v7().unwrap(),
             access_token: TOKEN.into(),
         };
         let target = PeerTarget {

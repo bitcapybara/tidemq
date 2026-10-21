@@ -47,24 +47,37 @@ impl ConfigFile {
         let role = self.role.ok_or(Error::Configuration {
             reason: "role-scoped configuration requires an explicit role",
         })?;
-        if role.serves_gateway() != self.gateway.is_some() {
+        if role.serves_gateway() && self.gateway.is_none() {
             return Err(Error::Configuration {
-                reason: "gateway section is required only for gateway or combined roles",
+                reason: "gateway section is required for gateway and combined roles",
             });
         }
-        if role.stores_data() != self.storage.is_some() {
+        if !role.serves_gateway() && self.gateway.is_some() {
             return Err(Error::Configuration {
-                reason: "storage section is required only for storage or combined roles",
+                reason: "gateway section is not supported by broker, storage, or metadata roles",
+            });
+        }
+        if role.stores_data() && self.storage.is_none() {
+            return Err(Error::Configuration {
+                reason: "storage section is required for storage and combined roles",
+            });
+        }
+        if !role.stores_data() && self.storage.is_some() {
+            return Err(Error::Configuration {
+                reason: "storage section is not supported by gateway, broker, or metadata roles",
             });
         }
         let authorization = self.authorization.as_ref().ok_or(Error::Configuration {
             reason: "role-scoped configuration requires the shared authorization section",
         })?;
-        if authorization.access_file.as_os_str().is_empty()
-            || authorization.delivery_key_file.as_os_str().is_empty()
-        {
+        if authorization.access_file.as_os_str().is_empty() {
             return Err(Error::Configuration {
-                reason: "shared authorization file paths must be nonempty",
+                reason: "authorization.access_file must not be empty",
+            });
+        }
+        if authorization.delivery_key_file.as_os_str().is_empty() {
+            return Err(Error::Configuration {
+                reason: "authorization.delivery_key_file must not be empty",
             });
         }
         Ok(role)

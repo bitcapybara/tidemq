@@ -32,17 +32,17 @@ mod tests {
     async fn uncertain_manifest_publication_freezes_cleanup_and_keeps_both_generations() {
         let directory = std::env::temp_dir().join(format!(
             "tidemq-snapshot-freeze-{}",
-            tidemq_protocol::Id::random().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         tokio::fs::create_dir(&directory).await.unwrap();
         let owner = Arc::new(std::fs::File::create(directory.join(".writer-lock")).unwrap());
         let old = SnapshotRef {
-            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::random().unwrap()),
+            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::new_v7().unwrap()),
             byte_len: 7,
             checksum: [0; 32],
         };
         let new = SnapshotRef {
-            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::random().unwrap()),
+            file_name: format!("snapshot-{}.bin", tidemq_protocol::Id::new_v7().unwrap()),
             byte_len: 11,
             checksum: [1; 32],
         };
@@ -262,7 +262,7 @@ impl SnapshotRegistry {
             .map_err(|_| Error::Limit {
                 name: "incoming snapshot handles",
             })?;
-        let id = tidemq_protocol::Id::random().map_err(|error| Error::Writer {
+        let id = tidemq_protocol::Id::new_v7().map_err(|error| Error::Writer {
             reason: error.to_string(),
         })?;
         let name = format!(".incoming-{id}");

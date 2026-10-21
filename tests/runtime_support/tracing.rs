@@ -51,7 +51,7 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     }
     let client = fixture.client(4).await;
     let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(

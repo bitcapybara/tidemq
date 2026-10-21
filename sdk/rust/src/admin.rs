@@ -37,7 +37,7 @@ impl Admin {
                 FrameKind::CreateTopic,
                 FrameKind::TopicResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::CreateTopic {
                     name: name.into(),
                     partitions,
@@ -60,7 +60,7 @@ impl Admin {
                 FrameKind::GetTopic,
                 FrameKind::TopicResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::GetTopic { name: name.into() },
                 deadline,
             )
@@ -100,7 +100,7 @@ impl Admin {
                 FrameKind::CreateSubscription,
                 FrameKind::SubscriptionResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::CreateSubscription {
                     topic_id: bytes(topic),
                     name: name.into(),
@@ -130,7 +130,7 @@ impl Admin {
                 FrameKind::GetSubscription,
                 FrameKind::SubscriptionResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::GetSubscription {
                     topic_id: bytes(topic),
                     name: name.into(),
@@ -201,7 +201,7 @@ impl Admin {
                 FrameKind::ProducerStatus,
                 FrameKind::ProducerStatusResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::ProducerStatus {
                     topic_id: bytes(topic),
                     partition_id: partition,
@@ -239,7 +239,7 @@ impl Admin {
                 FrameKind::SubscriptionStatus,
                 FrameKind::SubscriptionStatusResult,
                 TrafficClass::Control,
-                Id::random()?,
+                Id::new_v7()?,
                 &public::SubscriptionStatus {
                     topic_id: bytes(topic),
                     partition_id: partition,
@@ -255,10 +255,33 @@ pub(crate) fn bytes(id: Id) -> Bytes {
     Bytes::copy_from_slice(id.as_bytes())
 }
 fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > 255 || name.chars().any(char::is_control) {
-        return Err(Error::Configuration {
-            reason: "resource name is empty, excessive or contains control characters",
-        });
+    for (valid, reason) in [
+        (!name.is_empty(), "resource name must not be empty"),
+        (name.len() <= 255, "resource name must not exceed 255 bytes"),
+        (
+            !name.chars().any(char::is_control),
+            "resource name must not contain control characters",
+        ),
+    ] {
+        if !valid {
+            return Err(Error::Configuration { reason });
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_names_distinguish_missing_length_and_control_characters() {
+        let empty = validate_name("").unwrap_err().to_string();
+        let long = validate_name(&"x".repeat(256)).unwrap_err().to_string();
+        let control = validate_name("events\n").unwrap_err().to_string();
+        assert!(empty.contains("must not be empty"));
+        assert!(long.contains("must not exceed 255 bytes"));
+        assert!(control.contains("must not contain control characters"));
+        validate_name("events").unwrap();
+    }
 }

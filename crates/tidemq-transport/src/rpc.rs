@@ -16,10 +16,10 @@ use crate::{Connection, FrameReceiver, FrameSender, FramedStream, ReceivedFrame,
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("Invalid RPC limits"))]
-    Configuration,
-    #[snafu(display("RPC admission budget exhausted"))]
-    Admission,
+    #[snafu(display("Invalid RPC configuration: {reason}"))]
+    Configuration { reason: &'static str },
+    #[snafu(display("RPC admission failed for {resource}"))]
+    Admission { resource: &'static str },
     #[snafu(display("RPC client is closed; the request outcome may be unknown"))]
     Closed,
     #[snafu(display("RPC deadline exceeded; may have been sent: {may_have_been_sent}"))]
@@ -51,6 +51,42 @@ impl Default for RpcConfig {
             read_idle_timeout: Duration::from_secs(30),
             liveness_timeout: Duration::from_secs(1),
         }
+    }
+}
+
+impl RpcConfig {
+    pub fn validate(&self) -> Result<()> {
+        for (valid, reason) in [
+            (
+                (1..=65_536).contains(&self.max_pending_requests),
+                "max_pending_requests must be between 1 and 65536",
+            ),
+            (
+                self.max_pending_bytes > 0,
+                "max_pending_bytes must be greater than zero",
+            ),
+            (
+                usize::try_from(self.max_pending_bytes)
+                    .ok()
+                    .is_some_and(|bytes| bytes <= Semaphore::MAX_PERMITS),
+                "max_pending_bytes must fit the platform's semaphore capacity",
+            ),
+            (
+                !self.read_idle_timeout.is_zero()
+                    && self.read_idle_timeout <= Duration::from_secs(300),
+                "read_idle_timeout must be greater than zero and at most 300 seconds",
+            ),
+            (
+                (Duration::from_millis(100)..=Duration::from_secs(10))
+                    .contains(&self.liveness_timeout),
+                "liveness_timeout must be between 100 milliseconds and 10 seconds",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -145,8 +181,11 @@ impl RpcClient {
         deadline: Instant,
     ) -> Result<Self> {
         if request_lanes == 0 || request_lanes > 64 {
-            return Err(Error::Configuration);
+            return Err(Error::Configuration {
+                reason: "request_lanes must be between 1 and 64",
+            });
         }
+        config.validate()?;
         let mut streams = session.take_initial_streams().await;
         if session.connection().class() != tidemq_protocol::common::TrafficClass::Control {
             while streams.len() < request_lanes {
@@ -171,20 +210,11 @@ impl RpcClient {
         config: RpcConfig,
         session: Option<Arc<Session>>,
     ) -> Result<Self> {
-        if streams.is_empty()
-            || streams.len() > 64
-            || config.max_pending_requests == 0
-            || config.max_pending_requests > 65_536
-            || config.max_pending_bytes == 0
-            || usize::try_from(config.max_pending_bytes)
-                .ok()
-                .is_none_or(|bytes| bytes > Semaphore::MAX_PERMITS)
-            || config.read_idle_timeout.is_zero()
-            || config.read_idle_timeout > Duration::from_secs(300)
-            || config.liveness_timeout < Duration::from_millis(100)
-            || config.liveness_timeout > Duration::from_secs(10)
-        {
-            return Err(Error::Configuration);
+        config.validate()?;
+        if streams.is_empty() || streams.len() > 64 {
+            return Err(Error::Configuration {
+                reason: "streams must contain between 1 and 64 RPC lanes",
+            });
         }
         let state = Arc::new(State {
             pending: Mutex::new(HashMap::new()),
@@ -364,21 +394,27 @@ impl RpcClient {
         if self.is_closed() || self.inner.state.draining.load(Ordering::Acquire) {
             return Err(Error::Closed);
         }
-        let length = u32::try_from(frame.encoded_len()).map_err(|_| Error::Admission)?;
+        let length = u32::try_from(frame.encoded_len()).map_err(|_| Error::Admission {
+            resource: "encoded RPC frame length exceeds u32",
+        })?;
         let slots = self
             .inner
             .state
             .slots
             .clone()
             .try_acquire_owned()
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "max_pending_requests",
+            })?;
         let bytes = self
             .inner
             .state
             .bytes
             .clone()
             .try_acquire_many_owned(length)
-            .map_err(|_| Error::Admission)?;
+            .map_err(|_| Error::Admission {
+                resource: "max_pending_bytes",
+            })?;
         Ok((Arc::new(slots), Arc::new(bytes)))
     }
 
@@ -389,8 +425,13 @@ impl RpcClient {
         affinity: Option<u64>,
     ) -> Result<()> {
         let lane = match affinity {
-            Some(affinity) => usize::try_from(affinity % self.inner.writers.len() as u64)
-                .map_err(|_| Error::Configuration)?,
+            Some(affinity) => {
+                usize::try_from(affinity % self.inner.writers.len() as u64).map_err(|_| {
+                    Error::Configuration {
+                        reason: "RPC affinity lane index exceeds the platform's address space",
+                    }
+                })?
+            }
             None => self.inner.next_lane.fetch_add(1, Ordering::Relaxed) % self.inner.writers.len(),
         };
         let writer = self.inner.writers.get(lane).ok_or(Error::Closed)?;
@@ -602,8 +643,8 @@ mod tests {
         new_frame(
             FrameKind::ProduceResult,
             TrafficClass::Produce,
-            Id::random().unwrap(),
-            Id::random().unwrap(),
+            Id::new_v7().unwrap(),
+            Id::new_v7().unwrap(),
             &ProduceResult {
                 first_offset: 42,
                 message_count: 1,
@@ -625,7 +666,7 @@ mod tests {
             bytes: Arc::new(Semaphore::new(100)),
             connection: None,
         });
-        let id = Id::random().unwrap();
+        let id = Id::new_v7().unwrap();
         let old_ticket = Arc::new(state.slots.clone().try_acquire_owned().unwrap());
         let old = Waiter {
             state: state.clone(),
@@ -725,7 +766,7 @@ mod tests {
             .connect(
                 target,
                 &ClientCredentials::External {
-                    session_id: Id::random().unwrap(),
+                    session_id: Id::new_v7().unwrap(),
                     access_token: TOKEN.into(),
                 },
                 TrafficClass::Produce,

@@ -145,7 +145,7 @@ async fn a_live_read_reuses_its_bounded_hot_page_and_preserves_durable_ack_ident
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -232,7 +232,7 @@ async fn a_cancelled_read_retains_page_charge_until_its_owned_work_finishes() {
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -334,7 +334,7 @@ async fn an_unknown_delivery_after_a_durable_prefix_cannot_become_partial_succes
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -437,7 +437,7 @@ async fn a_later_hot_read_rejection_cannot_hide_a_durable_delivery_prefix() {
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -548,7 +548,7 @@ async fn a_real_logical_retention_floor_still_rejects_the_expired_offset() {
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     let consumer = Consumer::claim(
@@ -616,7 +616,7 @@ async fn a_real_logical_retention_floor_still_rejects_the_expired_offset() {
     let valid = service
         .require_retained_offset(2, partition, 1, deadline())
         .await;
-    let seek = consumer.seek(0, Id::random().unwrap()).await;
+    let seek = consumer.seek(0, Id::new_v7().unwrap()).await;
     client.close().await;
     drop(delivered);
     drop(consumer);
@@ -657,7 +657,7 @@ async fn run_reclaimed_read(paused_offset: u64) {
         topic_id: topic,
         partition: 0,
     };
-    let producer = Producer::open(client.clone(), topic, 0, Id::random().unwrap())
+    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
         .await
         .unwrap();
     // Claim before writing: the same live assignment must keep H=0 across local reclamation.

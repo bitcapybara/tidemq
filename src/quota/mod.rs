@@ -15,8 +15,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("Capacity watermarks or sampling limits are invalid"))]
-    InvalidLimits,
+    #[snafu(display("Invalid capacity limits: {reason}"))]
+    InvalidLimits { reason: String },
     #[snafu(display("Capacity has no fresh observation"))]
     Unmeasured,
     #[snafu(display("Capacity observation has expired"))]
@@ -32,9 +32,19 @@ pub struct Watermark {
 }
 
 impl Watermark {
-    fn validate(self) -> Result<()> {
-        if self.low >= self.high || self.high > i64::MAX as u64 {
-            return Err(Error::InvalidLimits);
+    fn validate(self, name: &str) -> Result<()> {
+        if self.low >= self.high {
+            return Err(Error::InvalidLimits {
+                reason: format!(
+                    "{name}.low ({}) must be smaller than {name}.high ({})",
+                    self.low, self.high
+                ),
+            });
+        }
+        if self.high > i64::MAX as u64 {
+            return Err(Error::InvalidLimits {
+                reason: format!("{name}.high ({}) must not exceed {}", self.high, i64::MAX),
+            });
         }
         Ok(())
     }
@@ -75,11 +85,18 @@ impl Default for Limits {
 
 impl Limits {
     pub fn validate(self) -> Result<()> {
-        for watermark in self.watermarks() {
-            watermark.validate()?;
+        for (name, watermark) in [
+            ("logical_backlog", self.logical_backlog),
+            ("physical_storage", self.physical_storage),
+            ("shared_reclaim_lag", self.shared_reclaim_lag),
+            ("process_memory", self.process_memory),
+        ] {
+            watermark.validate(name)?;
         }
         if !(10..=10_000).contains(&self.max_sample_age_ms) {
-            return Err(Error::InvalidLimits);
+            return Err(Error::InvalidLimits {
+                reason: "max_sample_age_ms must be between 10 and 10000".into(),
+            });
         }
         Ok(())
     }
@@ -436,16 +453,30 @@ impl MemoryEnvelope {
         ]
         .into_iter()
         .try_fold(0_u64, |total, part| total.checked_add(part))
-        .ok_or(Error::InvalidLimits)?;
-        if self.process_limit_bytes == 0
-            || self.application_bytes == 0
-            || self.native_bytes == 0
-            || self.thread_stack_bytes == 0
-            || self.diagnostic_bytes == 0
-            || self.allocator_margin_bytes == 0
-            || reserved > self.process_limit_bytes
-        {
-            return Err(Error::InvalidLimits);
+        .ok_or_else(|| Error::InvalidLimits {
+            reason: "memory envelope reservation sum overflows u64".into(),
+        })?;
+        for (name, value) in [
+            ("process_limit_bytes", self.process_limit_bytes),
+            ("application_bytes", self.application_bytes),
+            ("native_bytes", self.native_bytes),
+            ("thread_stack_bytes", self.thread_stack_bytes),
+            ("diagnostic_bytes", self.diagnostic_bytes),
+            ("allocator_margin_bytes", self.allocator_margin_bytes),
+        ] {
+            if value == 0 {
+                return Err(Error::InvalidLimits {
+                    reason: format!("memory envelope {name} must be greater than zero"),
+                });
+            }
+        }
+        if reserved > self.process_limit_bytes {
+            return Err(Error::InvalidLimits {
+                reason: format!(
+                    "memory envelope reservations ({reserved}) exceed process_limit_bytes ({})",
+                    self.process_limit_bytes
+                ),
+            });
         }
         Ok(())
     }

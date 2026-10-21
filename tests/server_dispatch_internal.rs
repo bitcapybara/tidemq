@@ -108,7 +108,7 @@ struct Fixture {
 impl Fixture {
     async fn new() -> Self {
         let pki = quic::Pki::new(&[1, 2]);
-        let cluster = Id::random().unwrap();
+        let cluster = Id::new_v7().unwrap();
         let mut grants = pki.grants(cluster, 1, "combined");
         for grant in &mut grants {
             grant.allowed_groups.push(2);
@@ -159,7 +159,7 @@ impl Fixture {
                     node_id: Some(2),
                 },
                 &ClientCredentials::Internal {
-                    session_id: Id::random().unwrap(),
+                    session_id: Id::new_v7().unwrap(),
                     cluster_id: cluster,
                     node_id: 1,
                     role: "combined".into(),
@@ -205,7 +205,7 @@ impl Fixture {
 }
 
 fn frame(group: u64, held: bool, milliseconds: u64) -> Frame {
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     new_frame(
         FrameKind::RaftAppend,
         TrafficClass::Control,
@@ -342,7 +342,7 @@ async fn both_core_lanes_release_expired_waiters_and_deliver_cancel() {
         .unwrap();
     wait_received(&fixture, before_frames + 1).await;
     assert!(fixture.budget.available_core_bytes() < before_budget);
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     fixture
         .rpc
         .notify(

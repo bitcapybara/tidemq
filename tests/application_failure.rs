@@ -44,7 +44,7 @@ impl Application for State {
 async fn local_apply_failure_stops_authority_and_snapshots_then_replays_the_committed_entry() {
     let directory = support::Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = StorageIdentity::new::<State>(Id::random().unwrap(), 2, 1);
+    let identity = StorageIdentity::new::<State>(Id::new_v7().unwrap(), 2, 1);
     let mut disk =
         DiskStore::<State>::open(&path, identity.clone(), StorageOptions::default(), None)
             .await

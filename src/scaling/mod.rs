@@ -28,7 +28,7 @@ pub enum Error {
     Configuration,
     #[snafu(display("Scaling is blocked by placement, capacity, or cooldown"))]
     Placement,
-    #[snafu(display("Scaling capacity is blocked by {reason:?}"))]
+    #[snafu(display("Scaling capacity is blocked: {reason}"))]
     Capacity { reason: BlockReason },
     #[snafu(display("Scaling admission is exhausted"))]
     Overloaded,
@@ -54,7 +54,7 @@ pub enum Error {
             >,
         >,
     },
-    #[snafu(display("Scaling plan was rejected: {reason:?}"))]
+    #[snafu(display("Scaling plan was rejected: {reason}"))]
     Rejected { reason: crate::metadata::Rejection },
     #[snafu(display("Scaling application storage is unavailable"))]
     Storage { source: crate::wal::Error },

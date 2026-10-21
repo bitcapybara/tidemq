@@ -24,11 +24,11 @@ fn record(offset: u64) -> Record {
 
 #[test]
 fn pack_round_trips_multiple_committed_partitions_and_redacts_payloads() {
-    let topic = Id::random().unwrap();
+    let topic = Id::new_v7().unwrap();
     let identity = PackIdentity {
-        cluster_id: Id::random().unwrap(),
+        cluster_id: Id::new_v7().unwrap(),
         group_id: 9,
-        object_id: Id::random().unwrap(),
+        object_id: Id::new_v7().unwrap(),
     };
     let records = [record(7), record(8)];
     let second = [record(30)];
@@ -72,11 +72,11 @@ fn pack_round_trips_multiple_committed_partitions_and_redacts_payloads() {
 #[test]
 fn rejects_uncommitted_cross_group_duplicate_gapped_and_oversized_records() {
     let identity = PackIdentity {
-        cluster_id: Id::random().unwrap(),
+        cluster_id: Id::new_v7().unwrap(),
         group_id: 9,
-        object_id: Id::random().unwrap(),
+        object_id: Id::new_v7().unwrap(),
     };
-    let topic = Id::random().unwrap();
+    let topic = Id::new_v7().unwrap();
     let records = [record(1), record(3)];
     let mut part = CommittedPartition {
         group_id: 9,
@@ -133,16 +133,16 @@ fn encoded_bytes_keep_memory_admission_until_every_clone_is_released() {
     let budget = budget();
     let before = budget.available_data_bytes();
     let identity = PackIdentity {
-        cluster_id: Id::random().unwrap(),
+        cluster_id: Id::new_v7().unwrap(),
         group_id: 9,
-        object_id: Id::random().unwrap(),
+        object_id: Id::new_v7().unwrap(),
     };
     let records = [record(1)];
     let pack = Pack::build(
         identity,
         &[CommittedPartition {
             group_id: 9,
-            topic_id: Id::random().unwrap(),
+            topic_id: Id::new_v7().unwrap(),
             partition_id: 0,
             offsets: OffsetRange::new(1, 2).unwrap(),
             committed_end: 2,

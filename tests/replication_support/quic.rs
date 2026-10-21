@@ -195,7 +195,7 @@ pub(crate) struct Cluster<A: Application = State> {
 
 impl Cluster<State> {
     pub(crate) async fn new(ids: &[u64]) -> Self {
-        Self::with_identity(ids, Id::random().unwrap(), GROUP, GroupRole::Data).await
+        Self::with_identity(ids, Id::new_v7().unwrap(), GROUP, GroupRole::Data).await
     }
 }
 
@@ -307,7 +307,7 @@ impl<A: Application> Cluster<A> {
             let pool = PeerPool::new(
                 client,
                 ClientCredentials::Internal {
-                    session_id: Id::random().unwrap(),
+                    session_id: Id::new_v7().unwrap(),
                     cluster_id: cluster,
                     node_id: id,
                     role: role_name.into(),

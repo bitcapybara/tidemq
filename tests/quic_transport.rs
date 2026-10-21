@@ -94,7 +94,7 @@ fn config() -> TransportConfig {
 }
 fn credentials() -> ClientCredentials {
     ClientCredentials::External {
-        session_id: Id::random().unwrap(),
+        session_id: Id::new_v7().unwrap(),
         access_token: TOKEN.into(),
     }
 }
@@ -158,7 +158,7 @@ fn frame(
     new_frame(
         kind,
         class,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         operation,
         payload,
         2_000,
@@ -266,7 +266,7 @@ async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
     drop(rebound);
 }
 fn produce() -> Frame {
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     frame(
         FrameKind::ProduceBatch,
         TrafficClass::Produce,
@@ -449,7 +449,7 @@ async fn scoped_tokens_are_checked_on_each_connection_and_frame() {
     let mut server = external_server(&pki, config());
     let client = external_client(&pki, config());
     let wrong = ClientCredentials::External {
-        session_id: Id::random().unwrap(),
+        session_id: Id::new_v7().unwrap(),
         access_token: "wrong-token-with-at-least-32-characters".into(),
     };
     assert!(
@@ -473,7 +473,7 @@ async fn scoped_tokens_are_checked_on_each_connection_and_frame() {
     let request = frame(
         FrameKind::Diagnose,
         TrafficClass::Control,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         &CreateTopic {
             name: "forbidden".into(),
             partitions: 1,
@@ -507,7 +507,7 @@ fn node_grant(leaf: &Leaf, cluster_id: Id, node_id: u64, role: &str) -> NodeGran
 }
 fn internal_credentials(cluster_id: Id, node_id: u64) -> ClientCredentials {
     ClientCredentials::Internal {
-        session_id: Id::random().unwrap(),
+        session_id: Id::new_v7().unwrap(),
         cluster_id,
         node_id,
         role: "storage".into(),
@@ -583,7 +583,7 @@ impl tidemq::server::WireService for BlockedSemanticControl {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
     let pki = pki();
-    let cluster = Id::random().unwrap();
+    let cluster = Id::new_v7().unwrap();
     let server = internal_server(&pki, cluster);
     let target = internal_target(&server, cluster);
     let service = Arc::new(BlockedSemanticControl {
@@ -623,7 +623,7 @@ async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
     .await
     .unwrap();
     let semantic = || {
-        let operation = Id::random().unwrap();
+        let operation = Id::new_v7().unwrap();
         frame(
             FrameKind::InternalCommand,
             TrafficClass::Control,
@@ -642,12 +642,12 @@ async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
         .unwrap()
         .unwrap()
         .forget();
-    let wire_id = Id::random().unwrap();
+    let wire_id = Id::new_v7().unwrap();
     let heartbeat = new_frame(
         FrameKind::RaftVote,
         TrafficClass::Control,
         wire_id,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         &RaftRequest {
             group_id: 7,
             rpc_id: Bytes::copy_from_slice(wire_id.as_bytes()),
@@ -681,7 +681,7 @@ async fn native_raft_control_progresses_when_semantic_core_handlers_are_full() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mtls_requires_certificate_pin_node_identity_and_group_authority() {
     let pki = pki();
-    let cluster = Id::random().unwrap();
+    let cluster = Id::new_v7().unwrap();
     let mut server = internal_server(&pki, cluster);
     let no_identity = external_client(&pki, config());
     assert!(
@@ -755,7 +755,7 @@ async fn mtls_requires_certificate_pin_node_identity_and_group_authority() {
     let accepted = server.accept().await.unwrap();
     let mut outgoing = session.take_initial_streams().await.pop().unwrap();
     let mut incoming = accepted.take_initial_streams().await.pop().unwrap();
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     let request = frame(
         FrameKind::RaftAppend,
         TrafficClass::Replication,
@@ -807,7 +807,7 @@ async fn raw_client(
 }
 
 async fn raw_hello(stream: &mut s2n_quic::stream::BidirectionalStream, class: TrafficClass) {
-    let session = Id::random().unwrap();
+    let session = Id::new_v7().unwrap();
     let hello = frame(
         FrameKind::Hello,
         class,
@@ -1052,7 +1052,7 @@ async fn ack_admission_exhaustion_preserves_preestablished_control_streams() {
     let request = frame(
         FrameKind::CreateTopic,
         TrafficClass::Control,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         &CreateTopic {
             name: "control-progress".into(),
             partitions: 1,
@@ -1108,7 +1108,7 @@ async fn slow_bulk_connection_does_not_block_control_progress() {
     let bulk_frame = frame(
         FrameKind::DeliveryBatch,
         TrafficClass::Bulk,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         &body,
     );
     let mut blocked = tokio::spawn(async move {
@@ -1132,7 +1132,7 @@ async fn slow_bulk_connection_does_not_block_control_progress() {
     let request = frame(
         FrameKind::CreateTopic,
         TrafficClass::Control,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         &CreateTopic {
             name: "bulk-isolation".into(),
             partitions: 1,
@@ -1284,7 +1284,7 @@ async fn reset_core_lane_does_not_block_its_sibling() {
     let request = frame(
         FrameKind::CreateTopic,
         TrafficClass::Control,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         &CreateTopic {
             name: "sibling-progress".into(),
             partitions: 1,
@@ -1439,7 +1439,7 @@ async fn data_saturation_allows_control_reauthentication_and_ack_progress() {
         }
         extra_core.push(stream);
     };
-    let id = Id::random().unwrap();
+    let id = Id::new_v7().unwrap();
     let ack = frame(
         FrameKind::AckBatch,
         TrafficClass::Control,
@@ -1528,7 +1528,7 @@ async fn saturated_normal_control_and_data_preserve_core_frame_memory() {
     let request = frame(
         FrameKind::CreateTopic,
         TrafficClass::Control,
-        Id::random().unwrap(),
+        Id::new_v7().unwrap(),
         &CreateTopic {
             name: "reserved-core-memory".into(),
             partitions: 1,
@@ -1553,7 +1553,7 @@ async fn saturated_normal_control_and_data_preserve_core_frame_memory() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_pin_rotation_preserves_exact_target_node_identity() {
     let pki = pki();
-    let cluster = Id::random().unwrap();
+    let cluster = Id::new_v7().unwrap();
     let old_server = internal_server(&pki, cluster);
     let new_server = Server::bind(
         address(),

@@ -219,7 +219,7 @@ enum Scenario {
 
 async fn exercise(scenario: Scenario) {
     let automatic = scenario == Scenario::Automatic;
-    let cluster = Id::random().unwrap();
+    let cluster = Id::new_v7().unwrap();
     let data =
         Cluster::<State>::with_identity(&[1, 2, 3, 4], cluster, GROUP, GroupRole::Data).await;
     data.initialize().await;

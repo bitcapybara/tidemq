@@ -37,7 +37,7 @@ fn official_openraft_storage_v2_suite_passes_on_real_files() {
         .try_init();
     Suite::<Config, DiskLog<State>, DiskStateMachine<State>, Builder, Directory>::test_all(
         Builder {
-            cluster: Id::random().unwrap(),
+            cluster: Id::new_v7().unwrap(),
             group: 1,
         },
     )
@@ -48,7 +48,7 @@ fn official_openraft_storage_v2_suite_passes_on_real_files() {
 async fn vote_committed_tail_fence_offsets_and_original_results_survive_reopen() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = identity(Id::random().unwrap(), 1, 1);
+    let identity = identity(Id::new_v7().unwrap(), 1, 1);
     let mut storage = store(&path, identity.clone()).await;
     storage
         .log
@@ -107,7 +107,7 @@ async fn vote_committed_tail_fence_offsets_and_original_results_survive_reopen()
 async fn uncommitted_tail_is_not_applied_and_can_be_replaced_after_restart() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = identity(Id::random().unwrap(), 1, 1);
+    let identity = identity(Id::new_v7().unwrap(), 1, 1);
     let mut storage = store(&path, identity.clone()).await;
     storage
         .log
@@ -153,7 +153,7 @@ async fn uncommitted_tail_is_not_applied_and_can_be_replaced_after_restart() {
 async fn repeated_truncate_and_new_terms_never_resurrect_superseded_entries() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = identity(Id::random().unwrap(), 1, 1);
+    let identity = identity(Id::new_v7().unwrap(), 1, 1);
     let mut storage = store(&path, identity.clone()).await;
     let prefix = vec![
         entry(1, 0, Command::Fence(9)),
@@ -232,7 +232,7 @@ async fn repeated_truncate_and_new_terms_never_resurrect_superseded_entries() {
 async fn new_store_publishes_only_the_segmented_layout() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let storage = store(&path, identity(Id::random().unwrap(), 1, 1)).await;
+    let storage = store(&path, identity(Id::new_v7().unwrap(), 1, 1)).await;
     storage.log.close().await.unwrap();
     drop(storage);
     assert!(
@@ -258,7 +258,7 @@ async fn new_store_publishes_only_the_segmented_layout() {
 async fn purging_old_segments_preserves_control_state_retained_entries_and_original_results() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = identity(Id::random().unwrap(), 1, 1);
+    let identity = identity(Id::new_v7().unwrap(), 1, 1);
     let options = StorageOptions {
         journal: tidemq::wal::JournalOptions {
             max_record_bytes: 512,
@@ -348,7 +348,7 @@ async fn purging_old_segments_preserves_control_state_retained_entries_and_origi
 #[tokio::test]
 async fn durable_snapshot_covers_purged_logs_and_install_validates_group_and_metadata() {
     let directory = Directory::new().await;
-    let cluster = Id::random().unwrap();
+    let cluster = Id::new_v7().unwrap();
     let group = 1;
     let first_identity = identity(cluster, group, 1);
     let path = directory.path().join("first");
@@ -431,7 +431,7 @@ async fn durable_snapshot_covers_purged_logs_and_install_validates_group_and_met
 async fn snapshot_readers_pin_retired_files_and_the_directory_until_they_are_dropped() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = identity(Id::random().unwrap(), 1, 1);
+    let identity = identity(Id::new_v7().unwrap(), 1, 1);
     let mut storage = store(&path, identity.clone()).await;
     let first_entry = entry(1, 0, Command::Fence(2));
     storage
@@ -509,7 +509,7 @@ async fn snapshot_reader_limit_rejects_new_handles_without_invalidating_existing
     };
     let mut storage = DiskStore::<State>::open(
         directory.path().join("replica"),
-        identity(Id::random().unwrap(), 1, 1),
+        identity(Id::new_v7().unwrap(), 1, 1),
         options,
         None,
     )
@@ -547,7 +547,7 @@ async fn snapshot_reader_limit_rejects_new_handles_without_invalidating_existing
 async fn writer_lock_identity_snapshot_write_limits_and_invalid_ranges_are_safe() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = identity(Id::random().unwrap(), 1, 1);
+    let identity = identity(Id::new_v7().unwrap(), 1, 1);
     let options = StorageOptions {
         max_snapshot_bytes: 1024,
         ..StorageOptions::default()
@@ -590,7 +590,7 @@ async fn writer_lock_identity_snapshot_write_limits_and_invalid_ranges_are_safe(
 async fn snapshot_corruption_after_compaction_fails_closed() {
     let directory = Directory::new().await;
     let path = directory.path().join("replica");
-    let identity = identity(Id::random().unwrap(), 1, 1);
+    let identity = identity(Id::new_v7().unwrap(), 1, 1);
     let mut storage = store(&path, identity.clone()).await;
     let batch = vec![
         entry(1, 0, Command::Fence(1)),
@@ -636,7 +636,7 @@ async fn storage_reports_real_stage_samples_capacity_and_local_state_without_cop
     let metrics = Metrics::default();
     let mut storage = DiskStore::<State>::open(
         directory.path().join("replica"),
-        identity(Id::random().unwrap(), 1, 1),
+        identity(Id::new_v7().unwrap(), 1, 1),
         StorageOptions::default(),
         metrics.operation(Operation::Control),
     )
@@ -704,7 +704,7 @@ async fn storage_reports_real_stage_samples_capacity_and_local_state_without_cop
 #[tokio::test]
 async fn copied_journal_and_missing_identity_cannot_rebind_another_replica() {
     let directory = Directory::new().await;
-    let cluster = Id::random().unwrap();
+    let cluster = Id::new_v7().unwrap();
     let first_path = directory.path().join("first");
     let second_path = directory.path().join("second");
     let first = store(&first_path, identity(cluster, 1, 1)).await;

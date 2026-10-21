@@ -79,7 +79,7 @@ async fn fresh_metadata_leader(metadata: &Cluster<MetadataState>, eligible: &[u6
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_quic_membership_reconciles_unknown_learner_then_replaces_voter_without_data_loss() {
-    let cluster_id = Id::random().unwrap();
+    let cluster_id = Id::new_v7().unwrap();
     let budget = RepairBudget::new(RepairLimits {
         concurrent: 1,
         bytes_per_second: 1024 * 1024,
@@ -271,7 +271,7 @@ async fn repair_budget_is_finite_cancellable_and_classification_does_not_limit_c
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_plan() {
     use std::sync::atomic::Ordering;
-    let cluster_id = Id::random().unwrap();
+    let cluster_id = Id::new_v7().unwrap();
     let budget = RepairBudget::new(RepairLimits::default()).unwrap();
     let mut data = Cluster::<State>::with_budget(
         &[1, 2, 3, 4],

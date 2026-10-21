@@ -182,7 +182,7 @@ async fn run(args: &Args) -> Result<()> {
     let output = timeout_at(work, Output::create(&args.output_dir))
         .await
         .context("Output setup exceeded the task deadline")??;
-    let run = Id::random()?;
+    let run = Id::new_v7()?;
     let mut report = Report::new(args, run, seconds, started)?;
     report.mark("connecting")?;
     let mut result = match timeout_at(work, connect(args, work)).await {
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn report_contains_counts_without_message_content_or_private_ledger() {
         let options = args();
-        let mut report = Report::new(&options, Id::random().unwrap(), 180, Instant::now()).unwrap();
+        let mut report = Report::new(&options, Id::new_v7().unwrap(), 180, Instant::now()).unwrap();
         for _ in 0..32 {
             report.mark("test_phase").unwrap();
         }

@@ -18,7 +18,9 @@ pub async fn scope_traceparent<T>(
     let mut context = String::new();
     context
         .try_reserve_exact(traceparent.len())
-        .map_err(|_| Error::Admission)?;
+        .map_err(|_| Error::Admission {
+            resource: "traceparent buffer allocation",
+        })?;
     context.push_str(traceparent);
     TRACEPARENT.scope(context, operation).await
 }
@@ -29,7 +31,9 @@ pub(crate) fn current_traceparent() -> Result<String> {
             let mut output = String::new();
             output
                 .try_reserve_exact(context.len())
-                .map_err(|_| Error::Admission)?;
+                .map_err(|_| Error::Admission {
+                    resource: "traceparent propagation buffer allocation",
+                })?;
             output.push_str(context);
             Ok(output)
         })
