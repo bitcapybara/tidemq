@@ -1539,8 +1539,10 @@
   ],
   "raw_analysis_sha256": "c64d4a11687c324a8130f7d96d778b128bdd2f3932d65b991fc507878cf849a0",
   "linux": {
-    "status": "pending",
-    "validation_root": "/root/tidemq-validation/performance-24471ce-20261021.XemuKYWG",
-    "scope": "one independent declared original-policy cohort; no Mac relabeling"
+    "status": "user_cancelled",
+    "complete": false,
+    "acceptance_status": "not_evaluated",
+    "evidence": "20261021-24471ce-linux-cancelled.json",
+    "scope": "The user stopped the only declared Linux run; no performance verdict or baseline promotion."
   }
 }
