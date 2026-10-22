@@ -46,6 +46,7 @@ pub(crate) struct Service {
     pub rpc: PeerRpc,
     pub authority: Arc<RemoteMetadataAuthority>,
     pub access: AccessTable,
+    pub(super) auth_cache: super::auth::AuthCache,
     pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
     pub metrics: Metrics,
@@ -144,6 +145,7 @@ impl Service {
             rpc,
             authority,
             access,
+            auth_cache: super::auth::AuthCache::default(),
             delivery_key,
             budget,
             metrics,
@@ -418,6 +420,10 @@ impl Service {
         if matches!(
             kind,
             FrameKind::CreateTopic
+                | FrameKind::CreateLogicalTopic
+                | FrameKind::GetTopicLayout
+                | FrameKind::ChangeTopicLayout
+                | FrameKind::ManageIdentity
                 | FrameKind::GetTopic
                 | FrameKind::CreateSubscription
                 | FrameKind::GetSubscription
@@ -605,6 +611,25 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::auth::AUTH_QUERY => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.auth_command(&request.body, deadline).await?
+            }
+            super::topology::SEAL_SHARD => {
+                drop(order);
+                if !matches!(peer.role.as_str(), "metadata" | "combined")
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.seal_shard_command(group, &request.body, deadline)
+                    .await?
+            }
             super::drain::KIND => {
                 drop(order);
                 if frame.traffic_class != i32::from(TrafficClass::Control) {
@@ -757,11 +782,21 @@ impl Service {
                     decode_frame(request.body, class, &self.config.protocol).map_err(|source| {
                         Error::operation("validate delegated public frame", source)
                     })?;
-                let access = self.access.delegated(
-                    &request.principal,
-                    &request.scope,
-                    frame_kind(&inner)?,
-                )?;
+                let (access, deadline) = if self.config.runtime.dynamic_auth {
+                    let (access, expires) = self
+                        .dynamic_access(&request.principal, &inner, deadline)
+                        .await?;
+                    (access, deadline.min(expires))
+                } else {
+                    (
+                        self.access.delegated(
+                            &request.principal,
+                            &request.scope,
+                            frame_kind(&inner)?,
+                        )?,
+                        deadline,
+                    )
+                };
                 if request.hops == 2 {
                     let partition = super::data::partition(&inner, &self.config.protocol)?;
                     let mut route = self
@@ -867,9 +902,12 @@ impl WireService for Service {
         crate::observability::tracing::observe_until(async {
         let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
         let result = match &peer {
-            Authorization::External { .. } => {
+            Authorization::External { principal, .. } => {
                 let kind = frame_kind(frame)?;
-                let access = self.access.external(&peer, kind)?;
+                let (access, deadline) = if self.config.runtime.dynamic_auth {
+                    let (access, expires) = self.dynamic_access(principal, frame, deadline).await?;
+                    (access, deadline.min(expires))
+                } else { (self.access.external(&peer, kind)?, deadline) };
                 if kind == FrameKind::Cancel {
                     let cancel: CancelRequest =
                         decode_payload(frame.payload.clone(), &self.config.protocol)

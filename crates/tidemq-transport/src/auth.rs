@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use std::{future::Future, pin::Pin, sync::Arc};
 use tidemq_protocol::{
     Id, ProtocolLimits,
     common::{Frame, FrameKind, TrafficClass},
@@ -6,6 +7,7 @@ use tidemq_protocol::{
     internal::{InternalCommand, PeerHello, RaftRequest, SnapshotChunk},
     public::Hello,
 };
+use tokio::time::Instant;
 
 use super::{Error, Result};
 
@@ -23,7 +25,7 @@ impl TokenGrant {
         token: &str,
         principal: String,
         scope: String,
-        allowed_kinds: Vec<FrameKind>,
+        mut allowed_kinds: Vec<FrameKind>,
     ) -> Result<Self> {
         validate_token(token)?;
         for (valid, reason) in [
@@ -61,6 +63,15 @@ impl TokenGrant {
             return Err(Error::Configuration {
                 reason: "token allowed_kinds must contain only public operations; internal and HELLO operations cannot be granted",
             });
+        }
+        for (existing, added) in [
+            (FrameKind::GetTopic, FrameKind::GetTopicLayout),
+            (FrameKind::CreateTopic, FrameKind::CreateLogicalTopic),
+            (FrameKind::CreateTopic, FrameKind::ChangeTopicLayout),
+        ] {
+            if allowed_kinds.contains(&existing) && !allowed_kinds.contains(&added) {
+                allowed_kinds.push(added);
+            }
         }
         Ok(Self {
             digest: blake3::hash(token.as_bytes()),
@@ -150,12 +161,22 @@ pub(super) fn validate_node_grants(grants: &[NodeGrant]) -> Result<()> {
 #[derive(Clone)]
 pub enum ServerAuthorization {
     External(Vec<TokenGrant>),
+    Dynamic(Arc<dyn TokenAuthenticator>),
     Internal(Vec<NodeGrant>),
+}
+
+pub trait TokenAuthenticator: Send + Sync {
+    fn authenticate<'a>(
+        &'a self,
+        token: &'a str,
+        deadline: Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<TokenGrant>> + Send + 'a>>;
 }
 
 impl ServerAuthorization {
     pub(super) fn validate(&self) -> Result<()> {
         match self {
+            Self::Dynamic(_) => Ok(()),
             Self::External(grants) if !grants.is_empty() && grants.len() <= 1_024 => Ok(()),
             Self::Internal(grants) if !grants.is_empty() && grants.len() <= 4_096 => {
                 validate_node_grants(grants)
@@ -174,11 +195,12 @@ impl ServerAuthorization {
     }
 
     // Keep the two disjoint binding policies atomic; neither may fall back to the other.
-    pub(super) fn authorize(
+    pub(super) async fn authorize(
         &self,
         frame: &Frame,
         peer_pin: Option<[u8; 32]>,
         limits: &ProtocolLimits,
+        deadline: Instant,
     ) -> Result<(Id, TrafficClass, Authorization)> {
         if FrameKind::try_from(frame.kind).ok() != Some(FrameKind::Hello) {
             return Err(Error::Authentication {
@@ -190,6 +212,15 @@ impl ServerAuthorization {
                 reason: "HELLO traffic class is invalid",
             })?;
         match self {
+            Self::Dynamic(authenticator) => {
+                let hello: Hello = decode_payload(frame.payload.clone(), limits)
+                    .map_err(|source| Error::Protocol { source })?;
+                validate_token(&hello.access_token)?;
+                let grant = authenticator
+                    .authenticate(&hello.access_token, deadline)
+                    .await?;
+                bind_external(frame, class, &hello, &grant)
+            }
             Self::External(grants) => {
                 let hello: Hello = decode_payload(frame.payload.clone(), limits)
                     .map_err(|source| Error::Protocol { source })?;
@@ -200,28 +231,7 @@ impl ServerAuthorization {
                         reason: "access token rejected",
                     },
                 )?;
-                if hello.traffic_class != frame.traffic_class || class == TrafficClass::Replication
-                {
-                    return Err(Error::Authorization {
-                        reason: "token cannot bind this traffic class",
-                    });
-                }
-                let session = Id::from_slice(&hello.session_id)
-                    .map_err(|source| Error::Protocol { source })?;
-                if frame.operation_id.as_ref() != session.as_bytes() {
-                    return Err(Error::Authentication {
-                        reason: "HELLO session binding differs",
-                    });
-                }
-                Ok((
-                    session,
-                    class,
-                    Authorization::External {
-                        principal: grant.principal.clone(),
-                        scope: grant.scope.clone(),
-                        allowed_kinds: grant.allowed_kinds.clone(),
-                    },
-                ))
+                bind_external(frame, class, &hello, grant)
             }
             Self::Internal(grants) => {
                 let pin = peer_pin.ok_or(Error::Authentication {
@@ -253,6 +263,34 @@ impl ServerAuthorization {
             }
         }
     }
+}
+
+fn bind_external(
+    frame: &Frame,
+    class: TrafficClass,
+    hello: &Hello,
+    grant: &TokenGrant,
+) -> Result<(Id, TrafficClass, Authorization)> {
+    if hello.traffic_class != frame.traffic_class || class == TrafficClass::Replication {
+        return Err(Error::Authorization {
+            reason: "token cannot bind this traffic class",
+        });
+    }
+    let session = Id::from_slice(&hello.session_id).map_err(|source| Error::Protocol { source })?;
+    if frame.operation_id.as_ref() != session.as_bytes() {
+        return Err(Error::Authentication {
+            reason: "HELLO session binding differs",
+        });
+    }
+    Ok((
+        session,
+        class,
+        Authorization::External {
+            principal: grant.principal.clone(),
+            scope: grant.scope.clone(),
+            allowed_kinds: grant.allowed_kinds.clone(),
+        },
+    ))
 }
 
 /// Transport checks operation classes. Business code must also resolve scope/resource ownership.

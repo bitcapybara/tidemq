@@ -12,7 +12,10 @@ mod policy;
 mod session;
 mod telemetry;
 
-pub use auth::{Authorization, ClientCredentials, NodeGrant, ServerAuthorization, TokenGrant};
+pub use auth::{
+    Authorization, ClientCredentials, NodeGrant, ServerAuthorization, TokenAuthenticator,
+    TokenGrant,
+};
 pub use endpoint::{Client, ClientTls, Server, ServerTls, TlsIdentity};
 pub use error::{Error, Result};
 pub use frame::{FrameReceiver, FrameSender, FramedStream, ReceivedFrame};

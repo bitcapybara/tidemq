@@ -67,7 +67,12 @@ impl RunningNode {
         .map_err(|source| Error::operation("load process TLS identity", source))?;
         let roots = super::read_bounded(&config.tls.trust_roots, 65_536).await?;
         let grants = grants(&config, cluster).await?;
-        let access = AccessTable::load(&config.runtime.access_file).await?;
+        let access = if config.runtime.dynamic_auth {
+            AccessTable::empty()
+        } else {
+            AccessTable::load(&config.runtime.access_file).await?
+        };
+        let auth_service = Arc::new(std::sync::OnceLock::new());
         let delivery_key = super::read_secret(&config.runtime.delivery_key_file, 32).await?;
         let delivery_key: [u8; 32] = delivery_key
             .as_ref()
@@ -95,7 +100,13 @@ impl RunningNode {
                         identity: identity.clone(),
                         client_trust_roots: None,
                     },
-                    ServerAuthorization::External(access.tokens()),
+                    if config.runtime.dynamic_auth {
+                        ServerAuthorization::Dynamic(Arc::new(super::auth::Authenticator(
+                            auth_service.clone(),
+                        )))
+                    } else {
+                        ServerAuthorization::External(access.tokens())
+                    },
                     transport.clone(),
                     budget.clone(),
                     bind_deadline,
@@ -268,9 +279,13 @@ impl RunningNode {
             shutdown.clone(),
         )?);
         let dispatcher = DispatchConfig {
+            // The external listener can authenticate only after its complete service is installed.
             protocol: service.config.protocol.clone(),
             ..DispatchConfig::default()
         };
+        auth_service
+            .set(Arc::downgrade(&service))
+            .map_err(|_| Error::invalid("Authentication service was installed twice"))?;
         let mut tasks = Vec::new();
         for server in [Some(internal), external].into_iter().flatten() {
             let service = service.clone();

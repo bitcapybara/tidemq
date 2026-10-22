@@ -30,6 +30,8 @@ use crate::{Admin, Error, Metrics, Result};
 #[derive(Clone, Debug)]
 pub struct ClientConfig {
     pub endpoint: String,
+    pub namespace: Option<String>,
+    pub close_timeout: Duration,
     pub request_timeout_ms: u64,
     pub max_pending_requests: u32,
     pub max_pending_bytes: u64,
@@ -64,6 +66,8 @@ impl ClientConfig {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            namespace: None,
+            close_timeout: Duration::from_secs(5),
             request_timeout_ms: 30_000,
             max_pending_requests: 256,
             max_pending_bytes: 16 * 1024 * 1024,

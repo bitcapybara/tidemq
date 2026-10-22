@@ -71,6 +71,27 @@ impl Service {
                     "Metadata startup reconciliation will retry"
                 );
             }
+            let plans = replica
+                .state
+                .try_with_application(|state| {
+                    state
+                        .topology()
+                        .pending()
+                        .take(1)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .map_err(|source| Error::operation("read unfinished layout plans", source))?;
+            for plan in plans {
+                if let Err(error) = self.resume_layout(plan, deadline).await {
+                    tracing::debug!(
+                        event_code = "layout_reconcile_wait",
+                        error_code = error.failure().code,
+                        "Durable layout plan will resume after authority or capacity becomes available"
+                    );
+                }
+            }
         }
         if let Err(error) = self.reconcile_owners(failover, deadline).await {
             tracing::debug!(
@@ -174,6 +195,7 @@ impl Service {
                 .await?;
             }
         }
+        self.bootstrap_credentials(deadline).await?;
         Ok(())
     }
 
@@ -187,7 +209,7 @@ impl Service {
             .map_err(|source| Error::operation("read metadata revision", source))
     }
 
-    async fn metadata_request_revision(&self, operation: Id) -> Result<u64> {
+    pub(super) async fn metadata_request_revision(&self, operation: Id) -> Result<u64> {
         self.metadata
             .as_ref()
             .ok_or_else(Error::unavailable)?
@@ -234,6 +256,17 @@ impl Service {
             .await?
             .map_err(|_| Error::unavailable())?;
         let operation = wire::id(&frame.operation_id)?;
+        if super::service::frame_kind(frame)? == FrameKind::ManageIdentity {
+            return self.identity_public(&access, frame, deadline).await;
+        }
+        if matches!(
+            super::service::frame_kind(frame)?,
+            FrameKind::CreateLogicalTopic
+                | FrameKind::GetTopicLayout
+                | FrameKind::ChangeTopicLayout
+        ) {
+            return self.topology_public(&access, frame, deadline).await;
+        }
         match super::service::frame_kind(frame)? {
             FrameKind::CreateTopic => {
                 let request: public::CreateTopic =
@@ -437,7 +470,7 @@ impl Service {
         }
     }
 
-    async fn ensure_route(
+    pub(super) async fn ensure_route(
         &self,
         partition: PartitionKey,
         deadline: Instant,
@@ -857,6 +890,7 @@ impl Service {
 fn metadata_rejection(reason: metadata::Rejection) -> Error {
     use metadata::Rejection as R;
     let (code, retryable) = match &reason {
+        R::Authorization(_) => (ErrorCode::Forbidden, false),
         R::Capacity => (ErrorCode::QuotaExceeded, true),
         R::RevisionConflict | R::GenerationConflict | R::RecoveryRequired | R::Uninitialized => {
             (ErrorCode::Unavailable, true)

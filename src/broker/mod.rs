@@ -10,6 +10,10 @@ mod telemetry;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+#[path = "../../tests/scalable_support/shard_sealing.rs"]
+mod shard_sealing_tests;
+
 pub use admission::BrokerLimits;
 pub use application::{
     ArchiveCandidate, ArchivePage, CapacityUsage, DataApplication, DataCommand, DataGroupConfig,

@@ -18,6 +18,57 @@ message HelloResult {
 message CreateTopic { string name = 1; uint32 partitions = 2; }
 message GetTopic { string name = 1; }
 message TopicResult { bytes topic_id = 1; string name = 2; uint32 partitions = 3; }
+message LogicalTopic { string name = 1; }
+message GetTopicLayout { bytes topic_id = 1; }
+message ShardRoute {
+  bytes shard_id = 1;
+  uint64 hash_start = 2;
+  optional uint64 hash_end = 3;
+  uint64 group_id = 4;
+  uint64 authority_epoch = 5;
+  uint32 birth_partition = 6;
+  repeated bytes predecessors = 7;
+  optional uint64 sealed_end = 8;
+}
+message TopicLayoutResult {
+  bytes topic_id = 1;
+  uint64 revision = 2;
+  repeated ShardRoute active = 3;
+  repeated ShardRoute history = 4;
+}
+message ChangeTopicLayout {
+  bytes topic_id = 1;
+  uint64 expected_revision = 2;
+  bytes left_shard = 3;
+  bytes right_shard = 4;
+  optional uint64 split_at = 5;
+}
+enum IdentityAction {
+  IDENTITY_ACTION_UNSPECIFIED = 0;
+  CREATE_TENANT_IDENTITY = 1;
+  CREATE_NAMESPACE_IDENTITY = 2;
+  PUT_PRINCIPAL_IDENTITY = 3;
+  ISSUE_CREDENTIAL = 4;
+  REVOKE_CREDENTIAL = 5;
+  SET_TENANT_ENABLED = 6;
+}
+message ManageIdentity {
+  IdentityAction action = 1;
+  bytes target_id = 2;
+  bytes parent_id = 3;
+  string name = 4;
+  repeated string permissions = 5;
+  uint64 lifetime_ms = 6;
+  bool enabled = 7;
+  bytes namespace_id = 8;
+}
+message IdentityResult {
+  bytes id = 1;
+  bytes parent_id = 2;
+  optional string access_token = 3;
+  uint64 expires_at_ms = 4;
+  bool secret_unavailable = 5;
+}
 enum DeliveryMode {
   DELIVERY_MODE_UNSPECIFIED = 0;
   PARALLEL = 1;

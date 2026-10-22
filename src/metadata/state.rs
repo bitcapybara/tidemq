@@ -30,7 +30,7 @@ pub(crate) struct PartitionRecord {
 }
 
 impl PartitionRecord {
-    fn new(group_id: u64) -> Self {
+    pub(super) fn new(group_id: u64) -> Self {
         Self {
             group_id,
             highest_epoch: 0,
@@ -64,6 +64,8 @@ pub struct MetadataState {
     pub(crate) mode: Option<DeploymentMode>,
     pub(crate) revision: u64,
     pub(crate) lifecycle: crate::lifecycle::Catalog,
+    pub(crate) topology: super::Topology,
+    pub(crate) auth: super::AuthState,
     pub(crate) limits: MetadataLimits,
     pub(crate) topics: BTreeMap<Id, TopicRecord>,
     pub(crate) topic_names: BTreeMap<String, Id>,
@@ -79,6 +81,9 @@ pub struct MetadataState {
 }
 
 impl MetadataState {
+    pub fn auth(&self) -> &super::AuthState {
+        &self.auth
+    }
     pub fn lifecycle(&self) -> &crate::lifecycle::Catalog {
         &self.lifecycle
     }
@@ -324,6 +329,29 @@ impl MetadataState {
             Action::ObserveRecovery(evidence) => self.observe_recovery(evidence),
             Action::ActivateRoute(evidence) => self.activate_route(evidence),
             Action::Lifecycle(operation) => self.apply_lifecycle(operation.clone()),
+            Action::PrepareLayout {
+                topic,
+                revision,
+                change,
+            } => self
+                .prepare_layout(command.operation_id, *topic, *revision, change)
+                .map(Outcome::LayoutPrepared),
+            Action::ObserveLayoutSeal { plan, source, end } => self
+                .observe_layout_seal(*plan, *source, *end)
+                .map(Outcome::LayoutPrepared),
+            Action::ActivateLayout { plan } => {
+                self.activate_layout(*plan).map(Outcome::LayoutActivated)
+            }
+            Action::Identity(command) => self
+                .auth
+                .apply(command)
+                .map(|outcome| {
+                    Outcome::Identity(super::AuthResult {
+                        request_digest: command.request_digest,
+                        outcome,
+                    })
+                })
+                .map_err(Rejection::Authorization),
             Action::Bootstrap { .. } => Err(Rejection::AlreadyInitialized),
         }
     }
@@ -424,6 +452,24 @@ impl MetadataState {
         name: &str,
         groups: &[u64],
     ) -> Result<Outcome, Rejection> {
+        if self.auth.initialized() {
+            let (tenant, _, _) = self
+                .auth
+                .resolve_topic(name)
+                .map_err(Rejection::Authorization)?;
+            let prefix = format!("{}/", tenant.name);
+            if self
+                .topics
+                .values()
+                .filter(|topic| {
+                    topic.status == RecordStatus::Active && topic.name.starts_with(&prefix)
+                })
+                .count()
+                >= tenant.max_topics
+            {
+                return Err(Rejection::Capacity);
+            }
+        }
         if self.topics.contains_key(&topic_id) {
             return Err(Rejection::IdentityRetired);
         }
@@ -439,6 +485,7 @@ impl MetadataState {
         {
             return Err(Rejection::Capacity);
         }
+        let (layout, shards) = super::Topology::initial(topic_id, groups)?;
         let mut partitions = Vec::new();
         for (partition, group_id) in groups.iter().enumerate() {
             if !self.groups.contains_key(group_id) {
@@ -462,6 +509,7 @@ impl MetadataState {
             status: RecordStatus::Active,
         };
         self.partitions.extend(partitions);
+        self.topology.install_initial(layout, shards);
         self.topic_names.insert(name.to_owned(), topic_id);
         self.topics.insert(topic_id, topic.clone());
         Ok(Outcome::TopicConfigured(topic))
@@ -494,6 +542,28 @@ impl MetadataState {
         config: &SubscriptionConfig,
     ) -> Result<Outcome, Rejection> {
         let topic = self.topics.get(&topic_id).ok_or(Rejection::NotFound)?;
+        if self.auth.initialized() && !self.subscriptions.contains_key(&id) {
+            let (tenant, _, _) = self
+                .auth
+                .resolve_topic(&topic.name)
+                .map_err(Rejection::Authorization)?;
+            let prefix = format!("{}/", tenant.name);
+            if self
+                .subscriptions
+                .values()
+                .filter(|subscription| {
+                    subscription.status == RecordStatus::Active
+                        && self
+                            .topics
+                            .get(&subscription.topic_id)
+                            .is_some_and(|topic| topic.name.starts_with(&prefix))
+                })
+                .count()
+                >= tenant.max_subscriptions
+            {
+                return Err(Rejection::Capacity);
+            }
+        }
         if topic.status != RecordStatus::Active {
             return Err(Rejection::IdentityRetired);
         }

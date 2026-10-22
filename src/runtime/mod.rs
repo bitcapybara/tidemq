@@ -1,10 +1,12 @@
 //! Process-owned listeners and authenticated semantic routing to durable authorities.
 
+mod auth;
 mod config;
 mod data;
 mod drain;
 mod error;
 mod failover;
+mod identity;
 mod maintenance;
 mod management;
 mod metadata;
@@ -14,6 +16,7 @@ pub(crate) mod physical;
 pub(crate) mod scaling;
 mod service;
 mod telemetry;
+mod topology;
 pub(crate) mod wire;
 
 use std::path::Path;

@@ -227,6 +227,16 @@ impl ProducerState {
         self.append_with_capacity(now_ms, request, u64::MAX, usize::MAX)
     }
 
+    pub(crate) fn committed_result(
+        &self,
+        now_ms: u64,
+        request: &AppendBatch,
+    ) -> Result<Option<BatchResult>> {
+        let (count, _) = self.validate_batch(request)?;
+        let session = self.find_session(request.producer_id, request.producer_epoch)?;
+        Self::previous_result(session, request, count, now_ms.max(self.logical_time_ms))
+    }
+
     pub(crate) fn append_with_capacity(
         &mut self,
         now_ms: u64,

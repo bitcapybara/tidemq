@@ -5,6 +5,12 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display(
+        "Credential {id} was committed but its one-time secret is unavailable; revoke it and issue a new credential"
+    ))]
+    CredentialSecretUnavailable { id: crate::CredentialId },
+    #[snafu(display("Could not read TLS or credential material"))]
+    Material { source: std::io::Error },
     #[snafu(display("Invalid client configuration: {reason}"))]
     Configuration { reason: &'static str },
     #[snafu(display("Invalid protocol data"))]

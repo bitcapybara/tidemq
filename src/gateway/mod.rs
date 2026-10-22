@@ -38,6 +38,12 @@ struct Token {
 }
 
 impl AccessTable {
+    pub(crate) fn empty() -> Self {
+        Self {
+            principals: BTreeMap::new(),
+            tokens: Vec::new(),
+        }
+    }
     pub async fn load(path: &Path) -> Result<Self> {
         let bytes = crate::runtime::read_secret(path, 65_536).await?;
         let text = std::str::from_utf8(&bytes)
@@ -109,6 +115,11 @@ impl AccessTable {
         Ok(access)
     }
     pub fn delegated(&self, principal: &str, scope: &str, kind: FrameKind) -> Result<Access> {
+        let kind = match kind {
+            FrameKind::GetTopicLayout => FrameKind::GetTopic,
+            FrameKind::ChangeTopicLayout | FrameKind::CreateLogicalTopic => FrameKind::CreateTopic,
+            kind => kind,
+        };
         let (principal, scopes) = self
             .principals
             .get_key_value(principal)
@@ -152,6 +163,10 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
     matches!(
         kind,
         FrameKind::CreateTopic
+            | FrameKind::CreateLogicalTopic
+            | FrameKind::GetTopicLayout
+            | FrameKind::ChangeTopicLayout
+            | FrameKind::ManageIdentity
             | FrameKind::GetTopic
             | FrameKind::CreateSubscription
             | FrameKind::GetSubscription

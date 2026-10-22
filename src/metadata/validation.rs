@@ -31,6 +31,8 @@ impl MetadataState {
             return Err(Rejection::InvalidGroup);
         }
         self.lifecycle.validate().map_err(Rejection::Lifecycle)?;
+        self.topology.validate(self.limits.partitions_per_topic)?;
+        self.auth.validate().map_err(Rejection::Authorization)?;
         self.validate_nodes_groups()?;
         self.validate_migrations()?;
         self.validate_topics()?;
@@ -56,6 +58,10 @@ impl MetadataState {
             || !self.migrations.is_empty()
             || self.lifecycle.object_count() != 0
             || self.lifecycle.pin_count() != 0
+            || !self.topology.layouts.is_empty()
+            || !self.topology.shards.is_empty()
+            || !self.topology.plans.is_empty()
+            || self.auth.initialized()
             || !self.control_operations.is_empty()
             || self.decisions.values().any(|decision| {
                 !matches!(decision.response, Response::Rejected { revision: 0, .. })

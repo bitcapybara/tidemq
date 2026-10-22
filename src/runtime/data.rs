@@ -1454,6 +1454,12 @@ pub(crate) fn unix_millis() -> Result<u64> {
 
 pub(crate) fn data_rejection(reason: DataRejection) -> Error {
     match reason {
+        reason @ DataRejection::ShardSealed => Error::reject_with(
+            ErrorCode::Fenced,
+            Outcome::Rejected,
+            false,
+            reason.to_string(),
+        ),
         DataRejection::Producer(reason) => producer_error(reason),
         DataRejection::Subscription(reason) => subscription_error(reason),
         reason @ (DataRejection::Retention(_) | DataRejection::Lifecycle(_)) => Error::reject_with(

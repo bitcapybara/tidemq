@@ -854,8 +854,9 @@ async fn accept_connection(
     )
     .await?
     .ok_or(Error::Closed)?;
-    let (session_id, class, peer) =
-        authorization.authorize(hello.frame(), evidence.peer_pin, &config.protocol)?;
+    let (session_id, class, peer) = authorization
+        .authorize(hello.frame(), evidence.peer_pin, &config.protocol, deadline)
+        .await?;
     let memory = budget
         .try_reserve(class, config.transport_reservation()?)
         .map_err(|source| Error::Memory { source })?;

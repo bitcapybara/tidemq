@@ -121,6 +121,12 @@ pub enum FrameKind {
     DiagnosticResult = 51,
     InternalCommand = 60,
     InternalResult = 61,
+    GetTopicLayout = 62,
+    TopicLayoutResult = 63,
+    ChangeTopicLayout = 64,
+    CreateLogicalTopic = 65,
+    ManageIdentity = 66,
+    IdentityResult = 67,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -169,6 +175,12 @@ impl FrameKind {
             Self::DiagnosticResult => "DIAGNOSTIC_RESULT",
             Self::InternalCommand => "INTERNAL_COMMAND",
             Self::InternalResult => "INTERNAL_RESULT",
+            Self::GetTopicLayout => "GET_TOPIC_LAYOUT",
+            Self::TopicLayoutResult => "TOPIC_LAYOUT_RESULT",
+            Self::ChangeTopicLayout => "CHANGE_TOPIC_LAYOUT",
+            Self::CreateLogicalTopic => "CREATE_LOGICAL_TOPIC",
+            Self::ManageIdentity => "MANAGE_IDENTITY",
+            Self::IdentityResult => "IDENTITY_RESULT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -214,6 +226,12 @@ impl FrameKind {
             "DIAGNOSTIC_RESULT" => Some(Self::DiagnosticResult),
             "INTERNAL_COMMAND" => Some(Self::InternalCommand),
             "INTERNAL_RESULT" => Some(Self::InternalResult),
+            "GET_TOPIC_LAYOUT" => Some(Self::GetTopicLayout),
+            "TOPIC_LAYOUT_RESULT" => Some(Self::TopicLayoutResult),
+            "CHANGE_TOPIC_LAYOUT" => Some(Self::ChangeTopicLayout),
+            "CREATE_LOGICAL_TOPIC" => Some(Self::CreateLogicalTopic),
+            "MANAGE_IDENTITY" => Some(Self::ManageIdentity),
+            "IDENTITY_RESULT" => Some(Self::IdentityResult),
             _ => None,
         }
     }

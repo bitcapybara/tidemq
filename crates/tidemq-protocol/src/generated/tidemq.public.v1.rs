@@ -41,6 +41,91 @@ pub struct TopicResult {
     pub partitions: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct LogicalTopic {
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetTopicLayout {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ShardRoute {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub hash_start: u64,
+    #[prost(uint64, optional, tag = "3")]
+    pub hash_end: ::core::option::Option<u64>,
+    #[prost(uint64, tag = "4")]
+    pub group_id: u64,
+    #[prost(uint64, tag = "5")]
+    pub authority_epoch: u64,
+    #[prost(uint32, tag = "6")]
+    pub birth_partition: u32,
+    #[prost(bytes = "bytes", repeated, tag = "7")]
+    pub predecessors: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+    #[prost(uint64, optional, tag = "8")]
+    pub sealed_end: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct TopicLayoutResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub revision: u64,
+    #[prost(message, repeated, tag = "3")]
+    pub active: ::prost::alloc::vec::Vec<ShardRoute>,
+    #[prost(message, repeated, tag = "4")]
+    pub history: ::prost::alloc::vec::Vec<ShardRoute>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ChangeTopicLayout {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub expected_revision: u64,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub left_shard: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub right_shard: ::prost::bytes::Bytes,
+    #[prost(uint64, optional, tag = "5")]
+    pub split_at: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ManageIdentity {
+    #[prost(enumeration = "IdentityAction", tag = "1")]
+    pub action: i32,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub target_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub parent_id: ::prost::bytes::Bytes,
+    #[prost(string, tag = "4")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(string, repeated, tag = "5")]
+    pub permissions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "6")]
+    pub lifetime_ms: u64,
+    #[prost(bool, tag = "7")]
+    pub enabled: bool,
+    #[prost(bytes = "bytes", tag = "8")]
+    pub namespace_id: ::prost::bytes::Bytes,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IdentityResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub parent_id: ::prost::bytes::Bytes,
+    #[prost(string, optional, tag = "3")]
+    pub access_token: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "4")]
+    pub expires_at_ms: u64,
+    #[prost(bool, tag = "5")]
+    pub secret_unavailable: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateSubscription {
     #[prost(bytes = "bytes", tag = "1")]
     pub topic_id: ::prost::bytes::Bytes,
@@ -397,6 +482,47 @@ pub struct ReceiveBarrier {
     pub delivery_generation: u64,
     #[prost(bytes = "bytes", tag = "8")]
     pub session_id: ::prost::bytes::Bytes,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum IdentityAction {
+    Unspecified = 0,
+    CreateTenantIdentity = 1,
+    CreateNamespaceIdentity = 2,
+    PutPrincipalIdentity = 3,
+    IssueCredential = 4,
+    RevokeCredential = 5,
+    SetTenantEnabled = 6,
+}
+impl IdentityAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "IDENTITY_ACTION_UNSPECIFIED",
+            Self::CreateTenantIdentity => "CREATE_TENANT_IDENTITY",
+            Self::CreateNamespaceIdentity => "CREATE_NAMESPACE_IDENTITY",
+            Self::PutPrincipalIdentity => "PUT_PRINCIPAL_IDENTITY",
+            Self::IssueCredential => "ISSUE_CREDENTIAL",
+            Self::RevokeCredential => "REVOKE_CREDENTIAL",
+            Self::SetTenantEnabled => "SET_TENANT_ENABLED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "IDENTITY_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "CREATE_TENANT_IDENTITY" => Some(Self::CreateTenantIdentity),
+            "CREATE_NAMESPACE_IDENTITY" => Some(Self::CreateNamespaceIdentity),
+            "PUT_PRINCIPAL_IDENTITY" => Some(Self::PutPrincipalIdentity),
+            "ISSUE_CREDENTIAL" => Some(Self::IssueCredential),
+            "REVOKE_CREDENTIAL" => Some(Self::RevokeCredential),
+            "SET_TENANT_ENABLED" => Some(Self::SetTenantEnabled),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

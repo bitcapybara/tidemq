@@ -24,6 +24,8 @@ mod broker_failover;
 mod combined;
 #[path = "runtime_support/read_batches.rs"]
 mod read_batches;
+#[path = "runtime_support/scalable.rs"]
+mod scalable;
 #[path = "runtime_support/scaling.rs"]
 mod scaling;
 #[path = "runtime_support/tracing.rs"]

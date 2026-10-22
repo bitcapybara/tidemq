@@ -69,6 +69,20 @@ pub(crate) enum Action {
     },
     CompleteMembership(crate::scaling::MembershipEvidence),
     Lifecycle(crate::lifecycle::MetadataOperation),
+    PrepareLayout {
+        topic: Id,
+        revision: u64,
+        change: super::LayoutChange,
+    },
+    ObserveLayoutSeal {
+        plan: Id,
+        source: Id,
+        end: u64,
+    },
+    ActivateLayout {
+        plan: Id,
+    },
+    Identity(super::AuthCommand),
 }
 
 impl Command {
@@ -226,6 +240,51 @@ impl Command {
         self.operation_id
     }
 
+    pub fn identity(operation: Id, expected_revision: u64, command: super::AuthCommand) -> Self {
+        Self::new(operation, expected_revision, Action::Identity(command))
+    }
+
+    pub fn prepare_layout(
+        operation: Id,
+        expected_revision: u64,
+        topic: Id,
+        revision: u64,
+        change: super::LayoutChange,
+    ) -> Self {
+        Self::new(
+            operation,
+            expected_revision,
+            Action::PrepareLayout {
+                topic,
+                revision,
+                change,
+            },
+        )
+    }
+
+    /// The trusted coordinator must obtain the immutable end from the source Raft leader.
+    pub fn observe_layout_seal(
+        operation: Id,
+        expected_revision: u64,
+        plan: Id,
+        source: Id,
+        end: u64,
+    ) -> Self {
+        Self::new(
+            operation,
+            expected_revision,
+            Action::ObserveLayoutSeal { plan, source, end },
+        )
+    }
+
+    pub fn activate_layout(operation: Id, expected_revision: u64, plan: Id) -> Self {
+        Self::new(
+            operation,
+            expected_revision,
+            Action::ActivateLayout { plan },
+        )
+    }
+
     pub(crate) fn new(operation_id: Id, expected_revision: u64, action: Action) -> Self {
         Self {
             operation_id,
@@ -261,11 +320,13 @@ pub enum Rejection {
     RecoveryRequired,
     CounterExhausted,
     Lifecycle(crate::lifecycle::Rejection),
+    Authorization(super::AuthRejection),
 }
 
 impl std::fmt::Display for Rejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reason = match self {
+            Self::Authorization(reason) => return write!(formatter, "{reason}"),
             Self::Uninitialized => "Metadata group has not been bootstrapped",
             Self::AlreadyInitialized => "Metadata group has already been bootstrapped",
             Self::InvalidLimit => "Metadata request exceeds its configured item or byte limit",
@@ -337,6 +398,9 @@ pub enum Outcome {
     MembershipPrepared(crate::scaling::MembershipPlan),
     MembershipCompleted(crate::scaling::MembershipPlan),
     Lifecycle(crate::lifecycle::MetadataResult),
+    LayoutPrepared(super::LayoutPlan),
+    LayoutActivated(tidemq_protocol::topic::TopicLayout),
+    Identity(super::AuthResult),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

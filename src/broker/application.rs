@@ -94,6 +94,11 @@ pub enum ProducerCommand {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataCommand {
     Initialize(DataGroupConfig),
+    SealShard {
+        partition: PartitionKey,
+        writer: WriterFence,
+        plan: Id,
+    },
     Retention {
         partition: PartitionKey,
         writer: WriterFence,
@@ -131,6 +136,7 @@ pub enum DataRejection {
     ConfigurationConflict,
     PartitionCapacity,
     PartitionMissing,
+    ShardSealed,
     Fence(FenceRejection),
     Producer(producer::Rejection),
     Subscription(subscription::Rejection),
@@ -154,6 +160,9 @@ impl fmt::Display for DataRejection {
             Self::PartitionMissing => {
                 formatter.write_str("Requested partition is not hosted by this data group")
             }
+            Self::ShardSealed => {
+                formatter.write_str("Birth shard has been permanently sealed for new writes")
+            }
             Self::Fence(reason) => write!(formatter, "{reason}"),
             Self::Producer(reason) => write!(formatter, "{reason}"),
             Self::Subscription(reason) => write!(formatter, "{reason}"),
@@ -168,6 +177,10 @@ pub enum DataResponse {
     #[default]
     Noop,
     Initialized,
+    ShardSealed {
+        plan: Id,
+        committed_end: u64,
+    },
     Fenced(FenceRecord),
     Recovered(RecoveredOwnership),
     Registered(SessionInfo),
@@ -185,6 +198,14 @@ impl fmt::Debug for DataResponse {
         match self {
             Self::Noop => formatter.write_str("Noop"),
             Self::Initialized => formatter.write_str("Initialized"),
+            Self::ShardSealed {
+                plan,
+                committed_end,
+            } => formatter
+                .debug_struct("ShardSealed")
+                .field("plan", plan)
+                .field("committed_end", committed_end)
+                .finish(),
             Self::Fenced(fence) => formatter
                 .debug_tuple("Fenced")
                 .field(&fence.grant.partition)
@@ -214,6 +235,7 @@ struct PartitionState {
     producer: ProducerState,
     subscriptions: SubscriptionState,
     retention: crate::retention::RetentionState,
+    seal: Option<(Id, u64)>,
 }
 
 /// The complete data-group authority: offsets, sessions, writer fences, delivery attempts and ACKs.
@@ -240,6 +262,39 @@ impl fmt::Debug for DataApplication {
 }
 
 impl DataApplication {
+    pub fn shard_seal(&self, partition: PartitionKey) -> Option<(Id, u64)> {
+        self.partitions.get(&partition).and_then(|state| state.seal)
+    }
+
+    fn seal_shard(
+        &mut self,
+        partition: PartitionKey,
+        writer: WriterFence,
+        plan: Id,
+    ) -> Result<DataResponse, DataRejection> {
+        self.check_writer(partition, writer)?;
+        let state = self
+            .partitions
+            .get_mut(&partition)
+            .ok_or(DataRejection::PartitionMissing)?;
+        if let Some((previous, committed_end)) = state.seal {
+            return if previous == plan {
+                Ok(DataResponse::ShardSealed {
+                    plan,
+                    committed_end,
+                })
+            } else {
+                Err(DataRejection::ShardSealed)
+            };
+        }
+        let committed_end = state.producer.committed_end();
+        state.seal = Some((plan, committed_end));
+        Ok(DataResponse::ShardSealed {
+            plan,
+            committed_end,
+        })
+    }
+
     pub fn retention(&self, partition: PartitionKey) -> Option<&crate::retention::RetentionState> {
         self.partitions
             .get(&partition)
@@ -436,6 +491,7 @@ impl DataApplication {
                     subscriptions,
                     retention: crate::retention::RetentionState::new(config.retention)
                         .map_err(DataRejection::Retention)?,
+                    seal: None,
                 },
             );
         }
@@ -475,6 +531,8 @@ impl DataApplication {
         }
         let mut digest = blake3::Hasher::new();
         digest.update(b"tidemq-data-recovery-v1\0");
+        postcard::to_io(&state.seal, &mut digest)
+            .map_err(|_| DataRejection::InvalidConfiguration)?;
         digest.update(
             &self
                 .lifecycle
@@ -531,6 +589,13 @@ impl DataApplication {
             .get_mut(&partition)
             .ok_or(DataRejection::PartitionMissing)?;
         match command {
+            ProducerCommand::Append(ref request) if state.seal.is_some() => state
+                .producer
+                .committed_result(now_ms, request)
+                .map_err(DataRejection::Producer)?
+                .map(DataResponse::Produced)
+                .ok_or(DataRejection::ShardSealed),
+            ProducerCommand::Register(_) if state.seal.is_some() => Err(DataRejection::ShardSealed),
             ProducerCommand::Register(request) => state
                 .producer
                 .register(now_ms, request)
@@ -722,6 +787,12 @@ impl DataApplication {
         let mut bytes = 0_u64;
         let mut messages = 0_usize;
         for (partition, state) in &self.partitions {
+            if state
+                .seal
+                .is_some_and(|(_, end)| end != state.producer.committed_end())
+            {
+                return Err(DataRejection::InvalidConfiguration);
+            }
             let fence = fences
                 .fence(*partition)
                 .ok_or(DataRejection::PartitionMissing)?;
@@ -777,13 +848,18 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 2;
+    const VERSION: u32 = 3;
     type Command = DataCommand;
     type Response = DataResponse;
 
     fn apply(&mut self, command: DataCommand) -> DataResponse {
         let result = match command {
             DataCommand::Initialize(config) => self.initialize(config),
+            DataCommand::SealShard {
+                partition,
+                writer,
+                plan,
+            } => self.seal_shard(partition, writer, plan),
             DataCommand::Retention {
                 partition,
                 writer,
