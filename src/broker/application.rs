@@ -112,6 +112,12 @@ pub enum DataCommand {
         permit: producer::PublisherPermit,
         before: u64,
     },
+    CleanupPublisher {
+        partition: PartitionKey,
+        writer: WriterFence,
+        permit: producer::PublisherPermit,
+        now_ms: u64,
+    },
     Initialize(DataGroupConfig),
     SealShard {
         partition: PartitionKey,
@@ -939,6 +945,20 @@ impl Application for DataApplication {
                 permit,
                 before,
             } => self.retire_publishes(partition, writer, permit, before),
+            DataCommand::CleanupPublisher {
+                partition,
+                writer,
+                permit,
+                now_ms,
+            } => self.check_writer(partition, writer).and_then(|()| {
+                self.partitions
+                    .get_mut(&partition)
+                    .ok_or(DataRejection::PartitionMissing)?
+                    .producer
+                    .cleanup_publisher(&permit, now_ms)
+                    .map_err(DataRejection::Producer)?;
+                Ok(DataResponse::Retired)
+            }),
             DataCommand::Initialize(config) => self.initialize(config),
             DataCommand::ConsumerGroup {
                 partition,

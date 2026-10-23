@@ -118,6 +118,7 @@ struct Progress {
     objects: Option<Id>,
     compactions: Option<Id>,
     partitions: Option<PartitionKey>,
+    publishers: Option<(PartitionKey, Id, u64)>,
     inspected: bool,
     blocked: bool,
 }
@@ -281,6 +282,7 @@ impl Service {
                 }
                 let position = progress.entry(*group).or_default();
                 let deadline = Instant::now() + Duration::from_secs(5);
+                let _ = self.maintain_publishers(*group, position, deadline).await;
                 if let Some(coordinator) = self.objects.get(group)
                     && self
                         .reconcile_objects(*group, coordinator, position, deadline)
@@ -294,6 +296,50 @@ impl Service {
                 } => {}
             }
         }
+    }
+
+    async fn maintain_publishers(
+        &self,
+        group: u64,
+        progress: &mut Progress,
+        deadline: Instant,
+    ) -> Result<()> {
+        let now_ms = super::data::unix_millis()?;
+        let page = self
+            .data
+            .get(&group)
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| state.publisher_cleanup_page(progress.publishers, now_ms))
+            .await
+            .map_err(|source| Error::operation("page publisher recovery history", source))?;
+        progress.publishers = page
+            .last()
+            .map(|(partition, permit)| (*partition, permit.producer, permit.registration));
+        for (partition, mut permit) in page {
+            if let Some(current) = self.publisher_recovery_permit(&permit, deadline).await? {
+                permit = current;
+            }
+            if permit.live {
+                continue;
+            }
+            let lease = self.data_lease(group, partition, deadline).await?;
+            self.data_write(
+                group,
+                DataCommand::CleanupPublisher {
+                    partition,
+                    writer: WriterFence {
+                        node_id: lease.grant().owner_node,
+                        owner_epoch: lease.grant().epoch,
+                    },
+                    permit,
+                    now_ms,
+                },
+                deadline,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn reconcile_objects(

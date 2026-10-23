@@ -6,6 +6,41 @@ fn id() -> Id {
 }
 
 #[test]
+fn expired_registration_history_is_bounded_without_reusing_its_registration() {
+    let mut book = PublishersBook::default();
+    let producer = id();
+    let operation = id();
+    let mut open = PublisherCommand::Open {
+        topic: id(),
+        producer,
+        registration: 1,
+        client: id(),
+        credential: id(),
+        now_ms: 1,
+        credential_expires_ms: 2_000_000,
+        digest: [9; 32],
+    };
+    book.apply(operation, &open).unwrap();
+    let original = open.clone();
+    if let PublisherCommand::Open {
+        producer,
+        registration,
+        now_ms,
+        ..
+    } = &mut open
+    {
+        *producer = id();
+        *registration = 2;
+        *now_ms = 920_002;
+    }
+    book.apply(id(), &open).unwrap();
+    assert_eq!(book.records().count(), 1);
+    assert_eq!(book.next_registration(), 3);
+    assert_eq!(book.apply(operation, &original), Err(Rejection::Superseded));
+    book.validate().unwrap();
+}
+
+#[test]
 fn publisher_registration_is_fenced_and_renewals_cannot_revive_expired_or_closed_sessions() {
     let mut book = PublishersBook::default();
     let topic = id();

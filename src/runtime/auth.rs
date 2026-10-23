@@ -67,6 +67,13 @@ pub(super) struct MemberLeaseRequest {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthQuery {
+    PublisherRecovery {
+        topic: Id,
+        producer: Id,
+        registration: u64,
+        client: Id,
+        credential: Id,
+    },
     Consumer(MemberLeaseRequest),
     BirthShard(Id),
     TopicResource(Id),
@@ -142,6 +149,25 @@ impl TokenAuthenticator for Authenticator {
 }
 
 impl Service {
+    pub(super) async fn publisher_recovery_permit(
+        &self,
+        permit: &crate::producer::PublisherPermit,
+        deadline: Instant,
+    ) -> Result<Option<crate::producer::PublisherPermit>> {
+        let (reply, _) = self
+            .auth_query(
+                AuthQuery::PublisherRecovery {
+                    topic: permit.topic,
+                    producer: permit.producer,
+                    registration: permit.registration,
+                    client: permit.client,
+                    credential: permit.credential,
+                },
+                deadline,
+            )
+            .await?;
+        Ok(reply.publisher)
+    }
     pub(super) async fn consumer_member_lease(
         &self,
         request: MemberLeaseRequest,
@@ -329,6 +355,31 @@ impl Service {
                         .ok_or_else(super::service::forbidden)?;
                     Ok(AuthReply {
                         resource: Some(topic.name.clone()),
+                        expires_ms: now.saturating_add(1000),
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
+                AuthQuery::PublisherRecovery {
+                    topic,
+                    producer,
+                    registration,
+                    client,
+                    credential,
+                } => {
+                    if registration == 0 || registration >= state.publishers().next_registration() {
+                        return Err(super::service::forbidden());
+                    }
+                    let record = state.publishers().record(producer, registration);
+                    if record.is_some_and(|record| {
+                        record.permit.topic != topic
+                            || record.permit.client != client
+                            || record.permit.credential != credential
+                    }) {
+                        return Err(super::service::forbidden());
+                    }
+                    Ok(AuthReply {
+                        publisher: record.map(|record| record.permit_at(now)),
                         expires_ms: now.saturating_add(1000),
                         now_ms: now,
                         ..Default::default()

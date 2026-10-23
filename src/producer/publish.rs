@@ -93,6 +93,59 @@ impl PublisherLedger {
 }
 
 impl ProducerState {
+    pub(crate) fn publisher_cleanup_candidates(
+        &self,
+        now_ms: u64,
+    ) -> impl Iterator<Item = PublisherPermit> + '_ {
+        self.publishers
+            .sessions
+            .iter()
+            .filter(move |(_, session)| session.reap_after_ms <= now_ms)
+            .map(|((producer, registration), session)| PublisherPermit {
+                topic: self.topic_id,
+                producer: *producer,
+                registration: *registration,
+                client: session.client,
+                credential: session.credential,
+                live: false,
+                expires_ms: session
+                    .reap_after_ms
+                    .saturating_sub(crate::metadata::PUBLISHER_RECOVERY_MS),
+            })
+    }
+
+    pub(crate) fn cleanup_publisher(
+        &mut self,
+        permit: &PublisherPermit,
+        now_ms: u64,
+    ) -> Result<()> {
+        self.publisher_binding(
+            permit,
+            SendIdentity {
+                topic: permit.topic,
+                producer: permit.producer,
+                registration: permit.registration,
+                sequence: 1,
+            },
+        )?;
+        if permit.live {
+            return Err(Rejection::SessionConflict);
+        }
+        self.advance_time(now_ms.max(self.logical_time_ms))?;
+        let key = (permit.producer, permit.registration);
+        if let Some(session) = self.publishers.sessions.get_mut(&key) {
+            session.retired = true;
+            session.reap_after_ms = session.reap_after_ms.max(
+                permit
+                    .expires_ms
+                    .saturating_add(crate::metadata::PUBLISHER_RECOVERY_MS),
+            );
+            if session.reap_after_ms <= self.logical_time_ms {
+                self.publishers.sessions.remove(&key);
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn publisher_binding(
         &self,
         permit: &PublisherPermit,

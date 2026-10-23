@@ -2,6 +2,25 @@ use super::*;
 use tidemq_protocol::topic::HashRange;
 
 impl DataApplication {
+    pub(crate) fn publisher_cleanup_page(
+        &self,
+        after: Option<(PartitionKey, Id, u64)>,
+        now_ms: u64,
+    ) -> Vec<(PartitionKey, producer::PublisherPermit)> {
+        self.partitions
+            .iter()
+            .flat_map(|(partition, state)| {
+                state
+                    .producer
+                    .publisher_cleanup_candidates(now_ms)
+                    .map(|permit| (*partition, permit))
+            })
+            .filter(|(partition, permit)| {
+                after.is_none_or(|after| (*partition, permit.producer, permit.registration) > after)
+            })
+            .take(4)
+            .collect()
+    }
     pub(super) fn retire_publishes(
         &mut self,
         partition: PartitionKey,

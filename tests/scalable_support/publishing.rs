@@ -121,6 +121,39 @@ fn result_capacity_never_silently_evicts_unclaimed_results_or_accepts_changed_co
 }
 
 #[test]
+fn authority_confirmed_cleanup_preserves_the_last_global_recovery_window_and_fences_late_commands()
+{
+    let topic = Id::new_v7().unwrap();
+    let original = permit(topic);
+    let mut state = ProducerState::new(topic, 0, ProducerLimits::default()).unwrap();
+    let request = message(&original, 1, None);
+    publish(&mut state, &original, request.clone(), 1).unwrap();
+    assert_eq!(state.publisher_cleanup_candidates(700_000).count(), 1);
+    assert_eq!(
+        state.cleanup_publisher(&original, 700_000),
+        Err(Rejection::SessionConflict)
+    );
+    let mut renewed = original.clone();
+    renewed.expires_ms = 1_000_000;
+    renewed.live = false;
+    state.cleanup_publisher(&renewed, 700_000).unwrap();
+    assert!(
+        publish(&mut state, &original, request.clone(), 700_000)
+            .unwrap()
+            .duplicate
+    );
+    assert_eq!(state.publisher_cleanup_candidates(700_000).count(), 0);
+    state.cleanup_publisher(&renewed, 1_620_001).unwrap();
+    assert_eq!(state.publish_state_bytes(), 0);
+    assert_eq!(
+        publish(&mut state, &original, request, 1),
+        Err(Rejection::SessionExpired)
+    );
+    assert_eq!(state.committed_end(), 1);
+    state.validate().unwrap();
+}
+
+#[test]
 fn closing_an_unseen_publisher_fences_late_sends_and_reaping_keeps_the_clock_fence() {
     let topic = Id::new_v7().unwrap();
     let mut permit = permit(topic);

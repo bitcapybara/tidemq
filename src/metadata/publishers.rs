@@ -7,6 +7,7 @@ use super::{MetadataState, RecordStatus, Rejection};
 use crate::producer::PublisherPermit;
 
 pub const PUBLISHER_LEASE_MS: u64 = 300_000;
+pub const PUBLISHER_RECOVERY_MS: u64 = 620_000;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PublisherCommand {
@@ -99,6 +100,17 @@ impl PublishersBook {
         operation: Id,
         command: &PublisherCommand,
     ) -> Result<PublisherPermit, Rejection> {
+        if let PublisherCommand::Open { now_ms, .. } | PublisherCommand::Heartbeat { now_ms, .. } =
+            command
+        {
+            self.records.retain(|_, record| {
+                record
+                    .permit
+                    .expires_ms
+                    .saturating_add(PUBLISHER_RECOVERY_MS)
+                    > *now_ms
+            });
+        }
         match command {
             PublisherCommand::Open { .. } => self.open(operation, command),
             PublisherCommand::Heartbeat {

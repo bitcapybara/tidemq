@@ -33,7 +33,9 @@ pub use members::{
     MEMBER_LEASE_MS, MEMBER_RECOVERY_MS, MemberHeartbeat, MemberInfo, MemberJoin, MemberStatus,
     MembersBook, MembersPlan,
 };
-pub use publishers::{PUBLISHER_LEASE_MS, PublisherCommand, PublisherRecord, PublishersBook};
+pub use publishers::{
+    PUBLISHER_LEASE_MS, PUBLISHER_RECOVERY_MS, PublisherCommand, PublisherRecord, PublishersBook,
+};
 pub use state::MetadataState;
 pub use topology::{BirthShard, LayoutChange, LayoutPlan, LayoutStage, Topology};
 pub use types::{
