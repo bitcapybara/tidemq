@@ -213,6 +213,16 @@ impl MetadataState {
             return self.reject(Rejection::Capacity);
         }
         let response = self.apply_new(&command);
+        // A stale CAS never admitted the operation; its retry can refresh that guard.
+        if matches!(
+            response,
+            Response::Rejected {
+                reason: Rejection::RevisionConflict,
+                ..
+            }
+        ) {
+            return response;
+        }
         self.decisions.insert(
             command.operation_id,
             Decision {

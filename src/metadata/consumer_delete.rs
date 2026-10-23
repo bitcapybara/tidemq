@@ -26,7 +26,7 @@ impl ConsumerDeletion {
             || self.domains != row.members.plan().domains
             || !self.deleted.is_subset(&domains)
             || self.complete && self.deleted != domains
-            || !row.members.can_delete(u64::MAX)
+            || !row.members.can_delete()
         {
             return Err(Rejection::InvalidEvidence);
         }
@@ -41,7 +41,6 @@ impl MetadataState {
         operation: Id,
         subscription: Id,
         model: SubscriptionKind,
-        now: u64,
     ) -> Result<ConsumerOutcome, Rejection> {
         let row = self
             .consumer_subscriptions
@@ -53,7 +52,7 @@ impl MetadataState {
         if let Some(plan) = &row.deletion {
             return Ok(ConsumerOutcome::Deletion(plan.clone()));
         }
-        if !row.members.can_delete(now) {
+        if !row.members.can_delete() {
             return Err(Rejection::SubscriptionInUse);
         }
         let topic = row.topic;

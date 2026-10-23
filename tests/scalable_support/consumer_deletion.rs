@@ -111,7 +111,6 @@ fn subscription_deletion_requires_online_members_and_handoffs_to_finish() {
             ConsumerCommand::Delete {
                 subscription,
                 model: SubscriptionKind::Queue,
-                now_ms: 3,
             },
         ),
         Rejection::SubscriptionInUse,
@@ -123,7 +122,6 @@ fn subscription_deletion_requires_online_members_and_handoffs_to_finish() {
             ConsumerCommand::Delete {
                 subscription,
                 model: SubscriptionKind::Queue,
-                now_ms: 5,
             },
         ),
         Rejection::SubscriptionInUse,
@@ -148,7 +146,6 @@ fn subscription_deletion_requires_online_members_and_handoffs_to_finish() {
             ConsumerCommand::Delete {
                 subscription,
                 model: SubscriptionKind::Queue,
-                now_ms: 7,
             },
         ),
         Rejection::SubscriptionInUse,
@@ -159,7 +156,6 @@ fn subscription_deletion_requires_online_members_and_handoffs_to_finish() {
         ConsumerCommand::Delete {
             subscription,
             model: SubscriptionKind::Queue,
-            now_ms: 20_001,
         },
     ));
     assert!(!plan.complete);
@@ -194,7 +190,6 @@ fn partial_subscription_deletion_blocks_recreation_and_replays_only_the_original
         ConsumerCommand::Delete {
             subscription,
             model: SubscriptionKind::Queue,
-            now_ms: 10,
         },
     );
     let original = state.apply(command.clone());
@@ -206,7 +201,6 @@ fn partial_subscription_deletion_blocks_recreation_and_replays_only_the_original
             ConsumerCommand::Delete {
                 subscription,
                 model: SubscriptionKind::Stream,
-                now_ms: 10,
             },
         )),
         Rejection::OperationConflict,
@@ -321,7 +315,6 @@ fn partial_subscription_deletion_blocks_recreation_and_replays_only_the_original
             ConsumerCommand::Delete {
                 subscription,
                 model: SubscriptionKind::Queue,
-                now_ms: 20
             }
         ))
         .id,

@@ -125,6 +125,40 @@ fn rejected(response: Response, reason: Rejection) {
 }
 
 #[test]
+fn a_stale_metadata_cas_does_not_bind_an_unadmitted_operation_identity() {
+    let (mut state, _) = fixture();
+    let operation = Id::new_v7().unwrap();
+    let topic = Id::new_v7().unwrap();
+    let command =
+        |revision| Command::create_topic(operation, revision, topic, "cas-retry".into(), vec![2]);
+    let stale = command(state.revision());
+    assert!(
+        state
+            .apply(Command::create_topic(
+                Id::new_v7().unwrap(),
+                state.revision(),
+                Id::new_v7().unwrap(),
+                "other-cas".into(),
+                vec![2]
+            ))
+            .is_applied()
+    );
+    rejected(state.apply(stale), Rejection::RevisionConflict);
+    assert_eq!(
+        state.lookup_operation(operation),
+        super::OperationResult::UnknownOrRetired
+    );
+    let admitted = command(state.revision());
+    let outcome = state.apply(admitted.clone());
+    assert!(outcome.is_applied());
+    let mut state: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
+    state.validate_snapshot().unwrap();
+    assert_eq!(state.apply(admitted), outcome);
+    assert_eq!(state.topic(topic).unwrap().name, "cas-retry");
+}
+
+#[test]
 fn activation_requires_matching_fence_and_rebuilt_state_before_route_publication() {
     let (mut state, partition) = fixture();
     let (fence, recovery) = evidence(&state, partition);

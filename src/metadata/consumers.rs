@@ -77,7 +77,6 @@ pub enum ConsumerCommand {
     Delete {
         subscription: Id,
         model: SubscriptionKind,
-        now_ms: u64,
     },
     ObserveDeleted {
         subscription: Id,
@@ -131,8 +130,7 @@ impl MetadataState {
             ConsumerCommand::Delete {
                 subscription,
                 model,
-                now_ms,
-            } => self.begin_consumer_delete(operation, *subscription, *model, *now_ms),
+            } => self.begin_consumer_delete(operation, *subscription, *model),
             ConsumerCommand::ObserveDeleted {
                 subscription,
                 deletion,
