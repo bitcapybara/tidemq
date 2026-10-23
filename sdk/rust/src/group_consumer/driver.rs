@@ -156,6 +156,15 @@ async fn leave_and_retire(core: &Core, deadline: Instant) -> Result<()> {
                 let probe = core.request(public::ConsumerAction::ConsumerStatus);
                 match control(&core.client, Id::new_v7()?, &probe, deadline).await {
                     Ok(status) if matches!(status.member_status, 4..=7) => status,
+                    Ok(_) | Err(_)
+                        if (error.outcome_unknown()
+                            || error.retry_admission()
+                            || error.retry_rejected())
+                            && Instant::now() < deadline =>
+                    {
+                        pause_control(deadline).await?;
+                        continue;
+                    }
                     _ => return Err(error),
                 }
             }

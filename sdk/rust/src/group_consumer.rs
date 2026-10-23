@@ -564,14 +564,36 @@ impl Core {
         }
     }
 
-    async fn join_closed(&self, result: CloseResult, deadline: Instant) -> CloseResult {
+    async fn join_closed(&self, mut result: CloseResult, deadline: Instant) -> CloseResult {
         if self.client.is_closing() {
             let task = self.quarantine.lock().ok().and_then(|mut task| task.take());
-            if let Some(mut task) = task
-                && tokio::time::timeout_at(deadline, &mut task).await.is_err()
-                && let Ok(mut stored) = self.quarantine.lock()
-            {
-                *stored = Some(task);
+            if let Some(mut task) = task {
+                match tokio::time::timeout_at(deadline, &mut task).await {
+                    Ok(Ok(())) => match &mut result {
+                        Ok(report) => report.local_cleanup_complete = true,
+                        Err(error) => error.report.local_cleanup_complete = true,
+                    },
+                    status => {
+                        let mut report = match result {
+                            Ok(report) => report,
+                            Err(error) => error.report,
+                        };
+                        report.local_cleanup_complete = false;
+                        let source = match status {
+                            Ok(Err(source)) => Error::Task { source },
+                            _ => {
+                                if let Ok(mut stored) = self.quarantine.lock() {
+                                    *stored = Some(task);
+                                }
+                                Error::Deadline
+                            }
+                        };
+                        return Err(CloseError {
+                            report,
+                            source: Arc::new(source),
+                        });
+                    }
+                }
             }
         }
         let task = self.task.lock().ok().and_then(|mut task| task.take());
