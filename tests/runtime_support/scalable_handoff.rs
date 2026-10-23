@@ -1,6 +1,79 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_handoff_keeps_cumulative_ack_usable_for_retained_ranges() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture
+        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = "acme/app/ack-handoff";
+    client.admin().create_logical_topic(topic).await.unwrap();
+    let first = client
+        .new_stream_consumer(topic, "history")
+        .prefetch_messages(64)
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(topic).build().await.unwrap();
+    let mut old = Vec::new();
+    for index in 0..40 {
+        producer
+            .send(tidemq_sdk::Message::new(format!("old-{index}")).key(format!("key-{index}")))
+            .await
+            .unwrap();
+    }
+    for _ in 0..40 {
+        old.push(
+            tokio::time::timeout(Duration::from_secs(15), first.receive())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let second = client
+        .new_stream_consumer(topic, "history")
+        .build()
+        .await
+        .unwrap();
+    let handed_off = tokio::time::timeout(Duration::from_secs(30), second.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let revoked = old
+        .iter()
+        .find(|message| message.message_id() == handed_off.message_id())
+        .unwrap();
+    second.ack_cumulative(&handed_off).await.unwrap();
+    for index in 0..40 {
+        producer
+            .send(tidemq_sdk::Message::new(format!("new-{index}")).key(format!("key-{index}")))
+            .await
+            .unwrap();
+    }
+    let retained = tokio::time::timeout(Duration::from_secs(30), first.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(retained.payload().starts_with(b"new-"));
+    first.ack_cumulative(&retained).await.unwrap();
+    assert!(matches!(
+        first.ack_cumulative(revoked).await,
+        Err(tidemq_sdk::Error::StaleDelivery)
+    ));
+    producer.close().await.unwrap();
+    second.close().await.unwrap();
+    first.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stream_handoff_stops_disconnected_members_from_delivering_old_prefetch() {
     let fixture = dynamic_fixture().await;
     let admin = fixture
