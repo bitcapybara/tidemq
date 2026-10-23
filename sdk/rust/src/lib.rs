@@ -11,6 +11,7 @@ mod context;
 mod error;
 mod group_consumer;
 mod identity;
+mod logical_producer;
 mod message;
 mod metrics;
 mod producer;
@@ -32,7 +33,10 @@ pub use group_consumer::{
 pub use identity::{
     AccessToken, CredentialId, NamespaceId, Permission, PrincipalBuilder, PrincipalId, TenantId,
 };
-pub use message::{MessageId, ReceivedMessage};
+pub use logical_producer::{
+    PendingSend, ProducerBuilder, SendBatchResult, SendReceipt, TopicProducer,
+};
+pub use message::{Message, MessageId, ReceivedMessage};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use producer::{PendingBatch, ProduceReceipt, Producer};
 pub use request::RequestContext;

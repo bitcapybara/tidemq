@@ -3,6 +3,69 @@ use std::{fmt, sync::Arc};
 use tidemq_protocol::{Id, public};
 use tokio::sync::OwnedSemaphorePermit;
 
+#[cfg(test)]
+#[path = "../../../tests/scalable_support/send_message.rs"]
+mod send_tests;
+
+#[derive(Clone, Default)]
+pub struct Message {
+    pub(crate) wire: public::PublishMessage,
+}
+
+impl Message {
+    pub fn new(payload: impl Into<Bytes>) -> Self {
+        Self {
+            wire: public::PublishMessage {
+                payload: payload.into(),
+                ..Default::default()
+            },
+        }
+    }
+    pub fn key(mut self, key: impl Into<Bytes>) -> Self {
+        self.wire.key = Some(key.into());
+        self
+    }
+    pub fn property(mut self, name: impl Into<String>, value: impl Into<Bytes>) -> Self {
+        self.wire.properties.insert(name.into(), value.into());
+        self
+    }
+    pub(crate) fn memory_bytes(&self, maximum: u32) -> crate::Result<u32> {
+        let bytes = tidemq_protocol::topic::delivery_bytes(
+            self.wire.key.as_deref().unwrap_or_default(),
+            &self.wire.payload,
+            &self.wire.properties,
+        )?;
+        if bytes > u64::from(maximum).saturating_add(256)
+            || self.wire.properties.len() > 128
+            || self
+                .wire
+                .properties
+                .keys()
+                .any(|name| name.is_empty() || name.len() > 256)
+        {
+            return Err(crate::Error::Configuration {
+                reason: "message exceeds its byte or property limits",
+            });
+        }
+        u32::try_from(bytes.saturating_mul(2).saturating_add(4096)).map_err(|_| {
+            crate::Error::Admission {
+                resource: "message bytes",
+            }
+        })
+    }
+}
+
+impl fmt::Debug for Message {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Message")
+            .field("payload_bytes", &self.wire.payload.len())
+            .field("has_key", &self.wire.key.is_some())
+            .field("property_count", &self.wire.properties.len())
+            .finish()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct MessageId {
     pub(crate) topic: Id,

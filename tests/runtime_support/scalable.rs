@@ -541,3 +541,170 @@ fn recoverable_member_error(error: &tidemq_sdk::Error) -> bool {
             _ => false,
         }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn logical_producer_clones_send_batches_across_a_split_and_preserve_message_context() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic("acme/app/messages")
+        .await
+        .unwrap();
+    let queue = client
+        .new_queue_consumer("acme/app/messages", "jobs")
+        .prefetch_messages(16)
+        .build()
+        .await
+        .unwrap();
+    let producer = client
+        .new_producer("acme/app/messages")
+        .build()
+        .await
+        .unwrap();
+    let clone = producer.clone();
+    let initial = vec![
+        tidemq_sdk::Message::new("without-key").property("type", "unkeyed"),
+        tidemq_sdk::Message::new("empty-key")
+            .key("")
+            .property("type", "keyed"),
+    ];
+    let receipts = clone.send_batch(initial).await.unwrap();
+    let mut expected: std::collections::HashSet<_> = receipts
+        .outcomes
+        .into_iter()
+        .map(|outcome| outcome.unwrap().message_id())
+        .collect();
+    client
+        .admin()
+        .split_topic_at("acme/app/messages", 1 << 63)
+        .await
+        .unwrap();
+    let messages = (0..16)
+        .map(|index| tidemq_sdk::Message::new(format!("event-{index}")).key(format!("key-{index}")))
+        .collect();
+    for receipt in producer.send_batch(messages).await.unwrap().outcomes {
+        assert!(expected.insert(receipt.unwrap().message_id()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut unkeyed = false;
+    let mut empty = false;
+    for _ in 0..18 {
+        let message = tokio::time::timeout(Duration::from_secs(20), queue.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(expected.contains(&message.message_id()));
+        assert!(seen.insert(message.message_id()));
+        match message.payload() {
+            b"without-key" => {
+                assert!(message.key().is_none());
+                assert_eq!(
+                    message.properties().get("type").unwrap().as_ref(),
+                    b"unkeyed"
+                );
+                unkeyed = true;
+            }
+            b"empty-key" => {
+                assert_eq!(message.key(), Some(b"".as_slice()));
+                assert_eq!(message.properties().get("type").unwrap().as_ref(), b"keyed");
+                empty = true;
+            }
+            _ => assert!(message.key().is_some()),
+        }
+        queue.ack(&message).await.unwrap();
+    }
+    assert_eq!(seen, expected);
+    assert!(unkeyed && empty);
+    assert!(producer.pending_sends().await.unwrap().is_empty());
+    assert!(producer.close().await.unwrap().local_cleanup_complete());
+    assert!(matches!(
+        clone.send(tidemq_sdk::Message::new("closed")).await,
+        Err(tidemq_sdk::Error::Closed)
+    ));
+    queue.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_send_waiter_keeps_its_original_owned_send_and_result() {
+    let fixture = dynamic_fixture().await;
+    let admin = fixture.client(1).await;
+    let tenant = admin.admin().create_tenant("acme").await.unwrap();
+    admin.admin().create_namespace(tenant, "app").await.unwrap();
+    admin
+        .admin()
+        .create_logical_topic("acme/app/cancelled-send")
+        .await
+        .unwrap();
+    let backend = fixture.configs.get(&1).unwrap().listen;
+    let proxy = udp_proxy::Proxy::start([backend, backend]).await;
+    let client = Client::with_target(
+        ClientConfig::new("node-1.local:7443"),
+        ClientTls {
+            trust_roots: fixture.roots.clone(),
+            identity: None,
+            expected_nodes: Vec::new(),
+        },
+        PeerTarget {
+            address: proxy.address,
+            server_name: "node-1.local".into(),
+            local_role: "sdk".into(),
+            remote_role: "combined".into(),
+            cluster_id: None,
+            node_id: None,
+        },
+        TOKEN.into(),
+    )
+    .await
+    .unwrap();
+    let producer = client
+        .new_producer("acme/app/cancelled-send")
+        .build()
+        .await
+        .unwrap();
+    let queue = admin
+        .new_queue_consumer("acme/app/cancelled-send", "jobs")
+        .build()
+        .await
+        .unwrap();
+    proxy.set_mtu(0);
+    {
+        let mut sending =
+            std::pin::pin!(producer.send(tidemq_sdk::Message::new("owned-send").key("key")));
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(sending.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+    let pending = producer.pending_sends().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    proxy.set_mtu(1200);
+    let receipt = pending.first().unwrap().retry().await.unwrap();
+    let message = tokio::time::timeout(Duration::from_secs(20), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.message_id(), receipt.message_id());
+    assert_eq!(message.payload(), b"owned-send");
+    assert_eq!(
+        pending.first().unwrap().retry().await.unwrap().message_id(),
+        receipt.message_id()
+    );
+    assert!(producer.pending_sends().await.unwrap().is_empty());
+    queue.ack(&message).await.unwrap();
+    producer.close().await.unwrap();
+    queue.close().await.unwrap();
+    client.close().await.unwrap();
+    admin.close().await.unwrap();
+    proxy.close().await;
+    fixture.close().await;
+}

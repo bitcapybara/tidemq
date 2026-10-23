@@ -1,6 +1,10 @@
 mod ack;
 mod driver;
 
+#[cfg(test)]
+#[path = "../../../tests/scalable_support/consumer_views.rs"]
+mod view_tests;
+
 use bytes::Bytes;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -203,7 +207,14 @@ impl Builder {
         };
         let ensure_operation = Id::new_v7()?;
         let status = loop {
-            let status = control(&self.client, ensure_operation, &request, deadline).await?;
+            let status = match control(&self.client, ensure_operation, &request, deadline).await {
+                Ok(status) => status,
+                Err(error) if error.outcome_unknown() && Instant::now() < deadline => {
+                    pause_control(deadline).await?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if status.plan_active {
                 break status;
             }
@@ -214,6 +225,7 @@ impl Builder {
         request.member_epoch = status.next_member_epoch;
         request.action = public::ConsumerAction::JoinConsumer.into();
         let member = Id::from_slice(&request.member_id)?;
+        let mut operation = Id::new_v7()?;
         let core = Arc::new(Core {
             client: self.client.background(),
             topic: self.topic,
@@ -252,16 +264,14 @@ impl Builder {
             core: core.clone(),
             _client: self.client,
         });
-        let mut operation = Id::new_v7()?;
         let (ready, result) = tokio::sync::oneshot::channel();
         let worker = core.clone();
         let task = tokio::spawn(async move {
             let core = worker;
-            let started = Instant::now();
             let result = join_control(&core.client, &mut operation, &mut request, deadline).await;
             core.epoch.store(request.member_epoch, Ordering::Release);
             match result {
-                Ok(status) => {
+                Ok((status, started)) => {
                     core.epoch.store(status.member_epoch, Ordering::Release);
                     if let Err(error) = core.update_info(status, started) {
                         core.record_error(error);
@@ -309,22 +319,53 @@ async fn join_control(
     operation: &mut Id,
     request: &mut public::ConsumerControl,
     deadline: Instant,
-) -> Result<public::ConsumerControlResult> {
+) -> Result<(public::ConsumerControlResult, Instant)> {
+    let mut pending_heartbeat: Option<(Id, public::ConsumerControl)> = None;
     loop {
+        let started = Instant::now();
         match control(client, *operation, request, deadline).await {
             Ok(result)
-                if result.member_status == 2 && result.plan_active && result.member_epoch > 0 =>
+                if result.member_status == 2
+                    && result.plan_active
+                    && result.member_epoch > 0
+                    && fresh_view(&result, started) =>
             {
-                return Ok(result);
+                return Ok((result, started));
             }
             Ok(result) if matches!(result.member_status, 1 | 2) && result.member_epoch > 0 => {
-                let mut heartbeat = request.clone();
-                heartbeat.action = public::ConsumerAction::HeartbeatConsumer.into();
-                heartbeat.heartbeat_sequence = result.next_heartbeat_sequence;
-                let status = control(client, Id::new_v7()?, &heartbeat, deadline).await?;
-                if status.member_status == 2 && status.plan_active {
-                    return Ok(status);
+                if pending_heartbeat.as_ref().is_some_and(|(_, request)| {
+                    request.heartbeat_sequence < result.next_heartbeat_sequence
+                }) {
+                    pending_heartbeat = None;
                 }
+                if pending_heartbeat.is_none() {
+                    let mut heartbeat = request.clone();
+                    heartbeat.action = public::ConsumerAction::HeartbeatConsumer.into();
+                    heartbeat.heartbeat_sequence = result.next_heartbeat_sequence;
+                    pending_heartbeat = Some((Id::new_v7()?, heartbeat));
+                }
+                let (heartbeat_operation, heartbeat) =
+                    pending_heartbeat.as_ref().ok_or(Error::SessionExpired)?;
+                let started = Instant::now();
+                let status = match control(client, *heartbeat_operation, heartbeat, deadline).await
+                {
+                    Ok(status) => status,
+                    Err(error) if error.outcome_unknown() && Instant::now() < deadline => {
+                        pause_control(deadline).await?;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
+                pending_heartbeat = None;
+                if status.member_status == 2 && status.plan_active && fresh_view(&status, started) {
+                    return Ok((status, started));
+                }
+                pause_control(deadline).await?;
+            }
+            Ok(result) if matches!(result.member_status, 5 | 7) && result.plan_active => {
+                request.member_epoch = result.next_member_epoch;
+                *operation = Id::new_v7()?;
+                pending_heartbeat = None;
                 pause_control(deadline).await?;
             }
             Ok(_) => return Err(Error::SessionExpired),
@@ -336,6 +377,10 @@ async fn join_control(
             }) => {
                 request.member_epoch = expected;
                 *operation = Id::new_v7()?;
+                pending_heartbeat = None;
+                pause_control(deadline).await?;
+            }
+            Err(error) if error.outcome_unknown() && Instant::now() < deadline => {
                 pause_control(deadline).await?;
             }
             Err(error) => return Err(error),
@@ -347,6 +392,13 @@ async fn pause_control(deadline: Instant) -> Result<()> {
     tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(10)))
         .await
         .map_err(|_| Error::Deadline)
+}
+
+fn fresh_view(status: &public::ConsumerControlResult, started: Instant) -> bool {
+    status.remaining_lease_ms <= 15_000
+        && started
+            .checked_add(Duration::from_millis(status.remaining_lease_ms))
+            .is_some_and(|until| until > Instant::now())
 }
 
 impl Core {

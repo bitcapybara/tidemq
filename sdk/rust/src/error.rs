@@ -5,6 +5,20 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Send did not complete; inspect the original pending send"))]
+    SendUnresolved {
+        pending: crate::PendingSend,
+        source: std::sync::Arc<Error>,
+    },
+    #[snafu(display("Batch send was interrupted; inspect its original pending sends"))]
+    BatchSendInterrupted {
+        pending: Vec<crate::PendingSend>,
+        source: std::sync::Arc<Error>,
+    },
+    #[snafu(display("The message was not submitted"))]
+    SendNotSubmitted { source: std::sync::Arc<Error> },
+    #[snafu(display("Send recovery exceeded its finite window; its outcome remains unknown"))]
+    SendRecoveryExpired,
     #[snafu(display("Acknowledgement is incomplete; inspect the original pending operation"))]
     Acknowledgement {
         pending: crate::PendingAck,
@@ -94,9 +108,10 @@ pub enum Error {
 impl Error {
     pub(crate) fn original_outcome_known(&self) -> bool {
         match self {
-            Self::Background { source } | Self::Acknowledgement { source, .. } => {
-                source.original_outcome_known()
-            }
+            Self::Background { source }
+            | Self::Acknowledgement { source, .. }
+            | Self::SendUnresolved { source, .. }
+            | Self::BatchSendInterrupted { source, .. } => source.original_outcome_known(),
             Self::Remote {
                 original_outcome_known,
                 ..
@@ -117,9 +132,11 @@ impl Error {
 
     pub(crate) fn permission_denied(&self) -> bool {
         match self {
-            Self::Background { source } | Self::Acknowledgement { source, .. } => {
-                source.permission_denied()
-            }
+            Self::Background { source }
+            | Self::Acknowledgement { source, .. }
+            | Self::SendUnresolved { source, .. }
+            | Self::BatchSendInterrupted { source, .. }
+            | Self::SendNotSubmitted { source } => source.permission_denied(),
             Self::Remote {
                 code: ErrorCode::Forbidden | ErrorCode::Unauthenticated,
                 ..
@@ -153,10 +170,12 @@ impl Error {
 
     pub fn outcome_unknown(&self) -> bool {
         match self {
-            Self::Background { source } | Self::Acknowledgement { source, .. } => {
-                source.outcome_unknown()
-            }
+            Self::Background { source }
+            | Self::Acknowledgement { source, .. }
+            | Self::SendUnresolved { source, .. }
+            | Self::BatchSendInterrupted { source, .. } => source.outcome_unknown(),
             Self::ProduceUnknown { .. }
+            | Self::SendRecoveryExpired
             | Self::RegistrationUnknown { .. }
             | Self::RequestUnknown { .. } => true,
             Self::Transport { source } => transient_transport(source),

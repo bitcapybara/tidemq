@@ -236,7 +236,8 @@ pub(crate) struct Inner {
     _reserved_memory: tokio::sync::OwnedSemaphorePermit,
     pub metrics: Arc<Metrics>,
     pub consumer_claims: std::sync::Mutex<HashSet<(Id, u32, Id)>>,
-    pub(crate) consumers: std::sync::Mutex<Vec<std::sync::Weak<crate::group_consumer::Core>>>,
+    pub(crate) consumers: std::sync::Mutex<Vec<Arc<crate::group_consumer::Core>>>,
+    producers: std::sync::Mutex<Vec<Arc<crate::logical_producer::Core>>>,
     closing: AtomicBool,
     close_result: std::sync::Mutex<Option<crate::close::CloseResult>>,
     close_changed: tokio::sync::Notify,
@@ -424,6 +425,7 @@ impl Client {
             metrics: Arc::new(Metrics::default()),
             consumer_claims: std::sync::Mutex::new(HashSet::new()),
             consumers: std::sync::Mutex::new(Vec::new()),
+            producers: std::sync::Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             close_result: std::sync::Mutex::new(None),
             close_changed: tokio::sync::Notify::new(),
@@ -709,6 +711,11 @@ impl Client {
         if frame.kind == i32::from(FrameKind::Error) {
             let reply: ErrorReply =
                 decode_payload(frame.payload.clone(), &self.inner.config.protocol)?;
+            if reply.message.len() > 1024 {
+                return Err(Error::ResponseMismatch {
+                    reason: "server error diagnostic exceeds its finite bound".into(),
+                });
+            }
             let code = ErrorCode::try_from(reply.code).map_err(|_| Error::ResponseMismatch {
                 reason: format!("error reply code {} is not recognized", reply.code),
             })?;
@@ -807,17 +814,31 @@ impl Client {
         if self.inner.closing.load(Ordering::Acquire) {
             return Err(Error::Closed);
         }
-        resources.retain(|resource| {
-            resource
-                .upgrade()
-                .is_some_and(|resource| resource.retains_work())
-        });
+        resources.retain(|resource| resource.retains_work());
         if resources.len() >= 128 {
             return Err(Error::Admission {
                 resource: "logical consumers",
             });
         }
-        resources.push(Arc::downgrade(core));
+        resources.push(core.clone());
+        Ok(())
+    }
+
+    pub(crate) fn register_producer(
+        &self,
+        core: &Arc<crate::logical_producer::Core>,
+    ) -> Result<()> {
+        let mut resources = self.inner.producers.lock().map_err(|_| Error::Closed)?;
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
+        resources.retain(|resource| resource.retains_work());
+        if resources.len() >= 128 {
+            return Err(Error::Admission {
+                resource: "logical producers",
+            });
+        }
+        resources.push(core.clone());
         Ok(())
     }
 
@@ -886,16 +907,20 @@ impl Client {
             .inner
             .consumers
             .lock()
-            .map(|resources| {
-                resources
-                    .iter()
-                    .filter_map(std::sync::Weak::upgrade)
-                    .collect::<Vec<_>>()
-            })
+            .map(|mut resources| std::mem::take(&mut *resources))
             .unwrap_or_default();
         let mut jobs = tokio::task::JoinSet::new();
         for consumer in consumers {
             jobs.spawn(async move { consumer.close_until(deadline).await });
+        }
+        let producers = self
+            .inner
+            .producers
+            .lock()
+            .map(|mut resources| std::mem::take(&mut *resources))
+            .unwrap_or_default();
+        for producer in producers {
+            jobs.spawn(async move { producer.close_until(deadline).await });
         }
         while let Some(result) = jobs.join_next().await {
             match result {

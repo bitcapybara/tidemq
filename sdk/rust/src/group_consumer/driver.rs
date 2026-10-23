@@ -219,13 +219,13 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
         *fence_after = (*fence_after).max(upper);
     }
     if let Some((operation, request)) = &mut lease.join {
-        let status = core
+        let (status, observed) = core
             .client
             .operation(|deadline| join_control(&core.client, operation, request, deadline))
             .await?;
         core.epoch.store(status.member_epoch, Ordering::Release);
         lease.sequence = status.next_heartbeat_sequence;
-        core.update_info(status, started)?;
+        core.update_info(status, observed)?;
         lease.join = None;
         lease.operation = Id::new_v7()?;
         return Ok(());

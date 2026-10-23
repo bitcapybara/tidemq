@@ -112,17 +112,24 @@ impl PendingAck {
         claim: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<AckReceipt>> + Send + '_>> {
         Box::pin(async move {
-            if !self.is_complete()
-                && self
-                    .work
-                    .inflight
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            {
-                let work = self.work.clone();
-                if let Ok(mut result) = work.result.lock() {
+            let launch = {
+                let mut result = self.work.result.lock().map_err(|_| Error::Closed)?;
+                if !self.is_complete()
+                    && self
+                        .work
+                        .inflight
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
                     *result = None;
+                    true
+                } else {
+                    false
                 }
+            };
+            if launch {
+                let mut owned_task = self.work.task.lock().map_err(|_| Error::Closed)?;
+                let work = self.work.clone();
                 let handle = tokio::spawn(async move {
                     let result = drive(&work, deadline).await.map_err(Arc::new);
                     let complete = work
@@ -141,14 +148,17 @@ impl PendingAck {
                     work.inflight.store(false, Ordering::Release);
                     work.changed.notify_waiters();
                 });
-                *self.work.task.lock().map_err(|_| Error::Closed)? = Some(handle);
+                *owned_task = Some(handle);
             }
             loop {
                 let notified = self.work.changed.notified();
-                let result = self.work.result.lock().map_err(|_| Error::Closed)?.clone();
+                let (result, complete) = {
+                    let result = self.work.result.lock().map_err(|_| Error::Closed)?;
+                    (result.clone(), self.is_complete())
+                };
                 if let Some(result) = result {
                     if claim
-                        && self.is_complete()
+                        && complete
                         && let Some(core) = self.work.core.upgrade()
                     {
                         core.state()?.pending.remove(&self.work.operation);
