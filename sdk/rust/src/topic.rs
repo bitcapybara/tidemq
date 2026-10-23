@@ -37,7 +37,43 @@ impl TopicInfo {
         self.wire.active.len()
     }
 
-    pub(crate) fn from_wire(name: String, wire: public::TopicLayoutResult) -> Result<Self> {
+    pub(crate) fn from_wire(name: String, mut wire: public::TopicLayoutResult) -> Result<Self> {
+        if wire.total_shards == 0
+            || wire.total_shards > 256
+            || wire.total_shards as usize != wire.active.len().saturating_add(wire.history.len())
+            || !wire.next_after_shard.is_empty()
+        {
+            return Err(Error::ResponseMismatch {
+                reason: "topic layout is incomplete or exceeds its finite bound".into(),
+            });
+        }
+        let mut identities = std::collections::BTreeSet::new();
+        for shard in wire.active.iter().chain(&wire.history) {
+            if !identities.insert(Id::from_slice(&shard.shard_id)?)
+                || shard.group_id == 0
+                || shard.authority_epoch == 0
+                || shard.predecessors.len() > 2
+            {
+                return Err(Error::ResponseMismatch {
+                    reason: "topic layout contains a duplicate or invalid birth domain".into(),
+                });
+            }
+        }
+        for shard in wire.active.iter().chain(&wire.history) {
+            HashRange {
+                start: shard.hash_start,
+                end: shard.hash_end,
+            }
+            .validate()?;
+            for predecessor in &shard.predecessors {
+                if !identities.contains(&Id::from_slice(predecessor)?) {
+                    return Err(Error::ResponseMismatch {
+                        reason: "topic layout omitted a predecessor".into(),
+                    });
+                }
+            }
+        }
+        wire.active.sort_by_key(|shard| shard.hash_start);
         let id = Id::from_slice(&wire.topic_id)?;
         let layout = TopicLayout {
             topic: id,
@@ -79,6 +115,7 @@ impl Admin {
                         deadline,
                     )
                     .await?;
+                let wire = complete_layout(&self.client, wire, deadline).await?;
                 TopicInfo::from_wire(name, wire)
             })
             .await
@@ -98,10 +135,13 @@ impl Admin {
                         Id::new_v7()?,
                         &public::GetTopicLayout {
                             topic_id: topic.topic_id,
+                            expected_revision: 0,
+                            after_shard: Default::default(),
                         },
                         deadline,
                     )
                     .await?;
+                let wire = complete_layout(&self.client, wire, deadline).await?;
                 TopicInfo::from_wire(name, wire)
             })
             .await
@@ -175,8 +215,98 @@ impl Admin {
                         deadline,
                     )
                     .await?;
+                let wire = complete_layout(&self.client, wire, deadline).await?;
                 TopicInfo::from_wire(name, wire)
             })
             .await
     }
+}
+
+async fn complete_layout(
+    client: &crate::Client,
+    first: public::TopicLayoutResult,
+    deadline: tokio::time::Instant,
+) -> Result<public::TopicLayoutResult> {
+    let topic_id = first.topic_id.clone();
+    let mut first = Some(first);
+    for attempt in 0..4 {
+        let page = match first.take() {
+            Some(page) => page,
+            None => {
+                client
+                    .request(
+                        FrameKind::GetTopicLayout,
+                        FrameKind::TopicLayoutResult,
+                        TrafficClass::Control,
+                        Id::new_v7()?,
+                        &public::GetTopicLayout {
+                            topic_id: topic_id.clone(),
+                            expected_revision: 0,
+                            after_shard: Default::default(),
+                        },
+                        deadline,
+                    )
+                    .await?
+            }
+        };
+        match layout_pages(client, page, deadline).await {
+            Err(Error::Remote {
+                code: tidemq_protocol::common::ErrorCode::StaleGeneration,
+                outcome: tidemq_protocol::common::Outcome::Rejected,
+                ..
+            }) if attempt < 3 => continue,
+            result => return result,
+        }
+    }
+    Err(Error::ResponseMismatch {
+        reason: "topic layout snapshot did not finish within its bounded attempts".into(),
+    })
+}
+
+async fn layout_pages(
+    client: &crate::Client,
+    mut layout: public::TopicLayoutResult,
+    deadline: tokio::time::Instant,
+) -> Result<public::TopicLayoutResult> {
+    for _ in 0..8 {
+        if layout.active.len().saturating_add(layout.history.len()) > 256 {
+            return Err(Error::ResponseMismatch {
+                reason: "topic layout exceeds its bounded birth-domain count".into(),
+            });
+        }
+        if layout.next_after_shard.is_empty() {
+            return Ok(layout);
+        }
+        let after = Id::from_slice(&layout.next_after_shard)?;
+        let page: public::TopicLayoutResult = client
+            .request(
+                FrameKind::GetTopicLayout,
+                FrameKind::TopicLayoutResult,
+                TrafficClass::Control,
+                Id::new_v7()?,
+                &public::GetTopicLayout {
+                    topic_id: layout.topic_id.clone(),
+                    expected_revision: layout.revision,
+                    after_shard: layout.next_after_shard.clone(),
+                },
+                deadline,
+            )
+            .await?;
+        if page.topic_id != layout.topic_id
+            || page.revision != layout.revision
+            || page.total_shards != layout.total_shards
+            || page.active.len().saturating_add(page.history.len()) > 32
+            || !page.next_after_shard.is_empty() && Id::from_slice(&page.next_after_shard)? <= after
+        {
+            return Err(Error::ResponseMismatch {
+                reason: "topic page changed its identity, revision, or cursor".into(),
+            });
+        }
+        layout.active.extend(page.active);
+        layout.history.extend(page.history);
+        layout.next_after_shard = page.next_after_shard;
+    }
+    Err(Error::ResponseMismatch {
+        reason: "topic layout pagination exceeds its finite bound".into(),
+    })
 }

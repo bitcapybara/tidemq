@@ -27,7 +27,7 @@ use crate::{
     admin::bytes,
     close::{CloseError, CloseReport, CloseResult},
 };
-pub use ack::{AckReceipt, PendingAck};
+pub use ack::{AckProgress, AckReceipt, PendingAck};
 
 struct Builder {
     client: Client,
@@ -116,9 +116,11 @@ pub(crate) struct Core {
     slots: Arc<Semaphore>,
     memory: Arc<Semaphore>,
     stop: CancellationToken,
-    ack_gate: tokio::sync::Mutex<()>,
     close_deadline: Mutex<Option<Instant>>,
     lease_until: Mutex<Instant>,
+    lease_fence_after: Mutex<Instant>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    resource_memory: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 }
 
 impl Client {
@@ -180,6 +182,7 @@ impl Builder {
     }
 
     async fn build_until(self, deadline: Instant) -> Result<Arc<Owner>> {
+        let resource_memory = self.client.reserve_resource(deadline).await?;
         let info = self.client.admin().topic_info(&self.topic).await?;
         let mut request = public::ConsumerControl {
             topic_id: bytes(info.id),
@@ -198,7 +201,14 @@ impl Builder {
             max_messages: self.messages,
             max_bytes: u64::from(self.bytes),
         };
-        let status = control(&self.client, Id::new_v7()?, &request, deadline).await?;
+        let ensure_operation = Id::new_v7()?;
+        let status = loop {
+            let status = control(&self.client, ensure_operation, &request, deadline).await?;
+            if status.plan_active {
+                break status;
+            }
+            pause_control(deadline).await?;
+        };
         request.subscription_id = status.subscription_id.clone();
         request.member_id = bytes(Id::new_v7()?);
         request.member_epoch = status.next_member_epoch;
@@ -231,9 +241,11 @@ impl Builder {
             slots: Arc::new(Semaphore::new(self.messages as usize)),
             memory: Arc::new(Semaphore::new(self.bytes as usize)),
             stop: CancellationToken::new(),
-            ack_gate: tokio::sync::Mutex::new(()),
             close_deadline: Mutex::new(None),
             lease_until: Mutex::new(Instant::now()),
+            lease_fence_after: Mutex::new(deadline + Duration::from_secs(15)),
+            task: Mutex::new(None),
+            resource_memory: Mutex::new(Some(resource_memory)),
         });
         self.client.register_consumer(&core)?;
         let owner = Arc::new(Owner {
@@ -242,7 +254,9 @@ impl Builder {
         });
         let mut operation = Id::new_v7()?;
         let (ready, result) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
+        let worker = core.clone();
+        let task = tokio::spawn(async move {
+            let core = worker;
             let started = Instant::now();
             let result = join_control(&core.client, &mut operation, &mut request, deadline).await;
             core.epoch.store(request.member_epoch, Ordering::Release);
@@ -263,6 +277,7 @@ impl Builder {
                 }
             }
         });
+        *core.task.lock().map_err(|_| Error::Closed)? = Some(task);
         result
             .await
             .map_err(|_| Error::Closed)?
@@ -297,8 +312,20 @@ async fn join_control(
 ) -> Result<public::ConsumerControlResult> {
     loop {
         match control(client, *operation, request, deadline).await {
-            Ok(result) if result.member_status == 2 && result.member_epoch > 0 => {
+            Ok(result)
+                if result.member_status == 2 && result.plan_active && result.member_epoch > 0 =>
+            {
                 return Ok(result);
+            }
+            Ok(result) if matches!(result.member_status, 1 | 2) && result.member_epoch > 0 => {
+                let mut heartbeat = request.clone();
+                heartbeat.action = public::ConsumerAction::HeartbeatConsumer.into();
+                heartbeat.heartbeat_sequence = result.next_heartbeat_sequence;
+                let status = control(client, Id::new_v7()?, &heartbeat, deadline).await?;
+                if status.member_status == 2 && status.plan_active {
+                    return Ok(status);
+                }
+                pause_control(deadline).await?;
             }
             Ok(_) => return Err(Error::SessionExpired),
             Err(Error::Remote {
@@ -309,14 +336,24 @@ async fn join_control(
             }) => {
                 request.member_epoch = expected;
                 *operation = Id::new_v7()?;
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                pause_control(deadline).await?;
             }
             Err(error) => return Err(error),
         }
     }
 }
 
+async fn pause_control(deadline: Instant) -> Result<()> {
+    tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(10)))
+        .await
+        .map_err(|_| Error::Deadline)
+}
+
 impl Core {
+    pub(crate) fn retains_work(&self) -> bool {
+        self.state()
+            .is_ok_and(|state| state.closed.is_none() || !state.pending.is_empty())
+    }
     fn update_info(&self, info: public::ConsumerControlResult, started: Instant) -> Result<()> {
         if info.remaining_lease_ms > 15_000 {
             return Err(Error::ResponseMismatch {
@@ -415,24 +452,53 @@ impl Core {
         self.changed.notify_waiters();
         loop {
             let notified = self.changed.notified();
-            match self.state() {
-                Ok(state) => {
-                    if let Some(result) = &state.closed {
-                        return result.clone();
-                    }
-                }
+            let closed = match self.state() {
+                Ok(state) => state.closed.clone(),
                 Err(source) => {
                     return Err(CloseError {
                         report: CloseReport::default(),
                         source: Arc::new(source),
                     });
                 }
+            };
+            if let Some(result) = closed {
+                return self.join_closed(result, deadline).await;
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 return Err(CloseError {
                     report: CloseReport::default(),
                     source: Arc::new(Error::Deadline),
                 });
+            }
+        }
+    }
+
+    async fn join_closed(&self, result: CloseResult, deadline: Instant) -> CloseResult {
+        let task = self.task.lock().ok().and_then(|mut task| task.take());
+        let Some(mut task) = task else {
+            return result;
+        };
+        match tokio::time::timeout_at(deadline, &mut task).await {
+            Ok(Ok(())) => result,
+            status => {
+                let mut report = match result {
+                    Ok(report) => report,
+                    Err(error) => error.report,
+                };
+                report.local_cleanup_complete = false;
+                let source = match status {
+                    Ok(Err(source)) => Error::Task { source },
+                    _ => {
+                        if let Ok(mut stored) = self.task.lock() {
+                            *stored = Some(task);
+                        }
+                        Error::Deadline
+                    }
+                };
+                Err(CloseError {
+                    report,
+                    source: Arc::new(source),
+                })
             }
         }
     }

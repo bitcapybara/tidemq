@@ -42,6 +42,102 @@ fn join(
 }
 
 #[test]
+fn retiring_members_allows_repeated_clean_shutdown_without_reviving_old_epochs() {
+    let mut book = MembersBook::new(
+        id(),
+        SubscriptionKind::Queue,
+        InitialPosition::Latest,
+        1,
+        vec![id()],
+    )
+    .unwrap();
+    activate(&mut book, 0);
+    let mut first = None;
+    for index in 0..300 {
+        let (operation, request) = join(&mut book, id(), id(), id(), index * 10 + 1);
+        if first.is_none() {
+            first = Some((operation, request.clone()));
+        }
+        assert!(
+            book.retire(
+                request.member,
+                request.expected_epoch,
+                request.client,
+                request.credential
+            )
+            .is_err()
+        );
+        activate(&mut book, index * 10 + 2);
+        book.leave(
+            id(),
+            request.member,
+            request.expected_epoch,
+            request.client,
+            request.credential,
+            index * 10 + 3,
+        )
+        .unwrap();
+        activate(&mut book, index * 10 + 4);
+        book.retire(
+            request.member,
+            request.expected_epoch,
+            request.client,
+            request.credential,
+        )
+        .unwrap();
+        book.validate().unwrap();
+    }
+    let (operation, request) = first.unwrap();
+    assert_eq!(book.join(operation, &request), Err(Rejection::Superseded));
+    assert_eq!(book.next_epoch(), 301);
+}
+
+#[test]
+fn joining_members_can_renew_a_long_running_domain_installation() {
+    let mut book = MembersBook::new(
+        id(),
+        SubscriptionKind::Stream,
+        InitialPosition::Latest,
+        1,
+        vec![id(); 1],
+    )
+    .unwrap();
+    activate(&mut book, 0);
+    let (_, request) = join(&mut book, id(), id(), id(), 1);
+    let version = book.plan().version;
+    book.heartbeat(
+        id(),
+        MemberHeartbeat {
+            member: request.member,
+            epoch: request.expected_epoch,
+            client: request.client,
+            credential: request.credential,
+            sequence: 1,
+            now_ms: 10_000,
+            credential_expires_ms: 1_000_000,
+            digest: [8; 32],
+        },
+    )
+    .unwrap();
+    let domain = book.plan().domains[0];
+    book.observe_installed(version, false, domain, 16_000)
+        .unwrap();
+    assert_eq!(book.grants(16_000).unwrap()[0].expires_ms, 25_000);
+    book.observe_installed(version, true, domain, 16_001)
+        .unwrap();
+    assert_eq!(
+        book.member(request.member, request.expected_epoch)
+            .unwrap()
+            .status,
+        MemberStatus::Active
+    );
+    assert_eq!(
+        book.next_heartbeat_sequence(request.member, request.expected_epoch),
+        Some(2)
+    );
+}
+
+#[test]
 fn a_new_owner_cannot_be_installed_until_every_domain_has_fenced() {
     let domains = vec![id(), id(), id()];
     let mut book = MembersBook::new(

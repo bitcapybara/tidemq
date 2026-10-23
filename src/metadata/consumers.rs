@@ -46,6 +46,13 @@ pub enum ConsumerCommand {
         credential: Id,
         now_ms: u64,
     },
+    Retire {
+        subscription: Id,
+        member: Id,
+        epoch: u64,
+        client: Id,
+        credential: Id,
+    },
     Observe {
         subscription: Id,
         version: u64,
@@ -61,6 +68,7 @@ pub enum ConsumerCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ConsumerOutcome {
+    Retired,
     GateOpened,
     Created { subscription: Id },
     Joined(MemberInfo),
@@ -93,6 +101,20 @@ impl MetadataState {
         command: &ConsumerCommand,
     ) -> Result<ConsumerOutcome, Rejection> {
         match command {
+            ConsumerCommand::Retire {
+                subscription,
+                member,
+                epoch,
+                client,
+                credential,
+            } => {
+                self.consumer_subscriptions
+                    .get_mut(subscription)
+                    .ok_or(Rejection::NotFound)?
+                    .members
+                    .retire(*member, *epoch, *client, *credential)?;
+                Ok(ConsumerOutcome::Retired)
+            }
             ConsumerCommand::OpenedGate {
                 subscription,
                 domain,

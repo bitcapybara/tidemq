@@ -230,6 +230,10 @@ pub(crate) struct Inner {
     pub bytes: Arc<Semaphore>,
     pub producer_bytes: Arc<Semaphore>,
     pub requests: Arc<Semaphore>,
+    pub control_requests: Arc<Semaphore>,
+    pub control_memory: Arc<Semaphore>,
+    pub resource_memory: Arc<Semaphore>,
+    _reserved_memory: tokio::sync::OwnedSemaphorePermit,
     pub metrics: Arc<Metrics>,
     pub consumer_claims: std::sync::Mutex<HashSet<(Id, u32, Id)>>,
     pub(crate) consumers: std::sync::Mutex<Vec<std::sync::Weak<crate::group_consumer::Core>>>,
@@ -380,10 +384,30 @@ impl Client {
         .map_err(|source| Error::Memory { source })?;
         let transport =
             tidemq_transport::Client::bind(bind, tls, config.transport.clone(), budget)?;
+        let bytes = Arc::new(Semaphore::new(config.max_pending_bytes as usize));
+        let reserved = (config.max_pending_bytes / 8) as u32;
+        let reserved_memory = bytes
+            .clone()
+            .try_acquire_many_owned(reserved.checked_mul(2).ok_or(Error::Configuration {
+                reason: "reserved memory exceeds its supported bound",
+            })?)
+            .map_err(|_| Error::Admission {
+                resource: "reserved client control memory",
+            })?;
+        let control_requests = (config.max_pending_requests / 4).max(1);
         let inner = Arc::new(Inner {
             producer_bytes: Arc::new(Semaphore::new(config.producer_bytes()?)),
-            bytes: Arc::new(Semaphore::new(config.max_pending_bytes as usize)),
-            requests: Arc::new(Semaphore::new(config.max_pending_requests as usize)),
+            bytes,
+            requests: Arc::new(Semaphore::new(
+                config
+                    .max_pending_requests
+                    .saturating_sub(control_requests)
+                    .max(1) as usize,
+            )),
+            control_requests: Arc::new(Semaphore::new(control_requests as usize)),
+            control_memory: Arc::new(Semaphore::new(reserved as usize)),
+            resource_memory: Arc::new(Semaphore::new(reserved as usize)),
+            _reserved_memory: reserved_memory,
             config,
             transport,
             credentials: ClientCredentials::External {
@@ -590,8 +614,12 @@ impl Client {
         affinity: Option<u64>,
     ) -> Result<R> {
         let _timer = self.inner.metrics.timer();
+        let mut uncertain = false;
         for attempt in 0..self.inner.config.max_reconnect_attempts {
-            let frame = self.frame(kind, class, Id::new_v7()?, operation, payload, deadline)?;
+            let frame = Id::new_v7()
+                .map_err(Error::from)
+                .and_then(|request| self.frame(kind, class, request, operation, payload, deadline))
+                .map_err(|error| error.preserve_uncertainty(uncertain))?;
             self.inner.metrics.record_request();
             let response = if kind == FrameKind::AckBatch {
                 self.ack_attempt(frame, deadline).await
@@ -610,7 +638,15 @@ impl Client {
                     Err(error) => Err(error),
                 }
             };
-            match response.and_then(|response| self.decode(response, response_kind)) {
+            let result = response.and_then(|response| self.decode(response, response_kind));
+            if let Err(error) = &result {
+                uncertain |= error.outcome_unknown()
+                    || matches!(
+                        error,
+                        Error::ResponseMismatch { .. } | Error::Protocol { .. }
+                    );
+            }
+            match result {
                 Ok(response) => return Ok(response),
                 Err(error)
                     if (error.retry_transport() || error.retry_rejected())
@@ -618,13 +654,13 @@ impl Client {
                 {
                     self.inner.metrics.record_retry();
                     if self.backoff(operation, attempt, deadline).await.is_err() {
-                        return Err(error);
+                        return Err(error.preserve_uncertainty(uncertain));
                     }
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.preserve_uncertainty(uncertain)),
             }
         }
-        Err(Error::Deadline)
+        Err(Error::Deadline.preserve_uncertainty(uncertain))
     }
 
     async fn ack_attempt(&self, frame: Frame, deadline: Instant) -> Result<ReceivedFrame> {
@@ -702,6 +738,7 @@ impl Client {
                 expected_sequence: reply.expected_sequence,
                 expected_registration_epoch: reply.expected_registration_epoch,
                 retry_after_ms: reply.retry_after_ms,
+                original_outcome_known: reply.original_outcome_known,
             });
         }
         if frame.kind != i32::from(expected) {
@@ -770,7 +807,11 @@ impl Client {
         if self.inner.closing.load(Ordering::Acquire) {
             return Err(Error::Closed);
         }
-        resources.retain(|resource| resource.strong_count() > 0);
+        resources.retain(|resource| {
+            resource
+                .upgrade()
+                .is_some_and(|resource| resource.retains_work())
+        });
         if resources.len() >= 128 {
             return Err(Error::Admission {
                 resource: "logical consumers",
@@ -813,6 +854,25 @@ impl Client {
             }
             notified.await;
         }
+    }
+
+    pub(crate) async fn reserve_resource(
+        &self,
+        deadline: Instant,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit> {
+        const BYTES: u32 = 64 * 1024;
+        if self.inner.config.max_pending_bytes / 8 < u64::from(BYTES) {
+            return Err(Error::Configuration {
+                reason: "pending bytes must reserve at least 64 KiB for each logical resource",
+            });
+        }
+        timeout_at(
+            deadline,
+            self.inner.resource_memory.clone().acquire_many_owned(BYTES),
+        )
+        .await
+        .map_err(|_| Error::Deadline)?
+        .map_err(|_| Error::Closed)
     }
 
     async fn close_owned(&self) -> crate::close::CloseResult {
@@ -866,6 +926,9 @@ impl Client {
         self.inner.bytes.close();
         self.inner.producer_bytes.close();
         self.inner.requests.close();
+        self.inner.control_requests.close();
+        self.inner.control_memory.close();
+        self.inner.resource_memory.close();
         for class in [
             TrafficClass::Control,
             TrafficClass::Produce,

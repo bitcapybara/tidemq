@@ -146,6 +146,14 @@ impl MembersBook {
     pub fn member(&self, id: Id, epoch: u64) -> Option<&MemberInfo> {
         self.members.get(&(id, epoch)).map(|record| &record.info)
     }
+    pub fn next_heartbeat_sequence(&self, id: Id, epoch: u64) -> Option<u64> {
+        self.members.get(&(id, epoch)).and_then(|record| {
+            record
+                .heartbeat
+                .as_ref()
+                .map_or(Some(1), |heartbeat| heartbeat.sequence.checked_add(1))
+        })
+    }
     pub fn assigned(&self, now: u64) -> impl Iterator<Item = &MemberInfo> {
         self.members
             .values()
@@ -417,6 +425,40 @@ impl MembersBook {
         before.saturating_sub(self.members.len())
     }
 
+    pub fn retire(
+        &mut self,
+        member: Id,
+        epoch: u64,
+        client: Id,
+        credential: Id,
+    ) -> Result<(), Rejection> {
+        let Some(record) = self.members.get(&(member, epoch)) else {
+            return if epoch > 0 && epoch < self.next_epoch {
+                Ok(())
+            } else {
+                Err(Rejection::NotFound)
+            };
+        };
+        if record.info.client != client || record.info.credential != credential {
+            return Err(Rejection::InvalidEvidence);
+        }
+        if !self.plan.active
+            || record.info.status.live()
+            || self
+                .plan_grants
+                .iter()
+                .any(|grant| grant.member == member && grant.epoch == epoch)
+            || self
+                .committed
+                .get(&member)
+                .is_some_and(|grant| grant.epoch == epoch)
+        {
+            return Err(Rejection::RecoveryRequired);
+        }
+        self.members.remove(&(member, epoch));
+        Ok(())
+    }
+
     fn begin_plan(&mut self, version: u64, now: u64) -> Result<(), Rejection> {
         self.plan_grants = self.desired_grants(now)?;
         self.plan.version = version;
@@ -428,7 +470,12 @@ impl MembersBook {
 
     pub fn grants(&self, now: u64) -> Result<Vec<crate::subscription::MemberGrant>, Rejection> {
         let _ = now;
-        let desired = self.plan_grants.clone();
+        let mut desired = self.plan_grants.clone();
+        for grant in &mut desired {
+            if let Some(member) = self.member(grant.member, grant.epoch) {
+                grant.expires_ms = grant.expires_ms.max(member.expires_ms);
+            }
+        }
         if self.plan.fenced {
             return Ok(desired);
         }

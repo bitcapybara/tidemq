@@ -26,7 +26,7 @@ pub use consumer::{Consumer, ConsumerConfig, Delivery, DeliveryOrdering};
 pub use context::scope_traceparent;
 pub use error::{Error, Result};
 pub use group_consumer::{
-    AckReceipt, PendingAck, QueueConsumer, QueueConsumerBuilder, StreamConsumer,
+    AckProgress, AckReceipt, PendingAck, QueueConsumer, QueueConsumerBuilder, StreamConsumer,
     StreamConsumerBuilder,
 };
 pub use identity::{

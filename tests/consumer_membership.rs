@@ -48,6 +48,60 @@ fn read(member: Id, sequence: u64, now_ms: u64) -> GroupRead {
 }
 
 #[test]
+fn an_original_ack_refusal_survives_attempt_changes_and_checks_the_exact_digest() {
+    let mut cursor = cursor(SubscriptionKind::Queue);
+    let member = id();
+    cursor
+        .install_members(1, &[grant(member, vec![])], 0)
+        .unwrap();
+    let deliveries = cursor
+        .read(
+            read(member, 1, 1),
+            &[Candidate {
+                offset: 0,
+                hash: 7,
+                bytes: 1,
+            }],
+        )
+        .unwrap();
+    let mut request = GroupAck {
+        member,
+        epoch: 1,
+        sequence: 1,
+        now_ms: 2,
+        model: SubscriptionKind::Queue,
+        proofs: deliveries.deliveries,
+        nack_delay_ms: None,
+    };
+    request.proofs[0].attempt += 1;
+    assert_eq!(cursor.original_ack_outcome(&request), None);
+    assert_eq!(
+        cursor.acknowledge(request.clone()),
+        Err(Rejection::StaleAttempt)
+    );
+    cursor.install_members(2, &[], 3).unwrap();
+    request.now_ms = 20_000;
+    assert_eq!(
+        cursor.original_ack_outcome(&request),
+        Some(Err(Rejection::StaleAttempt))
+    );
+    assert_eq!(
+        cursor.acknowledge(request.clone()),
+        Err(Rejection::StaleAttempt)
+    );
+    let mut different = request.clone();
+    different.nack_delay_ms = Some(1);
+    assert_eq!(cursor.original_ack_outcome(&different), None);
+    assert_eq!(
+        cursor.acknowledge(different),
+        Err(Rejection::IdentityConflict)
+    );
+    cursor.retire_ack(member, 1, 1).unwrap();
+    assert_eq!(cursor.original_ack_outcome(&request), None);
+    assert_eq!(cursor.acknowledge(request), Err(Rejection::OutcomeExpired));
+}
+
+#[test]
 fn replaying_an_assignment_after_renewal_preserves_its_original_result() {
     let mut cursor = cursor(SubscriptionKind::Queue);
     let member = id();
@@ -106,6 +160,156 @@ fn a_later_assignment_cannot_revive_an_expired_attempt() {
             .is_err()
     );
     cursor.validate().unwrap();
+}
+
+#[test]
+fn retiring_a_rejected_ack_closes_result_holes_and_fences_its_late_arrival() {
+    let limits = Limits {
+        max_window_slots: 4,
+        max_total_window_slots: 4,
+        max_in_flight_messages: 4,
+        ..Limits::default()
+    };
+    let mut cursor = GroupCursor::new(
+        GroupIdentity {
+            topic: id(),
+            shard: id(),
+            subscription: id(),
+        },
+        SubscriptionKind::Queue,
+        0,
+        [42; 32],
+        limits,
+    )
+    .unwrap();
+    let member = id();
+    let mut granted = grant(member, vec![]);
+    granted.max_messages = 4;
+    cursor.install_members(1, &[granted], 0).unwrap();
+    let mut request = read(member, 1, 1);
+    request.max_messages = 4;
+    let deliveries = cursor
+        .read(
+            request,
+            &(0..4)
+                .map(|offset| Candidate {
+                    offset,
+                    hash: 0,
+                    bytes: 1,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    cursor.retire_read(member, 1, 1).unwrap();
+    let late = GroupAck {
+        member,
+        epoch: 1,
+        sequence: 1,
+        now_ms: 2,
+        model: SubscriptionKind::Queue,
+        proofs: vec![deliveries.deliveries[0].clone()],
+        nack_delay_ms: None,
+    };
+    for (index, proof) in deliveries.deliveries.into_iter().enumerate() {
+        let sequence = index as u64 + 2;
+        cursor
+            .acknowledge(GroupAck {
+                sequence,
+                proofs: vec![proof],
+                ..late.clone()
+            })
+            .unwrap();
+        cursor.retire_ack(member, 1, sequence).unwrap();
+    }
+    assert_eq!(cursor.ack_result_slots(), 4);
+    cursor.retire_ack(member, 1, 1).unwrap();
+    assert_eq!(cursor.ack_result_slots(), 0);
+    assert_eq!(cursor.acknowledge(late), Err(Rejection::OutcomeExpired));
+    cursor.validate().unwrap();
+}
+
+#[test]
+fn a_full_result_window_reserves_one_slot_for_the_missing_head_ack() {
+    let limits = Limits {
+        max_window_slots: 4,
+        max_total_window_slots: 4,
+        max_in_flight_messages: 4,
+        ..Limits::default()
+    };
+    let mut cursor = GroupCursor::new(
+        GroupIdentity {
+            topic: id(),
+            shard: id(),
+            subscription: id(),
+        },
+        SubscriptionKind::Queue,
+        0,
+        [42; 32],
+        limits,
+    )
+    .unwrap();
+    let member = id();
+    let mut granted = grant(member, vec![]);
+    granted.max_messages = 4;
+    cursor.install_members(1, &[granted], 0).unwrap();
+    let mut request = read(member, 1, 1);
+    request.max_messages = 4;
+    let deliveries = cursor
+        .read(
+            request,
+            &(0..4)
+                .map(|offset| Candidate {
+                    offset,
+                    hash: 0,
+                    bytes: 1,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+    cursor.retire_read(member, 1, 1).unwrap();
+    for (index, proof) in deliveries.deliveries.into_iter().enumerate() {
+        let sequence = index as u64 + 2;
+        cursor
+            .acknowledge(GroupAck {
+                member,
+                epoch: 1,
+                sequence,
+                now_ms: 2,
+                model: SubscriptionKind::Queue,
+                proofs: vec![proof],
+                nack_delay_ms: None,
+            })
+            .unwrap();
+        cursor.retire_ack(member, 1, sequence).unwrap();
+    }
+    assert_eq!(cursor.ack_result_slots(), 4);
+    request.sequence = 2;
+    let next = cursor
+        .read(
+            request,
+            &[Candidate {
+                offset: 4,
+                hash: 0,
+                bytes: 1,
+            }],
+        )
+        .unwrap();
+    cursor
+        .acknowledge(GroupAck {
+            member,
+            epoch: 1,
+            sequence: 1,
+            now_ms: 3,
+            model: SubscriptionKind::Queue,
+            proofs: next.deliveries,
+            nack_delay_ms: None,
+        })
+        .unwrap();
+    assert_eq!(cursor.ack_result_slots(), 5);
+    cursor.validate().unwrap();
+    cursor.retire_ack(member, 1, 1).unwrap();
+    assert_eq!(cursor.ack_result_slots(), 0);
+    assert_eq!(cursor.acknowledged_before(), 5);
 }
 
 #[test]

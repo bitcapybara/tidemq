@@ -1555,6 +1555,8 @@ pub(super) fn subscription_error(reason: subscription::Rejection) -> Error {
         R::StaleGeneration | R::SessionMismatch => ErrorCode::StaleGeneration,
         R::StaleAttempt | R::InvalidToken | R::NotDelivered => ErrorCode::StaleDelivery,
         R::OutOfRetention => ErrorCode::OffsetExpired,
+        R::OutcomeExpired => ErrorCode::DeduplicationExpired,
+        R::IdentityConflict => ErrorCode::ContentConflict,
         R::WindowFull
         | R::InFlightMessages
         | R::InFlightBytes

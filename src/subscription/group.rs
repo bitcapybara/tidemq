@@ -283,6 +283,21 @@ impl GroupCursor {
                 request.sequence <= member.ack_floor || member.acks.contains_key(&request.sequence)
             })
     }
+    pub fn original_ack_outcome(&self, request: &GroupAck) -> Option<Result<AckDisposition>> {
+        let member = self.members.get(&(request.member, request.epoch))?;
+        let saved = member.acks.get(&request.sequence)?;
+        (!saved.retired && ack_digest(request).ok() == Some(saved.digest)).then_some(saved.result)
+    }
+    pub fn ack_retirement_requires_slot(&self, id: Id, epoch: u64, sequence: u64) -> bool {
+        self.members.get(&(id, epoch)).is_some_and(|member| {
+            sequence > member.ack_floor.saturating_add(1) && !member.acks.contains_key(&sequence)
+        })
+    }
+    pub fn ack_is_head(&self, request: &GroupAck) -> bool {
+        self.members
+            .get(&(request.member, request.epoch))
+            .is_some_and(|member| member.ack_floor.checked_add(1) == Some(request.sequence))
+    }
     pub fn in_flight_bytes(&self) -> u64 {
         self.members.values().map(|member| member.bytes).sum()
     }
@@ -351,18 +366,26 @@ impl GroupCursor {
                 .filter(|member| member.active)
                 .map(|member| &member.grant)
                 .collect();
-            return if current.len() == grants.len()
+            let matches = current.len() == grants.len()
                 && grants.iter().all(|grant| {
                     current.iter().any(|installed| {
                         let mut original = (*installed).clone();
                         original.expires_ms = grant.expires_ms;
-                        original == *grant && installed.expires_ms >= grant.expires_ms
+                        original == *grant
                     })
-                }) {
-                Ok(())
-            } else {
-                Err(Rejection::IdentityConflict)
-            };
+                });
+            if !matches {
+                return Err(Rejection::IdentityConflict);
+            }
+            self.fence_invalid_deliveries(now);
+            for grant in grants {
+                let member = self
+                    .members
+                    .get_mut(&(grant.member, grant.epoch))
+                    .ok_or(Rejection::InvalidSnapshot)?;
+                member.grant.expires_ms = member.grant.expires_ms.max(grant.expires_ms);
+            }
+            return Ok(());
         }
         let new = grants
             .iter()
@@ -726,19 +749,20 @@ impl GroupCursor {
             .ok_or(Rejection::SessionMismatch)?;
         let digest = ack_digest(&request)?;
         if let Some(saved) = member.acks.get(&request.sequence) {
+            if saved.retired {
+                return Err(Rejection::OutcomeExpired);
+            }
             if saved.digest != digest {
                 return Err(Rejection::IdentityConflict);
             }
-            return if saved.retired {
-                Err(Rejection::OutcomeExpired)
-            } else {
-                saved.result
-            };
+            return saved.result;
         }
         if request.sequence <= member.ack_floor {
             return Err(Rejection::OutcomeExpired);
         }
-        if member.acks.len() >= self.limits.max_window_slots as usize {
+        if member.acks.len() >= self.limits.max_window_slots as usize
+            && member.ack_floor.checked_add(1) != Some(request.sequence)
+        {
             return Err(Rejection::WindowFull);
         }
         let result = self
@@ -833,7 +857,9 @@ impl GroupCursor {
         {
             return Err(Rejection::AckBatchTooLarge);
         }
-        if member.acks.len() >= self.limits.max_window_slots as usize {
+        if member.acks.len() >= self.limits.max_window_slots as usize
+            && member.ack_floor.checked_add(1) != Some(request.sequence)
+        {
             return Err(Rejection::WindowFull);
         }
         let mut offsets = BTreeSet::new();
@@ -875,11 +901,30 @@ impl GroupCursor {
         if sequence <= member.ack_floor {
             return Ok(());
         }
-        member
-            .acks
-            .get_mut(&sequence)
-            .ok_or(Rejection::OutcomeExpired)?
-            .retired = true;
+        if sequence
+            == member
+                .ack_floor
+                .checked_add(1)
+                .ok_or(Rejection::CounterOverflow)?
+        {
+            member.acks.remove(&sequence);
+            member.ack_floor = sequence;
+        } else if let Some(ack) = member.acks.get_mut(&sequence) {
+            ack.retired = true;
+        } else {
+            if member.acks.len() >= self.limits.max_window_slots as usize {
+                return Err(Rejection::WindowFull);
+            }
+            // Retirement also fences an operation that was rejected before result allocation.
+            member.acks.insert(
+                sequence,
+                SavedAck {
+                    digest: [0; 32],
+                    result: Err(Rejection::OutcomeExpired),
+                    retired: true,
+                },
+            );
+        }
         while member
             .ack_floor
             .checked_add(1)
@@ -953,7 +998,10 @@ impl GroupCursor {
         }
         let before = self.members.len();
         self.members.retain(|_, member| {
-            member.active || member.grant.expires_ms.saturating_add(recovery_ms) > now
+            member.active
+                || (!member.acks.is_empty()
+                    || member.read.as_ref().is_some_and(|read| !read.retired))
+                    && member.grant.expires_ms.saturating_add(recovery_ms) > now
         });
         Ok(before.saturating_sub(self.members.len()))
     }
@@ -1032,7 +1080,7 @@ impl GroupCursor {
                 || member.bytes != bytes
                 || count > member.grant.max_messages
                 || bytes > member.grant.max_bytes
-                || member.acks.len() > self.limits.max_window_slots as usize
+                || member.acks.len() > (self.limits.max_window_slots as usize).saturating_add(1)
                 || member
                     .acks
                     .keys()

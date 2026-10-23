@@ -20,7 +20,7 @@ impl DataApplication {
         let usage = self.group_usage()?;
         if usage.windows > limits.max_total_window_slots as usize
             || usage.reads > limits.max_total_window_slots as usize
-            || usage.acks > limits.max_total_window_slots as usize
+            || usage.acks > (limits.max_total_window_slots as usize).saturating_add(usage.members)
             || usage.members > limits.max_total_window_slots as usize
             || usage.bytes > limits.max_total_in_flight_bytes
         {
@@ -193,7 +193,10 @@ fn execute_group(
             Ok(GroupOutcome::ReadRetired)
         }
         GroupCommand::Acknowledge { request, .. } => {
-            if usage.acks >= limits.max_total_window_slots as usize && !cursor.ack_known(&request) {
+            if usage.acks >= limits.max_total_window_slots as usize
+                && !cursor.ack_known(&request)
+                && !cursor.ack_is_head(&request)
+            {
                 return Err(Rejection::WindowFull);
             }
             cursor.acknowledge(request).map(GroupOutcome::Acknowledged)
@@ -204,6 +207,11 @@ fn execute_group(
             sequence,
             ..
         } => {
+            if usage.acks >= limits.max_total_window_slots as usize
+                && cursor.ack_retirement_requires_slot(member, epoch, sequence)
+            {
+                return Err(Rejection::WindowFull);
+            }
             cursor.retire_ack(member, epoch, sequence)?;
             Ok(GroupOutcome::AckRetired)
         }

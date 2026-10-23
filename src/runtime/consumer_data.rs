@@ -69,6 +69,13 @@ struct Progress {
     gate_open: bool,
 }
 
+struct GrantRenewal {
+    subscription: Id,
+    member: Id,
+    epoch: u64,
+    expires_ms: u64,
+}
+
 impl Service {
     pub(super) async fn install_consumer_domain(
         &self,
@@ -126,35 +133,63 @@ impl Service {
             .member(member, epoch)
             .ok_or_else(super::metadata::not_found)?
             .expires_ms;
-        for domain in &row.members.plan().domains {
-            let shard = self
-                .metadata
-                .as_ref()
-                .ok_or_else(Error::unavailable)?
-                .state
-                .try_with_application(|state| state.topology().shard(*domain).cloned())
-                .await
-                .map_err(|source| Error::operation("read renewal domain", source))?
-                .ok_or_else(super::metadata::not_found)?;
-            let target = self.leader(shard.route.group, deadline).await?;
-            self.rpc
-                .call(
-                    target,
-                    shard.route.group,
-                    Request::typed(
-                        GROUP_CONTROL,
-                        &Control::Renew {
-                            partition: shard.partition,
-                            subscription,
-                            member,
-                            epoch,
-                            expires_ms,
-                        },
-                    )?,
-                    deadline,
-                )
-                .await?;
+        let renewal = GrantRenewal {
+            subscription,
+            member,
+            epoch,
+            expires_ms,
+        };
+        for domains in row.members.plan().domains.chunks(4) {
+            let results = tokio::join!(
+                self.renew_consumer_domain(domains.first(), &renewal, deadline),
+                self.renew_consumer_domain(domains.get(1), &renewal, deadline),
+                self.renew_consumer_domain(domains.get(2), &renewal, deadline),
+                self.renew_consumer_domain(domains.get(3), &renewal, deadline),
+            );
+            results.0?;
+            results.1?;
+            results.2?;
+            results.3?;
         }
+        Ok(())
+    }
+
+    async fn renew_consumer_domain(
+        &self,
+        domain: Option<&Id>,
+        renewal: &GrantRenewal,
+        deadline: Instant,
+    ) -> Result<()> {
+        let Some(domain) = domain else {
+            return Ok(());
+        };
+        let shard = self
+            .metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| state.topology().shard(*domain).cloned())
+            .await
+            .map_err(|source| Error::operation("read renewal domain", source))?
+            .ok_or_else(super::metadata::not_found)?;
+        let target = self.leader(shard.route.group, deadline).await?;
+        self.rpc
+            .call(
+                target,
+                shard.route.group,
+                Request::typed(
+                    GROUP_CONTROL,
+                    &Control::Renew {
+                        partition: shard.partition,
+                        subscription: renewal.subscription,
+                        member: renewal.member,
+                        epoch: renewal.epoch,
+                        expires_ms: renewal.expires_ms,
+                    },
+                )?,
+                deadline,
+            )
+            .await?;
         Ok(())
     }
 
@@ -425,9 +460,19 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("read predecessor barriers", source))?;
-        for shard in shards.iter().filter(|shard| {
-            !shard.predecessors.is_empty() && !row.open_gates.contains(&shard.route.id)
-        }) {
+        let pending: Vec<_> = shards
+            .iter()
+            .filter(|shard| {
+                !shard.predecessors.is_empty() && !row.open_gates.contains(&shard.route.id)
+            })
+            .collect();
+        let start = (super::data::unix_millis()? / 100) as usize % pending.len().max(1);
+        for shard in pending
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(pending.len().min(4))
+        {
             let progress = self
                 .consumer_domain_progress(shard, row.id, deadline)
                 .await?;
@@ -561,6 +606,13 @@ impl Service {
         } else {
             deadline.min(lease.expires_at().into())
         };
+        let original_ack = match &command {
+            GroupCommand::Acknowledge {
+                subscription,
+                request,
+            } => Some((*subscription, request.clone())),
+            _ => None,
+        };
         let result = self
             .data_write(
                 route.group_id,
@@ -574,7 +626,33 @@ impl Service {
                 },
                 write_deadline,
             )
-            .await?;
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some((subscription, request)) = original_ack {
+                    let original = replica
+                        .state
+                        .try_with_application(|state| {
+                            state
+                                .consumer_group_cursor(route.partition, subscription)
+                                .and_then(|cursor| cursor.original_ack_outcome(&request))
+                        })
+                        .await
+                        .map_err(|source| {
+                            Error::operation("read original acknowledgement outcome", source)
+                        })?;
+                    if let Some(Err(reason)) = original {
+                        let mut error = super::data::subscription_error(reason);
+                        if let Error::Rejected { failure } = &mut error {
+                            failure.original_outcome_known = true;
+                        }
+                        return Err(error);
+                    }
+                }
+                return Err(error);
+            }
+        };
         let current = replica
             .state
             .try_with_application(|state| {

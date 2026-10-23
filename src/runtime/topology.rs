@@ -66,10 +66,27 @@ impl Service {
             self.change_layout(wire::id(&frame.operation_id)?, request, deadline)
                 .await?;
         }
+        let result = if kind == FrameKind::GetTopicLayout {
+            let request: public::GetTopicLayout =
+                decode_payload(frame.payload.clone(), &self.config.protocol)
+                    .map_err(|source| Error::operation("decode layout page", source))?;
+            self.layout_page(
+                topic,
+                request.expected_revision,
+                if request.after_shard.is_empty() {
+                    None
+                } else {
+                    Some(wire::id(&request.after_shard)?)
+                },
+            )
+            .await?
+        } else {
+            self.layout_result(topic).await?
+        };
         wire::response(
             frame,
             FrameKind::TopicLayoutResult,
-            &self.layout_result(topic).await?,
+            &result,
             &self.config.protocol,
         )
     }
@@ -143,31 +160,19 @@ impl Service {
     }
 
     pub(super) async fn layout_result(&self, topic: Id) -> Result<public::TopicLayoutResult> {
+        self.layout_page(topic, 0, None).await
+    }
+
+    async fn layout_page(
+        &self,
+        topic: Id,
+        revision: u64,
+        after: Option<Id>,
+    ) -> Result<public::TopicLayoutResult> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         replica
             .state
-            .try_with_application(|state| {
-                let topology = state.topology();
-                let layout = topology
-                    .layout(topic)
-                    .ok_or_else(super::metadata::not_found)?;
-                let active = layout
-                    .shards
-                    .iter()
-                    .map(|route| {
-                        topology
-                            .shard(route.id)
-                            .map(wire_shard)
-                            .ok_or_else(Error::unavailable)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                Ok(public::TopicLayoutResult {
-                    topic_id: super::metadata::bytes_id(topic),
-                    revision: layout.revision,
-                    active,
-                    history: topology.history(topic).map(wire_shard).collect(),
-                })
-            })
+            .try_with_application(|state| layout_page(state.topology(), topic, revision, after))
             .await
             .map_err(|source| Error::operation("read durable topic layout", source))?
     }
@@ -368,6 +373,57 @@ impl Service {
         })
     }
 }
+
+fn layout_page(
+    topology: &metadata::Topology,
+    topic: Id,
+    expected: u64,
+    after: Option<Id>,
+) -> Result<public::TopicLayoutResult> {
+    if after.is_some() && expected == 0 {
+        return Err(Error::invalid(
+            "A continuation requires its original layout revision",
+        ));
+    }
+    let layout = topology
+        .layout(topic)
+        .ok_or_else(super::metadata::not_found)?;
+    if expected != 0 && expected != layout.revision {
+        return Err(Error::reject(
+            tidemq_protocol::common::ErrorCode::StaleGeneration,
+            tidemq_protocol::common::Outcome::Rejected,
+            true,
+        ));
+    }
+    let mut page = topology
+        .domains(topic)
+        .filter(|shard| after.is_none_or(|after| shard.route.id > after));
+    let shards: Vec<_> = page.by_ref().take(32).collect();
+    let next_after_shard = if page.next().is_some() {
+        shards
+            .last()
+            .map(|shard| super::metadata::bytes_id(shard.route.id))
+            .unwrap_or_default()
+    } else {
+        Bytes::new()
+    };
+    let (active, history): (Vec<_>, Vec<_>) = shards
+        .into_iter()
+        .partition(|shard| shard.sealed_end.is_none());
+    Ok(public::TopicLayoutResult {
+        total_shards: u32::try_from(topology.domains(topic).count())
+            .map_err(|_| Error::unavailable())?,
+        topic_id: super::metadata::bytes_id(topic),
+        revision: layout.revision,
+        active: active.into_iter().map(wire_shard).collect(),
+        history: history.into_iter().map(wire_shard).collect(),
+        next_after_shard,
+    })
+}
+
+#[cfg(test)]
+#[path = "../../tests/scalable_support/layout_pages.rs"]
+mod layout_page_tests;
 
 fn wire_shard(shard: &BirthShard) -> public::ShardRoute {
     public::ShardRoute {

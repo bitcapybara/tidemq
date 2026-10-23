@@ -912,6 +912,7 @@ fn metadata_rejection(reason: metadata::Rejection) -> Error {
             (ErrorCode::Unavailable, true)
         }
         R::NotFound | R::IdentityRetired => (ErrorCode::NotFound, false),
+        R::Superseded => (ErrorCode::StaleGeneration, false),
         R::OperationConflict | R::NameInUse | R::AlreadyInitialized => {
             (ErrorCode::ContentConflict, false)
         }

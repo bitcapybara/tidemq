@@ -34,6 +34,8 @@ pub struct ErrorReply {
     pub expected_registration_epoch: ::core::option::Option<u64>,
     #[prost(uint64, optional, tag = "7")]
     pub retry_after_ms: ::core::option::Option<u64>,
+    #[prost(bool, tag = "8")]
+    pub original_outcome_known: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CancelRequest {

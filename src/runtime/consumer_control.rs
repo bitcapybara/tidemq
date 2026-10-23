@@ -58,7 +58,7 @@ impl Service {
         let action = public::ConsumerAction::try_from(request.action)
             .map_err(|_| Error::invalid("Consumer action is invalid"))?;
         let operation = wire::id(&frame.operation_id)?;
-        let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
+        let guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
         let subscription = if action == public::ConsumerAction::EnsureConsumerSubscription {
             match self
                 .consumer_meta_write(
@@ -101,6 +101,20 @@ impl Service {
         self.resume_consumer(subscription, deadline).await?;
         let digest = *blake3::hash(&frame.payload).as_bytes();
         match action {
+            public::ConsumerAction::RetireConsumer => {
+                self.consumer_meta_write(
+                    operation,
+                    ConsumerCommand::Retire {
+                        subscription,
+                        member: wire::id(&request.member_id)?,
+                        epoch: request.member_epoch,
+                        client,
+                        credential,
+                    },
+                    deadline,
+                )
+                .await?;
+            }
             public::ConsumerAction::JoinConsumer => {
                 self.consumer_meta_write(
                     operation,
@@ -141,13 +155,6 @@ impl Service {
                     deadline,
                 )
                 .await?;
-                self.renew_consumer_grants(
-                    subscription,
-                    wire::id(&request.member_id)?,
-                    request.member_epoch,
-                    deadline,
-                )
-                .await?;
             }
             public::ConsumerAction::LeaveConsumer => {
                 self.consumer_meta_write(
@@ -174,6 +181,19 @@ impl Service {
         let result = self
             .consumer_status(subscription, &request, client, credential)
             .await?;
+        drop(guard);
+        if action == public::ConsumerAction::HeartbeatConsumer
+            && result.member_status == 2
+            && result.plan_active
+        {
+            self.renew_consumer_grants(
+                subscription,
+                wire::id(&request.member_id)?,
+                request.member_epoch,
+                deadline,
+            )
+            .await?;
+        }
         wire::response(
             frame,
             FrameKind::ConsumerControlResult,
@@ -271,6 +291,12 @@ impl Service {
             Vec::new()
         };
         Ok(public::ConsumerControlResult {
+            next_heartbeat_sequence: member
+                .and_then(|member| {
+                    row.members
+                        .next_heartbeat_sequence(member.member, member.epoch)
+                })
+                .unwrap_or(1),
             remaining_lease_ms: member.map_or(0, |member| member.expires_ms.saturating_sub(now)),
             lanes: row
                 .members
@@ -297,14 +323,21 @@ impl Service {
             next_member_epoch: row.members.next_epoch(),
             member_epoch: member.map_or(0, |member| member.epoch),
             expires_ms: member.map_or(0, |member| member.expires_ms),
-            member_status: member.map_or(0, |member| match member.status {
-                MemberStatus::Joining => 1,
-                MemberStatus::Active => 2,
-                MemberStatus::Leaving => 3,
-                MemberStatus::Left => 4,
-                MemberStatus::Expired => 5,
-                MemberStatus::Revoked => 6,
-            }),
+            member_status: member.map_or(
+                if request.member_epoch > 0 && request.member_epoch < row.members.next_epoch() {
+                    7
+                } else {
+                    0
+                },
+                |member| match member.status {
+                    MemberStatus::Joining => 1,
+                    MemberStatus::Active => 2,
+                    MemberStatus::Leaving => 3,
+                    MemberStatus::Left => 4,
+                    MemberStatus::Expired => 5,
+                    MemberStatus::Revoked => 6,
+                },
+            ),
             plan_active: row.members.plan().active,
             work_shards: work.into_iter().map(bytes_id).collect(),
         })
@@ -379,6 +412,7 @@ impl Service {
 
     pub(super) async fn resume_consumer(&self, subscription: Id, deadline: Instant) -> Result<()> {
         // Each successful domain observation survives interruption; the next round resumes it.
+        let mut remaining = 4;
         for _ in 0..2 {
             let row = self.consumer_row(subscription).await?;
             let plan = row.members.plan().clone();
@@ -397,6 +431,10 @@ impl Service {
                 .iter()
                 .filter(|domain| !plan.installed.contains(domain))
             {
+                if remaining == 0 {
+                    return Ok(());
+                }
+                remaining -= 1;
                 self.install_consumer_domain(&row, *domain, version, grants.clone(), deadline)
                     .await?;
                 self.consumer_meta_write(

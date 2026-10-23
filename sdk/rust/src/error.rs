@@ -5,12 +5,19 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Acknowledgement is incomplete; inspect the original pending operation"))]
+    Acknowledgement {
+        pending: crate::PendingAck,
+        source: std::sync::Arc<Error>,
+    },
     #[snafu(display(
         "This delivery already has an unresolved ACK or NACK with different semantics"
     ))]
     AcknowledgementInProgress,
     #[snafu(display("An owned SDK operation failed"))]
     Background { source: std::sync::Arc<Error> },
+    #[snafu(display("An SDK task did not finish normally"))]
+    Task { source: tokio::task::JoinError },
     #[snafu(display(
         "Credential {id} was committed but its one-time secret is unavailable; revoke it and issue a new credential"
     ))]
@@ -56,6 +63,7 @@ pub enum Error {
         expected_sequence: Option<u64>,
         expected_registration_epoch: Option<u64>,
         retry_after_ms: Option<u64>,
+        original_outcome_known: bool,
     },
     #[snafu(display("Invalid server response: {reason}"))]
     ResponseMismatch { reason: String },
@@ -84,9 +92,34 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn original_outcome_known(&self) -> bool {
+        match self {
+            Self::Background { source } | Self::Acknowledgement { source, .. } => {
+                source.original_outcome_known()
+            }
+            Self::Remote {
+                original_outcome_known,
+                ..
+            } => *original_outcome_known,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn preserve_uncertainty(self, uncertain: bool) -> Self {
+        if uncertain && !self.outcome_unknown() && !self.original_outcome_known() {
+            Self::RequestUnknown {
+                source: Box::new(self),
+            }
+        } else {
+            self
+        }
+    }
+
     pub(crate) fn permission_denied(&self) -> bool {
         match self {
-            Self::Background { source } => source.permission_denied(),
+            Self::Background { source } | Self::Acknowledgement { source, .. } => {
+                source.permission_denied()
+            }
             Self::Remote {
                 code: ErrorCode::Forbidden | ErrorCode::Unauthenticated,
                 ..
@@ -120,18 +153,21 @@ impl Error {
 
     pub fn outcome_unknown(&self) -> bool {
         match self {
-            Self::Background { source } => source.outcome_unknown(),
+            Self::Background { source } | Self::Acknowledgement { source, .. } => {
+                source.outcome_unknown()
+            }
             Self::ProduceUnknown { .. }
             | Self::RegistrationUnknown { .. }
             | Self::RequestUnknown { .. } => true,
             Self::Transport { source } => transient_transport(source),
-            Self::Rpc { source } => matches!(
-                source,
+            Self::Rpc { source } => match source {
                 tidemq_transport::rpc::Error::Closed
-                    | tidemq_transport::rpc::Error::Deadline {
-                        may_have_been_sent: true
-                    }
-            ),
+                | tidemq_transport::rpc::Error::Deadline {
+                    may_have_been_sent: true,
+                } => true,
+                tidemq_transport::rpc::Error::Transport { source } => transient_transport(source),
+                _ => false,
+            },
             Self::Remote { outcome, .. } => *outcome == Outcome::Unknown,
             _ => false,
         }
@@ -182,6 +218,24 @@ impl From<tidemq_transport::rpc::Error> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_current_refusal_does_not_erase_an_earlier_unknown_outcome() {
+        let refusal = |original_outcome_known| Error::Remote {
+            code: ErrorCode::StaleDelivery,
+            outcome: Outcome::Rejected,
+            message: "The attempt was replaced".into(),
+            retryable: false,
+            expected_sequence: None,
+            expected_registration_epoch: None,
+            retry_after_ms: None,
+            original_outcome_known,
+        };
+        assert!(refusal(false).preserve_uncertainty(true).outcome_unknown());
+        assert!(!refusal(true).preserve_uncertainty(true).outcome_unknown());
+        assert!(!refusal(false).preserve_uncertainty(false).outcome_unknown());
+        assert!(Error::Deadline.preserve_uncertainty(true).outcome_unknown());
+    }
 
     #[test]
     fn authorization_is_terminal_while_connection_loss_can_have_an_unknown_result() {

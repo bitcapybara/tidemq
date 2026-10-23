@@ -117,6 +117,7 @@ message ErrorReply {
   optional uint64 expected_sequence = 5;
   optional uint64 expected_registration_epoch = 6;
   optional uint64 retry_after_ms = 7;
+  bool original_outcome_known = 8;
 }
 
 message CancelRequest { bytes request_id = 1; }

@@ -175,6 +175,7 @@ impl Consumer {
                 expected_sequence: None,
                 expected_registration_epoch: None,
                 retry_after_ms: None,
+                original_outcome_known: false,
             });
         }
         let request = public::ClaimAssignment {
@@ -1107,6 +1108,7 @@ impl Consumer {
                 expected_sequence: None,
                 expected_registration_epoch: None,
                 retry_after_ms: None,
+                original_outcome_known: false,
             });
         }
         let replacement = self.config.replace_session_id.ok_or(Error::StaleDelivery)?;

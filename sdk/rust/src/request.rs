@@ -77,8 +77,20 @@ impl RequestContext {
             cancellation: self.cancellation.child_token(),
             parent,
             depth,
+            abandoned: OnceLock::new(),
         });
-        REQUEST_CONTEXT.scope(scope, future).await
+        let mut future = Box::pin(REQUEST_CONTEXT.scope(scope.clone(), future));
+        let (result, interrupted) = tokio::select! {
+            biased;
+            _ = scope.cancelled() => (Err(Error::Cancelled), true),
+            _ = tokio::time::sleep_until(deadline) => (Err(Error::Deadline), true),
+            result = &mut future => (result, false),
+        };
+        drop(future);
+        if interrupted && let Some(operation) = scope.abandoned.get() {
+            return result.map_err(|error| operation.interrupted(error));
+        }
+        result
     }
 }
 
@@ -87,6 +99,7 @@ struct ScopedContext {
     cancellation: CancellationToken,
     parent: Option<Arc<Self>>,
     depth: usize,
+    abandoned: OnceLock<Arc<Operation>>,
 }
 
 impl ScopedContext {
@@ -110,6 +123,26 @@ struct Operation {
     sent: AtomicBool,
     produce_pending: AtomicBool,
     registration: OnceLock<(Id, u64)>,
+    scope: std::sync::Weak<ScopedContext>,
+}
+
+struct RunGuard {
+    operation: Arc<Operation>,
+    scope: Arc<ScopedContext>,
+    complete: bool,
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        if self.complete || !self.operation.sent.load(Ordering::Acquire) {
+            return;
+        }
+        let mut scope = Some(self.scope.clone());
+        while let Some(current) = scope {
+            let _ = current.abandoned.set(self.operation.clone());
+            scope = current.parent.clone();
+        }
+    }
 }
 
 impl Operation {
@@ -143,8 +176,24 @@ pub(crate) async fn run<T, F: Future<Output = Result<T>>>(
     closed: &CancellationToken,
     operation: impl FnOnce(Instant) -> F,
 ) -> Result<T> {
-    if let Ok(deadline) = OPERATION.try_with(|operation| operation.deadline) {
-        return operation(deadline).await;
+    if let Ok(parent) = OPERATION.try_with(Arc::clone) {
+        let scope = REQUEST_CONTEXT
+            .try_with(Arc::clone)
+            .ok()
+            .or_else(|| parent.scope.upgrade());
+        let deadline = scope
+            .as_ref()
+            .map_or(parent.deadline, |scope| parent.deadline.min(scope.deadline));
+        let mut guard = scope.map(|scope| RunGuard {
+            operation: parent,
+            scope,
+            complete: false,
+        });
+        let result = operation(deadline).await;
+        if let Some(guard) = &mut guard {
+            guard.complete = true;
+        }
+        return result;
     }
     let default_deadline = crate::client::deadline_after(timeout)?;
     let scope = match REQUEST_CONTEXT.try_with(Arc::clone) {
@@ -154,6 +203,7 @@ pub(crate) async fn run<T, F: Future<Output = Result<T>>>(
             cancellation: CancellationToken::new(),
             parent: None,
             depth: 1,
+            abandoned: OnceLock::new(),
         }),
     };
     let deadline = scope.deadline.min(default_deadline);
@@ -162,13 +212,19 @@ pub(crate) async fn run<T, F: Future<Output = Result<T>>>(
         sent: AtomicBool::new(false),
         produce_pending: AtomicBool::new(false),
         registration: OnceLock::new(),
+        scope: Arc::downgrade(&scope),
     });
     if Instant::now() >= deadline {
         return Err(Error::Deadline);
     }
     let cancellation = scope.cancellation.child_token();
     let _guard = cancellation.clone().drop_guard();
-    OPERATION
+    let mut guard = RunGuard {
+        operation: state.clone(),
+        scope: scope.clone(),
+        complete: false,
+    };
+    let result = OPERATION
         .scope(Arc::clone(&state), async {
             tokio::select! {
                 biased;
@@ -186,7 +242,9 @@ pub(crate) async fn run<T, F: Future<Output = Result<T>>>(
                 },
             }
         })
-        .await
+        .await;
+    guard.complete = true;
+    result
 }
 
 pub(crate) fn mark_sent() {
@@ -205,6 +263,42 @@ pub(crate) fn mark_registration(producer: Id, epoch: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn scopes_bound_result_futures_that_do_not_make_a_network_request() {
+        let context = RequestContext::with_timeout(Duration::from_millis(5)).unwrap();
+        assert!(matches!(
+            context.scope(std::future::pending::<Result<()>>()).await,
+            Err(Error::Deadline)
+        ));
+        let context = RequestContext::with_timeout(Duration::from_secs(1)).unwrap();
+        context.cancellation_token().cancel();
+        let polled = AtomicBool::new(false);
+        let result = context
+            .scope(async {
+                polled.store(true, Ordering::Release);
+                Ok(())
+            })
+            .await;
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(!polled.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn a_scope_keeps_unknown_outcomes_when_it_drops_an_admitted_operation() {
+        let context = RequestContext::with_timeout(Duration::from_millis(10)).unwrap();
+        let result = context
+            .scope(run(
+                Duration::from_secs(1),
+                &CancellationToken::new(),
+                |_| async {
+                    mark_sent();
+                    std::future::pending::<Result<()>>().await
+                },
+            ))
+            .await;
+        assert!(result.unwrap_err().outcome_unknown());
+    }
 
     #[tokio::test]
     async fn expired_or_cancelled_requests_never_poll_the_operation() {

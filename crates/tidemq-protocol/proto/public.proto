@@ -19,7 +19,7 @@ message CreateTopic { string name = 1; uint32 partitions = 2; }
 message GetTopic { string name = 1; }
 message TopicResult { bytes topic_id = 1; string name = 2; uint32 partitions = 3; }
 message LogicalTopic { string name = 1; }
-message GetTopicLayout { bytes topic_id = 1; }
+message GetTopicLayout { bytes topic_id = 1; uint64 expected_revision = 2; bytes after_shard = 3; }
 message ShardRoute {
   bytes shard_id = 1;
   uint64 hash_start = 2;
@@ -35,6 +35,8 @@ message TopicLayoutResult {
   uint64 revision = 2;
   repeated ShardRoute active = 3;
   repeated ShardRoute history = 4;
+  bytes next_after_shard = 5;
+  uint32 total_shards = 6;
 }
 message ChangeTopicLayout {
   bytes topic_id = 1;
@@ -77,6 +79,7 @@ enum ConsumerAction {
   HEARTBEAT_CONSUMER = 3;
   LEAVE_CONSUMER = 4;
   CONSUMER_STATUS = 5;
+  RETIRE_CONSUMER = 6;
 }
 enum ConsumerModel { CONSUMER_MODEL_UNSPECIFIED = 0; STREAM_CONSUMER = 1; QUEUE_CONSUMER = 2; }
 message ConsumerControl {
@@ -103,6 +106,7 @@ message ConsumerControlResult {
   repeated ConsumerLane lanes = 8;
   uint64 assignment_version = 9;
   uint64 remaining_lease_ms = 10;
+  uint64 next_heartbeat_sequence = 11;
 }
 message ConsumerLane { uint64 hash_start = 1; optional uint64 hash_end = 2; }
 message GroupRead {

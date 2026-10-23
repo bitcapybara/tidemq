@@ -26,6 +26,7 @@ pub struct Failure {
     pub expected_sequence: Option<u64>,
     pub expected_registration_epoch: Option<u64>,
     pub retry_after_ms: Option<u64>,
+    pub original_outcome_known: bool,
 }
 
 impl Error {
@@ -97,6 +98,7 @@ impl Failure {
             expected_sequence: None,
             expected_registration_epoch: None,
             retry_after_ms: None,
+            original_outcome_known: false,
         }
     }
 }

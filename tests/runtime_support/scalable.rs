@@ -163,6 +163,55 @@ async fn tenant_namespace_authorization_is_checked_on_each_resource() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consumers_finish_paginated_domain_installation_and_retire_cleanly() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic("acme/app/paged")
+        .await
+        .unwrap();
+    for boundary in 1..=17_u64 {
+        client
+            .admin()
+            .split_topic_at("acme/app/paged", boundary << 58)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        client
+            .admin()
+            .topic_info("acme/app/paged")
+            .await
+            .unwrap()
+            .shard_count(),
+        18
+    );
+    let queue = client
+        .new_queue_consumer("acme/app/paged", "jobs")
+        .build()
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer("acme/app/paged", "state")
+        .build()
+        .await
+        .unwrap();
+    assert!(queue.try_receive().unwrap().is_none());
+    assert!(stream.try_receive().unwrap().is_none());
+    assert_eq!(queue.close().await.unwrap().members_left(), 1);
+    assert_eq!(stream.close().await.unwrap().members_left(), 1);
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn queue_members_share_messages_and_a_persistent_nack_redelivers_after_leave() {
     let fixture = dynamic_fixture().await;
     let client = fixture.client(1).await;
@@ -445,12 +494,11 @@ async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() 
         {
             Ok(message) => break message,
             Err(error) => {
-                assert!(
-                    recoverable_member_error(&error),
-                    "Unexpected member recovery failure: {error:#}"
-                );
+                let recoverable = recoverable_member_error(&error);
+                let detail = format!("{:#}", anyhow::Error::new(error));
+                assert!(recoverable, "Unexpected member recovery failure: {detail}");
                 if failures.len() < 64 {
-                    failures.push(format!("{error:#}"));
+                    failures.push(detail);
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
@@ -483,6 +531,7 @@ fn recoverable_member_error(error: &tidemq_sdk::Error) -> bool {
                 code:
                     ErrorCode::Unavailable
                     | ErrorCode::Fenced
+                    | ErrorCode::StaleGeneration
                     | ErrorCode::StaleDelivery
                     | ErrorCode::SessionExpired,
                 ..

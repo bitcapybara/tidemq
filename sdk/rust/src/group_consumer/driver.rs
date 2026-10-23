@@ -18,6 +18,7 @@ struct Credit {
     slots: OwnedSemaphorePermit,
     memory: OwnedSemaphorePermit,
     client: OwnedSemaphorePermit,
+    request: OwnedSemaphorePermit,
 }
 struct ReadAttempt {
     request: public::GroupRead,
@@ -26,6 +27,7 @@ struct ReadAttempt {
     credit: Option<Credit>,
     created: Instant,
     progress: Option<ReadProgress>,
+    request_slot: Option<OwnedSemaphorePermit>,
 }
 
 #[derive(Clone, Copy)]
@@ -38,11 +40,11 @@ pub(super) async fn run(core: Arc<Core>) {
     let heartbeat = tokio::spawn(heartbeats(core.clone()));
     let reads = tokio::spawn(reads(core.clone()));
     core.stop.cancelled().await;
-    let result = cleanup(&core, None).await;
     heartbeat.abort();
     reads.abort();
     let _ = heartbeat.await;
     let _ = reads.await;
+    let result = cleanup(&core, None).await;
     ack::stop_tasks(&core).await;
     publish_close(&core, result);
 }
@@ -52,12 +54,52 @@ pub(super) async fn finish(core: Arc<Core>, error: Option<Arc<Error>>) {
     publish_close(&core, result);
 }
 
-fn publish_close(core: &Core, result: CloseResult) {
+fn publish_close(core: &Arc<Core>, mut result: CloseResult) {
+    let fenced = match &result {
+        Ok(report) => report.members_left > 0,
+        Err(error) => error.report.members_left > 0,
+    };
+    if fenced {
+        release_local(core);
+    } else {
+        if let Err(error) = &mut result {
+            error.report.local_cleanup_complete = false;
+        }
+        let retained = core.clone();
+        let until = core
+            .lease_fence_after
+            .lock()
+            .map(|until| *until)
+            .unwrap_or_else(|_| Instant::now() + Duration::from_secs(45));
+        tokio::spawn(async move {
+            tokio::time::sleep_until(until).await;
+            release_local(&retained);
+        });
+    }
     if let Ok(mut state) = core.state.lock() {
-        state.queue.clear();
+        state.closed = Some(result);
+    }
+    core.changed.notify_waiters();
+}
+
+fn release_local(core: &Core) {
+    if let Ok(mut state) = core.state.lock() {
+        for message in state.ledger.values().chain(state.queue.iter()) {
+            let _ = message.data.release_credit();
+        }
+        state.queue = VecDeque::new();
         state.ledger.clear();
         state.domains.clear();
-        state.closed = Some(result);
+        state.ack_sequences.clear();
+        state.claims.clear();
+    }
+    if let Ok(mut info) = core.info.lock() {
+        info.work_shards = Vec::new();
+        info.lanes = Vec::new();
+        info.subscription_id = bytes(core.subscription);
+    }
+    if let Ok(mut memory) = core.resource_memory.lock() {
+        memory.take();
     }
     core.changed.notify_waiters();
 }
@@ -70,11 +112,7 @@ async fn cleanup(core: &Core, original: Option<Arc<Error>>) -> CloseResult {
         .and_then(|deadline| *deadline)
         .unwrap_or_else(|| Instant::now() + core.client.inner.config.close_timeout);
     ack::drain(core, deadline).await;
-    let request = core.request(public::ConsumerAction::LeaveConsumer);
-    let leave = match Id::new_v7() {
-        Ok(operation) => control(&core.client, operation, &request, deadline).await,
-        Err(error) => Err(error.into()),
-    };
+    let leave = leave_and_retire(core, deadline).await;
     let mut report = CloseReport {
         local_cleanup_complete: true,
         ..CloseReport::default()
@@ -89,7 +127,7 @@ async fn cleanup(core: &Core, original: Option<Arc<Error>>) -> CloseResult {
         }
     }
     match leave {
-        Ok(status) if status.member_status == 4 => {
+        Ok(()) => {
             report.members_left = 1;
             if let Some(source) = original {
                 Err(CloseError { report, source })
@@ -97,14 +135,36 @@ async fn cleanup(core: &Core, original: Option<Arc<Error>>) -> CloseResult {
                 Ok(report)
             }
         }
-        Ok(_) => Err(CloseError {
-            report,
-            source: Arc::new(Error::SessionExpired),
-        }),
         Err(error) => Err(CloseError {
             report,
             source: original.unwrap_or_else(|| Arc::new(error)),
         }),
+    }
+}
+
+async fn leave_and_retire(core: &Core, deadline: Instant) -> Result<()> {
+    let mut request = core.request(public::ConsumerAction::LeaveConsumer);
+    let operation = Id::new_v7()?;
+    loop {
+        let status = match control(&core.client, operation, &request, deadline).await {
+            Ok(status) => status,
+            Err(error) => {
+                let probe = core.request(public::ConsumerAction::ConsumerStatus);
+                match control(&core.client, Id::new_v7()?, &probe, deadline).await {
+                    Ok(status) if matches!(status.member_status, 4..=7) => status,
+                    _ => return Err(error),
+                }
+            }
+        };
+        if matches!(status.member_status, 4..=7) && status.plan_active {
+            if status.member_status != 7 {
+                request.action = public::ConsumerAction::RetireConsumer.into();
+                // Membership fencing is complete; retirement only reclaims metadata history.
+                let _ = control(&core.client, Id::new_v7()?, &request, deadline).await;
+            }
+            return Ok(());
+        }
+        pause_control(deadline).await?;
     }
 }
 
@@ -118,7 +178,11 @@ async fn heartbeats(core: Arc<Core>) {
         }
     };
     let mut lease = LeaseDriver {
-        sequence: 1,
+        sequence: core
+            .info
+            .lock()
+            .map(|info| info.next_heartbeat_sequence)
+            .unwrap_or(1),
         operation,
         join: None,
         rejoins: 0,
@@ -147,15 +211,22 @@ struct LeaseDriver {
 
 async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
     let started = Instant::now();
+    let upper = started
+        + Duration::from_millis(core.client.inner.config.request_timeout_ms)
+        + Duration::from_secs(15);
+    {
+        let mut fence_after = core.lease_fence_after.lock().map_err(|_| Error::Closed)?;
+        *fence_after = (*fence_after).max(upper);
+    }
     if let Some((operation, request)) = &mut lease.join {
         let status = core
             .client
             .operation(|deadline| join_control(&core.client, operation, request, deadline))
             .await?;
         core.epoch.store(status.member_epoch, Ordering::Release);
+        lease.sequence = status.next_heartbeat_sequence;
         core.update_info(status, started)?;
         lease.join = None;
-        lease.sequence = 1;
         lease.operation = Id::new_v7()?;
         return Ok(());
     }
@@ -180,7 +251,7 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
                 .client
                 .operation(|deadline| control(&core.client, probe_operation, &probe, deadline))
                 .await?;
-            if status.member_status == 5 && status.plan_active {
+            if matches!(status.member_status, 5 | 7) && status.plan_active {
                 lease.rejoins = lease.rejoins.saturating_add(1);
                 if lease.rejoins > 16 {
                     return Err(Error::SessionExpired);
@@ -188,6 +259,9 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
                 // Metadata has observed every data-domain fence before this new join.
                 core.epoch.store(0, Ordering::Release);
                 let mut state = core.state()?;
+                for message in state.ledger.values().chain(state.queue.iter()) {
+                    message.data.release_credit()?;
+                }
                 state.queue.clear();
                 state.ledger.clear();
                 state.claims.clear();
@@ -296,7 +370,6 @@ async fn refresh_domains(core: &Core) -> Result<()> {
 }
 
 fn reserve(core: &Core) -> Result<Option<Credit>> {
-    let messages = core.slots.available_permits().min(32);
     let maximum = core
         .client
         .inner
@@ -309,9 +382,14 @@ fn reserve(core: &Core) -> Result<Option<Credit>> {
         .available_permits()
         .min(core.client.inner.bytes.available_permits())
         .min(maximum);
+    let messages = core.slots.available_permits().min(32).min(bytes / 1024);
     if messages == 0 || bytes < 1024 {
         return Ok(None);
     }
+    let request = match core.client.inner.requests.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return Ok(None),
+    };
     let slots = match core.slots.clone().try_acquire_many_owned(messages as u32) {
         Ok(permit) => permit,
         Err(_) => return Ok(None),
@@ -334,6 +412,7 @@ fn reserve(core: &Core) -> Result<Option<Credit>> {
         slots,
         memory,
         client,
+        request,
     }))
 }
 
@@ -374,7 +453,11 @@ fn next_read(core: &Core) -> Result<Option<(Id, Arc<Mutex<ReadAttempt>>)>> {
             member_epoch: core.epoch.load(Ordering::Acquire),
             sequence: domain.sequence,
             max_messages: credit.slots.num_permits() as u32,
-            max_bytes: credit.memory.num_permits() as u64,
+            max_bytes: credit
+                .memory
+                .num_permits()
+                .saturating_sub(credit.slots.num_permits().saturating_mul(256))
+                as u64,
         };
         domain.read = Some(Arc::new(Mutex::new(ReadAttempt {
             request,
@@ -383,6 +466,7 @@ fn next_read(core: &Core) -> Result<Option<(Id, Arc<Mutex<ReadAttempt>>)>> {
             credit: Some(credit),
             created: Instant::now(),
             progress: None,
+            request_slot: None,
         })));
     }
     let read = domain.read.as_ref().ok_or(Error::Closed)?.clone();
@@ -506,6 +590,7 @@ fn accept_read(
         return Ok(());
     }
     let mut credit = attempt.credit.take().ok_or(Error::Closed)?;
+    attempt.request_slot = Some(credit.request);
     let progress = ReadProgress {
         empty: result.deliveries.is_empty(),
         complete: result.sealed_complete,
@@ -519,8 +604,9 @@ fn accept_read(
             .key
             .len()
             .saturating_add(delivery.body.len())
-            .saturating_add(256);
-        let proof = delivery.proof.ok_or(Error::Closed)?;
+            .saturating_add(512);
+        let mut proof = delivery.proof.ok_or(Error::Closed)?;
+        proof.mac = Bytes::copy_from_slice(&proof.mac);
         let data = ReceivedData {
             id: MessageId {
                 topic: core.topic_id,
@@ -528,6 +614,7 @@ fn accept_read(
                 offset: proof.offset,
             },
             hash: delivery.key_hash,
+            acknowledgement: std::sync::OnceLock::new(),
             key: Bytes::copy_from_slice(&delivery.key),
             payload: Bytes::copy_from_slice(&delivery.body),
             proof,
@@ -537,7 +624,7 @@ fn accept_read(
             partition: request.partition_id,
             _memory: credit.memory.split(length).ok_or(Error::Closed)?,
             _client_memory: credit.client.split(length).ok_or(Error::Closed)?,
-            _slot: credit.slots.split(1).ok_or(Error::Closed)?,
+            slot: Mutex::new(Some(credit.slots.split(1).ok_or(Error::Closed)?)),
         };
         state.queue.push_back(ReceivedMessage {
             data: Arc::new(data),

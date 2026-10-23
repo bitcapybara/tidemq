@@ -313,6 +313,7 @@ pub(crate) fn error_response(
             expected_sequence: failure.expected_sequence,
             expected_registration_epoch: failure.expected_registration_epoch,
             retry_after_ms: failure.retry_after_ms,
+            original_outcome_known: failure.original_outcome_known,
         },
         limits,
     )
@@ -344,6 +345,7 @@ fn decode_error(frame: &Frame, limits: &ProtocolLimits) -> Result<Error> {
             expected_sequence: error.expected_sequence,
             expected_registration_epoch: error.expected_registration_epoch,
             retry_after_ms: error.retry_after_ms,
+            original_outcome_known: error.original_outcome_known,
         },
     })
 }

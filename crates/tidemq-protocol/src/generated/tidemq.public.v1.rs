@@ -49,6 +49,10 @@ pub struct LogicalTopic {
 pub struct GetTopicLayout {
     #[prost(bytes = "bytes", tag = "1")]
     pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub expected_revision: u64,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub after_shard: ::prost::bytes::Bytes,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ShardRoute {
@@ -79,6 +83,10 @@ pub struct TopicLayoutResult {
     pub active: ::prost::alloc::vec::Vec<ShardRoute>,
     #[prost(message, repeated, tag = "4")]
     pub history: ::prost::alloc::vec::Vec<ShardRoute>,
+    #[prost(bytes = "bytes", tag = "5")]
+    pub next_after_shard: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "6")]
+    pub total_shards: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ChangeTopicLayout {
@@ -172,6 +180,8 @@ pub struct ConsumerControlResult {
     pub assignment_version: u64,
     #[prost(uint64, tag = "10")]
     pub remaining_lease_ms: u64,
+    #[prost(uint64, tag = "11")]
+    pub next_heartbeat_sequence: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConsumerLane {
@@ -681,6 +691,7 @@ pub enum ConsumerAction {
     HeartbeatConsumer = 3,
     LeaveConsumer = 4,
     ConsumerStatus = 5,
+    RetireConsumer = 6,
 }
 impl ConsumerAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -695,6 +706,7 @@ impl ConsumerAction {
             Self::HeartbeatConsumer => "HEARTBEAT_CONSUMER",
             Self::LeaveConsumer => "LEAVE_CONSUMER",
             Self::ConsumerStatus => "CONSUMER_STATUS",
+            Self::RetireConsumer => "RETIRE_CONSUMER",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -706,6 +718,7 @@ impl ConsumerAction {
             "HEARTBEAT_CONSUMER" => Some(Self::HeartbeatConsumer),
             "LEAVE_CONSUMER" => Some(Self::LeaveConsumer),
             "CONSUMER_STATUS" => Some(Self::ConsumerStatus),
+            "RETIRE_CONSUMER" => Some(Self::RetireConsumer),
             _ => None,
         }
     }
