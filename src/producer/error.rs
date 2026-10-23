@@ -45,4 +45,6 @@ pub enum Rejection {
     Allocation,
     #[snafu(display("Producer snapshot violates its state invariants"))]
     InvalidSnapshot,
+    #[snafu(display("Message exceeds the configured size limit"))]
+    MessageTooLarge,
 }

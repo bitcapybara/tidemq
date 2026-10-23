@@ -697,20 +697,26 @@ fn transport_config(config: &Config) -> TransportConfig {
     }
 }
 
-pub(crate) fn data_config(
-    cluster: Id,
-    group: &GroupConfig,
-    retention: crate::retention::Policy,
-) -> DataGroupConfig {
+pub(crate) fn data_config(cluster: Id, group: &GroupConfig, config: &Config) -> DataGroupConfig {
+    // Public message bytes exclude internal routing context and its bounded encoding overhead.
+    let max_message_bytes = u64::from(config.protocol.max_message_bytes)
+        .saturating_add(256)
+        .min(16 * 1024 * 1024);
     DataGroupConfig {
         cluster_id: cluster,
         group_id: group.group_id,
         max_partitions: 128,
         max_hot_bytes: 32 * 1024 * 1024,
         max_hot_messages: 65_536,
-        producer: ProducerLimits::default(),
+        producer: ProducerLimits {
+            max_message_bytes,
+            max_batch_bytes: ProducerLimits::default()
+                .max_batch_bytes
+                .max(max_message_bytes),
+            ..ProducerLimits::default()
+        },
         subscription: crate::subscription::Limits::default(),
-        retention,
+        retention: config.runtime.retention,
     }
 }
 

@@ -57,7 +57,8 @@ impl Default for PackLimits {
             max_bytes: 64 * 1024 * 1024,
             max_partitions: 1024,
             max_records: 100_000,
-            max_message_bytes: 256 * 1024,
+            // The pack format bounds stored context as well as payload; producer policy is narrower.
+            max_message_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -71,7 +72,7 @@ impl PackLimits {
             || self.max_records == 0
             || self.max_records > 100_000
             || self.max_message_bytes == 0
-            || self.max_message_bytes > 256 * 1024
+            || self.max_message_bytes > 16 * 1024 * 1024
         {
             return Err(Error::Invalid {
                 reason: "pack limits exceed the supported hard bounds",

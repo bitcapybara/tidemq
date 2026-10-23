@@ -154,20 +154,19 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         .build()
         .await
         .unwrap();
+    queue.close().await.unwrap();
+    stream.close().await.unwrap();
     let producer = client.new_producer(topic).build().await.unwrap();
     let mut expected = Vec::new();
     for index in 0..3 {
-        expected.push(
-            producer
-                .send(
-                    tidemq_sdk::Message::new(format!("cold-{index}"))
-                        .key("same-key")
-                        .property("source", "birth-group"),
-                )
-                .await
-                .unwrap()
-                .message_id(),
-        );
+        let message = if index == 0 {
+            tidemq_sdk::Message::new(vec![7; 256 * 1024])
+        } else {
+            tidemq_sdk::Message::new(format!("cold-{index}"))
+                .key("same-key")
+                .property("source", "birth-group")
+        };
+        expected.push(producer.send(message).await.unwrap().message_id());
     }
     let partition = tidemq::metadata::PartitionKey {
         topic_id: Id::from_slice(&client.admin().topic(topic).await.unwrap().topic_id).unwrap(),
@@ -186,6 +185,18 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         .await
         .unwrap();
     node.reclaim_local(partition, 3, deadline()).await.unwrap();
+    let queue = client
+        .new_queue_consumer(topic, "jobs")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer(topic, "events")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
     let held_queue = tokio::time::timeout(Duration::from_secs(15), queue.receive())
         .await
         .unwrap()
@@ -196,6 +207,10 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         .unwrap();
     assert_eq!(held_queue.message_id(), expected[0]);
     assert_eq!(held_stream.message_id(), expected[0]);
+    assert_eq!(held_queue.payload().len(), 256 * 1024);
+    assert!(held_queue.payload().iter().all(|byte| *byte == 7));
+    assert_eq!(held_stream.payload().len(), 256 * 1024);
+    assert!(held_stream.payload().iter().all(|byte| *byte == 7));
     expected.push(
         producer
             .send(tidemq_sdk::Message::new("hot-3").key("same-key"))

@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "scalable_handoff.rs"]
 mod handoff;
+#[path = "scalable_message_limits.rs"]
+mod message_limits;
 #[path = "scalable_transfer.rs"]
 mod transfer;
 

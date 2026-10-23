@@ -319,8 +319,10 @@ impl ProducerState {
             .hot_bytes
             .checked_add(bytes)
             .ok_or(Rejection::CounterExhausted)?;
-        if bytes > self.limits.max_message_bytes
-            || bytes > available_bytes
+        if bytes > self.limits.max_message_bytes {
+            return Err(Rejection::MessageTooLarge);
+        }
+        if bytes > available_bytes
             || available_messages == 0
             || hot_bytes > self.limits.max_hot_bytes
             || self.messages.len() >= self.limits.max_hot_messages

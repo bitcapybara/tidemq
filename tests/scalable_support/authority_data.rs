@@ -182,6 +182,31 @@ fn capacity() -> TransferCapacity {
 }
 
 #[test]
+fn a_permanently_oversized_publish_does_not_consume_capacity_or_poison_following_writes() {
+    let plan = plan();
+    let mut app = application(&plan);
+    assert_eq!(
+        app.apply(publish_body(
+            plan.partition,
+            plan.shard,
+            1,
+            Bytes::from(vec![0; 256 * 1024])
+        )),
+        DataResponse::Rejected(DataRejection::Producer(
+            crate::producer::Rejection::MessageTooLarge
+        ))
+    );
+    app.validate().unwrap();
+    assert_eq!(app.producer(plan.partition).unwrap().committed_end(), 0);
+    assert!(matches!(
+        publish(&mut app, plan.partition, plan.shard, 1),
+        DataResponse::Published(_)
+    ));
+    app.validate().unwrap();
+    assert_eq!(app.producer(plan.partition).unwrap().committed_end(), 1);
+}
+
+#[test]
 fn target_reservations_expand_without_double_counting_or_changing_original_reserve_results() {
     let mut plan = plan();
     let mut target = initialized(plan.source.cluster_id, plan.target.group_id, None);

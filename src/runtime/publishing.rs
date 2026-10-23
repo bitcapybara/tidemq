@@ -204,6 +204,17 @@ impl Service {
         let message = request
             .message
             .ok_or_else(|| Error::invalid("Logical message is required"))?;
+        let bytes = tidemq_protocol::topic::delivery_bytes(
+            message.key.as_deref().unwrap_or_default(),
+            &message.payload,
+            &message.properties,
+        )
+        .map_err(|source| Error::operation("validate public message size", source))?;
+        if bytes > u64::from(self.config.protocol.max_message_bytes).saturating_add(256) {
+            return Err(super::data::data_rejection(
+                crate::broker::DataRejection::Producer(crate::producer::Rejection::MessageTooLarge),
+            ));
+        }
         let context = tidemq_protocol::topic::MessageMetadata {
             key_present: message.key.is_some(),
             routing_hash: tidemq_protocol::topic::routing_hash(

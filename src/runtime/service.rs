@@ -125,7 +125,7 @@ impl Service {
                     owner.node_id,
                     replica.raft.clone(),
                     replica.state.clone(),
-                    data_config(cluster, group, config.runtime.retention),
+                    data_config(cluster, group, &config),
                     budget.clone(),
                     BrokerLimits::default(),
                     producer.clone(),

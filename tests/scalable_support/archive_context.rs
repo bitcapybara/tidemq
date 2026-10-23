@@ -2,20 +2,21 @@ use super::*;
 use tidemq_protocol::topic::MessageMetadata;
 
 #[test]
-fn immutable_records_retain_absent_keys_empty_keys_hashes_and_properties() {
+fn immutable_records_retain_full_size_payloads_absent_keys_and_properties() {
     let metadata = |key_present, routing_hash| MessageMetadata {
         key_present,
         routing_hash,
         properties: [("content-type".into(), Bytes::from_static(b"private-value"))].into(),
     };
     let contexts = [metadata(false, 17), metadata(true, 29)];
+    let payload = Bytes::from(vec![7; 256 * 1024]);
     let records: Vec<_> = contexts
         .iter()
         .enumerate()
         .map(|(offset, context)| Record {
             offset: offset as u64,
             key: Bytes::new(),
-            body: Bytes::from_static(b"payload"),
+            body: payload.clone(),
             context: postcard::to_stdvec(context).unwrap().into(),
         })
         .collect();
@@ -53,7 +54,7 @@ fn immutable_records_retain_absent_keys_empty_keys_hashes_and_properties() {
     let restored = decode_records(index, bytes, PackLimits::default(), &budget).unwrap();
     for (record, expected) in restored.iter().zip(contexts) {
         assert!(record.key().is_empty());
-        assert_eq!(record.body(), b"payload");
+        assert_eq!(record.body(), payload.as_ref());
         let context: MessageMetadata = postcard::from_bytes(record.context()).unwrap();
         assert_eq!(context, expected);
         assert!(!format!("{context:?}").contains("private-value"));

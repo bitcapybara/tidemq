@@ -112,7 +112,7 @@ impl Service {
                 let config = data_config(
                     self.cluster,
                     self.config.runtime.group(*group)?,
-                    self.config.runtime.retention,
+                    &self.config,
                 );
                 let initialized = replica
                     .state
