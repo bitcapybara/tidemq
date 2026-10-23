@@ -463,24 +463,26 @@ impl MetadataState {
         name: &str,
         groups: &[u64],
     ) -> Result<Outcome, Rejection> {
-        if self.auth.initialized() {
-            let (tenant, _, _) = self
+        let (tenant, namespace) = if self.auth.initialized() {
+            let (tenant, namespace, _) = self
                 .auth
                 .resolve_topic(name)
                 .map_err(Rejection::Authorization)?;
-            let prefix = format!("{}/", tenant.name);
             if self
                 .topics
                 .values()
                 .filter(|topic| {
-                    topic.status == RecordStatus::Active && topic.name.starts_with(&prefix)
+                    topic.status == RecordStatus::Active && topic.tenant == Some(tenant.id)
                 })
                 .count()
                 >= tenant.max_topics
             {
                 return Err(Rejection::Capacity);
             }
-        }
+            (Some(tenant.id), Some(namespace.id))
+        } else {
+            (None, None)
+        };
         if self.topics.contains_key(&topic_id) {
             return Err(Rejection::IdentityRetired);
         }
@@ -514,6 +516,8 @@ impl MetadataState {
         let partition_count = u32::try_from(groups.len()).map_err(|_| Rejection::InvalidGroup)?;
         let topic = TopicRecord {
             topic_id,
+            tenant,
+            namespace,
             name: name.to_owned(),
             generation: 1,
             partition_count,

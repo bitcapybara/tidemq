@@ -106,6 +106,9 @@ impl MetadataState {
         let mut names = BTreeMap::new();
         let mut partitions = 0_usize;
         for (id, topic) in &self.topics {
+            self.auth
+                .validate_topic_parent(topic)
+                .map_err(Rejection::Authorization)?;
             if *id != topic.topic_id
                 || !valid_topic_name(&topic.name)
                 || topic.generation == 0

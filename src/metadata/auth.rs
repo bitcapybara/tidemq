@@ -185,6 +185,36 @@ impl AuthState {
     pub fn tenant(&self, id: Id) -> Option<&Tenant> {
         self.tenants.get(&id)
     }
+    pub(crate) fn validate_topic_parent(
+        &self,
+        topic: &super::TopicRecord,
+    ) -> Result<(), AuthRejection> {
+        if !self.initialized() {
+            return if topic.tenant.is_none() && topic.namespace.is_none() {
+                Ok(())
+            } else {
+                Err(AuthRejection::Invalid)
+            };
+        }
+        let tenant = topic
+            .tenant
+            .and_then(|id| self.tenants.get(&id))
+            .ok_or(AuthRejection::Invalid)?;
+        let namespace = topic
+            .namespace
+            .and_then(|id| self.namespaces.get(&id))
+            .ok_or(AuthRejection::Invalid)?;
+        let mut parts = topic.name.split('/');
+        if namespace.tenant != tenant.id
+            || parts.next() != Some(&tenant.name)
+            || parts.next() != Some(&namespace.name)
+            || parts.next().is_none()
+            || parts.next().is_some()
+        {
+            return Err(AuthRejection::Invalid);
+        }
+        Ok(())
+    }
 
     pub fn authenticate(
         &self,

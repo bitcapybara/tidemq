@@ -250,14 +250,13 @@ impl MetadataState {
                 .auth
                 .resolve_topic(&topic_record.name)
                 .map_err(Rejection::Authorization)?;
-            let prefix = format!("{}/", tenant.name);
             let count = self
                 .consumer_subscriptions
                 .values()
                 .filter(|subscription| {
                     self.topics
                         .get(&subscription.topic)
-                        .is_some_and(|topic| topic.name.starts_with(&prefix))
+                        .is_some_and(|topic| topic.tenant == Some(tenant.id))
                 })
                 .count();
             if count >= tenant.max_subscriptions {

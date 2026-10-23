@@ -1,6 +1,6 @@
 use tidemq::metadata::{
     AuthAction, AuthCommand, AuthRejection, Command, DeploymentMode, MetadataLimits, MetadataState,
-    Namespace, Permission, Principal, Rejection, Response, Tenant, TokenDigest,
+    Namespace, NodeRole, NodeSpec, Permission, Principal, Rejection, Response, Tenant, TokenDigest,
 };
 use tidemq_protocol::Id;
 
@@ -35,6 +35,128 @@ fn tenant(name: &str) -> Tenant {
         max_credentials: 8,
         max_backlog_bytes: 1024 * 1024,
     }
+}
+
+#[test]
+fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces() {
+    let mut state = MetadataState::default();
+    assert!(
+        state
+            .apply(Command::bootstrap(
+                id(),
+                id(),
+                1,
+                DeploymentMode::LocalRf1,
+                MetadataLimits::default()
+            ))
+            .is_applied()
+    );
+    assert!(
+        state
+            .apply(Command::put_node(
+                id(),
+                state.revision(),
+                NodeSpec {
+                    node_id: 1,
+                    zone: "local".into(),
+                    endpoint: "127.0.0.1:7444".parse().unwrap(),
+                    roles: [NodeRole::Broker, NodeRole::Storage].into(),
+                    schedulable: true,
+                },
+                0
+            ))
+            .is_applied()
+    );
+    assert!(
+        state
+            .apply(Command::create_group(id(), state.revision(), 2, [1].into()))
+            .is_applied()
+    );
+    let root = id();
+    assert!(
+        apply(
+            &mut state,
+            None,
+            AuthAction::Bootstrap {
+                principal: id(),
+                credential: root,
+                digest: TokenDigest::of(ROOT_TOKEN).unwrap(),
+                expires_ms: 100_000,
+            }
+        )
+        .is_applied()
+    );
+    let mut tenant = tenant("acme");
+    tenant.max_topics = 1;
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::CreateTenant(tenant.clone())
+        )
+        .is_applied()
+    );
+    let app = id();
+    for (namespace, name) in [(app, "app"), (id(), "other")] {
+        assert!(
+            apply(
+                &mut state,
+                Some(root),
+                AuthAction::CreateNamespace(Namespace {
+                    id: namespace,
+                    tenant: tenant.id,
+                    name: name.into(),
+                    enabled: true,
+                })
+            )
+            .is_applied()
+        );
+    }
+    let topic = id();
+    assert!(
+        state
+            .apply(Command::create_topic(
+                id(),
+                state.revision(),
+                topic,
+                "acme/app/orders".into(),
+                vec![2]
+            ))
+            .is_applied()
+    );
+    let record = state.topic(topic).unwrap();
+    assert_eq!(record.tenant, Some(tenant.id));
+    assert_eq!(record.namespace, Some(app));
+    assert!(matches!(
+        state.apply(Command::create_topic(
+            id(),
+            state.revision(),
+            id(),
+            "acme/other/orders".into(),
+            vec![2]
+        )),
+        Response::Rejected {
+            reason: Rejection::Capacity,
+            ..
+        }
+    ));
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::SetTenantEnabled {
+                id: tenant.id,
+                enabled: false
+            }
+        )
+        .is_applied()
+    );
+    state.validate_snapshot().unwrap();
+    let restored: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
+    restored.validate_snapshot().unwrap();
+    assert_eq!(restored.topic(topic).unwrap().tenant, Some(tenant.id));
+    assert_eq!(restored.topic(topic).unwrap().namespace, Some(app));
 }
 
 #[test]

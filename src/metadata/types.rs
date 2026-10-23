@@ -126,6 +126,8 @@ pub enum RecordStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TopicRecord {
     pub topic_id: Id,
+    pub tenant: Option<Id>,
+    pub namespace: Option<Id>,
     pub name: String,
     pub generation: u64,
     pub partition_count: u32,
