@@ -38,9 +38,8 @@ impl RustFs {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
-        let directory = std::env::current_dir()
-            .unwrap()
-            .join("target/s3-rustfs")
+        let directory = std::env::temp_dir()
+            .join("tidemq-rustfs")
             .join(Id::new_v7().unwrap().to_string());
         fs::create_dir_all(&directory).unwrap();
         #[cfg(unix)]
@@ -142,6 +141,13 @@ impl Drop for RustFs {
     fn drop(&mut self) {
         let _ = self.process.kill();
         let _ = self.process.wait();
+        if std::thread::panicking() || std::env::var_os("TIDEMQ_KEEP_TEST_EVIDENCE").is_some() {
+            eprintln!(
+                "Preserved RustFS evidence directory {}",
+                self.directory.display()
+            );
+            return;
+        }
         let _ = fs::remove_dir_all(&self.directory);
     }
 }
