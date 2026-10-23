@@ -390,14 +390,14 @@ impl Service {
                         .consumer_subscription(request.subscription)
                         .filter(|row| {
                             row.topic == request.topic
-                                && row.members.plan().active
+                                && request.version > 0
                                 && row
                                     .members
                                     .plan()
                                     .version
                                     .checked_mul(2)
                                     .and_then(|version| version.checked_add(1))
-                                    == Some(request.version)
+                                    .is_some_and(|current| request.version <= current)
                         })
                         .and_then(|row| row.members.member(request.member, request.epoch))
                         .filter(|member| {

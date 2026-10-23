@@ -102,7 +102,7 @@ fn an_original_ack_refusal_survives_attempt_changes_and_checks_the_exact_digest(
 }
 
 #[test]
-fn a_late_authoritative_renewal_fences_the_old_attempt_and_checks_the_assignment_version() {
+fn an_authoritative_renewal_preserves_the_attempt_and_checks_the_assignment_version() {
     let mut cursor = cursor(SubscriptionKind::Queue);
     let member = id();
     cursor
@@ -119,6 +119,7 @@ fn a_late_authoritative_renewal_fences_the_old_attempt_and_checks_the_assignment
         )
         .unwrap();
     cursor.retire_read(member, 1, 1).unwrap();
+    assert_eq!(cursor.reap_members(16_000, 620_000).unwrap(), 0);
     assert_eq!(
         cursor.renew(member, 1, 2, 25_000, 16_000),
         Err(Rejection::StaleGeneration)
@@ -134,10 +135,11 @@ fn a_late_authoritative_renewal_fences_the_old_attempt_and_checks_the_assignment
             proofs: original.deliveries,
             nack_delay_ms: None,
         }),
-        Err(Rejection::StaleAttempt)
+        Ok(AckDisposition::Acknowledged)
     );
     let delivered = cursor.read(read(member, 2, 16_000), &[]).unwrap();
-    assert_eq!(delivered.deliveries.first().unwrap().attempt, 2);
+    assert!(delivered.deliveries.is_empty());
+    assert_eq!(cursor.acknowledged_before(), 1);
     cursor.validate().unwrap();
 }
 
@@ -163,7 +165,7 @@ fn replaying_an_assignment_after_renewal_preserves_its_original_result() {
 }
 
 #[test]
-fn a_later_assignment_cannot_revive_an_expired_attempt() {
+fn a_later_assignment_preserves_attempts_for_unchanged_owners() {
     let mut cursor = cursor(SubscriptionKind::Queue);
     let member = id();
     let original = grant(member, vec![]);
@@ -185,19 +187,18 @@ fn a_later_assignment_cannot_revive_an_expired_attempt() {
     extended.expires_ms = 40_000;
     cursor.install_members(2, &[extended], 20_000).unwrap();
     let retry = cursor.read(read(member, 2, 20_001), &[]).unwrap();
-    assert!(retry.deliveries[0].attempt > delivered.deliveries[0].attempt);
-    assert!(
-        cursor
-            .acknowledge(GroupAck {
-                member,
-                epoch: 1,
-                sequence: 1,
-                now_ms: 20_002,
-                model: SubscriptionKind::Queue,
-                proofs: delivered.deliveries,
-                nack_delay_ms: None
-            })
-            .is_err()
+    assert!(retry.deliveries.is_empty());
+    assert_eq!(
+        cursor.acknowledge(GroupAck {
+            member,
+            epoch: 1,
+            sequence: 1,
+            now_ms: 20_002,
+            model: SubscriptionKind::Queue,
+            proofs: delivered.deliveries,
+            nack_delay_ms: None
+        }),
+        Ok(AckDisposition::Acknowledged)
     );
     cursor.validate().unwrap();
 }

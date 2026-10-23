@@ -478,8 +478,11 @@ impl GroupCursor {
     }
 
     fn eligible(&self, member: &Member, candidate: Candidate, now: u64) -> bool {
+        member.grant.expires_ms > now && self.owns(member, candidate)
+    }
+
+    fn owns(&self, member: &Member, candidate: Candidate) -> bool {
         member.active
-            && member.grant.expires_ms > now
             && (self.model == SubscriptionKind::Queue
                 || member
                     .grant
@@ -499,7 +502,7 @@ impl GroupCursor {
                 (!self
                     .members
                     .get(&(id, epoch))
-                    .is_some_and(|member| self.eligible(member, slot.candidate, now)))
+                    .is_some_and(|member| self.owns(member, slot.candidate)))
                 .then_some(*offset)
             })
             .collect();
@@ -899,14 +902,14 @@ impl GroupCursor {
         Ok(())
     }
 
-    pub fn delivery_is_current(&self, proof: &DeliveryProof, now: u64) -> bool {
+    pub fn delivery_is_current(&self, proof: &DeliveryProof, _now: u64) -> bool {
         self.slots.get(&proof.offset).is_some_and(|slot| {
             slot.state == SlotState::InFlight(proof.member, proof.epoch)
                 && slot.attempt == proof.attempt
                 && self
                     .members
                     .get(&(proof.member, proof.epoch))
-                    .is_some_and(|member| self.eligible(member, slot.candidate, now))
+                    .is_some_and(|member| self.owns(member, slot.candidate))
                 && self.valid_mac(proof).unwrap_or(false)
         })
     }
@@ -1009,11 +1012,7 @@ impl GroupCursor {
             return Err(Rejection::InvalidLimits);
         }
         self.fence_invalid_deliveries(now);
-        for member in self.members.values_mut() {
-            if member.grant.expires_ms <= now {
-                member.active = false;
-            }
-        }
+        // Cached data leases restrict admission; only a metadata assignment revokes ownership.
         let before = self.members.len();
         self.members.retain(|_, member| {
             member.active
@@ -1042,7 +1041,7 @@ impl GroupCursor {
         if !installed.active || expires_ms <= now || expires_ms.saturating_sub(now) > 15_000 {
             return Err(Rejection::SessionMismatch);
         }
-        // A late authoritative renewal cannot resurrect an already expired delivery attempt.
+        // Metadata checked the live member epoch and this exact installed assignment version.
         self.fence_invalid_deliveries(now);
         let member = self
             .members
