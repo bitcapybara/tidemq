@@ -18,6 +18,10 @@ use tokio::{
 
 use crate::{Client, Error, Result, admin::bytes};
 
+#[cfg(test)]
+#[path = "../../../tests/scalable_support/delivery_backing.rs"]
+mod backing_tests;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeliveryOrdering {
     Parallel,
@@ -512,6 +516,7 @@ impl Consumer {
             })?;
         for delivery in deliveries {
             let length = delivery_charge(&delivery)?;
+            let delivery = compact_delivery(delivery);
             let data =
                 DeliveryData {
                     offset: delivery.offset,
@@ -1385,6 +1390,14 @@ fn validate_assignment(
         cursor: assignment.cursor_generation,
         assignment: assignment.assignment_generation,
     })
+}
+
+fn compact_delivery(mut delivery: public::Delivery) -> public::Delivery {
+    // Long-lived delivery fields must not retain the shared backing of the entire wire batch.
+    delivery.key = Bytes::copy_from_slice(&delivery.key);
+    delivery.body = Bytes::copy_from_slice(&delivery.body);
+    delivery.delivery_token = Bytes::copy_from_slice(&delivery.delivery_token);
+    delivery
 }
 
 fn validate_batch(batch: &public::DeliveryBatch, state: &State, class: TrafficClass) -> Result<()> {

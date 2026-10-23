@@ -44,6 +44,12 @@ allocator-system = []
 allocator-mimalloc = ["dep:mimalloc"]
 allocator-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 heap-profiling = ["allocator-jemalloc", "tikv-jemalloc-ctl/profiling", "tikv-jemallocator/profiling", "tikv-jemallocator/profiling_libunwind"]
+# Explicitly enabled only for deterministic runtime integration fault injection.
+test-hooks = []
+
+[[test]]
+name = "runtime_reclamation"
+required-features = ["test-hooks"]
 
 [dependencies]
 anyhow = "=1.0.104"

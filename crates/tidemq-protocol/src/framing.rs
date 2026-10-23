@@ -517,33 +517,6 @@ mod tests {
         assert_eq!(inner.body, message.body);
     }
 
-    #[test]
-    #[ignore = "Finite codec timing probe; run with --release --ignored --nocapture"]
-    fn segmented_encoder_timing_probe() {
-        let limits = ProtocolLimits::default();
-        for length in [128, 16_384, 262_144] {
-            let frame = test_frame(length, 1_000);
-            let iterations = 4_096;
-            let started = std::time::Instant::now();
-            for _ in 0..iterations {
-                let input = std::hint::black_box(frame.clone());
-                std::hint::black_box(encode_frame(&input, &limits).unwrap());
-            }
-            let contiguous = started.elapsed();
-            let started = std::time::Instant::now();
-            for _ in 0..iterations {
-                let input = std::hint::black_box(frame.clone());
-                std::hint::black_box(encode_frame_parts(input, &limits).unwrap());
-            }
-            println!(
-                "payload_bytes={length} iterations={iterations} contiguous_ns={} segmented_ns={} payload_copy_bytes_removed={}",
-                contiguous.as_nanos(),
-                started.elapsed().as_nanos(),
-                length * iterations
-            );
-        }
-    }
-
     fn test_frame(length: usize, timeout: u64) -> Frame {
         Frame {
             protocol_version: PROTOCOL_VERSION,

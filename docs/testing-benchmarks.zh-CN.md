@@ -65,9 +65,11 @@ TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test lifecycle_compaction -- --ignored --nocapture
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test lifecycle_persistence -- --ignored --nocapture
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test runtime_queue actual_runtime_sdk -- --ignored --nocapture
-TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --lib runtime::data::reclaim_tests -- --include-ignored --test-threads=1
+TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --features test-hooks --test runtime_reclamation -- --include-ignored --test-threads=1
 TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --test tracing_export official_collector_accepts_real_otlp_and_releases_ports -- --exact --ignored
 ```
+
+`test-hooks` 仅用于确定性集成故障注入，默认服务构建不包含这些暂停点。单元测试不依赖 RustFS，也没有 `#[ignore]`；WAL 故障测试的子进程入口由父测试提供私有环境，普通运行直接返回。
 
 ## 证据索引
 
@@ -84,7 +86,7 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 | S09 [成员迁移](../tests/scaling_raft.rs)、[远程闭合迁移](../tests/scaling_remote.rs) | learner/joint/stable、隔离后保留原计划、joint 中换主、完成证明私有、容量新鲜度与预算、真实 native RF3 自动替换、缺样不创建计划 | 部分远程 fixture 为语义 codec loopback；S08 另验证实际 CLI/mTLS 修复，跨区与高压力组合仍待验 |
 | S10 [观测边界](../tests/observability_boundaries.rs)、[分配器](../tests/allocator_diagnostics.rs)、[堆采样](../tests/heap_profile.rs)、quota/retention 单元测试 | 字节许可、控制保留、有限指标、日志丢弃/失败/脱敏、临时过滤、真实 RSS、cgroup 解析、迟滞、同 allocator profile；原生 Prometheus/Grafana 实际 RF1 查询、29 面板和匿名只读权限，见[部署证据](../deploy/observability/README.zh-CN.md)；Linux 容器限额与 RF1 受控真 OOM 见 S12 | Linux 同 allocator 分配栈、长期趋势与浏览器画面待验；Collector 与正式开销单独记录 |
 | S11 [追踪导出](../tests/tracing_export.rs)、[四角色链路](../tests/runtime_support/tracing.rs) | 官方 OTLP HTTP/protobuf、TLS 拒绝、宿主设施共存、外部 sampled 仍受本地预算限制、慢/503/超大响应/关闭与恢复；真实 SDK→Gateway→Broker 父关系、owned 提交及持久 ACK、原期限清理；Linux 普通回归覆盖内置采集器边界；官方 native Collector 在 macOS 实际 accepted 与退出端口释放 | native Collector 用例需显式 ignored，本轮 Linux 未执行；默认 nop 不持久化 trace。域名/私有 CA/mTLS 由本地 Collector 代理；公网与正式 Linux Collector 部署待验，Docker 集群默认未开 OTLP |
-| S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../examples/deploy_validation.rs)、[读取回收回归](../src/runtime/data_reclaim_tests.rs)、[最新 Docker 记录](evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
+| S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../examples/deploy_validation.rs)、[读取回收集成测试](../tests/runtime_reclamation.rs)、[无外部服务的回归](../src/runtime/data_reclaim_tests.rs)、[最新 Docker 记录](evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
 | M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
 | P01 [性能工具与报告口径](performance.zh-CN.md)、[17 项报告](evidence/2026-10-20-local-performance.zh-CN.md) | 外部 SDK、独立 RF1 服务进程、warmup/measure/cooldown、原 PendingBatch、unique ID/offset 与最终持久 ACK；36032 条测量/2264 条预热；三 allocator、日志三档、同预算 2/4 lanes 及官方 Collector 53 span | 单消费者的有限闭环短跑；高吞吐低延迟、生产 P99.9、长稳及公平竞品未验。原 16 项缺独立子进程 exit-status 制品；样本不足高分位为 null |
 | P02 [CI 性能门禁](../.github/workflows/performance.yml)、[统计校验](../scripts/performance/compare.test.mjs)、[产物校验](../scripts/performance/prepared.test.mjs)、[历史记录](evidence/2026-10-20-ci-refactor.zh-CN.md) | 真 RF1/三进程 RF3、两版服务/SDK、独立构建 runner 与测量 runner、四个固定二进制校验、同机八对平衡交错、独立吞吐/计划发送延迟；十项比较族校正，五项显著回退否决、三项主指标精度验收；`693f9bd` 完整 32 试次及八项 Rust CI 成功，`d38fb80` 本地执行原联合脚本记录数值基线 | RF3 两项 p99 仍 imprecise，旧失败／不确定报告保留；公开后 `addf6d9` 已真实重跑，原计费失败仍按原历史保留。main 尚无 required checks，新 WAL 版完整性能仍待验 |

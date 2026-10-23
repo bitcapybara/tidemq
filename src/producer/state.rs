@@ -17,6 +17,10 @@ pub use publish::{PublishReceipt, PublishRequest, PublisherPermit};
 #[path = "../../tests/scalable_support/publishing.rs"]
 mod publishing_tests;
 
+#[cfg(test)]
+#[path = "../../tests/scalable_support/producer_memory.rs"]
+mod memory_tests;
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 struct SavedResult {
     first_sequence: u64,
@@ -750,6 +754,16 @@ impl ProducerState {
             .ok_or(Rejection::InvalidSnapshot)?;
         for _ in 0..count {
             self.messages.pop_front();
+        }
+        // Reclamation is a lifecycle boundary; retain small rings without keeping peak capacity.
+        if self.messages.is_empty()
+            && self
+                .messages
+                .capacity()
+                .saturating_mul(size_of::<MessageData>())
+                > 64 * 1024
+        {
+            self.messages = VecDeque::new();
         }
         self.local_reclaim_end = end;
         self.hot_bytes = bytes;

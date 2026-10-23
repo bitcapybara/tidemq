@@ -165,6 +165,7 @@ pub enum ServerAuthorization {
     Internal(Vec<NodeGrant>),
 }
 
+/// Called through `Arc<dyn TokenAuthenticator>`; native async methods are not dyn-compatible.
 pub trait TokenAuthenticator: Send + Sync {
     fn authenticate<'a>(
         &'a self,

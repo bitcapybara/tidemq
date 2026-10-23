@@ -1219,6 +1219,10 @@ impl Service {
                 if hot {
                     reclaim_tests::pause_hot_delivery(partition, offset, deadline).await;
                 }
+                #[cfg(feature = "test-hooks")]
+                if hot {
+                    super::test_hooks::pause_hot_delivery(partition, offset, deadline).await;
+                }
                 let outcome = self
                     .subscription_commit(
                         group,

@@ -116,6 +116,7 @@ impl PendingAck {
         })
     }
 
+    // Erasure breaks the Send-checking cycle through spawned ACKs and their dependencies.
     fn retry_until(
         &self,
         deadline: Instant,

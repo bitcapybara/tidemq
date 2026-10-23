@@ -150,13 +150,19 @@ async fn a_cached_rejection_cannot_become_an_applied_creation() {
     };
     let rejected = service
         .meta_write(
-            Command::create_topic(operation, 0, operation, payload.name.clone(), vec![2]),
+            Command::create_topic(
+                operation,
+                service.meta_revision().await.unwrap(),
+                operation,
+                payload.name.clone(),
+                vec![999],
+            ),
             deadline(),
         )
         .await
         .unwrap_err();
     assert!(matches!(rejected, Error::Rejected { failure }
-        if failure.code == i32::from(ErrorCode::Unavailable)
+        if failure.code == i32::from(ErrorCode::NotFound)
             && failure.outcome == i32::from(Outcome::Rejected)));
     let previous = replica
         .state
@@ -184,7 +190,7 @@ async fn a_cached_rejection_cannot_become_an_applied_creation() {
     assert!(matches!(
         previous,
         metadata::OperationResult::Known(Response::Rejected {
-            reason: metadata::Rejection::RevisionConflict,
+            reason: metadata::Rejection::NotFound,
             ..
         })
     ));
@@ -192,4 +198,63 @@ async fn a_cached_rejection_cannot_become_an_applied_creation() {
         if failure.outcome == i32::from(Outcome::Rejected)));
     assert_eq!(after, previous);
     assert!(!created);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_unadmitted_revision_conflict_can_retry_with_the_original_resource_identity() {
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    fixture.start_all().await;
+    let service = fixture.running.get(&1).unwrap().service.clone();
+    let access = service
+        .access
+        .delegated("runtime-test", "*", FrameKind::CreateTopic)
+        .unwrap();
+    let operation = Id::new_v7().unwrap();
+    let payload = public::CreateTopic {
+        name: "cas-retry-topic".into(),
+        partitions: 1,
+    };
+    let error = service
+        .meta_write(
+            Command::create_topic(operation, 0, operation, payload.name.clone(), vec![2]),
+            deadline(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, Error::Rejected { failure }
+        if failure.code == i32::from(ErrorCode::Unavailable)
+            && failure.outcome == i32::from(Outcome::Rejected)));
+    let metadata = service.metadata.as_ref().unwrap();
+    assert_eq!(
+        metadata
+            .state
+            .try_with_application(|state| state.lookup_operation(operation))
+            .await
+            .unwrap(),
+        metadata::OperationResult::UnknownOrRetired
+    );
+    let response = service
+        .metadata_public(
+            access,
+            &request(FrameKind::CreateTopic, operation, &payload),
+            deadline(),
+        )
+        .await;
+    let (result, created) = metadata
+        .state
+        .try_with_application(|state| {
+            (
+                state.lookup_operation(operation),
+                state.topic(operation).map(|topic| topic.name.clone()),
+            )
+        })
+        .await
+        .unwrap();
+    fixture.close().await;
+    response.unwrap();
+    assert!(matches!(
+        result,
+        metadata::OperationResult::Known(Response::Applied { .. })
+    ));
+    assert_eq!(created.as_deref(), Some(payload.name.as_str()));
 }

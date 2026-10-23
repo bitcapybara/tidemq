@@ -19,13 +19,16 @@ pub(super) fn boundary(phase: &'static str) {
         return;
     }
     let ready = PathBuf::from(std::env::var_os("TIDEMQ_WAL_TEST_READY").unwrap());
-    std::fs::write(&ready, phase).unwrap();
+    let notification = ready.with_extension("notification");
+    std::fs::write(&notification, phase).unwrap();
     std::fs::OpenOptions::new()
         .write(true)
-        .open(ready)
+        .open(&notification)
         .unwrap()
         .sync_all()
         .unwrap();
+    // Publish complete notification contents before the parent observes the file.
+    std::fs::rename(notification, ready).unwrap();
     loop {
         std::thread::park();
     }
@@ -62,9 +65,12 @@ fn relocation_options() -> JournalOptions {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "Only the parent fault test launches this process with its own private paths"]
 async fn crash_boundary_child() {
-    let path = PathBuf::from(std::env::var_os("TIDEMQ_WAL_TEST_PATH").unwrap());
+    // This test is a child-process entry point; the parent supplies its private fault fixture.
+    let Some(path) = std::env::var_os("TIDEMQ_WAL_TEST_PATH") else {
+        return;
+    };
+    let path = PathBuf::from(path);
     let arm = PathBuf::from(std::env::var_os("TIDEMQ_WAL_TEST_ARM").unwrap());
     let scenario = std::env::var("TIDEMQ_WAL_TEST_SCENARIO").unwrap();
     if scenario == "initialization" {
@@ -194,7 +200,7 @@ async fn kill_at_boundary(path: &Path, phase: &str, scenario: &str) {
     let log_path = path.with_extension("child.log");
     let output = std::fs::File::create(&log_path).unwrap();
     let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", CHILD, "--ignored", "--nocapture"])
+        .args(["--exact", CHILD, "--nocapture"])
         .env("TIDEMQ_WAL_TEST_PATH", path)
         .env("TIDEMQ_WAL_TEST_READY", &ready)
         .env("TIDEMQ_WAL_TEST_ARM", arm)

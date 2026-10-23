@@ -93,6 +93,7 @@ impl PendingSend {
             }
         })
     }
+    // Erasure breaks the Send-checking cycle through spawned sends and their dependencies.
     fn retry_until(
         &self,
         deadline: Instant,

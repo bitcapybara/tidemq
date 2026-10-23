@@ -1,7 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    future::Future,
-    pin::Pin,
     sync::Arc,
     time::Instant,
 };
@@ -24,8 +22,6 @@ use super::{
     coordinator::stable_voters,
     types::{CatalogCommand, CatalogOutcome, MetadataOperation, PinRecord},
 };
-
-pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 fn authority_scopes(
     state: &MetadataState,
@@ -108,15 +104,50 @@ pub(crate) struct QuorumView {
     pub view: View,
 }
 
-pub(crate) trait MetadataBackend: Send + Sync {
-    fn query(&self, data_group: u64, query: Query, deadline: Instant) -> BoxFuture<'_, QuorumView>;
-    fn execute(&self, command: CatalogCommand, deadline: Instant) -> BoxFuture<'_, CatalogOutcome>;
-    fn lease(&self, fence: FenceRecord, deadline: Instant) -> BoxFuture<'_, ControlLease>;
+pub(crate) enum MetadataBackend {
+    Local(LocalMetadata),
+    Remote(super::remote::RemoteMetadata),
+}
+
+impl MetadataBackend {
+    pub(crate) async fn query(
+        &self,
+        data_group: u64,
+        query: Query,
+        deadline: Instant,
+    ) -> Result<QuorumView> {
+        match self {
+            Self::Local(backend) => backend.read(data_group, query, deadline).await,
+            Self::Remote(backend) => backend.query(data_group, query, deadline).await,
+        }
+    }
+
+    pub(crate) async fn execute(
+        &self,
+        command: CatalogCommand,
+        deadline: Instant,
+    ) -> Result<CatalogOutcome> {
+        match self {
+            Self::Local(backend) => backend.execute(command, deadline).await,
+            Self::Remote(backend) => backend.execute(command, deadline).await,
+        }
+    }
+
+    pub(crate) async fn lease(
+        &self,
+        fence: FenceRecord,
+        deadline: Instant,
+    ) -> Result<ControlLease> {
+        match self {
+            Self::Local(backend) => backend.lease(fence, deadline).await,
+            Self::Remote(backend) => backend.lease(fence, deadline).await,
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct MetadataReplica {
-    pub(crate) backend: Arc<dyn MetadataBackend>,
+    pub(crate) backend: Arc<MetadataBackend>,
     pub(crate) cluster_id: Id,
     pub(crate) group_id: u64,
 }
@@ -132,7 +163,7 @@ impl MetadataReplica {
         let cluster_id = state.0.identity.group.cluster_id;
         let group_id = state.0.identity.group.group_id;
         Self {
-            backend: Arc::new(LocalMetadata { raft, state }),
+            backend: Arc::new(MetadataBackend::Local(LocalMetadata { raft, state })),
             cluster_id,
             group_id,
         }
@@ -201,80 +232,77 @@ impl LocalMetadata {
     }
 }
 
-impl MetadataBackend for LocalMetadata {
-    fn query(&self, data_group: u64, query: Query, deadline: Instant) -> BoxFuture<'_, QuorumView> {
-        Box::pin(self.read(data_group, query, deadline))
-    }
-    fn execute(&self, command: CatalogCommand, deadline: Instant) -> BoxFuture<'_, CatalogOutcome> {
-        Box::pin(async move {
-            for _ in 0..3 {
-                let started = Instant::now();
-                let revision = self.read(0, Query::Health, deadline).await?.revision;
-                let operation_id = Id::new_v7().map_err(|source| Error::Identity { source })?;
-                self.state
-                    .try_with_application(|state| {
-                        MetadataOperation {
-                            command: command.clone(),
-                        }
-                        .validate_context(state)
-                    })
-                    .await
-                    .map_err(|source| Error::Storage { source })?
-                    .map_err(|reason| Error::Rejected { reason })?;
-                let request = Command::new(
-                    operation_id,
-                    revision,
-                    Action::Lifecycle(MetadataOperation {
+impl LocalMetadata {
+    pub(super) async fn execute(
+        &self,
+        command: CatalogCommand,
+        deadline: Instant,
+    ) -> Result<CatalogOutcome> {
+        for _ in 0..3 {
+            let started = Instant::now();
+            let revision = self.read(0, Query::Health, deadline).await?.revision;
+            let operation_id = Id::new_v7().map_err(|source| Error::Identity { source })?;
+            self.state
+                .try_with_application(|state| {
+                    MetadataOperation {
                         command: command.clone(),
-                    }),
-                );
-                let response = tokio::time::timeout_at(
-                    deadline.min(started + ControlPolicy::default().ttl).into(),
-                    self.raft.client_write(request),
-                )
-                .await
-                .map_err(|_| Error::Unknown)?
-                .map_err(consensus)?;
-                match response.data {
-                    Response::Applied {
-                        outcome: Outcome::Lifecycle(result),
-                        ..
-                    } => return Ok(result.outcome),
-                    Response::Rejected {
-                        reason: crate::metadata::Rejection::RevisionConflict,
-                        ..
-                    } => continue,
-                    Response::Rejected {
-                        reason: crate::metadata::Rejection::Lifecycle(reason),
-                        ..
-                    } => return Err(Error::Rejected { reason }),
-                    _ => {
-                        return Err(Error::Rejected {
-                            reason: Rejection::Conflict,
-                        });
                     }
+                    .validate_context(state)
+                })
+                .await
+                .map_err(|source| Error::Storage { source })?
+                .map_err(|reason| Error::Rejected { reason })?;
+            let request = Command::new(
+                operation_id,
+                revision,
+                Action::Lifecycle(MetadataOperation {
+                    command: command.clone(),
+                }),
+            );
+            let response = tokio::time::timeout_at(
+                deadline.min(started + ControlPolicy::default().ttl).into(),
+                self.raft.client_write(request),
+            )
+            .await
+            .map_err(|_| Error::Unknown)?
+            .map_err(consensus)?;
+            match response.data {
+                Response::Applied {
+                    outcome: Outcome::Lifecycle(result),
+                    ..
+                } => return Ok(result.outcome),
+                Response::Rejected {
+                    reason: crate::metadata::Rejection::RevisionConflict,
+                    ..
+                } => continue,
+                Response::Rejected {
+                    reason: crate::metadata::Rejection::Lifecycle(reason),
+                    ..
+                } => return Err(Error::Rejected { reason }),
+                _ => {
+                    return Err(Error::Rejected {
+                        reason: Rejection::Conflict,
+                    });
                 }
             }
-            Err(Error::Rejected {
-                reason: Rejection::StaleGeneration,
-            })
+        }
+        Err(Error::Rejected {
+            reason: Rejection::StaleGeneration,
         })
     }
-    fn lease(&self, fence: FenceRecord, deadline: Instant) -> BoxFuture<'_, ControlLease> {
-        Box::pin(async move {
-            let authority = MetadataAuthority::new(
-                self.raft.clone(),
-                self.state.clone(),
-                self.state.0.identity.group.cluster_id,
-                self.state.0.identity.group.group_id,
-                ControlPolicy::default(),
-            )
-            .map_err(|source| Error::Authority { source })?;
-            tokio::time::timeout_at(deadline.into(), authority.active_lease(&fence))
-                .await
-                .map_err(|_| Error::Deadline)?
-                .map_err(|source| Error::Authority { source })
-        })
+    async fn lease(&self, fence: FenceRecord, deadline: Instant) -> Result<ControlLease> {
+        let authority = MetadataAuthority::new(
+            self.raft.clone(),
+            self.state.clone(),
+            self.state.0.identity.group.cluster_id,
+            self.state.0.identity.group.group_id,
+            ControlPolicy::default(),
+        )
+        .map_err(|source| Error::Authority { source })?;
+        tokio::time::timeout_at(deadline.into(), authority.active_lease(&fence))
+            .await
+            .map_err(|_| Error::Deadline)?
+            .map_err(|source| Error::Authority { source })
     }
 }
 

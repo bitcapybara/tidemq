@@ -21,9 +21,7 @@ use crate::{
 
 use super::{
     DataReplica, Error, Rejection, Result,
-    backend::{
-        BoxFuture, LocalMetadata, MetadataBackend, MetadataReplica, Query, QuorumView, View,
-    },
+    backend::{LocalMetadata, MetadataBackend, MetadataReplica, Query, QuorumView, View},
     types::{CatalogCommand, CatalogOutcome},
 };
 
@@ -43,11 +41,12 @@ pub(crate) trait LifecycleRpc: Send + Sync {
         kind: u32,
         body: Bytes,
         deadline: Instant,
-    ) -> BoxFuture<'_, Bytes>;
-    fn control_lease(&self, fence: FenceRecord, deadline: Instant) -> BoxFuture<'_, ControlLease>;
+    ) -> RpcFuture<'_, Bytes>;
+    fn control_lease(&self, fence: FenceRecord, deadline: Instant) -> RpcFuture<'_, ControlLease>;
 }
 
-pub(crate) type RpcFuture<'a, T> = BoxFuture<'a, T>;
+pub(crate) type RpcFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + 'a>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct FloorTarget {
@@ -381,7 +380,7 @@ enum Reply {
     Unavailable,
 }
 
-struct RemoteMetadata {
+pub(crate) struct RemoteMetadata {
     rpc: Arc<dyn LifecycleRpc>,
     cluster_id: Id,
     group_id: u64,
@@ -407,13 +406,13 @@ impl MetadataReplica {
             return Err(Error::Configuration);
         }
         Ok(Self {
-            backend: Arc::new(RemoteMetadata {
+            backend: Arc::new(MetadataBackend::Remote(RemoteMetadata {
                 rpc,
                 cluster_id,
                 group_id,
                 nodes,
                 mode,
-            }),
+            })),
             cluster_id,
             group_id,
         })
@@ -523,57 +522,66 @@ impl RemoteMetadata {
     }
 }
 
-impl MetadataBackend for RemoteMetadata {
-    fn query(&self, data_group: u64, query: Query, deadline: Instant) -> BoxFuture<'_, QuorumView> {
-        Box::pin(async move {
-            let (target, reply) = self
-                .call(LIFECYCLE_QUERY, data_group, query.clone(), deadline)
-                .await?;
-            match reply {
-                Reply::Query(proof) => {
-                    self.verify(target, &proof)?;
-                    validate_view(&query, &proof.view, self.cluster_id, data_group)?;
-                    Ok(*proof)
-                }
-                Reply::Rejected(reason) => Err(Error::Rejected { reason }),
-                _ => Err(Error::Wire),
+impl RemoteMetadata {
+    pub(super) async fn query(
+        &self,
+        data_group: u64,
+        query: Query,
+        deadline: Instant,
+    ) -> Result<QuorumView> {
+        let (target, reply) = self
+            .call(LIFECYCLE_QUERY, data_group, query.clone(), deadline)
+            .await?;
+        match reply {
+            Reply::Query(proof) => {
+                self.verify(target, &proof)?;
+                validate_view(&query, &proof.view, self.cluster_id, data_group)?;
+                Ok(*proof)
             }
-        })
+            Reply::Rejected(reason) => Err(Error::Rejected { reason }),
+            _ => Err(Error::Wire),
+        }
     }
-    fn execute(&self, command: CatalogCommand, deadline: Instant) -> BoxFuture<'_, CatalogOutcome> {
-        Box::pin(async move {
-            let data_group = command_group(&command);
-            let expected = command.clone();
-            let (target, reply) = self
-                .call(LIFECYCLE_COMMAND, data_group, command, deadline)
-                .await?;
-            match reply {
-                Reply::Mutation { proof, outcome } => {
-                    self.verify(target, &proof)?;
-                    if !matches_mutation(&expected, &outcome) {
-                        return Err(Error::Authorization);
-                    }
-                    match outcome {
-                        Mutation::Object(id) => match self
-                            .query(data_group, Query::Object(id), deadline)
-                            .await?
-                            .view
-                        {
-                            View::Object(object) => Ok(CatalogOutcome::Object(object)),
-                            _ => Err(Error::Wire),
-                        },
-                        Mutation::Pinned => Ok(CatalogOutcome::Pinned),
-                        Mutation::Released => Ok(CatalogOutcome::Released),
-                        Mutation::Retired => Ok(CatalogOutcome::Retired),
-                    }
+    pub(super) async fn execute(
+        &self,
+        command: CatalogCommand,
+        deadline: Instant,
+    ) -> Result<CatalogOutcome> {
+        let data_group = command_group(&command);
+        let expected = command.clone();
+        let (target, reply) = self
+            .call(LIFECYCLE_COMMAND, data_group, command, deadline)
+            .await?;
+        match reply {
+            Reply::Mutation { proof, outcome } => {
+                self.verify(target, &proof)?;
+                if !matches_mutation(&expected, &outcome) {
+                    return Err(Error::Authorization);
                 }
-                Reply::Rejected(reason) => Err(Error::Rejected { reason }),
-                _ => Err(Error::Unknown),
+                match outcome {
+                    Mutation::Object(id) => match self
+                        .query(data_group, Query::Object(id), deadline)
+                        .await?
+                        .view
+                    {
+                        View::Object(object) => Ok(CatalogOutcome::Object(object)),
+                        _ => Err(Error::Wire),
+                    },
+                    Mutation::Pinned => Ok(CatalogOutcome::Pinned),
+                    Mutation::Released => Ok(CatalogOutcome::Released),
+                    Mutation::Retired => Ok(CatalogOutcome::Retired),
+                }
             }
-        })
+            Reply::Rejected(reason) => Err(Error::Rejected { reason }),
+            _ => Err(Error::Unknown),
+        }
     }
-    fn lease(&self, fence: FenceRecord, deadline: Instant) -> BoxFuture<'_, ControlLease> {
-        self.rpc.control_lease(fence, deadline)
+    pub(super) async fn lease(
+        &self,
+        fence: FenceRecord,
+        deadline: Instant,
+    ) -> Result<ControlLease> {
+        self.rpc.control_lease(fence, deadline).await
     }
 }
 

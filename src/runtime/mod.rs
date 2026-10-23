@@ -21,6 +21,9 @@ mod publishing;
 pub(crate) mod scaling;
 mod service;
 mod telemetry;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub mod test_hooks;
 mod topology;
 pub(crate) mod wire;
 

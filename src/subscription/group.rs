@@ -1,5 +1,9 @@
 use super::{Limits, Rejection, Result};
 
+#[cfg(test)]
+#[path = "../../tests/scalable_support/consumer_memory.rs"]
+mod memory_tests;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GroupCommand {
     Create {
@@ -778,7 +782,8 @@ impl GroupCursor {
             return Err(Rejection::InvalidBarrier);
         }
         let read = member.read.as_mut().ok_or(Rejection::InvalidBarrier)?;
-        read.deliveries.clear();
+        // The next Read replaces this vector; keep only the retired identity during recovery.
+        read.deliveries = Vec::new();
         read.retired = true;
         Ok(())
     }
