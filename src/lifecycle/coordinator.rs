@@ -798,11 +798,14 @@ impl Coordinator {
             View::Read { object, generation } => (*object, generation),
             _ => return Err(Error::Configuration),
         };
-        let leases = self.leases(&object.plan, Work::Deliver, deadline).await?;
+        let leases = self
+            .partition_leases(&[partition], Work::Deliver, deadline)
+            .await?;
         let guard_deadline = deadline.min(earliest_expiry(&leases)?);
         let pin = self
-            .acquire_pin(
+            .pin_partitions(
                 vec![object.object_id()],
+                vec![partition],
                 MAX_PIN_TTL.min(guard_deadline.saturating_duration_since(Instant::now())),
                 deadline,
             )
@@ -861,6 +864,28 @@ impl Coordinator {
         ttl: Duration,
         deadline: Instant,
     ) -> Result<ReadPin> {
+        if objects.is_empty() || objects.len() > super::types::MAX_PIN_OBJECTS {
+            return Err(Error::Configuration);
+        }
+        let mut partitions = BTreeSet::new();
+        for id in &objects {
+            let object = self.object(*id, deadline).await?;
+            partitions.extend(object.descriptor().partitions.iter().map(key));
+            if partitions.len() > super::types::MAX_PARTITIONS {
+                return Err(Error::Configuration);
+            }
+        }
+        self.pin_partitions(objects, partitions.into_iter().collect(), ttl, deadline)
+            .await
+    }
+
+    async fn pin_partitions(
+        &self,
+        objects: Vec<Id>,
+        partitions: Vec<PartitionKey>,
+        ttl: Duration,
+        deadline: Instant,
+    ) -> Result<ReadPin> {
         if ttl.is_zero() || ttl > MAX_PIN_TTL {
             return Err(Error::Configuration);
         }
@@ -868,6 +893,7 @@ impl Coordinator {
         let record = PinRecord {
             id: Id::new_v7().map_err(|source| Error::Identity { source })?,
             group_id: self.0.data_group,
+            partitions,
             objects,
             ttl_millis: u64::try_from(ttl.as_millis()).map_err(|_| Error::Configuration)?,
         };

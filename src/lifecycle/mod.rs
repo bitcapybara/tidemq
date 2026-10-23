@@ -21,6 +21,8 @@ pub use types::{DataOperation, DataResult, MetadataOperation, MetadataResult};
 
 pub use types::Rejection;
 pub(crate) use types::{CatalogCommand, DataCommand};
+#[cfg(test)]
+pub(crate) use types::{PinRecord, Plan};
 
 use snafu::Snafu;
 

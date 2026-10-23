@@ -28,12 +28,14 @@ pub struct CapacityUsage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ObjectPage {
     pub objects: Vec<(Id, ObjectPhase)>,
+    /// Resume after this scan position, including when a filtered page has no matches.
     pub next_after: Option<Id>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PinPage {
     pub pins: Vec<Id>,
+    /// Resume after this scan position, including when a filtered page has no matches.
     pub next_after: Option<Id>,
 }
 
@@ -155,7 +157,9 @@ pub struct Manifest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct PinRecord {
     pub id: Id,
+    /// The reader's authority; immutable object keys keep their birth groups.
     pub group_id: u64,
+    pub partitions: Vec<PartitionKey>,
     pub objects: Vec<Id>,
     pub ttl_millis: u64,
 }
@@ -275,6 +279,9 @@ impl MetadataOperation {
         &self,
         state: &crate::metadata::MetadataState,
     ) -> Result<(), Rejection> {
+        if let CatalogCommand::Pin(pin) = &self.command {
+            return self.validate_pin(state, pin);
+        }
         let proof = match &self.command {
             CatalogCommand::RetireBefore(proof) | CatalogCommand::FloorCheckpoint { proof, .. } => {
                 proof
@@ -290,6 +297,53 @@ impl MetadataOperation {
             || proof.position.index == 0
         {
             return Err(Rejection::Identity);
+        }
+        Ok(())
+    }
+
+    fn validate_pin(
+        &self,
+        state: &crate::metadata::MetadataState,
+        pin: &PinRecord,
+    ) -> Result<(), Rejection> {
+        let catalog = state.lifecycle();
+        if let Some(original) = catalog.pin(pin.id) {
+            return if original == pin {
+                Ok(())
+            } else {
+                Err(Rejection::Conflict)
+            };
+        }
+        catalog.validate_pin_scope(pin)?;
+        for partition in &pin.partitions {
+            if state.partition_group(*partition) != Some(pin.group_id)
+                || state.route(*partition).is_none()
+            {
+                return Err(Rejection::Identity);
+            }
+            if state.topology().pending_transfers().any(|plan| {
+                plan.partition == *partition
+                    && plan.stage >= crate::metadata::TransferStage::Frozen
+                    && plan.stage < crate::metadata::TransferStage::Published
+            }) {
+                return Err(Rejection::StaleGeneration);
+            }
+            let binding = state
+                .topology()
+                .binding(*partition)
+                .ok_or(Rejection::Identity)?;
+            for id in &pin.objects {
+                let object = catalog.object(*id).ok_or(Rejection::NotFound)?;
+                if object
+                    .descriptor()
+                    .partitions
+                    .iter()
+                    .any(|index| super::catalog::key(index) == *partition)
+                    && !binding.accepts_object(object.descriptor().identity.group_id)
+                {
+                    return Err(Rejection::Identity);
+                }
+            }
         }
         Ok(())
     }

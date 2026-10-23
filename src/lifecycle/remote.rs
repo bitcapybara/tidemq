@@ -685,7 +685,12 @@ impl MetadataHandler {
                 }
                 plan.replaces.clone()
             }
-            CatalogCommand::Pin(pin) | CatalogCommand::ReleasePin { pin } => pin.objects.clone(),
+            CatalogCommand::Pin(pin) => {
+                return self
+                    .scope(peer, pin.group_id, &pin.objects, &pin.partitions)
+                    .await;
+            }
+            CatalogCommand::ReleasePin { pin } => pin.objects.clone(),
             CatalogCommand::Uploaded { object_id }
             | CatalogCommand::Publish { object_id }
             | CatalogCommand::RequestCancel { object_id }
@@ -720,6 +725,15 @@ impl MetadataHandler {
                     if !peer
                         .allowed_groups
                         .contains(&object.descriptor().identity.group_id)
+                        && !object.descriptor().partitions.iter().any(|index| {
+                            let partition = super::catalog::key(index);
+                            state
+                                .partition_group(partition)
+                                .is_some_and(|group| peer.allowed_groups.contains(&group))
+                                && state.topology().binding(partition).is_some_and(|binding| {
+                                    binding.accepts_object(object.descriptor().identity.group_id)
+                                })
+                        })
                     {
                         return Err(Error::Authorization);
                     }
@@ -800,9 +814,11 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                         .zip(pair.get(1))
                         .is_some_and(|(a, b)| a.0 < b.0)
                 })
-                && page
-                    .next_after
-                    .is_none_or(|cursor| page.objects.last().is_some_and(|(id, _)| *id == cursor))
+                && valid_page_cursor(
+                    *after,
+                    page.next_after,
+                    page.objects.last().map(|(id, _)| *id),
+                )
         }
         (Query::Pins { after, limit }, View::Pins(page)) => {
             *limit > 0
@@ -816,16 +832,16 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                     .pins
                     .windows(2)
                     .all(|pair| pair.first().zip(pair.get(1)).is_some_and(|(a, b)| a < b))
-                && page
-                    .next_after
-                    .is_none_or(|cursor| page.pins.last() == Some(&cursor))
+                && valid_page_cursor(*after, page.next_after, page.pins.last().copied())
         }
         (Query::Health, View::Health) => true,
         (Query::Pin(id), View::Pin(pin)) => pin.as_ref().is_none_or(|pin| {
             pin.id == *id
-                && pin.group_id == data_group
+                && pin.group_id > 0
                 && !pin.objects.is_empty()
                 && pin.objects.len() <= 64
+                && !pin.partitions.is_empty()
+                && pin.partitions.len() <= super::types::MAX_PARTITIONS
                 && pin.ttl_millis > 0
                 && pin.ttl_millis <= 10_000
         }),
@@ -884,6 +900,12 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
     } else {
         Err(Error::Authorization)
     }
+}
+
+fn valid_page_cursor(after: Option<Id>, next: Option<Id>, last: Option<Id>) -> bool {
+    next.is_none_or(|cursor| {
+        after.is_none_or(|after| cursor > after) && last.is_none_or(|last| cursor >= last)
+    })
 }
 
 struct Bounded {

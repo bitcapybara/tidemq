@@ -51,7 +51,9 @@ impl MetadataState {
                     return Err(Rejection::RecoveryRequired);
                 }
                 if matches!(step.as_ref(), TransferStep::Retired(_))
-                    && self.lifecycle.transfer_has_pins(original.partition)
+                    && self
+                        .lifecycle
+                        .transfer_has_pins(original.partition, original.source.group_id)
                 {
                     return Err(Rejection::RecoveryRequired);
                 }

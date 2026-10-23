@@ -256,11 +256,15 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
         Query::Health => Ok(View::Health),
         Query::Capacity => Ok(View::Capacity(catalog.capacity_usage_for(data_group))),
         Query::Objects { after, limit } => catalog
-            .objects_page(data_group, after, limit)
+            .related_objects_page(data_group, after, limit, |partition| {
+                state.partition_group(partition)
+            })
             .map(View::Objects)
             .map_err(|reason| Error::Rejected { reason }),
         Query::Pins { after, limit } => catalog
-            .pins_page(data_group, after, limit)
+            .related_pins_page(data_group, after, limit, |partition| {
+                state.partition_group(partition)
+            })
             .map(View::Pins)
             .map_err(|reason| Error::Rejected { reason }),
         Query::DataVoters => state
@@ -358,7 +362,11 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             let object = catalog
                 .object(segment.object_id)
                 .ok_or(Error::Configuration)?;
-            if state.partition_group(partition) != Some(object.descriptor().identity.group_id) {
+            if state.partition_group(partition) != Some(data_group)
+                || state.topology().binding(partition).is_none_or(|binding| {
+                    !binding.accepts_object(object.descriptor().identity.group_id)
+                })
+            {
                 return Err(Error::Configuration);
             }
             Ok(View::Read {

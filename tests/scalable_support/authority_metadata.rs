@@ -1,9 +1,77 @@
 use super::*;
+use crate::lifecycle::{CatalogCommand, MetadataOperation, PinRecord, Plan};
 use crate::metadata::{
     ConsumerCommand, ImportEvidence, Outcome, TransferCheckpoint, TransferCommand,
     TransferManifest, TransferStage, TransferStep,
 };
+use std::collections::BTreeMap;
 use tidemq_protocol::topic::{InitialPosition, SubscriptionKind};
+
+fn catalog(state: &mut MetadataState, command: CatalogCommand) {
+    let response = state.apply(Command::new(
+        Id::new_v7().unwrap(),
+        state.revision(),
+        Action::Lifecycle(MetadataOperation { command }),
+    ));
+    assert!(
+        response.is_applied(),
+        "Catalog operation was rejected: {response:?}"
+    );
+    state.validate_snapshot().unwrap();
+}
+
+fn archived_history(state: &mut MetadataState, partition: PartitionKey) -> PinRecord {
+    use crate::archive::{CommittedPartition, Pack, PackIdentity, PackLimits, Record};
+    use bytes::Bytes;
+    use tidemq_protocol::state::OffsetRange;
+    let identity = PackIdentity {
+        cluster_id: state.cluster_id().unwrap(),
+        group_id: 2,
+        object_id: id(710),
+    };
+    let record = Record {
+        offset: 0,
+        context: Bytes::new(),
+        key: Bytes::new(),
+        body: Bytes::from_static(b"history"),
+    };
+    let pack = Pack::build(
+        identity,
+        &[CommittedPartition {
+            group_id: 2,
+            topic_id: partition.topic_id,
+            partition_id: partition.partition,
+            offsets: OffsetRange::new(0, 1).unwrap(),
+            committed_end: 1,
+            records: &[record],
+        }],
+        PackLimits::default(),
+        &crate::budget::MemoryBudget::new(&crate::config::MemoryConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let object_id = pack.descriptor().identity.object_id;
+    let grant = state.grant(partition).unwrap().clone();
+    catalog(
+        state,
+        CatalogCommand::Register(Plan {
+            descriptor: pack.descriptor().clone(),
+            grants: vec![grant],
+            expected_generations: BTreeMap::from([(partition, 0)]),
+            replaces: vec![],
+        }),
+    );
+    catalog(state, CatalogCommand::Uploaded { object_id });
+    catalog(state, CatalogCommand::Publish { object_id });
+    let pin = PinRecord {
+        id: id(711),
+        group_id: 2,
+        partitions: vec![partition],
+        objects: vec![object_id],
+        ttl_millis: 1000,
+    };
+    catalog(state, CatalogCommand::Pin(pin.clone()));
+    pin
+}
 
 fn advance(
     state: &mut MetadataState,
@@ -36,6 +104,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     assert!(apply(&mut state, 0, Action::ObserveFence(fence)).is_applied());
     assert!(apply(&mut state, 0, Action::ObserveRecovery(recovery.clone())).is_applied());
     assert!(apply(&mut state, 0, Action::ActivateRoute(recovery)).is_applied());
+    let source_pin = archived_history(&mut state, partition);
     assert!(
         state
             .apply(Command::put_node(
@@ -119,6 +188,21 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
         index: 1000,
     };
     advance(&mut state, plan_id, TransferStep::Frozen(source_cut));
+    catalog(&mut state, CatalogCommand::Pin(source_pin.clone()));
+    let late = PinRecord {
+        id: id(714),
+        ..source_pin.clone()
+    };
+    rejected(
+        state.apply(Command::new(
+            Id::new_v7().unwrap(),
+            state.revision(),
+            Action::Lifecycle(MetadataOperation {
+                command: CatalogCommand::Pin(late),
+            }),
+        )),
+        Rejection::Lifecycle(crate::lifecycle::Rejection::StaleGeneration),
+    );
     let bytes = postcard::to_stdvec(&state).unwrap();
     let mut state: MetadataState = postcard::from_bytes(&bytes).unwrap();
     state.validate_snapshot().unwrap();
@@ -171,6 +255,41 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     assert_eq!(binding.authority_group, 3);
     assert_eq!(binding.generation, 2);
     assert!(binding.accepts_object(2) && binding.accepts_object(3));
+    let target_pin = PinRecord {
+        id: id(712),
+        group_id: 3,
+        ..source_pin.clone()
+    };
+    catalog(&mut state, CatalogCommand::Pin(target_pin));
+    rejected(
+        state.apply(Command::new(
+            Id::new_v7().unwrap(),
+            state.revision(),
+            Action::Lifecycle(MetadataOperation {
+                command: CatalogCommand::Checkpoint {
+                    object_id: id(710),
+                    generation: 1,
+                    voters: vec![1],
+                    snapshots: vec![(1, "wrong-authority-snapshot".into(), 10)],
+                },
+            }),
+        )),
+        Rejection::PlacementViolation,
+    );
+    let pins = state
+        .lifecycle()
+        .related_pins_page(3, None, 64, |partition| state.partition_group(partition))
+        .unwrap();
+    assert_eq!(pins.pins, vec![source_pin.id, id(712)]);
+    let objects = state
+        .lifecycle()
+        .related_objects_page(3, None, 64, |partition| state.partition_group(partition))
+        .unwrap();
+    assert_eq!(
+        objects.objects,
+        vec![(id(710), crate::lifecycle::ObjectPhase::Published)]
+    );
+    catalog(&mut state, CatalogCommand::Pin(source_pin.clone()));
     assert_eq!(
         state.topology.layout(partition.topic_id).unwrap().revision,
         2
@@ -223,6 +342,21 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
         state.topology.transfer(plan_id).unwrap().checkpoint_voters,
         BTreeSet::from([3])
     );
+    rejected(
+        state.apply(Command::transfer(
+            id(713),
+            state.revision(),
+            TransferCommand::Advance {
+                plan: plan_id,
+                step: Box::new(TransferStep::Retired(CommitPosition {
+                    index: 1001,
+                    ..source_cut
+                })),
+            },
+        )),
+        Rejection::RecoveryRequired,
+    );
+    catalog(&mut state, CatalogCommand::ReleasePin { pin: source_pin });
     let retired = advance(
         &mut state,
         plan_id,

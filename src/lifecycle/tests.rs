@@ -110,6 +110,7 @@ fn canceled_unseen_intent_cannot_be_authorized_after_snapshot_roundtrip() {
         catalog.apply(CatalogCommand::Pin(PinRecord {
             id: Id::new_v7().unwrap(),
             group_id: 9,
+            partitions: plan.expected_generations.keys().copied().collect(),
             objects: vec![id],
             ttl_millis: 50
         })),
@@ -123,6 +124,7 @@ fn canceled_unseen_intent_cannot_be_authorized_after_snapshot_roundtrip() {
 fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
     let object = plan(Id::new_v7().unwrap(), vec![], 0);
     let object_id = object.descriptor.identity.object_id;
+    let partition = *object.expected_generations.keys().next().unwrap();
     let mut catalog = Catalog::default();
     catalog.apply(CatalogCommand::Register(object)).unwrap();
     catalog
@@ -136,6 +138,7 @@ fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
         let pin = PinRecord {
             id: Id::new_v7().unwrap(),
             group_id: 9,
+            partitions: vec![partition],
             objects: vec![object_id],
             ttl_millis: 10,
         };
@@ -161,6 +164,10 @@ fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
     let mut wrong = pins.first().unwrap().clone();
     wrong.id = Id::new_v7().unwrap();
     wrong.group_id = 10;
+    wrong.partitions = vec![PartitionKey {
+        topic_id: Id::new_v7().unwrap(),
+        partition: 0,
+    }];
     assert_eq!(
         catalog.apply(CatalogCommand::Pin(wrong)),
         Err(Rejection::References)
@@ -174,6 +181,25 @@ fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
     restored.validate().unwrap();
     assert!(restored.pins_page(9, None, 64).unwrap().pins.is_empty());
     assert_eq!(restored.capacity_usage_for(9).read_pins, 0);
+    for _ in 0..70 {
+        restored
+            .apply(CatalogCommand::Pin(PinRecord {
+                id: Id::new_v7().unwrap(),
+                group_id: 9,
+                partitions: vec![partition],
+                objects: vec![object_id],
+                ttl_millis: 10,
+            }))
+            .unwrap();
+    }
+    let filtered = restored.related_pins_page(10, None, 64, |_| None).unwrap();
+    assert!(filtered.pins.is_empty());
+    assert!(filtered.next_after.is_some());
+    let final_page = restored
+        .related_pins_page(10, filtered.next_after, 64, |_| None)
+        .unwrap();
+    assert!(final_page.pins.is_empty());
+    assert_eq!(final_page.next_after, None);
 }
 
 #[test]
@@ -202,6 +228,7 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
     let pin = PinRecord {
         id: Id::new_v7().unwrap(),
         group_id: 9,
+        partitions: vec![partition],
         objects: vec![old_id],
         ttl_millis: 1_000,
     };
@@ -250,6 +277,7 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
         catalog.apply(CatalogCommand::Pin(PinRecord {
             id: Id::new_v7().unwrap(),
             group_id: 9,
+            partitions: vec![partition],
             objects: vec![old_id],
             ttl_millis: 50
         })),

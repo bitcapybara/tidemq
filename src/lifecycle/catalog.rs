@@ -37,18 +37,10 @@ impl Catalog {
                 )
         })
     }
-    pub(crate) fn transfer_has_pins(&self, partition: PartitionKey) -> bool {
-        self.pins.values().any(|pin| {
-            pin.objects.iter().any(|id| {
-                self.objects.get(id).is_some_and(|object| {
-                    object
-                        .descriptor()
-                        .partitions
-                        .iter()
-                        .any(|index| key(index) == partition)
-                })
-            })
-        })
+    pub(crate) fn transfer_has_pins(&self, partition: PartitionKey, source_group: u64) -> bool {
+        self.pins
+            .values()
+            .any(|pin| pin.group_id == source_group && pin.partitions.contains(&partition))
     }
     pub fn object(&self, id: Id) -> Option<&ObjectRecord> {
         self.objects.get(&id)
@@ -223,6 +215,85 @@ impl Catalog {
     }
     pub(crate) fn pin(&self, id: Id) -> Option<&PinRecord> {
         self.pins.get(&id)
+    }
+
+    pub(crate) fn related_objects_page(
+        &self,
+        group: u64,
+        after: Option<Id>,
+        limit: usize,
+        authority: impl Fn(PartitionKey) -> Option<u64>,
+    ) -> Result<super::ObjectPage, Rejection> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        if limit == 0 || limit > 64 {
+            return Err(Rejection::Capacity);
+        }
+        let mut entries = self
+            .objects
+            .range((after.map_or(Unbounded, Excluded), Unbounded));
+        let mut objects = Vec::new();
+        let mut scanned = None;
+        for _ in 0..64 {
+            let Some((id, object)) = entries.next() else {
+                break;
+            };
+            scanned = Some(*id);
+            if object.descriptor().identity.group_id == group
+                || object
+                    .descriptor()
+                    .partitions
+                    .iter()
+                    .any(|index| authority(key(index)) == Some(group))
+            {
+                objects.push((*id, object.phase));
+                if objects.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(super::ObjectPage {
+            objects,
+            next_after: entries.next().and(scanned),
+        })
+    }
+
+    pub(crate) fn related_pins_page(
+        &self,
+        group: u64,
+        after: Option<Id>,
+        limit: usize,
+        authority: impl Fn(PartitionKey) -> Option<u64>,
+    ) -> Result<super::PinPage, Rejection> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        if limit == 0 || limit > 64 {
+            return Err(Rejection::Capacity);
+        }
+        let mut entries = self
+            .pins
+            .range((after.map_or(Unbounded, Excluded), Unbounded));
+        let mut pins = Vec::new();
+        let mut scanned = None;
+        for _ in 0..64 {
+            let Some((id, pin)) = entries.next() else {
+                break;
+            };
+            scanned = Some(*id);
+            if pin.group_id == group
+                || pin
+                    .partitions
+                    .iter()
+                    .any(|partition| authority(*partition) == Some(group))
+            {
+                pins.push(*id);
+                if pins.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(super::PinPage {
+            pins,
+            next_after: entries.next().and(scanned),
+        })
     }
 
     pub fn pins_page(
@@ -543,24 +614,12 @@ impl Catalog {
                 Err(Rejection::Conflict)
             };
         }
-        if self.pins.len() >= MAX_PINS
-            || pin.objects.is_empty()
-            || pin.objects.len() > MAX_PIN_OBJECTS
-            || pin.ttl_millis == 0
-            || u128::from(pin.ttl_millis) > MAX_PIN_TTL.as_millis()
-        {
+        if self.pins.len() >= MAX_PINS {
             return Err(Rejection::Capacity);
         }
-        let unique: BTreeSet<_> = pin.objects.iter().copied().collect();
-        if unique.len() != pin.objects.len() {
-            return Err(Rejection::Conflict);
-        }
+        self.validate_pin_scope(&pin)?;
         for id in &pin.objects {
-            let object = self.objects.get(id).ok_or(Rejection::NotFound)?;
-            if object.phase != ObjectPhase::Published
-                || self.references(*id) == 0
-                || object.descriptor().identity.group_id != pin.group_id
-            {
+            if self.references(*id) == 0 {
                 return Err(Rejection::References);
             }
         }
@@ -570,6 +629,57 @@ impl Catalog {
             .insert(pin.id);
         self.pins.insert(pin.id, pin);
         Ok(CatalogOutcome::Pinned)
+    }
+
+    pub(super) fn validate_pin_scope(&self, pin: &PinRecord) -> Result<(), Rejection> {
+        if pin.group_id == 0
+            || pin.objects.is_empty()
+            || pin.objects.len() > MAX_PIN_OBJECTS
+            || pin.partitions.is_empty()
+            || pin.partitions.len() > MAX_PARTITIONS
+            || pin.ttl_millis == 0
+            || u128::from(pin.ttl_millis) > MAX_PIN_TTL.as_millis()
+        {
+            return Err(Rejection::Capacity);
+        }
+        let unique: BTreeSet<_> = pin.objects.iter().copied().collect();
+        if unique.len() != pin.objects.len()
+            || pin
+                .partitions
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len()
+                != pin.partitions.len()
+        {
+            return Err(Rejection::Conflict);
+        }
+        for id in &pin.objects {
+            let object = self.objects.get(id).ok_or(Rejection::NotFound)?;
+            if object.phase != ObjectPhase::Published
+                || !object
+                    .descriptor()
+                    .partitions
+                    .iter()
+                    .any(|index| pin.partitions.contains(&key(index)))
+            {
+                return Err(Rejection::References);
+            }
+        }
+        if pin.partitions.iter().any(|partition| {
+            !pin.objects.iter().any(|id| {
+                self.objects.get(id).is_some_and(|object| {
+                    object
+                        .descriptor()
+                        .partitions
+                        .iter()
+                        .any(|index| key(index) == *partition)
+                })
+            })
+        }) {
+            return Err(Rejection::References);
+        }
+        Ok(())
     }
 
     fn release_pin(&mut self, pin: PinRecord) -> Result<CatalogOutcome, Rejection> {
@@ -885,17 +995,7 @@ impl Catalog {
         }
         for (id, pin) in &self.pins {
             if *id != pin.id
-                || pin.group_id == 0
-                || pin.objects.len() > MAX_PIN_OBJECTS
-                || pin.objects.is_empty()
-                || pin.ttl_millis == 0
-                || u128::from(pin.ttl_millis) > MAX_PIN_TTL.as_millis()
-                || pin.objects.iter().any(|id| {
-                    self.objects.get(id).is_none_or(|o| {
-                        o.phase != ObjectPhase::Published
-                            || o.descriptor().identity.group_id != pin.group_id
-                    })
-                })
+                || self.validate_pin_scope(pin).is_err()
                 || self
                     .pins_by_group
                     .get(&pin.group_id)

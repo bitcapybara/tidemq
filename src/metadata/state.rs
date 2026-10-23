@@ -899,7 +899,15 @@ impl MetadataState {
             let group = self
                 .group(object.descriptor().identity.group_id)
                 .ok_or(Rejection::NotFound)?;
-            if group.voters.iter().copied().collect::<Vec<_>>() != *voters {
+            // Cross-group recovery is proved by the transfer manifest and target checkpoints.
+            if group.voters.iter().copied().collect::<Vec<_>>() != *voters
+                || object.descriptor().partitions.iter().any(|index| {
+                    self.partition_group(PartitionKey {
+                        topic_id: index.topic_id,
+                        partition: index.partition_id,
+                    }) != Some(object.descriptor().identity.group_id)
+                })
+            {
                 return Err(Rejection::PlacementViolation);
             }
         }
