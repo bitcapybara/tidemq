@@ -10,6 +10,10 @@ pub use remote::ReplicaCheckpoint;
 mod telemetry;
 mod types;
 
+#[cfg(test)]
+#[path = "../../tests/scalable_support/lifecycle_authority.rs"]
+mod authority_tests;
+
 pub(crate) use authority_slice::AuthoritySlice;
 pub use backend::MetadataReplica;
 pub use catalog::Catalog;
@@ -17,7 +21,10 @@ pub use coordinator::{CompactionStep, Coordinator, DataReplica, GuardedPage, Pre
 pub use data::DataState;
 pub use telemetry::LifecycleMetrics;
 pub use types::VerifiedColdDelivery;
-pub use types::{Blocker, Diagnostic, Manifest, ObjectPhase, ObjectRecord, RangeRequest, ReadPin};
+pub use types::{
+    Blocker, CheckpointScope, Diagnostic, Manifest, ObjectPhase, ObjectRecord, RangeRequest,
+    ReadPin,
+};
 pub use types::{CapacityUsage, ObjectPage, PinPage};
 pub use types::{DataOperation, DataResult, MetadataOperation, MetadataResult};
 

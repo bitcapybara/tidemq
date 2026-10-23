@@ -468,6 +468,21 @@ impl Coordinator {
                 reason: Rejection::NotPublished,
             });
         }
+        if self
+            .data_read(deadline, |state, _| {
+                Ok(state.lifecycle().intent(object_id).is_some_and(|intent| {
+                    intent.plan == object.plan
+                        && matches!(
+                            intent.phase,
+                            super::types::IntentPhase::Published
+                                | super::types::IntentPhase::Retired
+                        )
+                }))
+            })
+            .await?
+        {
+            return Ok(());
+        }
         let generations = object.published_generations.clone();
         self.data_write(
             DataCommand::Published {
@@ -631,9 +646,19 @@ impl Coordinator {
             .try_acquire_owned()
             .map_err(|_| Error::Overloaded)?;
         self.complete(object_id, deadline).await?;
+        let scopes = self.diagnose(object_id, deadline).await?.authority_scopes;
+        if scopes.is_empty() {
+            return Err(Error::Rejected {
+                reason: Rejection::Identity,
+            });
+        }
+        let partitions: Vec<_> = scopes.iter().map(|scope| scope.partition).collect();
         let (outcome, position) = self
             .data_write(
-                DataCommand::Checkpoint { object_id },
+                DataCommand::Checkpoint {
+                    object_id,
+                    partitions: partitions.clone(),
+                },
                 Work::ControlMutation,
                 deadline,
             )
@@ -645,7 +670,14 @@ impl Coordinator {
         let mut snapshots = Vec::new();
         for checkpoint in self.selected_checkpoints(&voters)? {
             let proof = checkpoint
-                .build(object_id, generation, position, &voters, deadline)
+                .build(
+                    object_id,
+                    generation,
+                    position,
+                    &voters,
+                    &partitions,
+                    deadline,
+                )
                 .await?;
             snapshots.push((proof.node_id, proof.snapshot_id, proof.position.index));
         }
@@ -658,6 +690,8 @@ impl Coordinator {
         self.meta_write(
             CatalogCommand::Checkpoint {
                 object_id,
+                group_id: self.0.data_group,
+                scopes,
                 generation,
                 voters: voters.into_iter().collect(),
                 snapshots,
@@ -1268,15 +1302,7 @@ impl Coordinator {
                 .iter()
                 .map(key)
                 .collect::<Vec<_>>(),
-            DataCommand::Checkpoint { object_id } => self
-                .object(*object_id, deadline)
-                .await?
-                .plan
-                .descriptor
-                .partitions
-                .iter()
-                .map(key)
-                .collect(),
+            DataCommand::Checkpoint { partitions, .. } => partitions.clone(),
             DataCommand::Reclaim { partition, .. }
             | DataCommand::FloorCheckpoint { partition, .. } => vec![*partition],
         };

@@ -110,7 +110,10 @@ impl DataState {
             DataCommand::Authorize(plan) => self.authorize(plan),
             DataCommand::Abort(plan) => self.abort(plan),
             DataCommand::Published { plan, generations } => self.published(plan, &generations),
-            DataCommand::Checkpoint { object_id } => self.checkpoint(object_id),
+            DataCommand::Checkpoint {
+                object_id,
+                partitions,
+            } => self.checkpoint(object_id, &partitions),
             DataCommand::Reclaim {
                 partition,
                 end,
@@ -302,10 +305,38 @@ impl DataState {
         Ok(DataOutcome::Published)
     }
 
-    fn checkpoint(&mut self, id: Id) -> Result<DataOutcome, Rejection> {
-        let intent = self.intents.get_mut(&id).ok_or(Rejection::NotFound)?;
+    fn checkpoint(
+        &mut self,
+        id: Id,
+        partitions: &[PartitionKey],
+    ) -> Result<DataOutcome, Rejection> {
+        let intent = self.intents.get(&id).ok_or(Rejection::NotFound)?;
         if intent.phase != IntentPhase::Published {
             return Err(Rejection::NotPublished);
+        }
+        if partitions.is_empty()
+            || partitions.len() > 64
+            || partitions
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != partitions.len()
+            || partitions.iter().any(|partition| {
+                intent
+                    .plan
+                    .descriptor
+                    .partitions
+                    .iter()
+                    .find(|index| key(index) == *partition)
+                    .is_none_or(|index| {
+                        self.manifests
+                            .get(partition)
+                            .is_none_or(|manifest| manifest.published_end < index.offsets.end)
+                    })
+            })
+        {
+            return Err(Rejection::InvalidRange);
         }
         if let Some(generation) = intent.checkpoint_generation {
             return Ok(DataOutcome::Checkpoint { generation });
@@ -315,6 +346,10 @@ impl DataState {
             .checked_add(1)
             .ok_or(Rejection::Capacity)?;
         self.checkpoint_generation = generation;
+        let intent = self
+            .intents
+            .get_mut(&id)
+            .ok_or(Rejection::InvalidSnapshot)?;
         intent.checkpoint_generation = Some(generation);
         Ok(DataOutcome::Checkpoint { generation })
     }

@@ -62,6 +62,7 @@ struct SnapshotRequest {
     group_id: u64,
     object_id: Option<Id>,
     generation: u64,
+    partitions: Vec<crate::metadata::PartitionKey>,
     floor: Option<FloorTarget>,
     voters: BTreeSet<u64>,
 }
@@ -72,6 +73,7 @@ pub(crate) struct SnapshotEvidence {
     pub(crate) group_id: u64,
     pub(crate) object_id: Option<Id>,
     pub(crate) generation: u64,
+    partitions: Vec<crate::metadata::PartitionKey>,
     floor: Option<FloorTarget>,
     pub(crate) voters: BTreeSet<u64>,
     pub(crate) node_id: u64,
@@ -127,6 +129,7 @@ impl ReplicaCheckpoint {
         generation: u64,
         position: LogId<u64>,
         voters: &BTreeSet<u64>,
+        partitions: &[crate::metadata::PartitionKey],
         deadline: Instant,
     ) -> Result<SnapshotEvidence> {
         let request = SnapshotRequest {
@@ -134,6 +137,7 @@ impl ReplicaCheckpoint {
             group_id: self.group_id,
             object_id: Some(object_id),
             generation,
+            partitions: partitions.to_vec(),
             floor: None,
             voters: voters.clone(),
         };
@@ -150,6 +154,7 @@ impl ReplicaCheckpoint {
             group_id: self.group_id,
             object_id: None,
             generation: 0,
+            partitions: Vec::new(),
             floor: Some(FloorTarget {
                 partition: proof.partition,
                 before: proof.before,
@@ -188,6 +193,7 @@ impl ReplicaCheckpoint {
             || proof.group_id != self.group_id
             || proof.object_id != request.object_id
             || proof.generation != request.generation
+            || proof.partitions != request.partitions
             || proof.floor != request.floor
             || proof.voters != request.voters
             || proof.node_id != self.node_id
@@ -240,6 +246,17 @@ async fn build_snapshot(
         || replica.state.0.identity.group.group_id != request.group_id
         || !request.voters.contains(&replica.node_id())
         || !matches!(request.voters.len(), 1 | 3)
+        || request.partitions.len() > 64
+        || request.object_id.is_some() == request.floor.is_some()
+        || request
+            .partitions
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != request.partitions.len()
+        || request.object_id.is_some() && (request.partitions.is_empty() || request.generation == 0)
+        || request.floor.is_some() && !request.partitions.is_empty()
     {
         return Err(Error::Authorization);
     }
@@ -254,26 +271,11 @@ async fn build_snapshot(
         }
         let position = replica
             .state
-            .try_with_applied(|state, applied| {
-                let valid = match (request.object_id, request.floor) {
-                    (Some(id), None) => state.lifecycle().intent(id).is_some_and(|intent| {
-                        intent.phase == super::types::IntentPhase::Published
-                            && intent.checkpoint_generation == Some(request.generation)
-                    }),
-                    (None, Some(floor)) => {
-                        state
-                            .producer(floor.partition)
-                            .is_some_and(|producer| producer.retained_floor() >= floor.before)
-                            && state
-                                .lifecycle()
-                                .manifest(floor.partition)
-                                .map_or(0, |manifest| manifest.generation)
-                                >= floor.manifest_generation
-                    }
-                    _ => false,
-                };
-                if valid { applied } else { None }
-            })
+            .try_with_applied(
+                |state, applied| {
+                    if request.ready(state) { applied } else { None }
+                },
+            )
             .await
             .map_err(|source| Error::Storage { source })?;
         if let Some(position) = position {
@@ -305,12 +307,50 @@ async fn build_snapshot(
         group_id: request.group_id,
         object_id: request.object_id,
         generation: request.generation,
+        partitions: request.partitions.clone(),
         floor: request.floor,
         voters: request.voters.clone(),
         node_id: replica.node_id(),
         snapshot_id: snapshot.meta.snapshot_id,
         position,
     })
+}
+
+impl SnapshotRequest {
+    fn ready(&self, state: &crate::broker::DataApplication) -> bool {
+        match (self.object_id, self.floor) {
+            (Some(id), None) => state.lifecycle().intent(id).is_some_and(|intent| {
+                intent.phase == super::types::IntentPhase::Published
+                    && intent.checkpoint_generation == Some(self.generation)
+                    && self.partitions.iter().all(|partition| {
+                        intent
+                            .plan
+                            .descriptor
+                            .partitions
+                            .iter()
+                            .find(|index| super::catalog::key(index) == *partition)
+                            .is_some_and(|index| {
+                                state.producer(*partition).is_some_and(|producer| {
+                                    producer.committed_end() >= index.offsets.end
+                                }) && state.lifecycle().manifest(*partition).is_some_and(
+                                    |manifest| manifest.published_end >= index.offsets.end,
+                                )
+                            })
+                    })
+            }),
+            (None, Some(floor)) => {
+                state
+                    .producer(floor.partition)
+                    .is_some_and(|producer| producer.retained_floor() >= floor.before)
+                    && state
+                        .lifecycle()
+                        .manifest(floor.partition)
+                        .map_or(0, |manifest| manifest.generation)
+                        >= floor.manifest_generation
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -668,6 +708,24 @@ impl MetadataHandler {
         command: &CatalogCommand,
     ) -> Result<()> {
         let objects = match command {
+            CatalogCommand::Checkpoint {
+                object_id,
+                group_id,
+                scopes,
+                ..
+            } => {
+                return self
+                    .scope(
+                        peer,
+                        *group_id,
+                        &[*object_id],
+                        &scopes
+                            .iter()
+                            .map(|scope| scope.partition)
+                            .collect::<Vec<_>>(),
+                    )
+                    .await;
+            }
             CatalogCommand::RetireBefore(proof) | CatalogCommand::FloorCheckpoint { proof, .. } => {
                 return self
                     .scope(peer, proof.group_id, &[], &[proof.partition])
@@ -695,7 +753,6 @@ impl MetadataHandler {
             | CatalogCommand::Publish { object_id }
             | CatalogCommand::RequestCancel { object_id }
             | CatalogCommand::FinishCancel { object_id, .. }
-            | CatalogCommand::Checkpoint { object_id, .. }
             | CatalogCommand::BeginDelete { object_id }
             | CatalogCommand::Deleted { object_id } => vec![*object_id],
         };
@@ -765,6 +822,7 @@ impl MetadataHandler {
 fn command_group(command: &CatalogCommand) -> u64 {
     match command {
         CatalogCommand::Register(plan) => plan.descriptor.identity.group_id,
+        CatalogCommand::Checkpoint { group_id, .. } => *group_id,
         _ => 0,
     }
 }
@@ -858,7 +916,21 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                     .len()
                     == ranges.len()
         }),
-        (Query::Diagnose(id), View::Diagnostic(diagnostic)) => diagnostic.object_id == *id,
+        (Query::Diagnose(id), View::Diagnostic(diagnostic)) => {
+            diagnostic.object_id == *id
+                && diagnostic.authority_scopes.len() <= 64
+                && diagnostic
+                    .authority_scopes
+                    .iter()
+                    .all(|scope| scope.binding_generation > 0)
+                && diagnostic
+                    .authority_scopes
+                    .iter()
+                    .map(|scope| scope.partition)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == diagnostic.authority_scopes.len()
+        }
         (Query::DataVoters, View::DataVoters(group)) => {
             group.group_id == data_group && matches!(group.voters.len(), 1 | 3)
         }

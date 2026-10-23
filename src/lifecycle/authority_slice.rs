@@ -27,13 +27,15 @@ impl DataState {
         }
         let mut next = self.clone();
         for (id, mut intent) in slice.intents {
-            if let Some(original) = next.intents.get(&id) {
+            if let Some(original) = next.intents.get_mut(&id) {
                 if original.plan != intent.plan
                     || original.phase != intent.phase
                     || original.generation != intent.generation
                 {
                     return Err(Rejection::Conflict);
                 }
+                // A prior checkpoint did not include this newly imported scope.
+                original.checkpoint_generation = None;
             } else {
                 // A source group's checkpoint counter cannot certify target durability.
                 intent.checkpoint_generation = None;

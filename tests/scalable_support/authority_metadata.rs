@@ -1,5 +1,5 @@
 use super::*;
-use crate::lifecycle::{CatalogCommand, MetadataOperation, PinRecord, Plan};
+use crate::lifecycle::{CatalogCommand, CheckpointScope, MetadataOperation, PinRecord, Plan};
 use crate::metadata::{
     ConsumerCommand, ImportEvidence, Outcome, TransferCheckpoint, TransferCommand,
     TransferManifest, TransferStage, TransferStep,
@@ -105,6 +105,20 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     assert!(apply(&mut state, 0, Action::ObserveRecovery(recovery.clone())).is_applied());
     assert!(apply(&mut state, 0, Action::ActivateRoute(recovery)).is_applied());
     let source_pin = archived_history(&mut state, partition);
+    catalog(
+        &mut state,
+        CatalogCommand::Checkpoint {
+            object_id: id(710),
+            group_id: 2,
+            scopes: vec![CheckpointScope {
+                partition,
+                binding_generation: 1,
+            }],
+            generation: 19,
+            voters: vec![1],
+            snapshots: vec![(1, "source-history-snapshot".into(), 100)],
+        },
+    );
     assert!(
         state
             .apply(Command::put_node(
@@ -268,6 +282,11 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
             Action::Lifecycle(MetadataOperation {
                 command: CatalogCommand::Checkpoint {
                     object_id: id(710),
+                    group_id: 2,
+                    scopes: vec![CheckpointScope {
+                        partition,
+                        binding_generation: 1,
+                    }],
                     generation: 1,
                     voters: vec![1],
                     snapshots: vec![(1, "wrong-authority-snapshot".into(), 10)],
@@ -341,6 +360,35 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     assert_eq!(
         state.topology.transfer(plan_id).unwrap().checkpoint_voters,
         BTreeSet::from([3])
+    );
+    catalog(
+        &mut state,
+        CatalogCommand::Checkpoint {
+            object_id: id(710),
+            group_id: 3,
+            scopes: vec![CheckpointScope {
+                partition,
+                binding_generation: 2,
+            }],
+            generation: 1,
+            voters: vec![3],
+            snapshots: vec![(3, "target-history-snapshot".into(), 11)],
+        },
+    );
+    let checkpoint = state
+        .lifecycle()
+        .object(id(710))
+        .unwrap()
+        .checkpoints
+        .get(&partition)
+        .unwrap();
+    assert_eq!(
+        (
+            checkpoint.group_id,
+            checkpoint.binding_generation,
+            checkpoint.generation
+        ),
+        (3, 2, 1)
     );
     rejected(
         state.apply(Command::transfer(

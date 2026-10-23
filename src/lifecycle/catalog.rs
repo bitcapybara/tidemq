@@ -6,10 +6,58 @@ use tidemq_protocol::{Id, state::OffsetRange};
 use crate::{archive::PackLimits, metadata::PartitionKey};
 
 use super::types::{
-    Blocker, CatalogCommand, CatalogOutcome, Diagnostic, MAX_OBJECTS, MAX_PARTITIONS,
-    MAX_PIN_OBJECTS, MAX_PIN_TTL, MAX_PINS, MAX_SEGMENTS, Manifest, ObjectPhase, ObjectRecord,
-    PinRecord, Plan, Rejection, Segment,
+    Blocker, CatalogCommand, CatalogOutcome, CheckpointScope, Diagnostic, MAX_OBJECTS,
+    MAX_PARTITIONS, MAX_PIN_OBJECTS, MAX_PIN_TTL, MAX_PINS, MAX_SEGMENTS, Manifest,
+    ObjectCheckpoint, ObjectPhase, ObjectRecord, PinRecord, Plan, Rejection, Segment,
 };
+
+fn validate_checkpoint_scopes(
+    object: &ObjectRecord,
+    group: u64,
+    scopes: &[CheckpointScope],
+    generation: u64,
+) -> Result<(), Rejection> {
+    if object.phase != ObjectPhase::Published {
+        return Err(Rejection::NotPublished);
+    }
+    if group == 0
+        || generation == 0
+        || scopes.is_empty()
+        || scopes.len() > MAX_PARTITIONS
+        || scopes
+            .iter()
+            .map(|scope| scope.partition)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != scopes.len()
+    {
+        return Err(Rejection::Identity);
+    }
+    for scope in scopes {
+        if scope.binding_generation == 0
+            || !object
+                .descriptor()
+                .partitions
+                .iter()
+                .any(|index| key(index) == scope.partition)
+        {
+            return Err(Rejection::Identity);
+        }
+        if let Some(old) = object.checkpoints.get(&scope.partition) {
+            if scope.binding_generation < old.binding_generation
+                || scope.binding_generation == old.binding_generation
+                    && group == old.group_id
+                    && generation < old.generation
+            {
+                return Err(Rejection::StaleGeneration);
+            }
+            if scope.binding_generation == old.binding_generation && group != old.group_id {
+                return Err(Rejection::Conflict);
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Terminal records are permanent identity fences; reaching the cap stops registration.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -350,7 +398,8 @@ impl Catalog {
             blocker,
             manifest_references: references,
             read_pins: pins,
-            checkpoint_generation: object.checkpoint_generation,
+            checkpoint_generation: None,
+            authority_scopes: Vec::new(),
             recovery_replacement: object.recovery_replacement,
         })
     }
@@ -369,10 +418,14 @@ impl Catalog {
             CatalogCommand::ReleasePin { pin } => self.release_pin(pin),
             CatalogCommand::Checkpoint {
                 object_id,
+                group_id,
+                scopes,
                 generation,
                 voters,
                 snapshots,
-            } => self.checkpoint(object_id, generation, &voters, &snapshots),
+            } => self.checkpoint(
+                object_id, group_id, &scopes, generation, &voters, &snapshots,
+            ),
             CatalogCommand::BeginDelete { object_id } => self.begin_delete(object_id),
             CatalogCommand::Deleted { object_id } => self.deleted(object_id),
             CatalogCommand::RetireBefore(proof) => self.retire_before(proof),
@@ -402,7 +455,7 @@ impl Catalog {
             phase: ObjectPhase::Registered,
             generation: 1,
             manifest_references: 0,
-            checkpoint_generation: None,
+            checkpoints: BTreeMap::new(),
             published_generations: BTreeMap::new(),
             recovery_replacement: None,
             floor_holds: BTreeMap::new(),
@@ -460,7 +513,7 @@ impl Catalog {
                 .ok_or(Rejection::InvalidSnapshot)?;
             old.recovery_replacement = Some(id);
             old.manifest_references = 0;
-            old.checkpoint_generation = None;
+            old.checkpoints.clear();
         }
         let object = self
             .objects
@@ -703,16 +756,21 @@ impl Catalog {
     fn checkpoint(
         &mut self,
         id: Id,
+        group_id: u64,
+        scopes: &[CheckpointScope],
         generation: u64,
         voters: &[u64],
         snapshots: &[(u64, String, u64)],
     ) -> Result<CatalogOutcome, Rejection> {
+        if !matches!(voters.len(), 1 | 3) || snapshots.len() != voters.len() {
+            return Err(Rejection::Membership);
+        }
         let expected: BTreeSet<_> = voters.iter().copied().collect();
         let actual: BTreeSet<_> = snapshots.iter().map(|(node, _, _)| *node).collect();
         if !matches!(expected.len(), 1 | 3)
             || expected.contains(&0)
             || actual != expected
-            || snapshots.len() != voters.len()
+            || expected.len() != voters.len()
             || generation == 0
             || snapshots.iter().any(|(_, snapshot, index)| {
                 snapshot.is_empty() || snapshot.len() > 128 || *index == 0
@@ -720,18 +778,32 @@ impl Catalog {
         {
             return Err(Rejection::Membership);
         }
+        let object = self.objects.get(&id).ok_or(Rejection::NotFound)?;
+        validate_checkpoint_scopes(object, group_id, scopes, generation)?;
         let object = self.objects.get_mut(&id).ok_or(Rejection::NotFound)?;
-        if object.phase != ObjectPhase::Published {
-            return Err(Rejection::NotPublished);
+        for scope in scopes {
+            object.checkpoints.insert(
+                scope.partition,
+                ObjectCheckpoint {
+                    group_id,
+                    binding_generation: scope.binding_generation,
+                    generation,
+                },
+            );
         }
-        object.checkpoint_generation = Some(generation);
-        for old in self
-            .objects
-            .values_mut()
-            .filter(|old| old.recovery_replacement == Some(id))
-        {
-            old.recovery_replacement = None;
-            old.checkpoint_generation = Some(generation);
+        let complete = object
+            .descriptor()
+            .partitions
+            .iter()
+            .all(|index| object.checkpoints.contains_key(&key(index)));
+        if complete {
+            for old in self
+                .objects
+                .values_mut()
+                .filter(|old| old.recovery_replacement == Some(id))
+            {
+                old.recovery_replacement = None;
+            }
         }
         Ok(CatalogOutcome::Object(Box::new(
             self.objects
@@ -907,6 +979,17 @@ impl Catalog {
             validate_plan(&object.plan)?;
             if *id != object.object_id()
                 || object.generation == 0
+                || object.checkpoints.len() > MAX_PARTITIONS
+                || object.checkpoints.iter().any(|(partition, proof)| {
+                    proof.group_id == 0
+                        || proof.binding_generation == 0
+                        || proof.generation == 0
+                        || !object
+                            .descriptor()
+                            .partitions
+                            .iter()
+                            .any(|index| key(index) == *partition)
+                })
                 || object.floor_holds.len() > MAX_PARTITIONS
                 || object.floor_holds.iter().any(|(partition, generation)| {
                     *generation == 0

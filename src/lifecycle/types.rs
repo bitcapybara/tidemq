@@ -122,10 +122,23 @@ pub struct ObjectRecord {
     pub phase: ObjectPhase,
     pub generation: u64,
     pub(crate) manifest_references: usize,
-    pub checkpoint_generation: Option<u64>,
+    pub(crate) checkpoints: BTreeMap<PartitionKey, ObjectCheckpoint>,
     pub(crate) published_generations: BTreeMap<PartitionKey, u64>,
     pub(crate) recovery_replacement: Option<Id>,
     pub(crate) floor_holds: BTreeMap<PartitionKey, u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CheckpointScope {
+    pub partition: PartitionKey,
+    pub binding_generation: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ObjectCheckpoint {
+    pub group_id: u64,
+    pub binding_generation: u64,
+    pub generation: u64,
 }
 
 impl ObjectRecord {
@@ -205,7 +218,10 @@ pub struct Diagnostic {
     pub blocker: Blocker,
     pub manifest_references: usize,
     pub read_pins: usize,
+    /// Local to the querying data group; absent when any requested scope lacks coverage.
     pub checkpoint_generation: Option<u64>,
+    /// Mutable ranges currently held by the querying data group.
+    pub authority_scopes: Vec<CheckpointScope>,
     pub recovery_replacement: Option<Id>,
 }
 
@@ -231,6 +247,8 @@ pub(crate) enum CatalogCommand {
     },
     Checkpoint {
         object_id: Id,
+        group_id: u64,
+        scopes: Vec<CheckpointScope>,
         generation: u64,
         voters: Vec<u64>,
         snapshots: Vec<(u64, String, u64)>,
@@ -399,6 +417,7 @@ pub(crate) enum DataCommand {
     },
     Checkpoint {
         object_id: Id,
+        partitions: Vec<PartitionKey>,
     },
     Reclaim {
         partition: PartitionKey,

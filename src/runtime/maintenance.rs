@@ -368,6 +368,12 @@ impl Service {
                     .diagnose(id, deadline.into_std())
                     .await
                     .map_err(|source| Error::operation("read archive checkpoint status", source))?;
+                if pending.contains(&id)
+                    && coordinator.complete(id, deadline.into_std()).await.is_err()
+                {
+                    progress.blocked = true;
+                    continue;
+                }
                 if diagnostic.manifest_references == 0 {
                     match coordinator.collect(id, deadline.into_std()).await {
                         Ok(())
@@ -380,10 +386,7 @@ impl Service {
                     }
                     continue;
                 }
-                if pending.contains(&id)
-                    && coordinator.complete(id, deadline.into_std()).await.is_err()
-                {
-                    progress.blocked = true;
+                if diagnostic.authority_scopes.is_empty() {
                     continue;
                 }
                 if diagnostic.checkpoint_generation.is_none()

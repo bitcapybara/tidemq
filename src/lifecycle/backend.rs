@@ -27,6 +27,34 @@ use super::{
 
 pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
+fn authority_scopes(
+    state: &MetadataState,
+    group: u64,
+    object: &ObjectRecord,
+) -> Result<Vec<super::CheckpointScope>> {
+    let mut scopes = Vec::new();
+    for index in &object.descriptor().partitions {
+        let partition = super::catalog::key(index);
+        if state.partition_group(partition) != Some(group)
+            || state.topology().transfer_blocks(partition)
+        {
+            continue;
+        }
+        let binding = state
+            .topology()
+            .binding(partition)
+            .filter(|binding| binding.authority_group == group)
+            .ok_or(Error::Rejected {
+                reason: Rejection::Identity,
+            })?;
+        scopes.push(super::CheckpointScope {
+            partition,
+            binding_generation: binding.generation,
+        });
+    }
+    Ok(scopes)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Query {
     Health,
@@ -274,12 +302,28 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             .ok_or(Error::Rejected {
                 reason: Rejection::Membership,
             }),
-        Query::Diagnose(id) => catalog
-            .diagnose(id)
-            .map(View::Diagnostic)
-            .ok_or(Error::Rejected {
+        Query::Diagnose(id) => {
+            let object = catalog.object(id).ok_or(Error::Rejected {
                 reason: Rejection::NotFound,
-            }),
+            })?;
+            let scopes = authority_scopes(state, data_group, object)?;
+            let mut diagnostic = catalog.diagnose(id).ok_or(Error::Configuration)?;
+            if !scopes.is_empty() {
+                diagnostic.checkpoint_generation =
+                    scopes.iter().try_fold(0, |generation, scope| {
+                        object
+                            .checkpoints
+                            .get(&scope.partition)
+                            .filter(|row| {
+                                row.group_id == data_group
+                                    && row.binding_generation == scope.binding_generation
+                            })
+                            .map(|row| generation.max(row.generation))
+                    });
+            }
+            diagnostic.authority_scopes = scopes;
+            Ok(View::Diagnostic(diagnostic))
+        }
         Query::Object(id) => catalog
             .object(id)
             .cloned()
@@ -324,6 +368,16 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             })
         }
         Query::Reclaim { partition, end } => {
+            let binding = state
+                .topology()
+                .binding(partition)
+                .filter(|binding| {
+                    binding.authority_group == data_group
+                        && state.partition_group(partition) == Some(data_group)
+                })
+                .ok_or(Error::Rejected {
+                    reason: Rejection::Identity,
+                })?;
             if end <= catalog.checkpointed_floor(partition) {
                 return Ok(View::Reclaim { generation: 0 });
             }
@@ -340,10 +394,19 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
                 let object = catalog
                     .object(segment.object_id)
                     .ok_or(Error::Configuration)?;
-                generation =
-                    generation.max(object.checkpoint_generation.ok_or(Error::Rejected {
-                        reason: Rejection::CheckpointRequired,
-                    })?);
+                generation = generation.max(
+                    object
+                        .checkpoints
+                        .get(&partition)
+                        .filter(|row| {
+                            row.group_id == data_group
+                                && row.binding_generation == binding.generation
+                        })
+                        .ok_or(Error::Rejected {
+                            reason: Rejection::CheckpointRequired,
+                        })?
+                        .generation,
+                );
             }
             Ok(View::Reclaim { generation })
         }
@@ -375,10 +438,20 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             })
         }
         Query::Pin(id) => Ok(View::Pin(catalog.pin(id).cloned())),
-        Query::Compaction(id) => catalog
-            .compaction_ranges(id)
-            .map(View::Compaction)
-            .map_err(|reason| Error::Rejected { reason }),
+        Query::Compaction(id) => {
+            let object = catalog.object(id).ok_or(Error::Rejected {
+                reason: Rejection::NotFound,
+            })?;
+            if authority_scopes(state, data_group, object)?.len()
+                != object.descriptor().partitions.len()
+            {
+                return Ok(View::Compaction(None));
+            }
+            catalog
+                .compaction_ranges(id)
+                .map(View::Compaction)
+                .map_err(|reason| Error::Rejected { reason })
+        }
     }
 }
 

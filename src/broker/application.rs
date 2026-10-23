@@ -976,7 +976,7 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 9;
+    const VERSION: u32 = 10;
     type Command = DataCommand;
     type Response = DataResponse;
 
@@ -1100,6 +1100,20 @@ impl DataApplication {
         use crate::lifecycle::{DataCommand as LifecycleCommand, Rejection};
         let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
         if operation.grants.is_empty() || operation.grants.len() > 64 {
+            return Err(DataRejection::Lifecycle(Rejection::Identity));
+        }
+        if let LifecycleCommand::Checkpoint { partitions, .. } = &operation.command
+            && (partitions.len() != operation.grants.len()
+                || partitions
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    != operation
+                        .grants
+                        .iter()
+                        .map(|grant| grant.partition)
+                        .collect())
+        {
             return Err(DataRejection::Lifecycle(Rejection::Identity));
         }
         for grant in &operation.grants {

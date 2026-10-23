@@ -13,7 +13,7 @@ use crate::{
 
 use super::catalog::key;
 use super::{
-    Catalog, CatalogCommand, DataCommand, DataState, Rejection,
+    Catalog, CatalogCommand, CheckpointScope, DataCommand, DataState, Rejection,
     types::{IntentPhase, PinRecord, Plan},
 };
 
@@ -260,11 +260,19 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
         catalog.apply(CatalogCommand::BeginDelete { object_id: old_id }),
         Err(Rejection::RecoveryDependency)
     );
-    data.apply(DataCommand::Checkpoint { object_id: new_id })
-        .unwrap();
+    data.apply(DataCommand::Checkpoint {
+        object_id: new_id,
+        partitions: vec![partition],
+    })
+    .unwrap();
     catalog
         .apply(CatalogCommand::Checkpoint {
             object_id: new_id,
+            group_id: 9,
+            scopes: vec![CheckpointScope {
+                partition,
+                binding_generation: 1,
+            }],
             generation: 1,
             voters: vec![1],
             snapshots: vec![(1, "actual-snapshot-fixture".into(), 9)],

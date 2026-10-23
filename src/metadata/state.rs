@@ -889,23 +889,34 @@ impl MetadataState {
             }
         }
         if let CatalogCommand::Checkpoint {
-            object_id, voters, ..
+            object_id,
+            group_id,
+            scopes,
+            voters,
+            ..
         } = &operation.command
         {
             let object = self
                 .lifecycle
                 .object(*object_id)
                 .ok_or(Rejection::NotFound)?;
-            let group = self
-                .group(object.descriptor().identity.group_id)
-                .ok_or(Rejection::NotFound)?;
-            // Cross-group recovery is proved by the transfer manifest and target checkpoints.
+            let group = self.group(*group_id).ok_or(Rejection::NotFound)?;
             if group.voters.iter().copied().collect::<Vec<_>>() != *voters
-                || object.descriptor().partitions.iter().any(|index| {
-                    self.partition_group(PartitionKey {
-                        topic_id: index.topic_id,
-                        partition: index.partition_id,
-                    }) != Some(object.descriptor().identity.group_id)
+                || scopes.is_empty()
+                || scopes.len() > 64
+                || scopes.iter().any(|scope| {
+                    self.partition_group(scope.partition) != Some(*group_id)
+                        || self.route(scope.partition).is_none()
+                        || self.topology.transfer_blocks(scope.partition)
+                        || self
+                            .topology
+                            .binding(scope.partition)
+                            .is_none_or(|binding| {
+                                binding.authority_group != *group_id
+                                    || binding.generation != scope.binding_generation
+                                    || !binding
+                                        .accepts_object(object.descriptor().identity.group_id)
+                            })
                 })
             {
                 return Err(Rejection::PlacementViolation);
