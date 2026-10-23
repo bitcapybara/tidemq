@@ -862,31 +862,43 @@ async fn cancelling_a_send_waiter_keeps_its_original_owned_send_and_result() {
         .await
         .unwrap();
     proxy.set_mtu(0);
-    {
-        let mut sending =
-            std::pin::pin!(producer.send(tidemq_sdk::Message::new("owned-send").key("key")));
+    let send_deadline = Instant::now() + Duration::from_secs(1);
+    let payloads = ["owned-send", "second-owned-send", "third-owned-send"];
+    for payload in payloads {
+        let context = tidemq_sdk::RequestContext::with_deadline(send_deadline);
+        let mut sending = std::pin::pin!(
+            context.scope(producer.send(tidemq_sdk::Message::new(payload).key("key")))
+        );
         std::future::poll_fn(|context| {
             assert!(std::future::Future::poll(sending.as_mut(), context).is_pending());
             std::task::Poll::Ready(())
         })
         .await;
     }
+    tokio::time::sleep_until(send_deadline + Duration::from_millis(50)).await;
     let pending = producer.pending_sends().await.unwrap();
-    assert_eq!(pending.len(), 1);
+    assert_eq!(pending.len(), 3);
     proxy.set_mtu(1200);
-    let receipt = pending.first().unwrap().retry().await.unwrap();
-    let message = tokio::time::timeout(Duration::from_secs(20), queue.receive())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(message.message_id(), receipt.message_id());
-    assert_eq!(message.payload(), b"owned-send");
+    let last = pending.last().unwrap().retry().await.unwrap();
+    for (pending, payload) in pending.iter().zip(payloads) {
+        let receipt = pending.retry().await.unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(20), queue.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.message_id(), receipt.message_id());
+        assert_eq!(message.payload(), payload.as_bytes());
+        assert_eq!(
+            pending.retry().await.unwrap().message_id(),
+            receipt.message_id()
+        );
+        queue.ack(&message).await.unwrap();
+    }
     assert_eq!(
-        pending.first().unwrap().retry().await.unwrap().message_id(),
-        receipt.message_id()
+        pending.last().unwrap().retry().await.unwrap().message_id(),
+        last.message_id()
     );
     assert!(producer.pending_sends().await.unwrap().is_empty());
-    queue.ack(&message).await.unwrap();
     producer.close().await.unwrap();
     queue.close().await.unwrap();
     client.close().await.unwrap();

@@ -17,7 +17,6 @@ pub(super) struct Work {
     operation: Id,
     request: Mutex<public::Publish>,
     credit: Mutex<Credit>,
-    dependency: Mutex<Option<PendingSend>>,
     uncertain: AtomicBool,
     complete: AtomicBool,
     inflight: AtomicBool,
@@ -323,14 +322,6 @@ fn admit(core: &Arc<Core>, mut message: Message, credit: Credit) -> Result<Pendi
         .ok_or(Error::ResponseMismatch {
             reason: "topic layout omitted the routing hash".into(),
         })?;
-    let dependency = key.and_then(|key| {
-        state
-            .pending
-            .values()
-            .rev()
-            .find(|pending| pending.work.key == Some(key) && !pending.complete())
-            .cloned()
-    });
     message.wire.key = message
         .wire
         .key
@@ -369,7 +360,6 @@ fn admit(core: &Arc<Core>, mut message: Message, credit: Credit) -> Result<Pendi
             operation: Id::new_v7()?,
             request: Mutex::new(request),
             credit: Mutex::new(credit),
-            dependency: Mutex::new(dependency),
             uncertain: AtomicBool::new(false),
             complete: AtomicBool::new(false),
             inflight: AtomicBool::new(false),
@@ -398,9 +388,6 @@ fn release_payload(work: &Work) {
         let bytes = credit.bytes.num_permits().saturating_sub(4096);
         drop(credit.bytes.split(bytes));
     }
-    if let Ok(mut dependency) = work.dependency.lock() {
-        dependency.take();
-    }
 }
 
 async fn drive(
@@ -412,21 +399,25 @@ async fn drive(
         core.stop.cancel();
         return Err((Error::SendRecoveryExpired, false));
     }
-    let dependency = work
-        .dependency
-        .lock()
-        .map_err(|_| (Error::Closed, false))?
-        .clone();
-    if let Some(dependency) = dependency {
-        if let Err(error) = dependency.retry_until(deadline, false).await
-            && error.outcome_unknown()
-        {
-            return Err((Error::ProducerBlocked, true));
+    while work.key.is_some() {
+        let dependency = core
+            .state()
+            .map_err(|error| (error, false))?
+            .pending
+            .range(..work.sequence)
+            .rev()
+            .find(|(_, pending)| pending.work.key == work.key && !pending.complete())
+            .map(|(_, pending)| pending.clone());
+        let Some(dependency) = dependency else { break };
+        let _ = dependency.retry_until(deadline, false).await;
+        if !dependency.complete() {
+            return Err((
+                Error::RequestUnknown {
+                    source: Box::new(Error::ProducerBlocked),
+                },
+                false,
+            ));
         }
-        work.dependency
-            .lock()
-            .map_err(|_| (Error::Closed, false))?
-            .take();
     }
     drive_requests(&core, work, deadline).await
 }
