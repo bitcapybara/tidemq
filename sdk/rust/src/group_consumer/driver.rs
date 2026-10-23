@@ -197,7 +197,13 @@ async fn heartbeats(core: Arc<Core>) {
         tokio::select! { _ = core.stop.cancelled() => return, _ = timer.tick() => {} }
         if let Err(error) = maintain_lease(&core, &mut lease).await {
             let terminal = error.permission_denied() || lease.rejoins > 16;
-            core.record_error(error);
+            let live = core
+                .lease_until
+                .lock()
+                .is_ok_and(|until| *until > Instant::now());
+            if terminal || !live || !no_work(&error) {
+                core.record_error(error);
+            }
             if terminal {
                 core.stop.cancel();
                 return;
@@ -251,10 +257,21 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
         Err(error) => {
             let probe = core.request(public::ConsumerAction::ConsumerStatus);
             let probe_operation = Id::new_v7()?;
+            let observed = Instant::now();
             let status = core
                 .client
                 .operation(|deadline| control(&core.client, probe_operation, &probe, deadline))
                 .await?;
+            if status.member_status == 2
+                && status.plan_active
+                && status.next_heartbeat_sequence > lease.sequence
+                && fresh_view(&status, observed)
+            {
+                lease.sequence = status.next_heartbeat_sequence;
+                lease.operation = Id::new_v7()?;
+                core.update_info(status, observed)?;
+                return Ok(());
+            }
             if matches!(status.member_status, 5 | 7) && status.plan_active {
                 lease.rejoins = lease.rejoins.saturating_add(1);
                 if lease.rejoins > 16 {
@@ -291,6 +308,7 @@ async fn reads(core: Arc<Core>) {
     let mut refreshed = Instant::now()
         .checked_sub(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
+    let mut refresh_failure = None::<Instant>;
     loop {
         tokio::select! {
             _ = core.stop.cancelled() => return,
@@ -317,11 +335,18 @@ async fn reads(core: Arc<Core>) {
             }
         }
         if refreshed.elapsed() >= Duration::from_secs(1) {
+            refreshed = Instant::now();
             match refresh_domains(&core).await {
-                Ok(()) => refreshed = Instant::now(),
+                Ok(()) => refresh_failure = None,
                 Err(error) => {
-                    core.record_error(error);
-                    continue;
+                    let failed_since = refresh_failure.get_or_insert_with(Instant::now);
+                    if !no_work(&error)
+                        || failed_since.elapsed()
+                            >= Duration::from_millis(core.client.inner.config.request_timeout_ms)
+                    {
+                        core.record_error(error);
+                        refresh_failure = Some(Instant::now());
+                    }
                 }
             }
         }
@@ -491,7 +516,9 @@ async fn poll_read(core: &Core, domain: Id, work: Arc<Mutex<ReadAttempt>>) -> Re
         }
         (work.request.clone(), work.operation, work.applied)
     };
-    core.client
+    let work = &work;
+    let result = core
+        .client
         .operation(|deadline| async move {
             if !applied {
                 let result: public::GroupDeliveries = core
@@ -505,7 +532,7 @@ async fn poll_read(core: &Core, domain: Id, work: Arc<Mutex<ReadAttempt>>) -> Re
                         deadline,
                     )
                     .await?;
-                accept_read(core, domain, &work, &request, result)?;
+                accept_read(core, domain, work, &request, result)?;
             }
             let retire = public::GroupRetire {
                 topic_id: request.topic_id,
@@ -531,19 +558,37 @@ async fn poll_read(core: &Core, domain: Id, work: Arc<Mutex<ReadAttempt>>) -> Re
                 .progress
                 .ok_or(Error::Closed)
         })
-        .await
+        .await;
+    if let Err(error) = &result
+        && error.outcome_unknown()
+        && work.lock().is_ok_and(|work| {
+            work.created.elapsed()
+                >= Duration::from_millis(core.client.inner.config.request_timeout_ms)
+        })
+    {
+        core.record_error(Error::Background {
+            source: Arc::new(Error::RequestUnknown {
+                source: Box::new(Error::Deadline),
+            }),
+        });
+    }
+    result
 }
 
 fn no_work(error: &Error) -> bool {
-    matches!(
-        error,
-        Error::Remote {
-            code: tidemq_protocol::common::ErrorCode::AssignmentBusy
-                | tidemq_protocol::common::ErrorCode::QuotaExceeded,
-            outcome: tidemq_protocol::common::Outcome::Rejected,
-            ..
-        }
-    )
+    error.retry_transport()
+        || error.retry_rejected()
+        || error.outcome_unknown()
+        || matches!(
+            error,
+            Error::Remote {
+                code: tidemq_protocol::common::ErrorCode::AssignmentBusy
+                    | tidemq_protocol::common::ErrorCode::StaleGeneration
+                    | tidemq_protocol::common::ErrorCode::QuotaExceeded,
+                outcome: tidemq_protocol::common::Outcome::Rejected,
+                ..
+            }
+        )
 }
 
 fn accept_read(

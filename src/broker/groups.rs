@@ -68,6 +68,33 @@ impl DataApplication {
             .subscription;
         let usage = self.group_usage()?;
         let subscription = command.subscription();
+        if let GroupCommand::Read { request, cold, .. } = &command {
+            if let Some(original) = self
+                .consumer_group_cursor(partition, subscription)
+                .and_then(|cursor| cursor.original_read(request))
+            {
+                return original
+                    .map(|read| DataResponse::ConsumerGroup(GroupOutcome::Read(read)))
+                    .map_err(DataRejection::Subscription);
+            }
+            if cold.len() > limits.max_window_slots as usize {
+                return Err(DataRejection::Subscription(
+                    subscription::Rejection::WindowFull,
+                ));
+            }
+            for proof in cold {
+                if proof.partition() != partition
+                    || proof.delivery_bytes < u64::from(proof.body_bytes())
+                {
+                    return Err(DataRejection::Subscription(
+                        subscription::Rejection::InvalidContext,
+                    ));
+                }
+                self.lifecycle
+                    .verify_delivery(proof)
+                    .map_err(DataRejection::Lifecycle)?;
+            }
+        }
         let state = self
             .partitions
             .get_mut(&partition)
@@ -180,8 +207,8 @@ fn execute_group(
             cursor.install_members(version, &grants, now_ms)?;
             Ok(GroupOutcome::MembersInstalled)
         }
-        GroupCommand::Read { request, .. } => {
-            read_group(cursor, producer, limits, usage, request).map(GroupOutcome::Read)
+        GroupCommand::Read { request, cold, .. } => {
+            read_group(cursor, producer, limits, usage, request, &cold).map(GroupOutcome::Read)
         }
         GroupCommand::RetireRead {
             member,
@@ -218,11 +245,12 @@ fn execute_group(
         GroupCommand::Renew {
             member,
             epoch,
+            version,
             expires_ms,
             now_ms,
             ..
         } => cursor
-            .renew(member, epoch, expires_ms, now_ms)
+            .renew(member, epoch, version, expires_ms, now_ms)
             .map(GroupOutcome::Renewed),
         GroupCommand::Reap {
             now_ms,
@@ -249,21 +277,40 @@ fn read_group(
     limits: subscription::Limits,
     usage: Usage,
     request: GroupRead,
+    cold: &[crate::lifecycle::VerifiedColdDelivery],
 ) -> subscription::Result<subscription::ReadResult> {
+    if let Some(original) = cursor.original_read(&request) {
+        return original;
+    }
     let available_windows = (limits.max_total_window_slots as usize).saturating_sub(usage.windows);
     let count = (limits.max_window_slots as usize)
         .saturating_sub(cursor.window_slots())
         .min(available_windows)
         .min(producer.limits().max_batch_messages);
-    let mut candidates = Vec::new();
-    if count > 0 {
+    let mut candidates: Vec<_> = cold
+        .iter()
+        .filter(|proof| proof.offset() >= cursor.next_offset())
+        .take(count)
+        .map(|proof| Candidate {
+            offset: proof.offset(),
+            hash: proof.routing_hash,
+            bytes: proof.delivery_bytes,
+        })
+        .collect();
+    if candidates
+        .first()
+        .is_some_and(|candidate| candidate.offset != cursor.next_offset())
+    {
+        return Err(subscription::Rejection::AssignmentBusy);
+    }
+    if count > 0 && candidates.is_empty() {
         let page = producer
             .hot_read(
                 cursor.next_offset(),
                 count,
                 producer.limits().max_batch_bytes,
             )
-            .map_err(|_| subscription::Rejection::InvalidContext)?;
+            .map_err(|_| subscription::Rejection::AssignmentBusy)?;
         for (index, message) in page.messages.iter().enumerate() {
             let offset = page
                 .first_offset

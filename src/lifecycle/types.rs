@@ -319,6 +319,8 @@ pub struct VerifiedColdDelivery {
     pub(crate) manifest_generation: u64,
     pub(crate) offset: u64,
     pub(crate) body_bytes: u32,
+    pub(crate) routing_hash: u64,
+    pub(crate) delivery_bytes: u64,
 }
 
 impl VerifiedColdDelivery {

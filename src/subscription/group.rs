@@ -18,6 +18,7 @@ pub enum GroupCommand {
     Read {
         subscription: Id,
         request: GroupRead,
+        cold: Vec<crate::lifecycle::VerifiedColdDelivery>,
     },
     RetireRead {
         subscription: Id,
@@ -39,6 +40,7 @@ pub enum GroupCommand {
         subscription: Id,
         member: Id,
         epoch: u64,
+        version: u64,
         expires_ms: u64,
         now_ms: u64,
     },
@@ -231,6 +233,12 @@ impl GroupCursor {
         self.members
             .get(&(member, epoch))
             .is_some_and(|row| row.grant.client == client && row.grant.credential == credential)
+    }
+    pub(crate) fn renewal_version(&self, member: Id, epoch: u64, now: u64) -> Option<u64> {
+        self.members
+            .get(&(member, epoch))
+            .filter(|member| member.active && member.grant.expires_ms <= now.saturating_add(5_000))
+            .map(|_| self.version)
     }
     pub fn limits(&self) -> Limits {
         self.limits
@@ -525,6 +533,25 @@ impl GroupCursor {
         )
     }
 
+    pub(crate) fn original_read(&self, request: &GroupRead) -> Option<Result<ReadResult>> {
+        let Some(member) = self.members.get(&(request.member, request.epoch)) else {
+            return Some(Err(Rejection::SessionMismatch));
+        };
+        if request.sequence == member.read_sequence && request.sequence > 0 {
+            return Some(if member.read_digest != read_digest(request) {
+                Err(Rejection::IdentityConflict)
+            } else {
+                member
+                    .read
+                    .as_ref()
+                    .filter(|read| !read.retired)
+                    .cloned()
+                    .ok_or(Rejection::OutcomeExpired)
+            });
+        }
+        (request.sequence < member.read_sequence).then_some(Err(Rejection::OutcomeExpired))
+    }
+
     pub(crate) fn read_admitted(
         &mut self,
         request: GroupRead,
@@ -532,25 +559,14 @@ impl GroupCursor {
         available_bytes: u64,
         available_results: u32,
     ) -> Result<ReadResult> {
+        if let Some(original) = self.original_read(&request) {
+            return original;
+        }
         let member = self
             .members
             .get(&(request.member, request.epoch))
             .ok_or(Rejection::SessionMismatch)?;
         let digest = read_digest(&request);
-        if request.sequence == member.read_sequence && request.sequence > 0 {
-            if member.read_digest != digest {
-                return Err(Rejection::IdentityConflict);
-            }
-            return member
-                .read
-                .as_ref()
-                .filter(|read| !read.retired)
-                .cloned()
-                .ok_or(Rejection::OutcomeExpired);
-        }
-        if request.sequence < member.read_sequence {
-            return Err(Rejection::OutcomeExpired);
-        }
         if !self.gate_open {
             return Err(Rejection::AssignmentBusy);
         }
@@ -1006,18 +1022,30 @@ impl GroupCursor {
         Ok(before.saturating_sub(self.members.len()))
     }
 
-    pub fn renew(&mut self, member: Id, epoch: u64, expires_ms: u64, now: u64) -> Result<u64> {
+    pub fn renew(
+        &mut self,
+        member: Id,
+        epoch: u64,
+        version: u64,
+        expires_ms: u64,
+        now: u64,
+    ) -> Result<u64> {
+        if self.version != version {
+            return Err(Rejection::StaleGeneration);
+        }
+        let installed = self
+            .members
+            .get(&(member, epoch))
+            .ok_or(Rejection::SessionMismatch)?;
+        if !installed.active || expires_ms <= now || expires_ms.saturating_sub(now) > 15_000 {
+            return Err(Rejection::SessionMismatch);
+        }
+        // A late authoritative renewal cannot resurrect an already expired delivery attempt.
+        self.fence_invalid_deliveries(now);
         let member = self
             .members
             .get_mut(&(member, epoch))
             .ok_or(Rejection::SessionMismatch)?;
-        if !member.active
-            || member.grant.expires_ms <= now
-            || expires_ms <= now
-            || expires_ms.saturating_sub(now) > 300_000
-        {
-            return Err(Rejection::SessionMismatch);
-        }
         member.grant.expires_ms = member.grant.expires_ms.max(expires_ms);
         Ok(member.grant.expires_ms)
     }

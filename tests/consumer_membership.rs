@@ -102,6 +102,46 @@ fn an_original_ack_refusal_survives_attempt_changes_and_checks_the_exact_digest(
 }
 
 #[test]
+fn a_late_authoritative_renewal_fences_the_old_attempt_and_checks_the_assignment_version() {
+    let mut cursor = cursor(SubscriptionKind::Queue);
+    let member = id();
+    cursor
+        .install_members(1, &[grant(member, vec![])], 0)
+        .unwrap();
+    let original = cursor
+        .read(
+            read(member, 1, 1),
+            &[Candidate {
+                offset: 0,
+                hash: 7,
+                bytes: 1,
+            }],
+        )
+        .unwrap();
+    cursor.retire_read(member, 1, 1).unwrap();
+    assert_eq!(
+        cursor.renew(member, 1, 2, 25_000, 16_000),
+        Err(Rejection::StaleGeneration)
+    );
+    cursor.renew(member, 1, 1, 25_000, 16_000).unwrap();
+    assert_eq!(
+        cursor.acknowledge(GroupAck {
+            member,
+            epoch: 1,
+            sequence: 1,
+            now_ms: 16_000,
+            model: SubscriptionKind::Queue,
+            proofs: original.deliveries,
+            nack_delay_ms: None,
+        }),
+        Err(Rejection::StaleAttempt)
+    );
+    let delivered = cursor.read(read(member, 2, 16_000), &[]).unwrap();
+    assert_eq!(delivered.deliveries.first().unwrap().attempt, 2);
+    cursor.validate().unwrap();
+}
+
+#[test]
 fn replaying_an_assignment_after_renewal_preserves_its_original_result() {
     let mut cursor = cursor(SubscriptionKind::Queue);
     let member = id();
@@ -109,7 +149,7 @@ fn replaying_an_assignment_after_renewal_preserves_its_original_result() {
     cursor
         .install_members(1, std::slice::from_ref(&grant), 0)
         .unwrap();
-    cursor.renew(member, 1, 20_000, 1_000).unwrap();
+    cursor.renew(member, 1, 1, 15_500, 1_000).unwrap();
     cursor
         .install_members(1, std::slice::from_ref(&grant), 1_001)
         .unwrap();

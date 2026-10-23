@@ -4,6 +4,7 @@ mod auth;
 mod config;
 mod consumer_control;
 mod consumer_data;
+mod consumer_read;
 mod data;
 mod drain;
 mod error;

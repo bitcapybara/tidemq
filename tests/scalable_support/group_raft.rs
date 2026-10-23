@@ -103,6 +103,7 @@ async fn group_consumers_replay_nack_and_attempts_after_a_three_replica_restart(
         .write(command(GroupCommand::Read {
             subscription,
             request: read,
+            cold: Vec::new(),
         }))
         .await
     else {
@@ -112,6 +113,7 @@ async fn group_consumers_replay_nack_and_attempts_after_a_three_replica_restart(
         .write(command(GroupCommand::Read {
             subscription,
             request: read,
+            cold: Vec::new(),
         }))
         .await;
     assert_eq!(
@@ -168,6 +170,7 @@ async fn group_consumers_replay_nack_and_attempts_after_a_three_replica_restart(
                 max_messages: 8,
                 max_bytes: 2048,
             },
+            cold: Vec::new(),
         }))
         .await
     else {

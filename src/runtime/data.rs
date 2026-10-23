@@ -1411,7 +1411,7 @@ fn assignment_wire(
         issued_before: assignment.issued_before,
     }
 }
-fn cold_message(
+pub(super) fn cold_message(
     page: &GuardedPage,
     offset: u64,
 ) -> Result<Option<(MessageData, VerifiedColdDelivery)>> {

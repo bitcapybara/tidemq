@@ -120,12 +120,27 @@ impl GuardedPage {
             .len()
             .checked_add(record.body().len())
             .ok_or(Error::Configuration)?;
+        let metadata = crate::producer::MessageData {
+            key: bytes::Bytes::copy_from_slice(record.key()),
+            context: bytes::Bytes::copy_from_slice(record.context()),
+            body: bytes::Bytes::new(),
+        }
+        .metadata(self.partition.topic_id)
+        .map_err(|_| Error::Configuration)?;
+        let delivery_bytes = tidemq_protocol::topic::delivery_bytes(
+            record.key(),
+            record.body(),
+            &metadata.properties,
+        )
+        .map_err(|_| Error::Configuration)?;
         Ok(VerifiedColdDelivery {
             partition: self.partition,
             object_id: self.object_id,
             manifest_generation: self.manifest_generation,
             offset,
             body_bytes: u32::try_from(bytes).map_err(|_| Error::Configuration)?,
+            routing_hash: metadata.routing_hash,
+            delivery_bytes,
         })
     }
     pub async fn release(mut self, deadline: Instant) -> Result<()> {

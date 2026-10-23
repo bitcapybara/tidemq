@@ -59,6 +59,7 @@ enum Control {
         subscription: Id,
         member: Id,
         epoch: u64,
+        version: u64,
         expires_ms: u64,
     },
 }
@@ -67,13 +68,6 @@ enum Control {
 struct Progress {
     frontier: u64,
     gate_open: bool,
-}
-
-struct GrantRenewal {
-    subscription: Id,
-    member: Id,
-    epoch: u64,
-    expires_ms: u64,
 }
 
 impl Service {
@@ -120,76 +114,60 @@ impl Service {
         Ok(())
     }
 
-    pub(super) async fn renew_consumer_grants(
+    pub(super) async fn refresh_consumer_grant(
         &self,
+        access: &Access,
+        route: &Route,
         subscription: Id,
-        member: Id,
-        epoch: u64,
+        member: (Id, u64),
         deadline: Instant,
     ) -> Result<()> {
-        let row = self.consumer_row(subscription).await?;
-        let expires_ms = row
-            .members
-            .member(member, epoch)
-            .ok_or_else(super::metadata::not_found)?
-            .expires_ms;
-        let renewal = GrantRenewal {
-            subscription,
-            member,
-            epoch,
-            expires_ms,
-        };
-        for domains in row.members.plan().domains.chunks(4) {
-            let results = tokio::join!(
-                self.renew_consumer_domain(domains.first(), &renewal, deadline),
-                self.renew_consumer_domain(domains.get(1), &renewal, deadline),
-                self.renew_consumer_domain(domains.get(2), &renewal, deadline),
-                self.renew_consumer_domain(domains.get(3), &renewal, deadline),
-            );
-            results.0?;
-            results.1?;
-            results.2?;
-            results.3?;
-        }
-        Ok(())
-    }
-
-    async fn renew_consumer_domain(
-        &self,
-        domain: Option<&Id>,
-        renewal: &GrantRenewal,
-        deadline: Instant,
-    ) -> Result<()> {
-        let Some(domain) = domain else {
-            return Ok(());
-        };
-        let shard = self
-            .metadata
-            .as_ref()
+        let (member, epoch) = member;
+        let now = super::data::unix_millis()?;
+        let version = self
+            .data
+            .get(&route.group_id)
             .ok_or_else(Error::unavailable)?
             .state
-            .try_with_application(|state| state.topology().shard(*domain).cloned())
+            .try_with_application(|state| {
+                state
+                    .consumer_group_cursor(route.partition, subscription)
+                    .and_then(|cursor| cursor.renewal_version(member, epoch, now))
+            })
             .await
-            .map_err(|source| Error::operation("read renewal domain", source))?
-            .ok_or_else(super::metadata::not_found)?;
-        let target = self.leader(shard.route.group, deadline).await?;
-        self.rpc
-            .call(
-                target,
-                shard.route.group,
-                Request::typed(
-                    GROUP_CONTROL,
-                    &Control::Renew {
-                        partition: shard.partition,
-                        subscription: renewal.subscription,
-                        member: renewal.member,
-                        epoch: renewal.epoch,
-                        expires_ms: renewal.expires_ms,
+            .map_err(|source| Error::operation("read consumer grant expiry", source))?;
+        if let Some(version) = version {
+            let (client, credential) = super::consumer_control::actor(access)?;
+            let expires_ms = self
+                .consumer_member_lease(
+                    super::auth::MemberLeaseRequest {
+                        topic: route.partition.topic_id,
+                        subscription,
+                        member,
+                        epoch,
+                        version,
+                        client,
+                        credential,
                     },
-                )?,
-                deadline,
-            )
-            .await?;
+                    deadline,
+                )
+                .await?;
+            if expires_ms > now {
+                self.group_commit(
+                    route,
+                    GroupCommand::Renew {
+                        subscription,
+                        member,
+                        epoch,
+                        version,
+                        expires_ms,
+                        now_ms: super::data::unix_millis()?,
+                    },
+                    deadline,
+                )
+                .await?;
+            }
+        }
         Ok(())
     }
 
@@ -309,6 +287,7 @@ impl Service {
                 subscription,
                 member,
                 epoch,
+                version,
                 expires_ms,
                 ..
             } => {
@@ -328,6 +307,7 @@ impl Service {
                         subscription,
                         member,
                         epoch,
+                        version,
                         expires_ms,
                         now_ms: super::data::unix_millis()?,
                     },
@@ -562,7 +542,7 @@ impl Service {
         Ok(())
     }
 
-    async fn group_commit(
+    pub(super) async fn group_commit(
         &self,
         route: &Route,
         command: GroupCommand,
@@ -770,31 +750,33 @@ impl Service {
         let member = wire::id(&request.member_id)?;
         self.authorize_group_member(access, &route, subscription, member, request.member_epoch)
             .await?;
+        self.refresh_consumer_grant(
+            access,
+            &route,
+            subscription,
+            (member, request.member_epoch),
+            deadline,
+        )
+        .await?;
         if request.max_bytes > u64::from(self.config.protocol.max_frame_bytes.saturating_sub(8192))
         {
             return Err(Error::invalid("Group read exceeds its frame budget"));
         }
-        let result = self
-            .group_commit(
+        let (read, mut page) = self
+            .read_consumer_page(
                 &route,
-                GroupCommand::Read {
-                    subscription,
-                    request: subscription::GroupRead {
-                        member,
-                        epoch: request.member_epoch,
-                        sequence: request.sequence,
-                        now_ms: super::data::unix_millis()?,
-                        max_messages: request.max_messages,
-                        max_bytes: request.max_bytes,
-                    },
+                subscription,
+                subscription::GroupRead {
+                    member,
+                    epoch: request.member_epoch,
+                    sequence: request.sequence,
+                    now_ms: super::data::unix_millis()?,
+                    max_messages: request.max_messages,
+                    max_bytes: request.max_bytes,
                 },
                 deadline,
             )
             .await?;
-        let GroupOutcome::Read(read) = result else {
-            return Err(Error::invalid("Read returned an invalid result"));
-        };
-        let now = super::data::unix_millis()?;
         let sealed_complete = self
             .data
             .get(&route.group_id)
@@ -809,51 +791,23 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("read sealed subscription completion", source))?;
-        let deliveries = self
-            .data
-            .get(&route.group_id)
-            .ok_or_else(Error::unavailable)?
-            .state
-            .try_with_application(|state| {
-                let producer = state
-                    .producer(route.partition)
-                    .ok_or_else(super::metadata::not_found)?;
-                read.deliveries
-                    .into_iter()
-                    .map(|proof| {
-                        let message = producer
-                            .hot_read(proof.offset, 1, request.max_bytes)
-                            .map_err(|_| Error::unavailable())?
-                            .messages
-                            .into_iter()
-                            .next()
-                            .ok_or_else(Error::unavailable)?;
-                        let metadata =
-                            message
-                                .metadata(route.partition.topic_id)
-                                .map_err(|source| {
-                                    Error::operation("read stored message context", source)
-                                })?;
-                        Ok(public::GroupDelivery {
-                            key_present: metadata.key_present,
-                            properties: metadata.properties,
-                            current_attempt: state
-                                .consumer_group_cursor(route.partition, subscription)
-                                .is_some_and(|cursor| cursor.delivery_is_current(&proof, now)),
-                            key_hash: metadata.routing_hash,
-                            proof: Some(public::GroupProof {
-                                offset: proof.offset,
-                                attempt: proof.attempt,
-                                mac: Bytes::copy_from_slice(&proof.mac),
-                            }),
-                            key: message.key,
-                            body: message.body,
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()
-            })
-            .await
-            .map_err(|source| Error::operation("read original group delivery bodies", source))??;
+        let deliveries = async {
+            let mut deliveries = Vec::new();
+            for proof in read.deliveries {
+                deliveries.push(
+                    self.consumer_delivery(&route, subscription, proof, &mut page, deadline)
+                        .await?,
+                );
+            }
+            Ok::<_, Error>(deliveries)
+        }
+        .await;
+        if let Some(page) = page {
+            page.release(deadline.into_std())
+                .await
+                .map_err(|source| Error::operation("release consumer delivery pin", source))?;
+        }
+        let deliveries = deliveries?;
         wire::response(
             frame,
             FrameKind::GroupDeliveries,
@@ -881,6 +835,14 @@ impl Service {
         let model = self
             .authorize_group_member(access, &route, subscription, member, request.member_epoch)
             .await?;
+        self.refresh_consumer_grant(
+            access,
+            &route,
+            subscription,
+            (member, request.member_epoch),
+            deadline,
+        )
+        .await?;
         let proofs =
             request
                 .proofs

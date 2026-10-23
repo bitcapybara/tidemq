@@ -98,7 +98,6 @@ impl Service {
             .consumer_credential_expiry(credential, topic, now)
             .await?;
         self.refresh_consumer_if_needed(&row, now, deadline).await?;
-        self.resume_consumer(subscription, deadline).await?;
         let digest = *blake3::hash(&frame.payload).as_bytes();
         match action {
             public::ConsumerAction::RetireConsumer => {
@@ -182,18 +181,6 @@ impl Service {
             .consumer_status(subscription, &request, client, credential)
             .await?;
         drop(guard);
-        if action == public::ConsumerAction::HeartbeatConsumer
-            && result.member_status == 2
-            && result.plan_active
-        {
-            self.renew_consumer_grants(
-                subscription,
-                wire::id(&request.member_id)?,
-                request.member_epoch,
-                deadline,
-            )
-            .await?;
-        }
         wire::response(
             frame,
             FrameKind::ConsumerControlResult,

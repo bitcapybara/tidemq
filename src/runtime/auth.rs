@@ -55,7 +55,19 @@ mod admission_tests {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub(super) struct MemberLeaseRequest {
+    pub topic: Id,
+    pub subscription: Id,
+    pub member: Id,
+    pub epoch: u64,
+    pub version: u64,
+    pub client: Id,
+    pub credential: Id,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthQuery {
+    Consumer(MemberLeaseRequest),
     BirthShard(Id),
     TopicResource(Id),
     Publisher {
@@ -76,6 +88,7 @@ enum AuthQuery {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct AuthReply {
+    consumer_expires_ms: u64,
     birth: Option<crate::metadata::BirthShard>,
     resource: Option<String>,
     publisher: Option<crate::producer::PublisherPermit>,
@@ -129,6 +142,16 @@ impl TokenAuthenticator for Authenticator {
 }
 
 impl Service {
+    pub(super) async fn consumer_member_lease(
+        &self,
+        request: MemberLeaseRequest,
+        deadline: Instant,
+    ) -> Result<u64> {
+        let (reply, _) = self
+            .auth_query(AuthQuery::Consumer(request), deadline)
+            .await?;
+        Ok(reply.consumer_expires_ms)
+    }
     pub(super) async fn publisher_birth(
         &self,
         shard: Id,
@@ -306,6 +329,35 @@ impl Service {
                         .ok_or_else(super::service::forbidden)?;
                     Ok(AuthReply {
                         resource: Some(topic.name.clone()),
+                        expires_ms: now.saturating_add(1000),
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
+                AuthQuery::Consumer(request) => {
+                    let consumer_expires_ms = state
+                        .consumer_subscription(request.subscription)
+                        .filter(|row| {
+                            row.topic == request.topic
+                                && row.members.plan().active
+                                && row
+                                    .members
+                                    .plan()
+                                    .version
+                                    .checked_mul(2)
+                                    .and_then(|version| version.checked_add(1))
+                                    == Some(request.version)
+                        })
+                        .and_then(|row| row.members.member(request.member, request.epoch))
+                        .filter(|member| {
+                            member.client == request.client
+                                && member.credential == request.credential
+                                && member.status == crate::metadata::MemberStatus::Active
+                                && member.expires_ms > now
+                        })
+                        .map_or(0, |member| member.expires_ms);
+                    Ok(AuthReply {
+                        consumer_expires_ms,
                         expires_ms: now.saturating_add(1000),
                         now_ms: now,
                         ..Default::default()

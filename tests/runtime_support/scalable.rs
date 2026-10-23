@@ -2,6 +2,12 @@ use super::*;
 
 async fn dynamic_fixture() -> Fixture {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    configure_dynamic_fixture(&mut fixture).await;
+    fixture.start_all().await;
+    fixture
+}
+
+async fn configure_dynamic_fixture(fixture: &mut Fixture) {
     let bootstrap = fixture.directory.join("bootstrap.token");
     tokio::fs::write(&bootstrap, TOKEN).await.unwrap();
     private_file(bootstrap.clone()).await;
@@ -13,8 +19,128 @@ async fn dynamic_fixture() -> Fixture {
         voters: vec![1],
         standby: Vec::new(),
     });
-    fixture.start_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
+async fn stream_and_queue_recover_archived_context_and_nack_after_local_reclaim_and_restart() {
+    let rustfs = rustfs::RustFs::start().await;
+    rustfs.create_bucket().await;
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    configure_dynamic_fixture(&mut fixture).await;
+    enable_objects(&mut fixture, &rustfs).await;
     fixture
+        .configs
+        .get_mut(&1)
+        .unwrap()
+        .runtime
+        .archive_interval_ms = 60_000;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = "acme/app/cold";
+    client.admin().create_logical_topic(topic).await.unwrap();
+    let queue = client
+        .new_queue_consumer(topic, "jobs")
+        .build()
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer(topic, "events")
+        .build()
+        .await
+        .unwrap();
+    queue.close().await.unwrap();
+    stream.close().await.unwrap();
+    let producer = client.new_producer(topic).build().await.unwrap();
+    let mut expected = Vec::new();
+    for index in 0..3 {
+        let message =
+            tidemq_sdk::Message::new(format!("cold-{index}")).property("source", "archive");
+        let message = if index == 0 { message } else { message.key("") };
+        expected.push(producer.send(message).await.unwrap().message_id());
+    }
+    producer.close().await.unwrap();
+    let partition = tidemq::metadata::PartitionKey {
+        topic_id: Id::from_slice(&client.admin().topic(topic).await.unwrap().topic_id).unwrap(),
+        partition: 0,
+    };
+    let node = fixture.running.get(&1).unwrap();
+    node.archive(
+        2,
+        vec![tidemq::lifecycle::RangeRequest {
+            partition,
+            offsets: tidemq_protocol::state::OffsetRange { start: 0, end: 3 },
+        }],
+        deadline(),
+    )
+    .await
+    .unwrap();
+    node.reclaim_local(partition, 3, deadline()).await.unwrap();
+    client.close().await.unwrap();
+    fixture.stop(1).await;
+    fixture.restart(1).await;
+    let client = fixture.client(1).await;
+    let queue = client
+        .new_queue_consumer(topic, "jobs")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer(topic, "events")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    for (index, identity) in expected.iter().enumerate() {
+        let message = tokio::time::timeout(Duration::from_secs(20), stream.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.message_id(), *identity);
+        assert_eq!(message.payload(), format!("cold-{index}").as_bytes());
+        assert_eq!(message.key(), (index > 0).then_some(b"".as_slice()));
+        assert_eq!(
+            message.properties().get("source").unwrap().as_ref(),
+            b"archive"
+        );
+        stream.ack_cumulative(&message).await.unwrap();
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut nacked = None;
+    for _ in 0..4 {
+        let message = tokio::time::timeout(Duration::from_secs(20), queue.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(expected.contains(&message.message_id()));
+        assert_eq!(
+            message.properties().get("source").unwrap().as_ref(),
+            b"archive"
+        );
+        if nacked.is_none() {
+            nacked = Some(message.message_id());
+            queue
+                .nack(&message, Duration::from_millis(50))
+                .await
+                .unwrap();
+        } else {
+            assert!(seen.insert(message.message_id()));
+            queue.ack(&message).await.unwrap();
+        }
+    }
+    assert_eq!(seen.len(), expected.len());
+    assert!(seen.contains(&nacked.unwrap()));
+    queue.close().await.unwrap();
+    stream.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
 }
 
 async fn token_client(fixture: &Fixture, token: &str) -> Client {
