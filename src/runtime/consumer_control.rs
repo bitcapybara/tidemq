@@ -278,6 +278,8 @@ impl Service {
             Vec::new()
         };
         Ok(public::ConsumerControlResult {
+            assignment_fenced: row.members.plan().fenced,
+            lane_fences: row.members.lane_fences().to_vec(),
             next_heartbeat_sequence: member
                 .and_then(|member| {
                     row.members

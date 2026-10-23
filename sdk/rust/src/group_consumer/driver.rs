@@ -91,6 +91,10 @@ fn release_local(core: &Core) {
         for message in state.ledger.values().chain(state.queue.iter()) {
             let _ = message.data.release_credit();
         }
+        for (_, data) in &state.revoked {
+            let _ = data.release_credit();
+        }
+        state.revoked.clear();
         state.queue = VecDeque::new();
         state.ledger.clear();
         state.domains.clear();
@@ -292,6 +296,10 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
                 for message in state.ledger.values().chain(state.queue.iter()) {
                     message.data.release_credit()?;
                 }
+                for (_, data) in &state.revoked {
+                    data.release_credit()?;
+                }
+                state.revoked.clear();
                 state.queue.clear();
                 state.ledger.clear();
                 state.claims.clear();
@@ -608,6 +616,7 @@ fn accept_read(
     result: public::GroupDeliveries,
 ) -> Result<()> {
     if result.sequence != request.sequence
+        || result.assignment_version == 0
         || result.deliveries.len() > request.max_messages as usize
     {
         return Err(Error::ResponseMismatch {
@@ -663,6 +672,7 @@ fn accept_read(
         complete: result.sealed_complete,
     };
     let mut state = core.state()?;
+    let info = core.info.lock().map_err(|_| Error::Closed)?;
     for delivery in result.deliveries {
         if !delivery.current_attempt {
             continue;
@@ -686,6 +696,7 @@ fn accept_read(
                 offset: proof.offset,
             },
             hash: delivery.key_hash,
+            assignment_version: result.assignment_version,
             acknowledgement: std::sync::OnceLock::new(),
             key: Bytes::copy_from_slice(&delivery.key),
             key_present: delivery.key_present,
@@ -704,11 +715,16 @@ fn accept_read(
             _client_memory: credit.client.split(length).ok_or(Error::Closed)?,
             slot: Mutex::new(Some(credit.slots.split(1).ok_or(Error::Closed)?)),
         };
-        state.queue.push_back(ReceivedMessage {
-            data: Arc::new(data),
-            delivery_sequence: 0,
-        });
+        state.enqueue(
+            core.model,
+            &info,
+            ReceivedMessage {
+                data: Arc::new(data),
+                delivery_sequence: 0,
+            },
+        )?;
     }
+    state.release_revoked(&info)?;
     attempt.applied = true;
     attempt.progress = Some(progress);
     drop(state);

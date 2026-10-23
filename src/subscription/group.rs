@@ -166,6 +166,7 @@ struct Member {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReadResult {
     pub sequence: u64,
+    pub assignment_version: u64,
     pub deliveries: Vec<DeliveryProof>,
     pub retired: bool,
 }
@@ -722,6 +723,7 @@ impl GroupCursor {
         }
         let result = ReadResult {
             sequence: request.sequence,
+            assignment_version: self.version,
             deliveries,
             retired: false,
         };
@@ -1119,6 +1121,8 @@ impl GroupCursor {
             }
             if let Some(read) = &member.read {
                 if read.sequence != member.read_sequence
+                    || read.assignment_version == 0
+                    || read.assignment_version > self.version
                     || read.retired && !read.deliveries.is_empty()
                 {
                     return Err(Rejection::InvalidSnapshot);

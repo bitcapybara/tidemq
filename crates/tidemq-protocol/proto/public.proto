@@ -107,6 +107,8 @@ message ConsumerControlResult {
   uint64 assignment_version = 9;
   uint64 remaining_lease_ms = 10;
   uint64 next_heartbeat_sequence = 11;
+  bool assignment_fenced = 12;
+  repeated uint64 lane_fences = 13;
 }
 message ConsumerLane { uint64 hash_start = 1; optional uint64 hash_end = 2; }
 message GroupRead {
@@ -178,7 +180,7 @@ message RetirePublishes {
   bool close = 7;
 }
 message PublishesRetired { uint64 before = 1; }
-message GroupDeliveries { uint64 sequence = 1; repeated GroupDelivery deliveries = 2; bool sealed_complete = 3; }
+message GroupDeliveries { uint64 sequence = 1; repeated GroupDelivery deliveries = 2; bool sealed_complete = 3; uint64 assignment_version = 4; }
 message GroupAck {
   bytes topic_id = 1;
   uint32 partition_id = 2;

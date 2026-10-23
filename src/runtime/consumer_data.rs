@@ -822,6 +822,7 @@ impl Service {
             &public::GroupDeliveries {
                 sealed_complete,
                 sequence: read.sequence,
+                assignment_version: read.assignment_version,
                 deliveries,
             },
             &self.config.protocol,

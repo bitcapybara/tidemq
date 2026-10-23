@@ -92,6 +92,7 @@ pub struct MembersBook {
     plan: MembersPlan,
     committed: BTreeMap<Id, crate::subscription::MemberGrant>,
     plan_grants: Vec<crate::subscription::MemberGrant>,
+    lane_fences: Vec<u64>,
 }
 
 impl MembersBook {
@@ -123,6 +124,11 @@ impl MembersBook {
             },
             committed: BTreeMap::new(),
             plan_grants: Vec::new(),
+            lane_fences: if model == SubscriptionKind::Stream {
+                vec![0; 64]
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -144,6 +150,9 @@ impl MembersBook {
     }
     pub fn plan(&self) -> &MembersPlan {
         &self.plan
+    }
+    pub fn lane_fences(&self) -> &[u64] {
+        &self.lane_fences
     }
     pub fn member(&self, id: Id, epoch: u64) -> Option<&MemberInfo> {
         self.members.get(&(id, epoch)).map(|record| &record.info)
@@ -465,36 +474,70 @@ impl MembersBook {
     }
 
     fn begin_plan(&mut self, version: u64, now: u64) -> Result<(), Rejection> {
-        self.plan_grants = self.desired_grants(now)?;
+        // A partial full phase can issue deliveries before its last metadata observation.
+        let issued: Vec<_> = if self.plan.fenced && now >= self.plan.grant_after_ms {
+            self.plan_grants.clone()
+        } else {
+            self.committed.values().cloned().collect()
+        };
+        let desired = self.desired_grants(now)?;
+        self.plan.grant_after_ms = self.record_revocations(&issued, &desired, version, now)?;
+        self.committed = issued
+            .into_iter()
+            .filter_map(|mut grant| {
+                let retained = desired
+                    .iter()
+                    .find(|new| new.member == grant.member && new.epoch == grant.epoch)?;
+                grant.lanes.retain(|lane| retained.lanes.contains(lane));
+                Some((grant.member, grant))
+            })
+            .collect();
+        self.plan_grants = desired;
+        self.plan.version = version;
+        self.plan.active = false;
+        self.plan.fenced = false;
+        self.plan.installed.clear();
+        Ok(())
+    }
+
+    fn record_revocations(
+        &mut self,
+        issued: &[crate::subscription::MemberGrant],
+        desired: &[crate::subscription::MemberGrant],
+        version: u64,
+        now: u64,
+    ) -> Result<u64, Rejection> {
+        let fence_version = version.checked_mul(2).ok_or(Rejection::CounterExhausted)?;
+        let mut fences = self.lane_fences.clone();
         let mut grant_after = if self.plan.active {
             now
         } else {
             self.plan.grant_after_ms.max(now)
         };
         if self.model == SubscriptionKind::Stream {
-            for old in self.committed.values() {
-                let retained = self
-                    .plan_grants
+            for old in issued {
+                let retained = desired
                     .iter()
                     .find(|grant| grant.member == old.member && grant.epoch == old.epoch);
-                if old
-                    .lanes
-                    .iter()
-                    .any(|lane| retained.is_none_or(|grant| !grant.lanes.contains(lane)))
-                    && let Some(member) = self.member(old.member, old.epoch)
-                    && member.status.assigned()
-                {
-                    // A disconnected SDK may still deliver its prefetch until this lease ends.
-                    grant_after = grant_after.max(member.expires_ms);
+                for lane in &old.lanes {
+                    if retained.is_some_and(|grant| grant.lanes.contains(lane)) {
+                        continue;
+                    }
+                    let index = usize::try_from(lane.start >> 58)
+                        .map_err(|_| Rejection::InvalidEvidence)?;
+                    let fence = fences.get_mut(index).ok_or(Rejection::InvalidEvidence)?;
+                    *fence = (*fence).max(fence_version);
+                    if let Some(member) = self.member(old.member, old.epoch)
+                        && member.status.assigned()
+                    {
+                        // A disconnected SDK can deliver prefetch until its previous lease ends.
+                        grant_after = grant_after.max(member.expires_ms);
+                    }
                 }
             }
         }
-        self.plan.grant_after_ms = grant_after;
-        self.plan.version = version;
-        self.plan.active = false;
-        self.plan.fenced = false;
-        self.plan.installed.clear();
-        Ok(())
+        self.lane_fences = fences;
+        Ok(grant_after)
     }
 
     pub fn grants(&self, now: u64) -> Result<Vec<crate::subscription::MemberGrant>, Rejection> {
@@ -610,6 +653,18 @@ impl MembersBook {
     pub fn validate(&self) -> Result<(), Rejection> {
         validate_domains(&self.plan.domains)?;
         if self.next_epoch == 0
+            || self.plan.version == 0
+            || self.lane_fences.len()
+                != if self.model == SubscriptionKind::Stream {
+                    64
+                } else {
+                    0
+                }
+            || self
+                .plan
+                .version
+                .checked_mul(2)
+                .is_none_or(|version| self.lane_fences.iter().any(|fence| *fence > version))
             || self.members.len() > 256
             || self.plan.layout_revision == 0
             || self.plan.active

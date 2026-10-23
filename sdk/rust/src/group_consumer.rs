@@ -1,4 +1,5 @@
 mod ack;
+mod assignment;
 mod driver;
 
 #[cfg(test)]
@@ -36,6 +37,7 @@ use crate::{
     Client, Error, InitialPosition, ReceivedMessage, Result,
     admin::bytes,
     close::{CloseError, CloseReport, CloseResult},
+    message::ReceivedData,
 };
 pub use ack::{AckProgress, AckReceipt, PendingAck};
 
@@ -100,6 +102,7 @@ impl Drop for Owner {
 struct State {
     queue: VecDeque<ReceivedMessage>,
     ledger: BTreeMap<u64, ReceivedMessage>,
+    revoked: Vec<(u64, Arc<ReceivedData>)>,
     next_delivery: u64,
     domains: BTreeMap<Id, driver::Domain>,
     read_after: Option<Id>,
@@ -252,6 +255,7 @@ impl Builder {
             state: Mutex::new(State {
                 queue: VecDeque::new(),
                 ledger: BTreeMap::new(),
+                revoked: Vec::new(),
                 next_delivery: 1,
                 domains: BTreeMap::new(),
                 read_after: None,
@@ -444,20 +448,6 @@ impl Core {
                     .is_ok_and(|memory| memory.is_some())
         })
     }
-    fn update_info(&self, info: public::ConsumerControlResult, started: Instant) -> Result<()> {
-        if info.remaining_lease_ms > 15_000 {
-            return Err(Error::ResponseMismatch {
-                reason: "consumer lease exceeds its supported bound".into(),
-            });
-        }
-        let expires = started
-            .checked_add(Duration::from_millis(info.remaining_lease_ms))
-            .ok_or(Error::Deadline)?;
-        *self.lease_until.lock().map_err(|_| Error::Closed)? = expires;
-        *self.info.lock().map_err(|_| Error::Closed)? = info;
-        self.changed.notify_waiters();
-        Ok(())
-    }
     fn state(&self) -> Result<std::sync::MutexGuard<'_, State>> {
         self.state.lock().map_err(|_| Error::Closed)
     }
@@ -492,7 +482,10 @@ impl Core {
         if *self.lease_until.lock().map_err(|_| Error::Closed)? <= Instant::now() {
             return Err(Error::SessionExpired);
         }
-        while let Some(mut message) = state.queue.pop_front() {
+        for _ in 0..state.queue.len() {
+            let Some(mut message) = state.queue.pop_front() else {
+                break;
+            };
             if message.data.epoch != self.epoch.load(Ordering::Acquire) {
                 continue;
             }
@@ -502,6 +495,7 @@ impl Core {
                     message.data.hash >= lane.hash_start
                         && lane.hash_end.is_none_or(|end| message.data.hash < end)
                 }) {
+                    state.queue.push_back(message);
                     continue;
                 }
             }

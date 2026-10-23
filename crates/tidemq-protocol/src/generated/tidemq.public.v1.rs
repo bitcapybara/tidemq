@@ -182,6 +182,10 @@ pub struct ConsumerControlResult {
     pub remaining_lease_ms: u64,
     #[prost(uint64, tag = "11")]
     pub next_heartbeat_sequence: u64,
+    #[prost(bool, tag = "12")]
+    pub assignment_fenced: bool,
+    #[prost(uint64, repeated, tag = "13")]
+    pub lane_fences: ::prost::alloc::vec::Vec<u64>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConsumerLane {
@@ -350,6 +354,8 @@ pub struct GroupDeliveries {
     pub deliveries: ::prost::alloc::vec::Vec<GroupDelivery>,
     #[prost(bool, tag = "3")]
     pub sealed_complete: bool,
+    #[prost(uint64, tag = "4")]
+    pub assignment_version: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GroupAck {

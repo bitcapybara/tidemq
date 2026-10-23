@@ -386,6 +386,7 @@ impl Service {
                     })
                 }
                 AuthQuery::Consumer(request) => {
+                    // Data keeps its exact installed version while a membership plan is pending.
                     let consumer_expires_ms = state
                         .consumer_subscription(request.subscription)
                         .filter(|row| {

@@ -47,6 +47,8 @@ pub(super) struct Work {
     nack: Option<u64>,
     dependencies: Mutex<Vec<PendingAck>>,
     batches: Mutex<Vec<Batch>>,
+    // Original receipt cells remain reachable without retaining message bodies.
+    deliveries: BTreeMap<u64, Weak<ReceivedData>>,
     result: Mutex<Option<Result<AckReceipt, Arc<Error>>>>,
     inflight: AtomicBool,
     complete: AtomicBool,
@@ -215,7 +217,7 @@ pub(super) async fn start(
             .map_err(|_| Error::Deadline)?
             .map_err(|_| Error::Closed)?;
             let bytes = if cumulative {
-                core.max_messages.saturating_mul(384).saturating_add(4096)
+                core.max_messages.saturating_mul(512).saturating_add(4096)
             } else {
                 4480
             };
@@ -337,6 +339,10 @@ fn admit(
         }
     }
     let work = Arc::new(Work {
+        deliveries: own
+            .iter()
+            .map(|(sequence, message)| (*sequence, Arc::downgrade(&message.data)))
+            .collect(),
         _memory: memory,
         _slot: slot,
         core: Arc::downgrade(core),
@@ -476,11 +482,12 @@ fn settle_batch(
     }
     let mut state = core.state()?;
     for sequence in &batch.entries {
-        if let Ok(receipt) = outcome
-            && let Some(message) = state.ledger.remove(sequence)
-        {
-            let _ = message.data.acknowledgement.set(*receipt);
-            message.data.release_credit()?;
+        if let Ok(receipt) = outcome {
+            state.ledger.remove(sequence);
+            if let Some(data) = work.deliveries.get(sequence).and_then(Weak::upgrade) {
+                let _ = data.acknowledgement.set(*receipt);
+                data.release_credit()?;
+            }
         }
         state.claims.remove(sequence);
     }

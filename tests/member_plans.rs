@@ -252,6 +252,79 @@ fn expired_or_retired_sessions_never_revive_from_a_late_join_or_heartbeat() {
 }
 
 #[test]
+fn an_abandoned_handoff_keeps_its_revocation_history_and_original_lease_bound() {
+    let domains = vec![id(), id()];
+    let mut book = MembersBook::new(
+        id(),
+        SubscriptionKind::Stream,
+        InitialPosition::Latest,
+        1,
+        domains.clone(),
+    )
+    .unwrap();
+    activate(&mut book, 0);
+    let (_, first) = join(&mut book, id(), id(), id(), 100);
+    activate(&mut book, 100);
+    let (_, second) = join(&mut book, id(), id(), id(), 200);
+    let abandoned = book.plan().version;
+    book.observe_installed(abandoned, false, domains[0], 201)
+        .unwrap();
+    assert!(!book.plan().fenced);
+    assert!(book.lane_fences().contains(&6));
+    book.leave(
+        id(),
+        second.member,
+        second.expected_epoch,
+        second.client,
+        second.credential,
+        202,
+    )
+    .unwrap();
+    let regained = book.plan().version;
+    assert_eq!(regained, 4);
+    assert!(book.grants(203).unwrap()[0].lanes.len() < 64);
+    book.heartbeat(
+        id(),
+        MemberHeartbeat {
+            member: first.member,
+            epoch: first.expected_epoch,
+            client: first.client,
+            credential: first.credential,
+            sequence: 1,
+            now_ms: 1000,
+            credential_expires_ms: 1_000_000,
+            digest: [8; 32],
+        },
+    )
+    .unwrap();
+    assert_eq!(book.plan().grant_after_ms, 15_100);
+    let mut book: MembersBook = postcard::from_bytes(&postcard::to_stdvec(&book).unwrap()).unwrap();
+    book.validate().unwrap();
+    for domain in &domains {
+        book.observe_installed(regained, false, *domain, 1001)
+            .unwrap();
+    }
+    assert!(book.plan().fenced);
+    assert!(book.grants(1001).unwrap()[0].lanes.len() < 64);
+    activate(&mut book, 15_100);
+    assert_eq!(book.grants(15_100).unwrap()[0].lanes.len(), 64);
+    assert!(book.lane_fences().contains(&6));
+    book.validate().unwrap();
+    let fresh = MembersBook::new(
+        id(),
+        SubscriptionKind::Stream,
+        InitialPosition::Latest,
+        1,
+        domains,
+    )
+    .unwrap();
+    let mut corrupted = serde_json::to_value(fresh).unwrap();
+    corrupted["lane_fences"][0] = serde_json::json!(99);
+    let corrupted: MembersBook = serde_json::from_value(corrupted).unwrap();
+    assert_eq!(corrupted.validate(), Err(Rejection::InvalidEvidence));
+}
+
+#[test]
 fn queue_worksets_cover_every_domain_without_an_all_to_all_scan() {
     let domains: Vec<_> = (0..12).map(|_| id()).collect();
     let mut book = MembersBook::new(
