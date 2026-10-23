@@ -1,6 +1,54 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_live_queue_member_keeps_unacknowledged_work_past_cached_data_lease_expiry() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = "acme/app/held-work";
+    client.admin().create_logical_topic(topic).await.unwrap();
+    let first = client
+        .new_queue_consumer(topic, "jobs")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(topic).build().await.unwrap();
+    producer
+        .send(tidemq_sdk::Message::new("still-processing"))
+        .await
+        .unwrap();
+    let held = tokio::time::timeout(Duration::from_secs(15), first.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = client
+        .new_queue_consumer(topic, "jobs")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(17), second.receive())
+            .await
+            .is_err(),
+        "An online member's unacknowledged work was reassigned without NACK or departure"
+    );
+    first.ack(&held).await.unwrap();
+    assert!(second.try_receive().unwrap().is_none());
+    producer.close().await.unwrap();
+    first.close().await.unwrap();
+    second.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stream_handoff_keeps_cumulative_ack_usable_for_retained_ranges() {
     let fixture = dynamic_fixture().await;
     let client = fixture
