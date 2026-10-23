@@ -160,6 +160,18 @@ impl FenceState {
         Ok(())
     }
 
+    pub(crate) fn retire_partition(&mut self, grant: &Grant) -> Result<(), FenceRejection> {
+        if self
+            .partitions
+            .get(&grant.partition)
+            .is_none_or(|record| record.fence.grant != *grant)
+        {
+            return Err(FenceRejection::EpochConflict);
+        }
+        self.partitions.remove(&grant.partition);
+        Ok(())
+    }
+
     pub fn recovered(&self, partition: PartitionKey) -> Option<RecoveredOwnership> {
         let record = self.partitions.get(&partition)?;
         Some(RecoveredOwnership {

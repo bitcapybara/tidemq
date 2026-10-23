@@ -373,6 +373,7 @@ impl DataApplication {
             .ok_or(TransferDataRejection::InvalidPlan)?;
         if plan.target.cluster_id != config.cluster_id
             || plan.target.group_id != config.group_id
+            || !self.authority.accepts_import(plan)
             || self.partitions.contains_key(&plan.partition)
             || self
                 .ownership

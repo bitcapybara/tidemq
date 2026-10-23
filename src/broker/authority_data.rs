@@ -1,5 +1,7 @@
 use super::*;
-use crate::metadata::{AuthorityTransfer, MAX_TRANSFER_BYTES, TransferStage};
+use crate::metadata::{
+    AuthorityTransfer, MAX_AUTHORITY_TRANSFERS, MAX_TRANSFER_BYTES, TransferManifest, TransferStage,
+};
 use crate::ownership::CommitPosition;
 use snafu::Snafu;
 use std::io::Write;
@@ -59,6 +61,13 @@ pub enum TransferDataRejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AuthorityDataCommand {
+    ReclaimSource {
+        plan: Box<AuthorityTransfer>,
+    },
+    RecordRetiredCut {
+        plan: Id,
+        cut: CommitPosition,
+    },
     Reserve {
         plan: Box<AuthorityTransfer>,
         capacity: TransferCapacity,
@@ -100,6 +109,10 @@ impl std::fmt::Debug for TransferPage {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TransferOutcome {
+    SourceReclaimed {
+        plan: Id,
+        partition: PartitionKey,
+    },
     Reserved {
         plan: Id,
     },
@@ -118,7 +131,7 @@ pub enum TransferOutcome {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct AuthorityDataState {
-    sources: BTreeMap<PartitionKey, FrozenSource>,
+    sources: BTreeMap<Id, FrozenSource>,
     targets: BTreeMap<Id, TargetImport>,
 }
 
@@ -143,9 +156,18 @@ struct FrozenSource {
     plan: AuthorityTransfer,
     capacity: TransferCapacity,
     cut: Option<CommitPosition>,
-    lifecycle: crate::lifecycle::AuthoritySlice,
+    lifecycle: Option<crate::lifecycle::AuthoritySlice>,
     metadata_bytes: u64,
     committed_end: u64,
+    phase: SourcePhase,
+    manifest: Option<TransferManifest>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+enum SourcePhase {
+    Frozen,
+    Reclaimed,
+    Retired(CommitPosition),
 }
 
 impl FrozenSource {
@@ -169,7 +191,27 @@ struct ExportView<'a> {
 
 impl AuthorityDataState {
     pub(super) fn is_frozen(&self, partition: PartitionKey) -> bool {
-        self.sources.contains_key(&partition)
+        self.sources
+            .values()
+            .any(|source| source.plan.partition == partition && source.phase == SourcePhase::Frozen)
+    }
+
+    pub(super) fn has_source(&self, partition: PartitionKey) -> bool {
+        self.sources
+            .values()
+            .any(|source| source.plan.partition == partition)
+    }
+
+    fn accepts_import(&self, plan: &AuthorityTransfer) -> bool {
+        self.sources
+            .values()
+            .filter(|source| source.plan.partition == plan.partition)
+            .all(|source| {
+                matches!(source.phase, SourcePhase::Retired(_))
+                    && source.plan.shard == plan.shard
+                    && source.plan.target.epoch < plan.target.epoch
+                    && source.plan.binding_generation < plan.binding_generation
+            })
     }
 
     pub(super) fn reservation(&self) -> Option<&TransferCapacity> {
@@ -189,12 +231,19 @@ impl AuthorityDataState {
 #[path = "authority_import.rs"]
 mod target;
 
+#[path = "authority_retire.rs"]
+mod retirement;
+
 impl DataApplication {
     pub(super) fn authority_transfer(
         &mut self,
         command: AuthorityDataCommand,
     ) -> Result<DataResponse, DataRejection> {
         let outcome = match command {
+            AuthorityDataCommand::ReclaimSource { plan } => self.reclaim_source(*plan),
+            AuthorityDataCommand::RecordRetiredCut { plan, cut } => {
+                self.record_retired_cut(plan, cut)
+            }
             AuthorityDataCommand::Reserve { plan, capacity } => {
                 self.reserve_target(*plan, capacity)
             }
@@ -216,19 +265,17 @@ impl DataApplication {
         capacity.validate()?;
         plan.validate()
             .map_err(|_| TransferDataRejection::InvalidPlan)?;
-        if let Some(original) = self.authority.sources.get(&plan.partition) {
+        if let Some(original) = self.authority.sources.get(&plan.id) {
             if !same_plan(&original.plan, &plan) || original.capacity != capacity {
                 return Err(TransferDataRejection::Conflict);
             }
             return Ok(original.outcome());
         }
-        if self
-            .authority
-            .sources
-            .values()
-            .any(|source| source.plan.id == plan.id)
-        {
+        if self.authority.is_frozen(plan.partition) {
             return Err(TransferDataRejection::Conflict);
+        }
+        if self.authority.sources.len() >= MAX_AUTHORITY_TRANSFERS {
+            return Err(TransferDataRejection::Capacity);
         }
         self.validate_freeze_source(&plan, capacity)?;
         let state = self
@@ -241,9 +288,11 @@ impl DataApplication {
             plan,
             capacity,
             cut: None,
-            lifecycle,
+            lifecycle: Some(lifecycle),
             metadata_bytes,
             committed_end,
+            phase: SourcePhase::Frozen,
+            manifest: None,
         };
         // Leave room for the final source log position's maximum encoded width.
         encoded_size(
@@ -255,11 +304,11 @@ impl DataApplication {
                     leader_node: 1,
                     index: 1,
                 },
-            ),
+            )?,
             capacity.max_bytes.saturating_sub(32),
         )?;
         let outcome = source.outcome();
-        self.authority.sources.insert(source.plan.partition, source);
+        self.authority.sources.insert(source.plan.id, source);
         Ok(outcome)
     }
 
@@ -351,8 +400,7 @@ impl DataApplication {
         let source = self
             .authority
             .sources
-            .values_mut()
-            .find(|source| source.plan.id == plan)
+            .get_mut(&plan)
             .ok_or(TransferDataRejection::NotReady)?;
         if let Some(original) = source.cut {
             return Ok(TransferOutcome::Cut(original));
@@ -373,15 +421,17 @@ impl DataApplication {
         let source = self
             .authority
             .sources
-            .values()
-            .find(|source| source.plan.id == plan)
+            .get(&plan)
             .ok_or(TransferDataRejection::NotReady)?;
+        if source.phase != SourcePhase::Frozen {
+            return Err(TransferDataRejection::NotReady);
+        }
         let state = self
             .partitions
             .get(&source.plan.partition)
             .ok_or(TransferDataRejection::InvalidPlan)?;
         let cut = source.cut.ok_or(TransferDataRejection::NotReady)?;
-        postcard::to_io(&view(source, state, cut), &mut writer)
+        postcard::to_io(&view(source, state, cut)?, &mut writer)
             .map(|_| ())
             .map_err(|_| TransferDataRejection::Encoding)
     }
@@ -389,12 +439,17 @@ impl DataApplication {
     pub(super) fn validate_transfers(&self) -> Result<(), DataRejection> {
         self.validate_targets().map_err(DataRejection::Transfer)?;
         let mut metadata_bytes = 0_u64;
-        let mut identities = std::collections::BTreeSet::new();
-        for (partition, source) in &self.authority.sources {
-            if !identities.insert(source.plan.id) {
+        let mut active = std::collections::BTreeSet::new();
+        if self.authority.sources.len() > MAX_AUTHORITY_TRANSFERS {
+            return Err(DataRejection::Transfer(TransferDataRejection::Capacity));
+        }
+        for (id, source) in &self.authority.sources {
+            if *id != source.plan.id
+                || source.phase == SourcePhase::Frozen && !active.insert(source.plan.partition)
+            {
                 return Err(DataRejection::Transfer(TransferDataRejection::Conflict));
             }
-            self.validate_frozen_source(*partition, source)?;
+            self.validate_source_record(source)?;
             metadata_bytes = metadata_bytes
                 .checked_add(source.metadata_bytes)
                 .ok_or(DataRejection::Transfer(TransferDataRejection::Capacity))?;
@@ -414,19 +469,15 @@ impl DataApplication {
             .partitions
             .get(&partition)
             .ok_or(DataRejection::Transfer(TransferDataRejection::InvalidPlan))?;
-        source
-            .plan
-            .validate()
-            .map_err(|_| DataRejection::Transfer(TransferDataRejection::InvalidPlan))?;
-        source
-            .capacity
-            .validate()
-            .map_err(DataRejection::Transfer)?;
+        let lifecycle = source
+            .lifecycle
+            .as_ref()
+            .ok_or(DataRejection::Transfer(TransferDataRejection::InvalidPlan))?;
         self.validate_freeze_source(&source.plan, source.capacity)
             .map_err(DataRejection::Transfer)?;
         if partition != source.plan.partition
             || state.producer.committed_end() != source.committed_end
-            || source.lifecycle.partition != partition
+            || lifecycle.partition != partition
             || source.cut.is_some_and(|cut| {
                 cut.index == 0
                     || cut.term == 0
@@ -435,12 +486,9 @@ impl DataApplication {
         {
             return Err(DataRejection::Transfer(TransferDataRejection::InvalidPlan));
         }
-        source
-            .lifecycle
-            .validate()
-            .map_err(DataRejection::Lifecycle)?;
-        let actual = encoded_size(&source.lifecycle, MAX_FROZEN_METADATA_BYTES)
-            .map_err(DataRejection::Transfer)?;
+        lifecycle.validate().map_err(DataRejection::Lifecycle)?;
+        let actual =
+            encoded_size(lifecycle, MAX_FROZEN_METADATA_BYTES).map_err(DataRejection::Transfer)?;
         if actual != source.metadata_bytes {
             return Err(DataRejection::Transfer(TransferDataRejection::InvalidPlan));
         }
@@ -453,7 +501,8 @@ impl DataApplication {
                     leader_node: 1,
                     index: 1,
                 }),
-            ),
+            )
+            .map_err(DataRejection::Transfer)?,
             source.capacity.max_bytes,
         )
         .map_err(DataRejection::Transfer)?;
@@ -477,14 +526,17 @@ fn view<'a>(
     source: &'a FrozenSource,
     state: &'a PartitionState,
     cut: CommitPosition,
-) -> ExportView<'a> {
-    ExportView {
+) -> Result<ExportView<'a>, TransferDataRejection> {
+    Ok(ExportView {
         format: 1,
         plan: &source.plan,
         cut,
         state,
-        lifecycle: &source.lifecycle,
-    }
+        lifecycle: source
+            .lifecycle
+            .as_ref()
+            .ok_or(TransferDataRejection::NotReady)?,
+    })
 }
 
 fn encoded_size(value: &impl Serialize, limit: u64) -> Result<u64, TransferDataRejection> {

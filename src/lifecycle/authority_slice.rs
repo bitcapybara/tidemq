@@ -17,6 +17,40 @@ pub(crate) struct AuthoritySlice {
 }
 
 impl DataState {
+    pub(crate) fn without_authority_scope(
+        &self,
+        partition: PartitionKey,
+        remaining: &std::collections::BTreeSet<PartitionKey>,
+    ) -> Result<Self, Rejection> {
+        if self.pending.iter().any(|id| {
+            self.intents.get(id).is_some_and(|intent| {
+                intent
+                    .plan
+                    .descriptor
+                    .partitions
+                    .iter()
+                    .any(|index| catalog::key(index) == partition)
+            })
+        }) {
+            return Err(Rejection::RecoveryDependency);
+        }
+        let mut next = self.clone();
+        next.manifests.remove(&partition);
+        next.reclaim_ends.remove(&partition);
+        next.checkpointed_floors.remove(&partition);
+        next.intents.retain(|_, intent| {
+            intent
+                .plan
+                .descriptor
+                .partitions
+                .iter()
+                .any(|index| remaining.contains(&catalog::key(index)))
+        });
+        next.pending.retain(|id| next.intents.contains_key(id));
+        next.validate()?;
+        Ok(next)
+    }
+
     pub(crate) fn import_authority_slice(&self, slice: AuthoritySlice) -> Result<Self, Rejection> {
         slice.validate()?;
         if self.manifests.contains_key(&slice.partition)

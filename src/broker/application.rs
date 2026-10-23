@@ -538,6 +538,8 @@ impl DataApplication {
     fn install_fence(&mut self, command: FenceCommand) -> Result<DataResponse, DataRejection> {
         if self.authority.is_frozen(command.grant.partition)
             || self.authority.is_reserved(command.grant.partition)
+            || !self.partitions.contains_key(&command.grant.partition)
+                && self.authority.has_source(command.grant.partition)
         {
             return Err(DataRejection::Transfer(TransferDataRejection::Frozen));
         }
@@ -976,7 +978,7 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 10;
+    const VERSION: u32 = 11;
     type Command = DataCommand;
     type Response = DataResponse;
 

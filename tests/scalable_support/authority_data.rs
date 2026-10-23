@@ -7,9 +7,13 @@ use crate::{
         WriterFence,
     },
     metadata::{
-        AuthorityTransfer, Command, PartitionKey, TransferManifest, TransferStage, TransferStep,
+        AuthorityTransfer, Command, ImportEvidence, PartitionKey, TransferCheckpoint,
+        TransferManifest, TransferStage, TransferStep,
     },
-    ownership::{CommitPosition, FenceCommand, Grant},
+    ownership::{
+        CommitPosition, FenceCommand, FenceRecord, Grant, RecoveredOwnership, RecoveryCheckpoint,
+        RecoveryEvidence,
+    },
     producer::{MessageData, ProducerLimits, PublishRequest, PublisherPermit},
     replication::Application,
 };
@@ -175,6 +179,337 @@ fn capacity() -> TransferCapacity {
         max_members: 16,
         max_in_flight_bytes: 1024,
     }
+}
+
+fn checkpointed_report(
+    mut plan: AuthorityTransfer,
+    bytes: &[u8],
+    cut: CommitPosition,
+) -> AuthorityTransfer {
+    let manifest = TransferManifest {
+        bytes: bytes.len() as u64,
+        digest: *blake3::hash(bytes).as_bytes(),
+        source_cut: cut,
+        committed_end: 1,
+    };
+    plan.advance(TransferStep::Frozen(cut)).unwrap();
+    plan.advance(TransferStep::Exported(manifest.clone()))
+        .unwrap();
+    let committed = CommitPosition {
+        term: 1,
+        leader_node: 2,
+        index: 1,
+    };
+    plan.advance(TransferStep::Imported(ImportEvidence {
+        manifest: manifest.clone(),
+        recovery: RecoveryEvidence {
+            recovered: RecoveredOwnership {
+                fence: FenceRecord {
+                    grant: plan.target.clone(),
+                    fence_generation: 1,
+                },
+                checkpoint: RecoveryCheckpoint {
+                    fence_generation: 1,
+                    producer_state_revision: 1,
+                    ack_state_revision: 1,
+                    committed_end: 1,
+                    state_digest: [9; 32],
+                },
+            },
+            committed,
+        },
+    }))
+    .unwrap();
+    plan.advance(TransferStep::Published).unwrap();
+    plan.advance(TransferStep::Checkpointed(vec![TransferCheckpoint {
+        voter: 2,
+        position: CommitPosition {
+            index: 2,
+            ..committed
+        },
+        manifest_digest: manifest.digest,
+    }]))
+    .unwrap();
+    plan
+}
+
+#[test]
+fn source_reclamation_keeps_a_permanent_fence_after_its_payload_is_removed() {
+    let original = plan();
+    let mut source = application(&original);
+    publish(&mut source, original.partition, original.shard, 1);
+    let freeze = DataCommand::AuthorityTransfer(AuthorityDataCommand::Freeze {
+        plan: Box::new(original.clone()),
+        capacity: capacity(),
+    });
+    let frozen = source.apply(freeze.clone());
+    let cut = CommitPosition {
+        term: 1,
+        leader_node: 1,
+        index: 100,
+    };
+    source.apply(DataCommand::AuthorityTransfer(
+        AuthorityDataCommand::RecordCut {
+            plan: original.id,
+            cut,
+        },
+    ));
+    let mut bytes = Vec::new();
+    source
+        .write_transfer_payload(original.id, &mut bytes)
+        .unwrap();
+    let report = checkpointed_report(original.clone(), &bytes, cut);
+    assert_eq!(
+        source.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ReclaimSource {
+                plan: Box::new(original.clone())
+            }
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::NotReady))
+    );
+    assert_eq!(
+        source.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::RecordRetiredCut {
+                plan: original.id,
+                cut
+            }
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::NotReady))
+    );
+    let mut corrupt = report.clone();
+    corrupt.manifest.as_mut().unwrap().digest[0] ^= 1;
+    let digest = corrupt.manifest.as_ref().unwrap().digest;
+    corrupt.imported.as_mut().unwrap().manifest.digest = digest;
+    for checkpoint in corrupt.checkpoints.values_mut() {
+        checkpoint.manifest_digest = digest;
+    }
+    corrupt.validate().unwrap();
+    assert_eq!(
+        source.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ReclaimSource {
+                plan: Box::new(corrupt)
+            }
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Conflict))
+    );
+    let reclaim = DataCommand::AuthorityTransfer(AuthorityDataCommand::ReclaimSource {
+        plan: Box::new(report),
+    });
+    let reclaimed = DataResponse::AuthorityTransfer(TransferOutcome::SourceReclaimed {
+        plan: original.id,
+        partition: original.partition,
+    });
+    assert_eq!(source.apply(reclaim.clone()), reclaimed);
+    assert!(source.producer(original.partition).is_none());
+    assert_eq!((source.hot_bytes(), source.hot_messages()), (0, 0));
+    source = postcard::from_bytes(&postcard::to_stdvec(&source).unwrap()).unwrap();
+    source.validate().unwrap();
+    let retired = CommitPosition { index: 101, ..cut };
+    assert_eq!(
+        source.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::RecordRetiredCut {
+                plan: original.id,
+                cut: retired
+            }
+        )),
+        DataResponse::AuthorityTransfer(TransferOutcome::Cut(retired))
+    );
+    assert_eq!(source.apply(reclaim), reclaimed);
+    assert_eq!(source.apply(freeze), frozen);
+    assert_eq!(
+        source.apply(DataCommand::InstallFence(FenceCommand {
+            grant: original.source.clone()
+        })),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Frozen))
+    );
+    let mut later = original.source;
+    later.epoch = 3;
+    later.expected_route_generation = 2;
+    later.metadata_revision = 3;
+    later.operation_id = Command::grant_ownership(1, later.cluster_id, later.partition, 1, 2, 2)
+        .unwrap()
+        .operation_id();
+    assert_eq!(
+        source.apply(DataCommand::InstallFence(FenceCommand { grant: later })),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Frozen))
+    );
+    assert_eq!(
+        source.write_transfer_payload(original.id, &mut Vec::new()),
+        Err(TransferDataRejection::NotReady)
+    );
+    source.validate().unwrap();
+}
+
+#[test]
+fn a_retired_source_accepts_a_later_import_without_replaying_old_retirement() {
+    let forward = plan();
+    let mut backward = forward.clone();
+    backward.id = Id::new_v7().unwrap();
+    backward.layout_revision = 2;
+    backward.binding_generation = 2;
+    backward.source = forward.target.clone();
+    backward.target = Grant {
+        cluster_id: forward.source.cluster_id,
+        partition: forward.partition,
+        group_id: forward.source.group_id,
+        epoch: 3,
+        owner_node: 1,
+        expected_route_generation: 2,
+        metadata_revision: 3,
+        operation_id: crate::metadata::grant_operation_id(
+            forward.source.cluster_id,
+            forward.partition,
+            3,
+            1,
+            2,
+        )
+        .unwrap(),
+    };
+    backward.source_voters = forward.target_voters.clone();
+    backward.target_voters = forward.source_voters.clone();
+    backward.checkpoint_voters = backward.target_voters.clone();
+    backward.validate().unwrap();
+    let mut groups = [
+        application(&forward),
+        initialized(forward.source.cluster_id, forward.target.group_id, None),
+    ];
+    let other = PartitionKey {
+        topic_id: Id::new_v7().unwrap(),
+        partition: 0,
+    };
+    let other_shard = Id::new_v7().unwrap();
+    let mut other_grant = forward.source.clone();
+    other_grant.partition = other;
+    other_grant.operation_id =
+        crate::metadata::grant_operation_id(other_grant.cluster_id, other, 1, 1, 0).unwrap();
+    install(&mut groups[0], other_grant);
+    publish(&mut groups[0], other, other_shard, 1);
+    publish(&mut groups[0], forward.partition, forward.shard, 1);
+    let mut original_reclaim = None;
+    for (round, plan) in [forward.clone(), backward.clone()].into_iter().enumerate() {
+        let from = round;
+        let to = 1 - round;
+        assert!(matches!(
+            groups[to].apply(DataCommand::AuthorityTransfer(
+                AuthorityDataCommand::Reserve {
+                    plan: Box::new(plan.clone()),
+                    capacity: capacity(),
+                }
+            )),
+            DataResponse::AuthorityTransfer(TransferOutcome::Reserved { .. })
+        ));
+        assert!(matches!(
+            groups[from].apply(DataCommand::AuthorityTransfer(
+                AuthorityDataCommand::Freeze {
+                    plan: Box::new(plan.clone()),
+                    capacity: capacity(),
+                }
+            )),
+            DataResponse::AuthorityTransfer(TransferOutcome::Frozen { .. })
+        ));
+        let cut = CommitPosition {
+            term: 1,
+            leader_node: *plan.source_voters.iter().next().unwrap(),
+            index: if round == 0 { 100 } else { 500 },
+        };
+        groups[from].apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::RecordCut { plan: plan.id, cut },
+        ));
+        let mut bytes = Vec::new();
+        groups[from]
+            .write_transfer_payload(plan.id, &mut bytes)
+            .unwrap();
+        let mut exported = plan.clone();
+        exported.advance(TransferStep::Frozen(cut)).unwrap();
+        exported
+            .advance(TransferStep::Exported(TransferManifest {
+                bytes: bytes.len() as u64,
+                digest: *blake3::hash(&bytes).as_bytes(),
+                source_cut: cut,
+                committed_end: 1,
+            }))
+            .unwrap();
+        groups[to].apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::BeginImport {
+                plan: Box::new(exported),
+            },
+        ));
+        for (index, chunk) in bytes
+            .chunks(crate::metadata::TRANSFER_PAGE_BYTES)
+            .enumerate()
+        {
+            assert!(matches!(
+                groups[to].apply(DataCommand::AuthorityTransfer(
+                    AuthorityDataCommand::ImportPage(TransferPage {
+                        plan: plan.id,
+                        offset: (index * crate::metadata::TRANSFER_PAGE_BYTES) as u64,
+                        bytes: Bytes::copy_from_slice(chunk),
+                        digest: *blake3::hash(chunk).as_bytes(),
+                    })
+                )),
+                DataResponse::AuthorityTransfer(TransferOutcome::ImportProgress { .. })
+            ));
+        }
+        let imported = groups[to].apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::FinishImport { plan: plan.id },
+        ));
+        assert!(
+            matches!(
+                imported,
+                DataResponse::AuthorityTransfer(TransferOutcome::Imported(_))
+            ),
+            "Import failed: {imported:?}"
+        );
+        if round == 0 {
+            let command = DataCommand::AuthorityTransfer(AuthorityDataCommand::ReclaimSource {
+                plan: Box::new(checkpointed_report(plan.clone(), &bytes, cut)),
+            });
+            assert!(matches!(
+                groups[from].apply(command.clone()),
+                DataResponse::AuthorityTransfer(TransferOutcome::SourceReclaimed { .. })
+            ));
+            groups[from].apply(DataCommand::AuthorityTransfer(
+                AuthorityDataCommand::RecordRetiredCut {
+                    plan: plan.id,
+                    cut: CommitPosition { index: 101, ..cut },
+                },
+            ));
+            original_reclaim = Some(command);
+            assert!(groups[from].producer(forward.partition).is_none());
+            assert!(matches!(
+                publish(&mut groups[from], other, other_shard, 2),
+                DataResponse::Published(_)
+            ));
+        }
+        for group in &mut groups {
+            *group = postcard::from_bytes(&postcard::to_stdvec(group).unwrap()).unwrap();
+            group.validate().unwrap();
+        }
+    }
+    let mut next = publish_command(forward.partition, forward.shard, 2);
+    if let DataCommand::Publish { writer, .. } = &mut next {
+        writer.owner_epoch = 3;
+    }
+    assert!(matches!(groups[0].apply(next), DataResponse::Published(_)));
+    assert!(matches!(
+        groups[0].apply(original_reclaim.unwrap()),
+        DataResponse::AuthorityTransfer(TransferOutcome::SourceReclaimed { .. })
+    ));
+    groups[0].apply(DataCommand::AuthorityTransfer(
+        AuthorityDataCommand::Freeze {
+            plan: Box::new(forward.clone()),
+            capacity: capacity(),
+        },
+    ));
+    assert_eq!(
+        groups[0]
+            .producer(forward.partition)
+            .unwrap()
+            .committed_end(),
+        2
+    );
+    assert_eq!(groups[0].producer(other).unwrap().committed_end(), 2);
+    groups[0].validate().unwrap();
 }
 
 #[test]
