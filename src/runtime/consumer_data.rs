@@ -672,6 +672,9 @@ impl Service {
         route: Route,
         deadline: Instant,
     ) -> Result<Frame> {
+        // Cached routes may still name a reclaimed source; retry routing before looking up members.
+        self.data_lease(route.group_id, route.partition, deadline)
+            .await?;
         let kind = super::service::frame_kind(frame)?;
         match kind {
             FrameKind::GroupRead => self.group_read_public(access, frame, route, deadline).await,

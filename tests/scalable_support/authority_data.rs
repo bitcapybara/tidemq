@@ -584,6 +584,14 @@ fn a_frozen_shard_keeps_a_stable_export_while_other_shards_continue_writing() {
     source
         .write_transfer_payload(plan.id, &mut expected)
         .unwrap();
+    let owned = source.transfer_export(plan.id).unwrap();
+    let mut owned_bytes = Vec::new();
+    owned.write_to(&mut owned_bytes).unwrap();
+    assert_eq!(owned_bytes, expected);
+    assert_eq!(
+        source.transfer_export_size(plan.id).unwrap(),
+        expected.len() as u64
+    );
     assert!(matches!(
         publish(&mut source, other, other_shard, 2),
         DataResponse::Published(_)
@@ -596,6 +604,9 @@ fn a_frozen_shard_keeps_a_stable_export_while_other_shards_continue_writing() {
         .write_transfer_payload(plan.id, &mut recovered)
         .unwrap();
     assert_eq!(recovered, expected);
+    let mut detached_bytes = Vec::new();
+    owned.write_to(&mut detached_bytes).unwrap();
+    assert_eq!(detached_bytes, expected);
     assert_eq!(
         publish(&mut source, plan.partition, plan.shard, 2),
         DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Frozen))

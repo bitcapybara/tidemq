@@ -15,6 +15,7 @@ mod tests;
 mod shard_sealing_tests;
 
 pub use admission::BrokerLimits;
+pub(crate) use application::AuthorityExport;
 pub use application::{
     ArchiveCandidate, ArchivePage, AuthorityDataCommand, CapacityUsage, DataApplication,
     DataCommand, DataGroupConfig, DataRejection, DataResponse, ProducerCommand, TransferCapacity,

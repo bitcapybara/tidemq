@@ -80,11 +80,16 @@ impl RepairBudget {
         if target == 0 || group == 0 {
             return Err(Error::Configuration);
         }
-        let permit = tokio::time::timeout_at(deadline, self.0.repairs.clone().acquire_owned())
+        let permit = self.acquire(deadline).await?;
+        self.register_permit(target, group, permit)
+    }
+
+    /// Admission for application-level transfer work without changing Raft peer routing.
+    pub(crate) async fn acquire(&self, deadline: Instant) -> Result<OwnedSemaphorePermit> {
+        tokio::time::timeout_at(deadline, self.0.repairs.clone().acquire_owned())
             .await
             .map_err(|_| Error::Deadline)?
-            .map_err(|_| Error::Overloaded)?;
-        self.register_permit(target, group, permit)
+            .map_err(|_| Error::Overloaded)
     }
 
     pub fn try_register(&self, target: u64, group: u64) -> Result<RepairLease> {

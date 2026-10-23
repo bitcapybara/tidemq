@@ -21,6 +21,7 @@ mod authority_data;
 mod groups;
 #[path = "publish.rs"]
 mod publish;
+pub(crate) use authority_data::AuthorityExport;
 pub use authority_data::{
     AuthorityDataCommand, TransferCapacity, TransferDataRejection, TransferOutcome, TransferPage,
 };

@@ -17,6 +17,7 @@ mod authority_tests;
 pub(crate) use authority_slice::AuthoritySlice;
 pub use backend::MetadataReplica;
 pub use catalog::Catalog;
+pub(crate) use coordinator::stable_voters;
 pub use coordinator::{CompactionStep, Coordinator, DataReplica, GuardedPage, PreparedObject};
 pub use data::DataState;
 pub use telemetry::LifecycleMetrics;

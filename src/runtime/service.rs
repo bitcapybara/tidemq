@@ -58,6 +58,8 @@ pub(crate) struct Service {
     pub scaling_diagnostic: std::sync::Mutex<serde_json::Value>,
     pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
     pub scaling: super::scaling::RuntimeScaling,
+    pub(super) transfer_exports: super::authority_transfer::ExportCache,
+    pub(super) repair: crate::scaling::RepairBudget,
     pub quota: std::sync::Mutex<crate::quota::Quota>,
     pub quota_observed: Notify,
     pub disk_capacity: std::sync::Mutex<Option<(crate::quota::disk::Snapshot, Instant)>>,
@@ -71,6 +73,7 @@ pub(crate) struct Service {
     pub groups: RwLock<BTreeMap<u64, (DataGroup, Instant)>>,
     pub leases: std::sync::Mutex<BTreeMap<PartitionKey, LeaseSlot>>,
     pub metadata_mutation: Mutex<()>,
+    pub(super) transfer_serial: Mutex<()>,
     pub subscriptions: std::sync::Mutex<BTreeMap<Id, (Id, Instant)>>,
     cancellations: Arc<std::sync::Mutex<BTreeMap<CancelKey, watch::Sender<bool>>>>,
 }
@@ -106,7 +109,7 @@ impl Service {
             metadata.as_ref(),
             &data,
             rpc.clone(),
-            repair,
+            repair.clone(),
             metrics.registry_mut(),
         )?;
         let mut brokers = BTreeMap::new();
@@ -158,6 +161,8 @@ impl Service {
             scaling_diagnostic: std::sync::Mutex::new(serde_json::json!({"status":"starting"})),
             transport_metrics,
             scaling,
+            transfer_exports: super::authority_transfer::ExportCache::default(),
+            repair,
             quota: std::sync::Mutex::new(quota),
             quota_observed: Notify::new(),
             disk_capacity: std::sync::Mutex::new(None),
@@ -171,6 +176,7 @@ impl Service {
             groups: RwLock::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             metadata_mutation: Mutex::new(()),
+            transfer_serial: Mutex::new(()),
             subscriptions: std::sync::Mutex::new(BTreeMap::new()),
             cancellations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
         })
@@ -635,6 +641,18 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::authority_transfer::AUTHORITY_TRANSFER => {
+                drop(order);
+                self.authority_transfer_command(
+                    peer,
+                    group,
+                    wire::id(&frame.operation_id)?,
+                    frame.traffic_class,
+                    &request.body,
+                    deadline,
+                )
+                .await?
+            }
             super::consumer_data::GROUP_CONTROL => {
                 drop(order);
                 if !matches!(peer.role.as_str(), "metadata" | "combined")

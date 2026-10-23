@@ -140,10 +140,22 @@ impl Fixture {
             if ready {
                 return;
             }
-            assert!(
-                Instant::now() < deadline,
-                "Not all runtime roles obtained fresh readiness before the deadline"
-            );
+            if Instant::now() >= deadline {
+                let mut diagnostics = BTreeMap::new();
+                for (id, node) in &self.running {
+                    diagnostics.insert(*id, http(node.management_address, "/diagnostics").await);
+                }
+                tokio::fs::write(
+                    self.directory.join("readiness-failure.json"),
+                    serde_json::to_vec_pretty(&diagnostics).unwrap(),
+                )
+                .await
+                .unwrap();
+                panic!(
+                    "Runtime readiness deadline elapsed; inspect {}",
+                    self.directory.join("readiness-failure.json").display()
+                );
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }

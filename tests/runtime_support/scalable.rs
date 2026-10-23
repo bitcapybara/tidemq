@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "scalable_handoff.rs"]
 mod handoff;
+#[path = "scalable_transfer.rs"]
+mod transfer;
 
 async fn dynamic_fixture() -> Fixture {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;

@@ -189,6 +189,33 @@ struct ExportView<'a> {
     lifecycle: &'a crate::lifecycle::AuthoritySlice,
 }
 
+// Clone one frozen scope so disk I/O never holds the group's application lock.
+#[derive(Serialize)]
+pub(crate) struct AuthorityExport {
+    format: u32,
+    plan: AuthorityTransfer,
+    cut: CommitPosition,
+    state: PartitionState,
+    lifecycle: crate::lifecycle::AuthoritySlice,
+}
+
+impl AuthorityExport {
+    pub(crate) fn write_to(&self, writer: impl Write) -> Result<(), TransferDataRejection> {
+        postcard::to_io(self, writer)
+            .map(|_| ())
+            .map_err(|_| TransferDataRejection::Encoding)
+    }
+
+    pub(crate) fn manifest(&self, bytes: u64, digest: [u8; 32]) -> TransferManifest {
+        TransferManifest {
+            bytes,
+            digest,
+            source_cut: self.cut,
+            committed_end: self.state.producer.committed_end(),
+        }
+    }
+}
+
 impl AuthorityDataState {
     pub(super) fn is_frozen(&self, partition: PartitionKey) -> bool {
         self.sources
@@ -434,6 +461,68 @@ impl DataApplication {
         postcard::to_io(&view(source, state, cut)?, &mut writer)
             .map(|_| ())
             .map_err(|_| TransferDataRejection::Encoding)
+    }
+
+    pub(crate) fn transfer_export_size(&self, plan: Id) -> Result<u64, TransferDataRejection> {
+        let (source, state, cut) = self.export_source(plan)?;
+        encoded_size(&view(source, state, cut)?, source.capacity.max_bytes)
+    }
+
+    pub(crate) fn transfer_export(
+        &self,
+        plan: Id,
+    ) -> Result<AuthorityExport, TransferDataRejection> {
+        let (source, state, cut) = self.export_source(plan)?;
+        Ok(AuthorityExport {
+            format: 1,
+            plan: source.plan.clone(),
+            cut,
+            state: state.clone(),
+            lifecycle: source
+                .lifecycle
+                .clone()
+                .ok_or(TransferDataRejection::NotReady)?,
+        })
+    }
+
+    fn export_source(
+        &self,
+        plan: Id,
+    ) -> Result<(&FrozenSource, &PartitionState, CommitPosition), TransferDataRejection> {
+        let source = self
+            .authority
+            .sources
+            .get(&plan)
+            .ok_or(TransferDataRejection::NotReady)?;
+        if source.phase != SourcePhase::Frozen {
+            return Err(TransferDataRejection::NotReady);
+        }
+        let state = self
+            .partitions
+            .get(&source.plan.partition)
+            .ok_or(TransferDataRejection::InvalidPlan)?;
+        Ok((
+            source,
+            state,
+            source.cut.ok_or(TransferDataRejection::NotReady)?,
+        ))
+    }
+
+    pub(crate) fn transfer_source_capacity(&self, plan: Id) -> Option<TransferCapacity> {
+        self.authority
+            .sources
+            .get(&plan)
+            .map(|source| source.capacity)
+    }
+
+    pub(crate) fn transfer_import_progress(
+        &self,
+        plan: Id,
+    ) -> Option<(u64, Option<RecoveredOwnership>)> {
+        self.authority
+            .targets
+            .get(&plan)
+            .map(|target| (target.received, target.recovered.clone()))
     }
 
     pub(super) fn validate_transfers(&self) -> Result<(), DataRejection> {

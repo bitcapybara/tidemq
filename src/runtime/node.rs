@@ -303,6 +303,9 @@ impl RunningNode {
             super::management::start(service.clone(), stopped.clone()).await?;
         tasks.push(task);
         tasks.push(tokio::spawn(service.clone().rebalance(stopped.clone())));
+        tasks.push(tokio::spawn(
+            service.clone().resume_authority_transfers(stopped.clone()),
+        ));
         let maintenance = service.clone();
         tasks.push(tokio::spawn(maintenance.maintain(stopped.clone())));
         tasks.push(tokio::spawn(service.clone().expire_pins(stopped.clone())));
@@ -424,6 +427,30 @@ impl RunningNode {
             .await
             .map_err(|source| Error::operation("execute replica replacement", source))?;
         Ok(plan)
+    }
+
+    /// Trusted metadata-node control entry point; retries retain the original operation identity.
+    pub async fn transfer_shard(
+        &self,
+        operation: Id,
+        shard: Id,
+        target_group: u64,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::metadata::AuthorityTransfer> {
+        self.service
+            .start_authority_transfer(operation, shard, target_group, deadline)
+            .await
+    }
+
+    /// Quorum-read progress for the original trusted authority transfer operation.
+    pub async fn authority_transfer_status(
+        &self,
+        operation: Id,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<crate::metadata::AuthorityTransfer>> {
+        self.service
+            .authority_transfer_status(operation, deadline)
+            .await
     }
 
     /// Archive committed ranges through the authenticated lifecycle service and durable manifest.

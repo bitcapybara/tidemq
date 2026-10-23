@@ -1,6 +1,7 @@
 //! Process-owned listeners and authenticated semantic routing to durable authorities.
 
 mod auth;
+mod authority_transfer;
 mod config;
 mod consumer_control;
 mod consumer_data;
