@@ -15,6 +15,7 @@ mod metadata;
 mod node;
 mod objects;
 pub(crate) mod physical;
+mod publishing;
 pub(crate) mod scaling;
 mod service;
 mod telemetry;

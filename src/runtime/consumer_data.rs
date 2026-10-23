@@ -828,18 +828,19 @@ impl Service {
                             .into_iter()
                             .next()
                             .ok_or_else(Error::unavailable)?;
+                        let metadata =
+                            message
+                                .metadata(route.partition.topic_id)
+                                .map_err(|source| {
+                                    Error::operation("read stored message context", source)
+                                })?;
                         Ok(public::GroupDelivery {
+                            key_present: metadata.key_present,
+                            properties: metadata.properties,
                             current_attempt: state
                                 .consumer_group_cursor(route.partition, subscription)
                                 .is_some_and(|cursor| cursor.delivery_is_current(&proof, now)),
-                            key_hash: tidemq_protocol::topic::routing_hash(
-                                Some(&message.key),
-                                member,
-                                0,
-                            )
-                            .map_err(|source| {
-                                Error::operation("compute stored routing hash", source)
-                            })?,
+                            key_hash: metadata.routing_hash,
                             proof: Some(public::GroupProof {
                                 offset: proof.offset,
                                 attempt: proof.attempt,

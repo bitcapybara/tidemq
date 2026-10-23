@@ -33,6 +33,14 @@ impl MetadataState {
         self.lifecycle.validate().map_err(Rejection::Lifecycle)?;
         self.topology.validate(self.limits.partitions_per_topic)?;
         self.auth.validate().map_err(Rejection::Authorization)?;
+        self.publishers.validate()?;
+        if self
+            .publishers
+            .records()
+            .any(|record| !self.topics.contains_key(&record.permit.topic))
+        {
+            return Err(Rejection::InvalidEvidence);
+        }
         self.validate_nodes_groups()?;
         self.validate_migrations()?;
         self.validate_topics()?;

@@ -16,6 +16,7 @@ fn budget() -> MemoryBudget {
 
 fn record(offset: u64) -> Record {
     Record {
+        context: Bytes::new(),
         offset,
         key: Bytes::from_static(b"private-key"),
         body: Bytes::from_static(b"private-body"),

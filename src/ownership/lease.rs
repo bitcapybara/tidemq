@@ -51,6 +51,7 @@ pub enum Work {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalizationKind {
+    Produce,
     Ack,
     Read,
 }

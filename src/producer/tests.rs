@@ -29,6 +29,7 @@ fn batch(
     let messages: Vec<_> = bodies
         .iter()
         .map(|body| MessageData {
+            context: Bytes::new(),
             key: Bytes::from_static(b"sensitive-business-key"),
             body: Bytes::copy_from_slice(body.as_bytes()),
         })

@@ -33,6 +33,7 @@ pub fn pack_in_cluster(
 ) -> Pack {
     let records: Vec<_> = (0..count)
         .map(|offset| Record {
+            context: Bytes::new(),
             offset: offset as u64 + 3,
             key: Bytes::from_static(b"private-key"),
             body: Bytes::from(vec![b'x'; record_bytes]),

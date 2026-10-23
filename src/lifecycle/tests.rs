@@ -29,6 +29,7 @@ fn plan_range(object_id: Id, replaces: Vec<Id>, generation: u64, offset: u64) ->
         partition: 0,
     };
     let record = Record {
+        context: Bytes::new(),
         offset,
         key: Bytes::from_static(b"k"),
         body: Bytes::from_static(b"body"),
@@ -273,6 +274,7 @@ fn local_reclaim_preserves_logical_floor_original_results_and_append_admission_a
         )
         .unwrap();
     let messages = vec![MessageData {
+        context: Bytes::new(),
         key: Bytes::from_static(b"key"),
         body: Bytes::from_static(b"body"),
     }];
@@ -432,6 +434,7 @@ fn archive_reader_can_finish_publishing_logically_expired_hot_data() {
         )
         .unwrap();
     let messages = vec![MessageData {
+        context: Bytes::new(),
         key: Bytes::from_static(b"k"),
         body: Bytes::from_static(b"body"),
     }];
@@ -475,6 +478,7 @@ fn shared_plan(id: Id, ranges: &[(u32, u64, u64)], replaces: Vec<Id>) -> Plan {
         .map(|(_, start, end)| {
             (*start..*end)
                 .map(|offset| Record {
+                    context: Bytes::new(),
                     offset,
                     key: Bytes::from_static(b"k"),
                     body: Bytes::from_static(b"body"),

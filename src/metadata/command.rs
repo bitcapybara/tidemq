@@ -84,9 +84,17 @@ pub(crate) enum Action {
     },
     Identity(super::AuthCommand),
     Consumer(super::ConsumerCommand),
+    Publisher(super::PublisherCommand),
 }
 
 impl Command {
+    pub fn publisher(
+        operation: Id,
+        expected_revision: u64,
+        command: super::PublisherCommand,
+    ) -> Self {
+        Self::new(operation, expected_revision, Action::Publisher(command))
+    }
     pub fn consumer(
         operation: Id,
         expected_revision: u64,
@@ -417,6 +425,7 @@ pub enum Outcome {
     LayoutActivated(tidemq_protocol::topic::TopicLayout),
     Identity(super::AuthResult),
     Consumer(super::ConsumerOutcome),
+    Publisher(crate::producer::PublisherPermit),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -563,10 +563,15 @@ fn accept_read(
                 reason: "read result omitted a valid confirmation proof".into(),
             });
         }
+        let charge = tidemq_protocol::topic::delivery_bytes(
+            &delivery.key,
+            &delivery.body,
+            &delivery.properties,
+        )?;
         total = total
-            .checked_add(delivery.key.len())
-            .and_then(|bytes| bytes.checked_add(delivery.body.len()))
-            .and_then(|bytes| bytes.checked_add(256))
+            .checked_add(usize::try_from(charge).map_err(|_| Error::Admission {
+                resource: "delivery bytes",
+            })?)
             .ok_or(Error::Admission {
                 resource: "delivery bytes",
             })?;
@@ -600,11 +605,16 @@ fn accept_read(
         if !delivery.current_attempt {
             continue;
         }
-        let length = delivery
-            .key
-            .len()
-            .saturating_add(delivery.body.len())
-            .saturating_add(512);
+        let length = usize::try_from(tidemq_protocol::topic::delivery_bytes(
+            &delivery.key,
+            &delivery.body,
+            &delivery.properties,
+        )?)
+        .ok()
+        .and_then(|bytes| bytes.checked_add(256))
+        .ok_or(Error::Admission {
+            resource: "delivery bytes",
+        })?;
         let mut proof = delivery.proof.ok_or(Error::Closed)?;
         proof.mac = Bytes::copy_from_slice(&proof.mac);
         let data = ReceivedData {
@@ -616,6 +626,12 @@ fn accept_read(
             hash: delivery.key_hash,
             acknowledgement: std::sync::OnceLock::new(),
             key: Bytes::copy_from_slice(&delivery.key),
+            key_present: delivery.key_present,
+            properties: delivery
+                .properties
+                .into_iter()
+                .map(|(name, value)| (name, Bytes::copy_from_slice(&value)))
+                .collect(),
             payload: Bytes::copy_from_slice(&delivery.body),
             proof,
             member: core.member,

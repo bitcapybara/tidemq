@@ -9,6 +9,14 @@ use super::{
     RegisterProducer, Rejection, Result, SessionInfo,
 };
 
+#[path = "publish.rs"]
+mod publish;
+pub use publish::{PublishReceipt, PublishRequest, PublisherPermit};
+
+#[cfg(test)]
+#[path = "../../tests/scalable_support/publishing.rs"]
+mod publishing_tests;
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 struct SavedResult {
     first_sequence: u64,
@@ -52,6 +60,7 @@ pub struct ProducerState {
     sessions: BTreeMap<u64, Session>,
     by_producer: BTreeMap<Id, u64>,
     expiry: BTreeMap<(u64, u64), ()>,
+    publishers: publish::PublisherLedger,
 }
 
 impl fmt::Debug for ProducerState {
@@ -82,6 +91,7 @@ impl ProducerState {
             sessions: BTreeMap::new(),
             by_producer: BTreeMap::new(),
             expiry: BTreeMap::new(),
+            publishers: publish::PublisherLedger::default(),
         })
     }
 
@@ -509,6 +519,7 @@ impl ProducerState {
     /// Full validation is for decoded snapshots and recovery, never per-message admission.
     pub fn validate(&self) -> Result<()> {
         self.limits.validate()?;
+        self.publishers.validate(&self.limits, self.committed_end)?;
         let message_count = self.committed_end.checked_sub(self.local_reclaim_end);
         if self.revision == 0
             || self.retained_floor > self.committed_end
@@ -525,6 +536,9 @@ impl ProducerState {
         }
         let mut bytes = 0_u64;
         for message in &self.messages {
+            message
+                .metadata(self.topic_id)
+                .map_err(|_| Rejection::InvalidSnapshot)?;
             let length = message.logical_bytes().ok_or(Rejection::InvalidSnapshot)?;
             if length > self.limits.max_message_bytes {
                 return Err(Rejection::InvalidSnapshot);

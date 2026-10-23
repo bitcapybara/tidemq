@@ -413,6 +413,7 @@ impl Fixture {
         ));
         let messages = (0..count)
             .map(|offset| MessageData {
+                context: Bytes::new(),
                 key: Bytes::from(format!("key-{offset}")),
                 body: Bytes::from(format!("body-{offset}")),
             })

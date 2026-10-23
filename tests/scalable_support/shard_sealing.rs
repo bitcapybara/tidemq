@@ -70,6 +70,7 @@ fn seal_prevents_late_writes_but_replays_committed_results_after_restart() {
         panic!("Expected a registered producer");
     };
     let messages = vec![MessageData {
+        context: Default::default(),
         key: "key".into(),
         body: "body".into(),
     }];

@@ -626,6 +626,7 @@ mod tests {
             )
             .unwrap();
         let message = MessageData {
+            context: Bytes::new(),
             key: Bytes::from_static(b"k"),
             body: Bytes::from(vec![b'x'; message_bytes - 1]),
         };

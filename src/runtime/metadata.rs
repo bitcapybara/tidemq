@@ -263,6 +263,11 @@ impl Service {
             .await?
             .map_err(|_| Error::unavailable())?;
         let operation = wire::id(&frame.operation_id)?;
+        if super::service::frame_kind(frame)? == FrameKind::PublisherControl {
+            return self
+                .publisher_control_public(&access, frame, deadline)
+                .await;
+        }
         if super::service::frame_kind(frame)? == FrameKind::ConsumerControl {
             return self.consumer_control_public(&access, frame, deadline).await;
         }

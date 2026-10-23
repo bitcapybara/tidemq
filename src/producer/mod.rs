@@ -11,7 +11,7 @@ mod types;
 mod tests;
 
 pub use error::{Rejection, Result};
-pub use state::ProducerState;
+pub use state::{ProducerState, PublishReceipt, PublishRequest, PublisherPermit};
 pub use types::{
     AppendBatch, BatchResult, MessageData, ProducerDiagnostic, ProducerLimits, ReadPage,
     RegisterProducer, SessionInfo,

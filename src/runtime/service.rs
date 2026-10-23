@@ -427,6 +427,7 @@ impl Service {
                 | FrameKind::ChangeTopicLayout
                 | FrameKind::ManageIdentity
                 | FrameKind::ConsumerControl
+                | FrameKind::PublisherControl
                 | FrameKind::GetTopic
                 | FrameKind::CreateSubscription
                 | FrameKind::GetSubscription
@@ -510,7 +511,11 @@ impl Service {
                 .await;
         }
         let group = route.group_id;
-        let result = if matches!(
+        let result = if matches!(kind, FrameKind::Publish | FrameKind::RetirePublishes) {
+            drop(order);
+            self.publishing_public(&access, &forwarded, route, deadline)
+                .await
+        } else if matches!(
             kind,
             FrameKind::GroupRead
                 | FrameKind::GroupAck

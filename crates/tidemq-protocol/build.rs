@@ -6,6 +6,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);
     config.bytes(["."]);
+    config.btree_map([
+        ".tidemq.public.v1.GroupDelivery.properties",
+        ".tidemq.public.v1.PublishMessage.properties",
+    ]);
     config.out_dir(output);
     config.compile_protos(
         &[

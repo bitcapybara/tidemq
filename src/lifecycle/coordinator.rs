@@ -990,6 +990,7 @@ impl Coordinator {
                     {
                         records.push(Record {
                             offset: record.offset,
+                            context: copied(record.context())?,
                             key: copied(record.key())?,
                             body: copied(record.body())?,
                         });
@@ -1019,6 +1020,7 @@ impl Coordinator {
                         }
                         records.push(Record {
                             offset: next,
+                            context: message.context,
                             key: message.key,
                             body: message.body,
                         });

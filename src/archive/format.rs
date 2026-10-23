@@ -7,12 +7,16 @@ use tidemq_transport::budget::{MemoryBudget, MemoryPermit};
 
 use super::{Error, Result};
 
-const MAGIC: &[u8; 8] = b"TIDEPK01";
-const FOOTER_MAGIC: &[u8; 8] = b"TIDEEND1";
+const MAGIC: &[u8; 8] = b"TIDEPK02";
+const FOOTER_MAGIC: &[u8; 8] = b"TIDEEND2";
 const HEADER_BYTES: usize = 80;
-const RECORD_BYTES: usize = 68;
+const RECORD_BYTES: usize = 72;
 const INDEX_BYTES: usize = 84;
 const FOOTER_BYTES: usize = 92;
+
+#[cfg(test)]
+#[path = "../../tests/scalable_support/archive_context.rs"]
+mod context_tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PackIdentity {
@@ -82,6 +86,7 @@ pub struct Record {
     pub offset: u64,
     pub key: Bytes,
     pub body: Bytes,
+    pub context: Bytes,
 }
 
 /// A checked zero-copy view; one partition buffer keeps its byte admission alive.
@@ -90,6 +95,7 @@ pub struct ArchivedRecord {
     pub offset: u64,
     buffer: Arc<RecordBuffer>,
     key_start: usize,
+    context_start: usize,
     body_start: usize,
     body_end: usize,
 }
@@ -103,13 +109,19 @@ impl ArchivedRecord {
     pub fn key(&self) -> &[u8] {
         self.buffer
             .bytes
-            .get(self.key_start..self.body_start)
+            .get(self.key_start..self.context_start)
             .unwrap_or_default()
     }
     pub fn body(&self) -> &[u8] {
         self.buffer
             .bytes
             .get(self.body_start..self.body_end)
+            .unwrap_or_default()
+    }
+    pub fn context(&self) -> &[u8] {
+        self.buffer
+            .bytes
+            .get(self.context_start..self.body_start)
             .unwrap_or_default()
     }
 }
@@ -127,7 +139,10 @@ impl fmt::Debug for ArchivedRecord {
 
 impl PartialEq for ArchivedRecord {
     fn eq(&self, other: &Self) -> bool {
-        self.offset == other.offset && self.key() == other.key() && self.body() == other.body()
+        self.offset == other.offset
+            && self.key() == other.key()
+            && self.body() == other.body()
+            && self.context() == other.context()
     }
 }
 impl Eq for ArchivedRecord {}
@@ -316,11 +331,13 @@ fn encoded_size(
                 .key
                 .len()
                 .checked_add(record.body.len())
+                .and_then(|size| size.checked_add(record.context.len()))
                 .ok_or(Error::Limit)?;
             if record.offset != expected
                 || payload > limits.max_message_bytes
                 || record.key.len() > u32::MAX as usize
                 || record.body.len() > u32::MAX as usize
+                || record.context.len() > u32::MAX as usize
             {
                 return Err(Error::Invalid {
                     reason: "record offset or payload size is invalid",
@@ -353,13 +370,16 @@ fn encode_partition(
         bytes.extend_from_slice(&record.offset.to_be_bytes());
         bytes.extend_from_slice(&(record.key.len() as u32).to_be_bytes());
         bytes.extend_from_slice(&(record.body.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&(record.context.len() as u32).to_be_bytes());
         let mut hash = blake3::Hasher::new();
-        hash.update(b"tidemq-pack-record-v1\0");
+        hash.update(b"tidemq-pack-record-v2\0");
         hash.update(bytes.get(record_start..).ok_or(Error::Limit)?);
         hash.update(&record.key);
+        hash.update(&record.context);
         hash.update(&record.body);
         bytes.extend_from_slice(hash.finalize().as_bytes());
         bytes.extend_from_slice(&record.key);
+        bytes.extend_from_slice(&record.context);
         bytes.extend_from_slice(&record.body);
     }
     Ok(PartitionIndex {
@@ -545,6 +565,7 @@ pub(super) fn decode_records(
             offset: record.offset,
             buffer: buffer.clone(),
             key_start: record.key_start,
+            context_start: record.context_start,
             body_start: record.body_start,
             body_end: record.body_end,
         });
@@ -596,6 +617,7 @@ fn validate_records(index: &PartitionIndex, bytes: &[u8], limits: PackLimits) ->
 struct RecordView {
     offset: u64,
     key_start: usize,
+    context_start: usize,
     body_start: usize,
     body_end: usize,
 }
@@ -619,8 +641,13 @@ fn decode_record(
     let offset = cursor.u64()?;
     let key_len = cursor.u32()? as usize;
     let body_len = cursor.u32()? as usize;
+    let context_len = cursor.u32()? as usize;
     if offset != expected
-        || key_len.checked_add(body_len).ok_or(Error::Limit)? > limits.max_message_bytes
+        || key_len
+            .checked_add(body_len)
+            .and_then(|size| size.checked_add(context_len))
+            .ok_or(Error::Limit)?
+            > limits.max_message_bytes
     {
         return Err(Error::Corrupt {
             reason: "record offset or payload size differs",
@@ -632,19 +659,25 @@ fn decode_record(
         .checked_sub(cursor.0.len())
         .ok_or(Error::Limit)?;
     let key = cursor.take(key_len)?;
+    let context_start = bytes
+        .len()
+        .checked_sub(cursor.0.len())
+        .ok_or(Error::Limit)?;
+    let context = cursor.take(context_len)?;
     let body_start = bytes
         .len()
         .checked_sub(cursor.0.len())
         .ok_or(Error::Limit)?;
     let body = cursor.take(body_len)?;
     let mut hash = blake3::Hasher::new();
-    hash.update(b"tidemq-pack-record-v1\0");
+    hash.update(b"tidemq-pack-record-v2\0");
     hash.update(
         bytes
-            .get(start..start.checked_add(36).ok_or(Error::Limit)?)
+            .get(start..start.checked_add(40).ok_or(Error::Limit)?)
             .ok_or(Error::Limit)?,
     );
     hash.update(key);
+    hash.update(context);
     hash.update(body);
     if checksum != hash.finalize().as_bytes() {
         return Err(Error::Corrupt {
@@ -654,6 +687,7 @@ fn decode_record(
     Ok(RecordView {
         offset,
         key_start,
+        context_start,
         body_start,
         body_end: body_start.checked_add(body_len).ok_or(Error::Limit)?,
     })

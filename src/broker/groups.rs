@@ -271,16 +271,18 @@ fn read_group(
                     u64::try_from(index).map_err(|_| subscription::Rejection::CounterOverflow)?,
                 )
                 .ok_or(subscription::Rejection::CounterOverflow)?;
-            let hash =
-                tidemq_protocol::topic::routing_hash(Some(&message.key), producer.topic_id(), 0)
-                    .map_err(|_| subscription::Rejection::InvalidContext)?;
-            let bytes = message
-                .logical_bytes()
-                .and_then(|bytes| bytes.checked_add(256))
-                .ok_or(subscription::Rejection::CounterOverflow)?;
+            let metadata = message
+                .metadata(producer.topic_id())
+                .map_err(|_| subscription::Rejection::InvalidContext)?;
+            let bytes = tidemq_protocol::topic::delivery_bytes(
+                &message.key,
+                &message.body,
+                &metadata.properties,
+            )
+            .map_err(|_| subscription::Rejection::CounterOverflow)?;
             candidates.push(Candidate {
                 offset,
-                hash,
+                hash: metadata.routing_hash,
                 bytes,
             });
         }

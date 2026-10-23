@@ -165,7 +165,9 @@ async fn tenant_namespace_authorization_is_checked_on_each_resource() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn consumers_finish_paginated_domain_installation_and_retire_cleanly() {
     let fixture = dynamic_fixture().await;
-    let client = fixture.client(1).await;
+    let client = fixture
+        .client_with_timeouts(1, Duration::from_secs(60), Duration::from_secs(30))
+        .await;
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
         .admin()

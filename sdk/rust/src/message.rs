@@ -19,6 +19,8 @@ impl fmt::Display for MessageId {
 pub(crate) struct ReceivedData {
     pub id: MessageId,
     pub key: Bytes,
+    pub key_present: bool,
+    pub properties: std::collections::BTreeMap<String, Bytes>,
     pub payload: Bytes,
     pub proof: public::GroupProof,
     pub member: Id,
@@ -53,7 +55,10 @@ impl ReceivedMessage {
         &self.data.payload
     }
     pub fn key(&self) -> Option<&[u8]> {
-        Some(&self.data.key)
+        self.data.key_present.then_some(&self.data.key)
+    }
+    pub fn properties(&self) -> &std::collections::BTreeMap<String, Bytes> {
+        &self.data.properties
     }
 }
 
@@ -82,6 +87,8 @@ mod credit_tests {
                 offset: 0,
             },
             key: Bytes::new(),
+            key_present: false,
+            properties: Default::default(),
             payload: Bytes::from_static(b"data"),
             proof: public::GroupProof {
                 offset: 0,

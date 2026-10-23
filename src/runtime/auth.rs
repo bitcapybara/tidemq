@@ -56,6 +56,15 @@ mod admission_tests {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthQuery {
+    BirthShard(Id),
+    TopicResource(Id),
+    Publisher {
+        topic: Id,
+        producer: Id,
+        registration: u64,
+        client: Id,
+        credential: Id,
+    },
     Ready,
     Authenticate(TokenDigest),
     Authorize {
@@ -65,8 +74,11 @@ enum AuthQuery {
     },
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct AuthReply {
+    birth: Option<crate::metadata::BirthShard>,
+    resource: Option<String>,
+    publisher: Option<crate::producer::PublisherPermit>,
     credential: Option<Id>,
     expires_ms: u64,
     now_ms: u64,
@@ -117,6 +129,44 @@ impl TokenAuthenticator for Authenticator {
 }
 
 impl Service {
+    pub(super) async fn publisher_birth(
+        &self,
+        shard: Id,
+        partition: crate::metadata::PartitionKey,
+        deadline: Instant,
+    ) -> Result<tidemq_protocol::topic::HashRange> {
+        let (reply, _) = self
+            .auth_query(AuthQuery::BirthShard(shard), deadline)
+            .await?;
+        let birth = reply
+            .birth
+            .filter(|birth| birth.partition == partition)
+            .ok_or_else(super::service::forbidden)?;
+        Ok(birth.route.range)
+    }
+    pub(super) async fn publisher_permit(
+        &self,
+        access: &Access,
+        topic: Id,
+        producer: Id,
+        registration: u64,
+        deadline: Instant,
+    ) -> Result<crate::producer::PublisherPermit> {
+        let (client, credential) = super::consumer_control::actor(access)?;
+        let (reply, _) = self
+            .auth_query(
+                AuthQuery::Publisher {
+                    topic,
+                    producer,
+                    registration,
+                    client,
+                    credential,
+                },
+                deadline,
+            )
+            .await?;
+        reply.publisher.ok_or_else(super::service::forbidden)
+    }
     pub(super) async fn auth_ready(&self, deadline: Instant) -> bool {
         self.auth_query(AuthQuery::Ready, deadline).await.is_ok()
     }
@@ -236,6 +286,77 @@ impl Service {
         let reply = replica
             .state
             .try_with_application(|state| match query {
+                AuthQuery::BirthShard(shard) => {
+                    let birth = state
+                        .topology()
+                        .shard(shard)
+                        .cloned()
+                        .ok_or_else(super::service::forbidden)?;
+                    Ok(AuthReply {
+                        birth: Some(birth),
+                        expires_ms: now.saturating_add(1000),
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
+                AuthQuery::TopicResource(topic) => {
+                    let topic = state
+                        .topic(topic)
+                        .filter(|topic| topic.status == crate::metadata::RecordStatus::Active)
+                        .ok_or_else(super::service::forbidden)?;
+                    Ok(AuthReply {
+                        resource: Some(topic.name.clone()),
+                        expires_ms: now.saturating_add(1000),
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
+                AuthQuery::Publisher {
+                    topic,
+                    producer,
+                    registration,
+                    client,
+                    credential,
+                } => {
+                    let topic_record = state
+                        .topic(topic)
+                        .filter(|topic| topic.status == crate::metadata::RecordStatus::Active)
+                        .ok_or_else(super::service::forbidden)?;
+                    state
+                        .auth()
+                        .authorize(
+                            credential,
+                            now,
+                            Permission::Produce,
+                            Some(&topic_record.name),
+                        )
+                        .map_err(auth_rejection)?;
+                    let record = state
+                        .publishers()
+                        .record(producer, registration)
+                        .ok_or_else(|| {
+                            Error::reject(ErrorCode::SessionExpired, Outcome::Rejected, false)
+                        })?;
+                    if record.permit.topic != topic
+                        || record.permit.client != client
+                        || record.permit.credential != credential
+                    {
+                        return Err(super::service::forbidden());
+                    }
+                    let permit = record.permit_at(now);
+                    let expires_ms = if permit.live {
+                        permit.expires_ms.min(now.saturating_add(1000))
+                    } else {
+                        now.saturating_add(1000)
+                    };
+                    Ok(AuthReply {
+                        publisher: Some(permit),
+                        credential: Some(credential),
+                        expires_ms,
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
                 AuthQuery::Ready => {
                     if !state.auth().initialized() {
                         return Err(Error::unavailable());
@@ -244,6 +365,7 @@ impl Service {
                         credential: None,
                         expires_ms: now.saturating_add(1000),
                         now_ms: now,
+                        ..Default::default()
                     })
                 }
                 AuthQuery::Authenticate(digest) => {
@@ -255,6 +377,7 @@ impl Service {
                         credential: Some(credential.id),
                         expires_ms: credential.expires_ms,
                         now_ms: now,
+                        ..Default::default()
                     })
                 }
                 AuthQuery::Authorize {
@@ -274,6 +397,7 @@ impl Service {
                         credential: Some(credential),
                         expires_ms: record.expires_ms,
                         now_ms: now,
+                        ..Default::default()
                     })
                 }
             })
@@ -303,6 +427,9 @@ impl Service {
             | FrameKind::SeekSubscription
             | FrameKind::ChangeTopicLayout => Permission::ManageTopics,
             FrameKind::ProduceBatch
+            | FrameKind::PublisherControl
+            | FrameKind::Publish
+            | FrameKind::RetirePublishes
             | FrameKind::OpenProducer
             | FrameKind::ProducerStatus
             | FrameKind::RetireProducer => Permission::Produce,
@@ -331,7 +458,6 @@ impl Service {
     }
 
     async fn auth_resource_name(&self, frame: &Frame, deadline: Instant) -> Result<Option<String>> {
-        use crate::ownership::remote::{Query, Value};
         let kind = super::service::frame_kind(frame)?;
         let topic = match kind {
             FrameKind::CreateLogicalTopic => {
@@ -350,6 +476,9 @@ impl Service {
             FrameKind::ConsumerControl => {
                 wire::id(&decode::<public::ConsumerControl>(self, frame)?.topic_id)?
             }
+            FrameKind::PublisherControl => {
+                wire::id(&decode::<public::PublisherControl>(self, frame)?.topic_id)?
+            }
             FrameKind::CreateSubscription => {
                 wire::id(&decode::<public::CreateSubscription>(self, frame)?.topic_id)?
             }
@@ -359,12 +488,10 @@ impl Service {
             FrameKind::Cancel | FrameKind::Diagnose | FrameKind::ManageIdentity => return Ok(None),
             _ => super::data::partition(frame, &self.config.protocol)?.topic_id,
         };
-        let Value::Topic(Some(record)) =
-            self.authority.query(Query::Topic(topic), deadline).await?
-        else {
-            return Err(super::service::forbidden());
-        };
-        Ok(Some(record.name))
+        let (reply, _) = self
+            .auth_query(AuthQuery::TopicResource(topic), deadline)
+            .await?;
+        Ok(Some(reply.resource.ok_or_else(super::service::forbidden)?))
     }
 }
 

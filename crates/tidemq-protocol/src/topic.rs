@@ -1,8 +1,97 @@
 //! Stable key hashing and half-open ranges shared by routing and storage.
 
+use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::{Error, Id, Result};
+
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MessageMetadata {
+    pub key_present: bool,
+    pub routing_hash: u64,
+    pub properties: BTreeMap<String, Bytes>,
+}
+
+impl std::fmt::Debug for MessageMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MessageMetadata")
+            .field("key_present", &self.key_present)
+            .field("property_count", &self.properties.len())
+            .finish_non_exhaustive()
+    }
+}
+
+pub fn delivery_bytes(
+    key: &[u8],
+    payload: &[u8],
+    properties: &BTreeMap<String, Bytes>,
+) -> Result<u64> {
+    let mut size = key
+        .len()
+        .checked_add(payload.len())
+        .and_then(|size| size.checked_add(256))
+        .ok_or(Error::Overflow {
+            name: "delivery bytes",
+        })?;
+    for (name, value) in properties {
+        size = size
+            .checked_add(name.len())
+            .and_then(|size| size.checked_add(value.len()))
+            .and_then(|size| size.checked_add(96))
+            .ok_or(Error::Overflow {
+                name: "property bytes",
+            })?;
+    }
+    u64::try_from(size).map_err(|_| Error::Overflow {
+        name: "delivery bytes",
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SendIdentity {
+    pub topic: Id,
+    pub producer: Id,
+    pub registration: u64,
+    pub sequence: u64,
+}
+
+pub fn message_digest(
+    identity: SendIdentity,
+    key: Option<&[u8]>,
+    payload: &[u8],
+    properties: &BTreeMap<String, Bytes>,
+) -> Result<[u8; 32]> {
+    if properties.len() > 128
+        || properties
+            .keys()
+            .any(|name| name.is_empty() || name.len() > 256)
+    {
+        return Err(Error::Invalid {
+            reason: "message properties exceed their finite bounds",
+        });
+    }
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"tidemq/logical-message/v1\0");
+    digest.update(identity.topic.as_bytes());
+    digest.update(identity.producer.as_bytes());
+    digest.update(&identity.registration.to_be_bytes());
+    digest.update(&identity.sequence.to_be_bytes());
+    digest.update(&[u8::from(key.is_some())]);
+    for value in [key.unwrap_or_default(), payload] {
+        digest.update(&(value.len() as u64).to_be_bytes());
+        digest.update(value);
+    }
+    digest.update(&(properties.len() as u64).to_be_bytes());
+    for (name, value) in properties {
+        digest.update(&(name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+        digest.update(&(value.len() as u64).to_be_bytes());
+        digest.update(value);
+    }
+    Ok(*digest.finalize().as_bytes())
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HashRange {

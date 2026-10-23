@@ -138,6 +138,12 @@ pub enum FrameKind {
     GroupRetireRead = 74,
     GroupRetireAck = 75,
     GroupRetired = 76,
+    PublisherControl = 77,
+    PublisherControlResult = 78,
+    Publish = 79,
+    PublishResult = 80,
+    RetirePublishes = 81,
+    PublishesRetired = 82,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -201,6 +207,12 @@ impl FrameKind {
             Self::GroupRetireRead => "GROUP_RETIRE_READ",
             Self::GroupRetireAck => "GROUP_RETIRE_ACK",
             Self::GroupRetired => "GROUP_RETIRED",
+            Self::PublisherControl => "PUBLISHER_CONTROL",
+            Self::PublisherControlResult => "PUBLISHER_CONTROL_RESULT",
+            Self::Publish => "PUBLISH",
+            Self::PublishResult => "PUBLISH_RESULT",
+            Self::RetirePublishes => "RETIRE_PUBLISHES",
+            Self::PublishesRetired => "PUBLISHES_RETIRED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -261,6 +273,12 @@ impl FrameKind {
             "GROUP_RETIRE_READ" => Some(Self::GroupRetireRead),
             "GROUP_RETIRE_ACK" => Some(Self::GroupRetireAck),
             "GROUP_RETIRED" => Some(Self::GroupRetired),
+            "PUBLISHER_CONTROL" => Some(Self::PublisherControl),
+            "PUBLISHER_CONTROL_RESULT" => Some(Self::PublisherControlResult),
+            "PUBLISH" => Some(Self::Publish),
+            "PUBLISH_RESULT" => Some(Self::PublishResult),
+            "RETIRE_PUBLISHES" => Some(Self::RetirePublishes),
+            "PUBLISHES_RETIRED" => Some(Self::PublishesRetired),
             _ => None,
         }
     }

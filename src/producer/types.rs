@@ -67,12 +67,37 @@ impl ProducerLimits {
 pub struct MessageData {
     pub key: Bytes,
     pub body: Bytes,
+    pub context: Bytes,
 }
 
 impl MessageData {
     pub fn logical_bytes(&self) -> Option<u64> {
         let key = u64::try_from(self.key.len()).ok()?;
-        key.checked_add(u64::try_from(self.body.len()).ok()?)
+        key.checked_add(u64::try_from(self.body.len()).ok()?)?
+            .checked_add(u64::try_from(self.context.len()).ok()?)
+    }
+
+    pub fn metadata(&self, identity: Id) -> Result<tidemq_protocol::topic::MessageMetadata> {
+        if self.context.is_empty() {
+            return Ok(tidemq_protocol::topic::MessageMetadata {
+                key_present: true,
+                routing_hash: tidemq_protocol::topic::routing_hash(Some(&self.key), identity, 0)
+                    .map_err(|_| Rejection::InvalidBatch)?,
+                properties: Default::default(),
+            });
+        }
+        let metadata: tidemq_protocol::topic::MessageMetadata =
+            postcard::from_bytes(&self.context).map_err(|_| Rejection::InvalidBatch)?;
+        if !metadata.key_present && !self.key.is_empty()
+            || metadata.properties.len() > 128
+            || metadata
+                .properties
+                .keys()
+                .any(|name| name.is_empty() || name.len() > 256)
+        {
+            return Err(Rejection::InvalidBatch);
+        }
+        Ok(metadata)
     }
 }
 
@@ -82,6 +107,7 @@ impl fmt::Debug for MessageData {
             .debug_struct("MessageData")
             .field("key_bytes", &self.key.len())
             .field("body_bytes", &self.body.len())
+            .field("context_bytes", &self.context.len())
             .finish()
     }
 }
@@ -109,6 +135,7 @@ impl AppendBatch {
         for message in &mut self.messages {
             message.key = compact_bytes(&message.key)?;
             message.body = compact_bytes(&message.body)?;
+            message.context = compact_bytes(&message.context)?;
         }
         Ok(())
     }
@@ -132,7 +159,7 @@ impl AppendBatch {
     }
 }
 
-fn compact_bytes(bytes: &[u8]) -> Result<Bytes> {
+pub(crate) fn compact_bytes(bytes: &[u8]) -> Result<Bytes> {
     let mut owned = Vec::new();
     owned
         .try_reserve_exact(bytes.len())

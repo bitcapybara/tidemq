@@ -241,6 +241,10 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::IdentityResult
         | FrameKind::ConsumerControl
         | FrameKind::ConsumerControlResult
+        | FrameKind::PublisherControl
+        | FrameKind::PublisherControlResult
+        | FrameKind::RetirePublishes
+        | FrameKind::PublishesRetired
         | FrameKind::GroupAck
         | FrameKind::GroupAckResult
         | FrameKind::GroupRetireRead
@@ -253,7 +257,10 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::RaftVote
         | FrameKind::Diagnose
         | FrameKind::DiagnosticResult => class == TrafficClass::Control,
-        FrameKind::ProduceBatch | FrameKind::ProduceResult => class == TrafficClass::Produce,
+        FrameKind::ProduceBatch
+        | FrameKind::ProduceResult
+        | FrameKind::Publish
+        | FrameKind::PublishResult => class == TrafficClass::Produce,
         FrameKind::Read
         | FrameKind::DeliveryBatch
         | FrameKind::GroupRead

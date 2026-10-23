@@ -17,6 +17,8 @@ use crate::subscription::{self, DataContext, SubscriptionState};
 
 #[path = "groups.rs"]
 mod groups;
+#[path = "publish.rs"]
+mod publish;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DataGroupConfig {
@@ -96,6 +98,20 @@ pub enum ProducerCommand {
 /// Private service handlers admit these commands; never deserialize this enum from a wire RPC.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataCommand {
+    Publish {
+        partition: PartitionKey,
+        writer: WriterFence,
+        birth: (Id, tidemq_protocol::topic::HashRange),
+        permit: producer::PublisherPermit,
+        request: producer::PublishRequest,
+        now_ms: u64,
+    },
+    RetirePublishes {
+        partition: PartitionKey,
+        writer: WriterFence,
+        permit: producer::PublisherPermit,
+        before: u64,
+    },
     Initialize(DataGroupConfig),
     SealShard {
         partition: PartitionKey,
@@ -193,6 +209,8 @@ pub enum DataResponse {
     Recovered(RecoveredOwnership),
     Registered(SessionInfo),
     Produced(BatchResult),
+    Published(producer::PublishReceipt),
+    PublishClosed,
     Retired,
     TimeAdvanced,
     Retention(crate::retention::Status),
@@ -205,6 +223,8 @@ pub enum DataResponse {
 impl fmt::Debug for DataResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Published(receipt) => formatter.debug_tuple("Published").field(receipt).finish(),
+            Self::PublishClosed => formatter.write_str("PublishClosed"),
             Self::Noop => formatter.write_str("Noop"),
             Self::Initialized => formatter.write_str("Initialized"),
             Self::ShardSealed {
@@ -249,6 +269,7 @@ struct PartitionState {
     subscriptions: SubscriptionState,
     retention: crate::retention::RetentionState,
     seal: Option<(Id, u64)>,
+    birth: Option<(Id, tidemq_protocol::topic::HashRange)>,
     groups: BTreeMap<Id, subscription::GroupCursor>,
 }
 
@@ -525,6 +546,7 @@ impl DataApplication {
                     retention: crate::retention::RetentionState::new(config.retention)
                         .map_err(DataRejection::Retention)?,
                     seal: None,
+                    birth: None,
                     groups: BTreeMap::new(),
                 },
             );
@@ -824,6 +846,18 @@ impl DataApplication {
         let mut bytes = 0_u64;
         let mut messages = 0_usize;
         for (partition, state) in &self.partitions {
+            if let Some((birth, range)) = state.birth {
+                range
+                    .validate()
+                    .map_err(|_| DataRejection::InvalidConfiguration)?;
+                if state
+                    .groups
+                    .values()
+                    .any(|cursor| cursor.identity().shard != birth)
+                {
+                    return Err(DataRejection::InvalidConfiguration);
+                }
+            }
             if state
                 .seal
                 .is_some_and(|(_, end)| end != state.producer.committed_end())
@@ -885,12 +919,26 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 4;
+    const VERSION: u32 = 5;
     type Command = DataCommand;
     type Response = DataResponse;
 
     fn apply(&mut self, command: DataCommand) -> DataResponse {
         let result = match command {
+            DataCommand::Publish {
+                partition,
+                writer,
+                birth,
+                permit,
+                request,
+                now_ms,
+            } => self.publish_message(partition, writer, birth, permit, request, now_ms),
+            DataCommand::RetirePublishes {
+                partition,
+                writer,
+                permit,
+                before,
+            } => self.retire_publishes(partition, writer, permit, before),
             DataCommand::Initialize(config) => self.initialize(config),
             DataCommand::ConsumerGroup {
                 partition,

@@ -149,10 +149,21 @@ impl Fixture {
     }
 
     pub(super) async fn client(&self, gateway: u64) -> Client {
+        self.client_with_timeouts(gateway, Duration::from_secs(10), Duration::from_secs(5))
+            .await
+    }
+
+    pub(super) async fn client_with_timeouts(
+        &self,
+        gateway: u64,
+        request: Duration,
+        close: Duration,
+    ) -> Client {
         let config = self.configs.get(&gateway).unwrap();
         let address = config.listen;
         let mut sdk = ClientConfig::new(format!("node-{gateway}.local:{}", address.port()));
-        sdk.request_timeout_ms = 10_000;
+        sdk.request_timeout_ms = request.as_millis().try_into().unwrap();
+        sdk.close_timeout = close;
         Client::with_target(
             sdk,
             ClientTls {

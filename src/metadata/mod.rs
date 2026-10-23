@@ -9,6 +9,7 @@ mod consumers;
 mod control;
 mod diagnostics;
 mod members;
+mod publishers;
 mod replicated;
 mod scaling;
 mod state;
@@ -32,6 +33,7 @@ pub use members::{
     MEMBER_LEASE_MS, MEMBER_RECOVERY_MS, MemberHeartbeat, MemberInfo, MemberJoin, MemberStatus,
     MembersBook, MembersPlan,
 };
+pub use publishers::{PUBLISHER_LEASE_MS, PublisherCommand, PublisherRecord, PublishersBook};
 pub use state::MetadataState;
 pub use topology::{BirthShard, LayoutChange, LayoutPlan, LayoutStage, Topology};
 pub use types::{

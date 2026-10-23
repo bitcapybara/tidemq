@@ -66,6 +66,7 @@ pub struct MetadataState {
     pub(crate) lifecycle: crate::lifecycle::Catalog,
     pub(crate) topology: super::Topology,
     pub(crate) auth: super::AuthState,
+    pub(crate) publishers: super::PublishersBook,
     pub(crate) limits: MetadataLimits,
     pub(crate) topics: BTreeMap<Id, TopicRecord>,
     pub(crate) topic_names: BTreeMap<String, Id>,
@@ -176,7 +177,10 @@ impl MetadataState {
         ) {
             return self.apply_membership(&command);
         }
-        if matches!(command.action, Action::Lifecycle(_) | Action::Consumer(_)) {
+        if matches!(
+            command.action,
+            Action::Lifecycle(_) | Action::Consumer(_) | Action::Publisher(_)
+        ) {
             return self.apply_new(&command);
         }
         let digest = match self.command_digest(&command) {
@@ -278,6 +282,9 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::Publisher(request) => self
+                .publisher_command(command.operation_id, request)
+                .map(Outcome::Publisher),
             Action::Consumer(request) => self
                 .consumer_command(command.operation_id, request)
                 .map(Outcome::Consumer),

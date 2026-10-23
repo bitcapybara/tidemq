@@ -218,7 +218,7 @@ pub struct GroupProof {
     #[prost(bytes = "bytes", tag = "3")]
     pub mac: ::prost::bytes::Bytes,
 }
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GroupDelivery {
     #[prost(message, optional, tag = "1")]
     pub proof: ::core::option::Option<GroupProof>,
@@ -230,6 +230,117 @@ pub struct GroupDelivery {
     pub key_hash: u64,
     #[prost(bool, tag = "5")]
     pub current_attempt: bool,
+    #[prost(bool, tag = "6")]
+    pub key_present: bool,
+    #[prost(btree_map = "string, bytes", tag = "7")]
+    pub properties: ::prost::alloc::collections::BTreeMap<
+        ::prost::alloc::string::String,
+        ::prost::bytes::Bytes,
+    >,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PublishMessage {
+    #[prost(bytes = "bytes", optional, tag = "1")]
+    pub key: ::core::option::Option<::prost::bytes::Bytes>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub payload: ::prost::bytes::Bytes,
+    #[prost(btree_map = "string, bytes", tag = "3")]
+    pub properties: ::prost::alloc::collections::BTreeMap<
+        ::prost::alloc::string::String,
+        ::prost::bytes::Bytes,
+    >,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PublisherControl {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "3")]
+    pub registration: u64,
+    #[prost(enumeration = "PublisherAction", tag = "4")]
+    pub action: i32,
+    #[prost(uint64, tag = "5")]
+    pub heartbeat_sequence: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PublisherControlResult {
+    #[prost(uint64, tag = "1")]
+    pub next_registration: u64,
+    #[prost(uint64, tag = "2")]
+    pub registration: u64,
+    #[prost(bool, tag = "3")]
+    pub live: bool,
+    #[prost(uint64, tag = "4")]
+    pub remaining_lease_ms: u64,
+    #[prost(uint64, tag = "5")]
+    pub next_heartbeat_sequence: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct Publish {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "3")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub registration: u64,
+    #[prost(uint64, tag = "6")]
+    pub sequence: u64,
+    #[prost(bytes = "bytes", tag = "7")]
+    pub digest: ::prost::bytes::Bytes,
+    #[prost(message, optional, tag = "8")]
+    pub message: ::core::option::Option<PublishMessage>,
+    #[prost(uint64, tag = "9")]
+    pub retired_before: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PublishResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub registration: u64,
+    #[prost(uint64, tag = "5")]
+    pub sequence: u64,
+    #[prost(bytes = "bytes", tag = "6")]
+    pub digest: ::prost::bytes::Bytes,
+    #[prost(uint64, optional, tag = "7")]
+    pub offset: ::core::option::Option<u64>,
+    #[prost(bytes = "bytes", tag = "8")]
+    pub permanent_seal: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "9")]
+    pub sealed_end: u64,
+    #[prost(bool, tag = "10")]
+    pub permanently_closed: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RetirePublishes {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "3")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub registration: u64,
+    #[prost(uint64, tag = "6")]
+    pub before: u64,
+    #[prost(bool, tag = "7")]
+    pub close: bool,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PublishesRetired {
+    #[prost(uint64, tag = "1")]
+    pub before: u64,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GroupDeliveries {
@@ -748,6 +859,41 @@ impl ConsumerModel {
             "CONSUMER_MODEL_UNSPECIFIED" => Some(Self::Unspecified),
             "STREAM_CONSUMER" => Some(Self::StreamConsumer),
             "QUEUE_CONSUMER" => Some(Self::QueueConsumer),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum PublisherAction {
+    Unspecified = 0,
+    OpenPublisher = 1,
+    HeartbeatPublisher = 2,
+    ClosePublisher = 3,
+    PublisherStatus = 4,
+}
+impl PublisherAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "PUBLISHER_ACTION_UNSPECIFIED",
+            Self::OpenPublisher => "OPEN_PUBLISHER",
+            Self::HeartbeatPublisher => "HEARTBEAT_PUBLISHER",
+            Self::ClosePublisher => "CLOSE_PUBLISHER",
+            Self::PublisherStatus => "PUBLISHER_STATUS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "PUBLISHER_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "OPEN_PUBLISHER" => Some(Self::OpenPublisher),
+            "HEARTBEAT_PUBLISHER" => Some(Self::HeartbeatPublisher),
+            "CLOSE_PUBLISHER" => Some(Self::ClosePublisher),
+            "PUBLISHER_STATUS" => Some(Self::PublisherStatus),
             _ => None,
         }
     }

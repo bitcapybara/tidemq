@@ -355,6 +355,7 @@ pub(super) fn batch(
     body: &'static [u8],
 ) -> AppendBatch {
     let messages = vec![MessageData {
+        context: Bytes::new(),
         key: Bytes::from_static(b"private-key"),
         body: Bytes::from_static(body),
     }];

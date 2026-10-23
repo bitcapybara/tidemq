@@ -120,7 +120,64 @@ message GroupRead {
   uint64 max_bytes = 8;
 }
 message GroupProof { uint64 offset = 1; uint32 attempt = 2; bytes mac = 3; }
-message GroupDelivery { GroupProof proof = 1; bytes key = 2; bytes body = 3; uint64 key_hash = 4; bool current_attempt = 5; }
+message GroupDelivery {
+  GroupProof proof = 1;
+  bytes key = 2;
+  bytes body = 3;
+  uint64 key_hash = 4;
+  bool current_attempt = 5;
+  bool key_present = 6;
+  map<string, bytes> properties = 7;
+}
+message PublishMessage { optional bytes key = 1; bytes payload = 2; map<string, bytes> properties = 3; }
+enum PublisherAction { PUBLISHER_ACTION_UNSPECIFIED = 0; OPEN_PUBLISHER = 1; HEARTBEAT_PUBLISHER = 2; CLOSE_PUBLISHER = 3; PUBLISHER_STATUS = 4; }
+message PublisherControl {
+  bytes topic_id = 1;
+  bytes producer_id = 2;
+  uint64 registration = 3;
+  PublisherAction action = 4;
+  uint64 heartbeat_sequence = 5;
+}
+message PublisherControlResult {
+  uint64 next_registration = 1;
+  uint64 registration = 2;
+  bool live = 3;
+  uint64 remaining_lease_ms = 4;
+  uint64 next_heartbeat_sequence = 5;
+}
+message Publish {
+  bytes topic_id = 1;
+  bytes shard_id = 2;
+  uint32 partition_id = 3;
+  bytes producer_id = 4;
+  uint64 registration = 5;
+  uint64 sequence = 6;
+  bytes digest = 7;
+  PublishMessage message = 8;
+  uint64 retired_before = 9;
+}
+message PublishResult {
+  bytes topic_id = 1;
+  bytes shard_id = 2;
+  bytes producer_id = 3;
+  uint64 registration = 4;
+  uint64 sequence = 5;
+  bytes digest = 6;
+  optional uint64 offset = 7;
+  bytes permanent_seal = 8;
+  uint64 sealed_end = 9;
+  bool permanently_closed = 10;
+}
+message RetirePublishes {
+  bytes topic_id = 1;
+  bytes shard_id = 2;
+  uint32 partition_id = 3;
+  bytes producer_id = 4;
+  uint64 registration = 5;
+  uint64 before = 6;
+  bool close = 7;
+}
+message PublishesRetired { uint64 before = 1; }
 message GroupDeliveries { uint64 sequence = 1; repeated GroupDelivery deliveries = 2; bool sealed_complete = 3; }
 message GroupAck {
   bytes topic_id = 1;

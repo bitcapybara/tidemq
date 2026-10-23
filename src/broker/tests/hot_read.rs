@@ -61,6 +61,7 @@ async fn seed(
         .unwrap();
     let messages = vec![
         MessageData {
+            context: Bytes::new(),
             key: Bytes::new(),
             body: Bytes::from_static(b"x"),
         };

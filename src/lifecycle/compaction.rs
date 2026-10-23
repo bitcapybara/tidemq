@@ -214,6 +214,7 @@ fn copy_records(archived: &[ArchivedRecord], first: u64, end: u64) -> Result<Vec
         }
         records.push(Record {
             offset: record.offset,
+            context: copied(record.context())?,
             key: copied(record.key())?,
             body: copied(record.body())?,
         });

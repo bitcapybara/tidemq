@@ -74,6 +74,8 @@ pub(crate) fn partition(frame: &Frame, limits: &ProtocolLimits) -> Result<Partit
     }
     Ok(match frame_kind(frame)? {
         FrameKind::ProduceBatch => from!(public::ProduceBatch),
+        FrameKind::Publish => from!(public::Publish),
+        FrameKind::RetirePublishes => from!(public::RetirePublishes),
         FrameKind::OpenProducer => from!(public::OpenProducer),
         FrameKind::ProducerStatus => from!(public::ProducerStatus),
         FrameKind::RetireProducer => from!(public::RetireProducer),
@@ -362,6 +364,7 @@ impl Service {
                         .messages
                         .into_iter()
                         .map(|message| MessageData {
+                            context: Bytes::new(),
                             key: message.key,
                             body: message.body,
                         })
@@ -1423,6 +1426,7 @@ fn cold_message(
         .map_err(|source| Error::operation("bind cold delivery proof", source))?;
     Ok(Some((
         MessageData {
+            context: Bytes::copy_from_slice(record.context()),
             key: Bytes::copy_from_slice(record.key()),
             body: Bytes::copy_from_slice(record.body()),
         },
