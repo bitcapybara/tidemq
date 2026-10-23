@@ -181,6 +181,228 @@ fn capacity() -> TransferCapacity {
     }
 }
 
+#[test]
+fn target_reservations_expand_without_double_counting_or_changing_original_reserve_results() {
+    let mut plan = plan();
+    let mut target = initialized(plan.source.cluster_id, plan.target.group_id, None);
+    let initial = TransferCapacity {
+        max_hot_bytes: 0,
+        max_hot_messages: 0,
+        ..capacity()
+    };
+    let reserve = DataCommand::AuthorityTransfer(AuthorityDataCommand::Reserve {
+        plan: Box::new(plan.clone()),
+        capacity: initial,
+    });
+    let reserved = DataResponse::AuthorityTransfer(TransferOutcome::Reserved { plan: plan.id });
+    assert_eq!(target.apply(reserve.clone()), reserved);
+    let available = target.expanded_transfer_capacity(plan.id).unwrap();
+    assert!(available.max_hot_bytes > initial.max_hot_bytes);
+    assert!(available.max_members > initial.max_members);
+    let expanded = TransferCapacity {
+        max_hot_bytes: available.max_hot_bytes / 2,
+        ..available
+    };
+    let expand = DataCommand::AuthorityTransfer(AuthorityDataCommand::ExpandReservation {
+        plan: plan.id,
+        capacity: expanded,
+    });
+    assert_eq!(target.apply(expand.clone()), reserved);
+    target.validate().unwrap();
+    assert_eq!(target.transfer_capacity(plan.id).unwrap(), expanded);
+    assert_eq!(target.apply(reserve), reserved);
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ExpandReservation {
+                plan: plan.id,
+                capacity: initial
+            }
+        )),
+        reserved
+    );
+    assert_eq!(target.transfer_capacity(plan.id).unwrap(), expanded);
+    let excessive = TransferCapacity {
+        max_hot_bytes: available.max_hot_bytes + 1,
+        ..available
+    };
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ExpandReservation {
+                plan: plan.id,
+                capacity: excessive
+            }
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Capacity))
+    );
+    assert_eq!(target.transfer_capacity(plan.id).unwrap(), expanded);
+    let mut target: DataApplication =
+        postcard::from_bytes(&postcard::to_stdvec(&target).unwrap()).unwrap();
+    target.validate().unwrap();
+    assert_eq!(target.apply(expand.clone()), reserved);
+    let cut = CommitPosition {
+        term: 1,
+        leader_node: 1,
+        index: 100,
+    };
+    plan.advance(TransferStep::Frozen(cut)).unwrap();
+    plan.advance(TransferStep::Exported(TransferManifest {
+        bytes: 100,
+        digest: [9; 32],
+        source_cut: cut,
+        committed_end: 0,
+    }))
+    .unwrap();
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::BeginImport {
+                plan: Box::new(plan.clone())
+            }
+        )),
+        DataResponse::AuthorityTransfer(TransferOutcome::ImportProgress {
+            plan: plan.id,
+            received: 0
+        })
+    );
+    assert_eq!(
+        target.expanded_transfer_capacity(plan.id).unwrap(),
+        expanded
+    );
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ExpandReservation {
+                plan: plan.id,
+                capacity: available
+            }
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Conflict))
+    );
+    assert_eq!(target.apply(expand), reserved);
+    target.validate().unwrap();
+}
+
+#[test]
+fn retiring_another_target_scope_makes_capacity_available_to_the_original_waiting_transfer() {
+    let plan = plan();
+    let mut other = self::plan();
+    other.source.group_id = plan.target.group_id;
+    other.target.group_id = 4;
+    for grant in [&mut other.source, &mut other.target] {
+        grant.cluster_id = plan.source.cluster_id;
+        grant.operation_id = crate::metadata::grant_operation_id(
+            grant.cluster_id,
+            grant.partition,
+            grant.epoch,
+            grant.owner_node,
+            grant.expected_route_generation,
+        )
+        .unwrap();
+    }
+    let mut target = initialized(
+        plan.source.cluster_id,
+        plan.target.group_id,
+        Some(other.source.clone()),
+    );
+    assert!(matches!(
+        target.apply(publish_body(
+            other.partition,
+            other.shard,
+            1,
+            Bytes::from(vec![1; 240 * 1024])
+        )),
+        DataResponse::Published(_)
+    ));
+    let initial = target.transfer_capacity(plan.id).unwrap();
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::Reserve {
+                plan: Box::new(plan.clone()),
+                capacity: initial
+            }
+        )),
+        DataResponse::AuthorityTransfer(TransferOutcome::Reserved { plan: plan.id })
+    );
+    let mut source = application(&plan);
+    for sequence in 1..=4 {
+        assert!(matches!(
+            source.apply(publish_body(
+                plan.partition,
+                plan.shard,
+                sequence,
+                Bytes::from(vec![2; 240 * 1024])
+            )),
+            DataResponse::Published(_)
+        ));
+    }
+    assert_eq!(
+        source.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::Freeze {
+                plan: Box::new(plan.clone()),
+                capacity: initial
+            }
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Capacity))
+    );
+    let other_capacity = TransferCapacity {
+        max_bytes: 1024 * 1024,
+        max_hot_bytes: 512 * 1024,
+        ..capacity()
+    };
+    assert!(matches!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::Freeze {
+                plan: Box::new(other.clone()),
+                capacity: other_capacity
+            }
+        )),
+        DataResponse::AuthorityTransfer(TransferOutcome::Frozen { .. })
+    ));
+    let cut = CommitPosition {
+        term: 1,
+        leader_node: 1,
+        index: 100,
+    };
+    target.apply(DataCommand::AuthorityTransfer(
+        AuthorityDataCommand::RecordCut {
+            plan: other.id,
+            cut,
+        },
+    ));
+    let mut bytes = Vec::new();
+    target.write_transfer_payload(other.id, &mut bytes).unwrap();
+    let other = checkpointed_report(other, &bytes, cut);
+    assert!(matches!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ReclaimSource {
+                plan: Box::new(other)
+            }
+        )),
+        DataResponse::AuthorityTransfer(TransferOutcome::SourceReclaimed { .. })
+    ));
+    assert_eq!(target.transfer_capacity(plan.id).unwrap(), initial);
+    let expanded = target.expanded_transfer_capacity(plan.id).unwrap();
+    assert!(expanded.max_hot_bytes > initial.max_hot_bytes);
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ExpandReservation {
+                plan: plan.id,
+                capacity: expanded
+            }
+        )),
+        DataResponse::AuthorityTransfer(TransferOutcome::Reserved { plan: plan.id })
+    );
+    target.validate().unwrap();
+    assert!(matches!(
+        source.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::Freeze {
+                plan: Box::new(plan),
+                capacity: expanded
+            }
+        )),
+        DataResponse::AuthorityTransfer(TransferOutcome::Frozen { .. })
+    ));
+    source.validate().unwrap();
+}
+
 fn checkpointed_report(
     mut plan: AuthorityTransfer,
     bytes: &[u8],

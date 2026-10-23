@@ -117,7 +117,10 @@ impl DataApplication {
             .as_ref()
             .ok_or(DataRejection::Uninitialized)?
             .subscription;
-        let used = self.group_usage()?;
+        let mut used = self.group_usage()?;
+        if let Some(previous) = self.authority.reservation() {
+            used.remove_reservation(*previous)?;
+        }
         let maximum = limits.max_total_window_slots as usize;
         capacity.max_window_slots = maximum
             .checked_sub(used.windows)
@@ -287,8 +290,10 @@ impl DataApplication {
         capacity: TransferCapacity,
     ) -> Result<(), DataRejection> {
         let mut total = self.group_usage()?;
+        if let Some(previous) = self.authority.reservation() {
+            total.remove_reservation(*previous)?;
+        }
         if let Some(state) = state {
-            total.remove_reservation(capacity)?;
             total.add(transfer_usage(state)?)?;
         } else {
             total.add(Usage::reserved(capacity))?;

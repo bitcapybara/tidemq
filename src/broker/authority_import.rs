@@ -95,6 +95,29 @@ impl DataApplication {
         {
             return Err(TransferDataRejection::Capacity);
         }
+        self.available_transfer_capacity()
+    }
+
+    pub(crate) fn expanded_transfer_capacity(
+        &self,
+        plan: Id,
+    ) -> Result<TransferCapacity, TransferDataRejection> {
+        let target = self
+            .authority
+            .targets
+            .get(&plan)
+            .ok_or(TransferDataRejection::NotReady)?;
+        if target.plan.manifest.is_some() || target.recovered.is_some() {
+            return Ok(target.capacity);
+        }
+        let available = self.available_transfer_capacity()?;
+        if !available.covers(target.capacity) {
+            return Err(TransferDataRejection::Capacity);
+        }
+        Ok(available)
+    }
+
+    fn available_transfer_capacity(&self) -> Result<TransferCapacity, TransferDataRejection> {
         let config = self
             .config
             .as_ref()
@@ -126,6 +149,37 @@ impl DataApplication {
             .map_err(|_| TransferDataRejection::Capacity)
     }
 
+    pub(super) fn expand_reservation(
+        &mut self,
+        plan: Id,
+        capacity: TransferCapacity,
+    ) -> Result<TransferOutcome, TransferDataRejection> {
+        capacity.validate()?;
+        let target = self
+            .authority
+            .targets
+            .get(&plan)
+            .ok_or(TransferDataRejection::NotReady)?;
+        if target.capacity.covers(capacity) {
+            return Ok(TransferOutcome::Reserved { plan });
+        }
+        if !capacity.covers(target.capacity)
+            || target.plan.manifest.is_some()
+            || target.recovered.is_some()
+        {
+            return Err(TransferDataRejection::Conflict);
+        }
+        self.validate_target_reservation(&target.plan, capacity)?;
+        self.validate_target_group_capacity(None, capacity)
+            .map_err(|_| TransferDataRejection::Capacity)?;
+        self.authority
+            .targets
+            .get_mut(&plan)
+            .ok_or(TransferDataRejection::NotReady)?
+            .capacity = capacity;
+        Ok(TransferOutcome::Reserved { plan })
+    }
+
     pub(super) fn reserve_target(
         &mut self,
         plan: AuthorityTransfer,
@@ -135,7 +189,7 @@ impl DataApplication {
             .map_err(|_| TransferDataRejection::InvalidPlan)?;
         capacity.validate()?;
         if let Some(original) = self.authority.targets.get(&plan.id) {
-            if !same_plan(&original.plan, &plan) || original.capacity != capacity {
+            if !same_plan(&original.plan, &plan) || original.initial_capacity != capacity {
                 return Err(TransferDataRejection::Conflict);
             }
             return Ok(TransferOutcome::Reserved { plan: plan.id });
@@ -156,6 +210,7 @@ impl DataApplication {
             id,
             TargetImport {
                 plan,
+                initial_capacity: capacity,
                 capacity,
                 pages: BTreeMap::new(),
                 received: 0,
@@ -417,7 +472,9 @@ impl DataApplication {
                 .validate()
                 .map_err(|_| TransferDataRejection::InvalidPlan)?;
             target.capacity.validate()?;
+            target.initial_capacity.validate()?;
             if *id != target.plan.id
+                || !target.capacity.covers(target.initial_capacity)
                 || !matches!(
                     target.plan.stage,
                     TransferStage::Prepare | TransferStage::Exported

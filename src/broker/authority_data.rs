@@ -22,6 +22,17 @@ pub struct TransferCapacity {
 }
 
 impl TransferCapacity {
+    fn covers(self, other: Self) -> bool {
+        self.max_bytes >= other.max_bytes
+            && self.max_hot_bytes >= other.max_hot_bytes
+            && self.max_hot_messages >= other.max_hot_messages
+            && self.max_window_slots >= other.max_window_slots
+            && self.max_read_results >= other.max_read_results
+            && self.max_ack_slots >= other.max_ack_slots
+            && self.max_members >= other.max_members
+            && self.max_in_flight_bytes >= other.max_in_flight_bytes
+    }
+
     fn validate(self) -> Result<(), TransferDataRejection> {
         if self.max_bytes <= 32
             || self.max_bytes > MAX_TRANSFER_BYTES
@@ -87,6 +98,10 @@ pub enum AuthorityDataCommand {
         plan: Id,
         cut: CommitPosition,
     },
+    ExpandReservation {
+        plan: Id,
+        capacity: TransferCapacity,
+    },
 }
 
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -138,6 +153,7 @@ pub(super) struct AuthorityDataState {
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct TargetImport {
     plan: AuthorityTransfer,
+    initial_capacity: TransferCapacity,
     capacity: TransferCapacity,
     pages: BTreeMap<u64, ImportedPage>,
     received: u64,
@@ -279,6 +295,9 @@ impl DataApplication {
             AuthorityDataCommand::FinishImport { plan } => self.finish_import(plan),
             AuthorityDataCommand::Freeze { plan, capacity } => self.freeze_source(*plan, capacity),
             AuthorityDataCommand::RecordCut { plan, cut } => self.record_source_cut(plan, cut),
+            AuthorityDataCommand::ExpandReservation { plan, capacity } => {
+                self.expand_reservation(plan, capacity)
+            }
         }
         .map_err(DataRejection::Transfer)?;
         Ok(DataResponse::AuthorityTransfer(outcome))

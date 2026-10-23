@@ -283,27 +283,7 @@ impl Service {
     ) -> Result<TransferReply> {
         let plan = view.plan;
         match request {
-            TransferRequest::Reserve(_) => {
-                let capacity = self
-                    .data
-                    .get(&group)
-                    .ok_or_else(Error::unavailable)?
-                    .state
-                    .try_with_application(|state| state.transfer_capacity(plan.id))
-                    .await
-                    .map_err(|source| Error::operation("read target reservation capacity", source))?
-                    .map_err(transfer_error)?;
-                self.transfer_write(
-                    group,
-                    AuthorityDataCommand::Reserve {
-                        plan: Box::new(plan),
-                        capacity,
-                    },
-                    deadline,
-                )
-                .await?;
-                Ok(TransferReply::Reserved(capacity))
-            }
+            TransferRequest::Reserve(_) => self.reserve_transfer(group, plan, deadline).await,
             TransferRequest::Freeze { capacity, .. } => {
                 self.freeze_transfer(group, plan, capacity, view.pending, deadline)
                     .await
@@ -370,6 +350,63 @@ impl Service {
                 "Data group omitted the authority transfer result",
             )),
         }
+    }
+
+    async fn reserve_transfer(
+        &self,
+        group: u64,
+        plan: AuthorityTransfer,
+        deadline: Instant,
+    ) -> Result<TransferReply> {
+        let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
+        let id = plan.id;
+        let (existing, capacity) = replica
+            .state
+            .try_with_application(|state| {
+                state
+                    .transfer_capacity(id)
+                    .map(|capacity| (state.transfer_import_progress(id).is_some(), capacity))
+            })
+            .await
+            .map_err(|source| Error::operation("read original target reservation", source))?
+            .map_err(transfer_error)?;
+        if !existing {
+            self.transfer_write(
+                group,
+                AuthorityDataCommand::Reserve {
+                    plan: Box::new(plan),
+                    capacity,
+                },
+                deadline,
+            )
+            .await?;
+        }
+        let expanded = replica
+            .state
+            .try_with_application(|state| state.expanded_transfer_capacity(id))
+            .await
+            .map_err(|source| {
+                Error::operation("read available target reservation expansion", source)
+            })?
+            .map_err(transfer_error)?;
+        if expanded != capacity {
+            self.transfer_write(
+                group,
+                AuthorityDataCommand::ExpandReservation {
+                    plan: id,
+                    capacity: expanded,
+                },
+                deadline,
+            )
+            .await?;
+        }
+        let capacity = replica
+            .state
+            .try_with_application(|state| state.transfer_capacity(id))
+            .await
+            .map_err(|source| Error::operation("read committed target reservation", source))?
+            .map_err(transfer_error)?;
+        Ok(TransferReply::Reserved(capacity))
     }
 
     async fn transfer_position(&self, group: u64, deadline: Instant) -> Result<CommitPosition> {
