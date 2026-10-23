@@ -89,6 +89,10 @@ impl ClientConfig {
         self.validate_queues()?;
         for (valid, reason) in [
             (
+                (!self.close_timeout.is_zero() && self.close_timeout <= Duration::from_secs(300)),
+                "close timeout must be between one nanosecond and five minutes",
+            ),
+            (
                 (1..=tidemq_protocol::framing::MAX_TIMEOUT_MS).contains(&self.request_timeout_ms),
                 "request_timeout_ms must be between 1 and 300000 milliseconds",
             ),
@@ -228,6 +232,10 @@ pub(crate) struct Inner {
     pub requests: Arc<Semaphore>,
     pub metrics: Arc<Metrics>,
     pub consumer_claims: std::sync::Mutex<HashSet<(Id, u32, Id)>>,
+    pub(crate) consumers: std::sync::Mutex<Vec<std::sync::Weak<crate::group_consumer::Core>>>,
+    closing: AtomicBool,
+    close_result: std::sync::Mutex<Option<crate::close::CloseResult>>,
+    close_changed: tokio::sync::Notify,
     closed: AtomicBool,
     cancellation: CancellationToken,
 }
@@ -236,6 +244,26 @@ pub(crate) struct Inner {
 #[derive(Clone)]
 pub struct Client {
     pub(crate) inner: Arc<Inner>,
+    _owner: Option<Arc<ClientOwner>>,
+}
+
+struct ClientOwner(std::sync::Weak<Inner>);
+
+impl Drop for ClientOwner {
+    fn drop(&mut self) {
+        if let Some(inner) = self.0.upgrade()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                let _ = Client {
+                    inner,
+                    _owner: None,
+                }
+                .close()
+                .await;
+            });
+        }
+    }
 }
 
 impl Client {
@@ -352,29 +380,35 @@ impl Client {
         .map_err(|source| Error::Memory { source })?;
         let transport =
             tidemq_transport::Client::bind(bind, tls, config.transport.clone(), budget)?;
+        let inner = Arc::new(Inner {
+            producer_bytes: Arc::new(Semaphore::new(config.producer_bytes()?)),
+            bytes: Arc::new(Semaphore::new(config.max_pending_bytes as usize)),
+            requests: Arc::new(Semaphore::new(config.max_pending_requests as usize)),
+            config,
+            transport,
+            credentials: ClientCredentials::External {
+                session_id: Id::new_v7()?,
+                access_token,
+            },
+            target,
+            pool: Pool {
+                control: Mutex::new(None),
+                produce: Mutex::new(None),
+                delivery: Mutex::new(None),
+                bulk: Mutex::new(None),
+            },
+            metrics: Arc::new(Metrics::default()),
+            consumer_claims: std::sync::Mutex::new(HashSet::new()),
+            consumers: std::sync::Mutex::new(Vec::new()),
+            closing: AtomicBool::new(false),
+            close_result: std::sync::Mutex::new(None),
+            close_changed: tokio::sync::Notify::new(),
+            closed: AtomicBool::new(false),
+            cancellation: CancellationToken::new(),
+        });
         let client = Self {
-            inner: Arc::new(Inner {
-                producer_bytes: Arc::new(Semaphore::new(config.producer_bytes()?)),
-                bytes: Arc::new(Semaphore::new(config.max_pending_bytes as usize)),
-                requests: Arc::new(Semaphore::new(config.max_pending_requests as usize)),
-                config,
-                transport,
-                credentials: ClientCredentials::External {
-                    session_id: Id::new_v7()?,
-                    access_token,
-                },
-                target,
-                pool: Pool {
-                    control: Mutex::new(None),
-                    produce: Mutex::new(None),
-                    delivery: Mutex::new(None),
-                    bulk: Mutex::new(None),
-                },
-                metrics: Arc::new(Metrics::default()),
-                consumer_claims: std::sync::Mutex::new(HashSet::new()),
-                closed: AtomicBool::new(false),
-                cancellation: CancellationToken::new(),
-            }),
+            _owner: Some(Arc::new(ClientOwner(Arc::downgrade(&inner)))),
+            inner,
         };
         client.rpc(TrafficClass::Control, deadline).await?;
         Ok(client)
@@ -402,6 +436,9 @@ impl Client {
         &self,
         operation: impl FnOnce(Instant) -> F,
     ) -> Result<T> {
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
         crate::request::run(
             Duration::from_millis(self.inner.config.request_timeout_ms),
             &self.inner.cancellation,
@@ -721,17 +758,114 @@ impl Client {
         Ok(())
     }
 
-    pub async fn close(&self) {
+    pub(crate) fn background(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _owner: None,
+        }
+    }
+
+    pub(crate) fn register_consumer(&self, core: &Arc<crate::group_consumer::Core>) -> Result<()> {
+        let mut resources = self.inner.consumers.lock().map_err(|_| Error::Closed)?;
+        if self.inner.closing.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
+        resources.retain(|resource| resource.strong_count() > 0);
+        if resources.len() >= 128 {
+            return Err(Error::Admission {
+                resource: "logical consumers",
+            });
+        }
+        resources.push(Arc::downgrade(core));
+        Ok(())
+    }
+
+    pub async fn close(&self) -> Result<crate::CloseReport, crate::CloseError> {
+        if self
+            .inner
+            .closing
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let client = self.background();
+            tokio::spawn(async move {
+                let result = client.close_owned().await;
+                if let Ok(mut stored) = client.inner.close_result.lock() {
+                    *stored = Some(result);
+                }
+                client.inner.close_changed.notify_waiters();
+            });
+        }
+        loop {
+            let notified = self.inner.close_changed.notified();
+            match self.inner.close_result.lock() {
+                Ok(result) => {
+                    if let Some(result) = result.as_ref() {
+                        return result.clone();
+                    }
+                }
+                Err(_) => {
+                    return Err(crate::CloseError {
+                        report: crate::CloseReport::default(),
+                        source: Arc::new(Error::Closed),
+                    });
+                }
+            }
+            notified.await;
+        }
+    }
+
+    async fn close_owned(&self) -> crate::close::CloseResult {
+        let deadline = Instant::now() + self.inner.config.close_timeout;
+        let mut report = crate::CloseReport {
+            local_cleanup_complete: true,
+            ..crate::CloseReport::default()
+        };
+        let mut failure = None;
+        let consumers = self
+            .inner
+            .consumers
+            .lock()
+            .map(|resources| {
+                resources
+                    .iter()
+                    .filter_map(std::sync::Weak::upgrade)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut jobs = tokio::task::JoinSet::new();
+        for consumer in consumers {
+            jobs.spawn(async move { consumer.close_until(deadline).await });
+        }
+        while let Some(result) = jobs.join_next().await {
+            match result {
+                Ok(Ok(child)) => report.merge(&child),
+                Ok(Err(error)) => {
+                    report.merge(error.report());
+                    failure.get_or_insert(error.source);
+                }
+                Err(_) => {
+                    report.local_cleanup_complete = false;
+                    failure.get_or_insert_with(|| Arc::new(Error::Closed));
+                }
+            }
+        }
+        if let Err(error) = self.close_transport(deadline).await {
+            report.local_cleanup_complete = false;
+            failure.get_or_insert_with(|| Arc::new(error));
+        }
+        match failure {
+            Some(source) => Err(crate::CloseError { report, source }),
+            None => Ok(report),
+        }
+    }
+
+    async fn close_transport(&self, deadline: Instant) -> Result<()> {
         self.inner.closed.store(true, Ordering::Release);
         self.inner.cancellation.cancel();
         self.inner.bytes.close();
         self.inner.producer_bytes.close();
         self.inner.requests.close();
-        let Ok(deadline) =
-            deadline_after(Duration::from_millis(self.inner.config.request_timeout_ms))
-        else {
-            return;
-        };
         for class in [
             TrafficClass::Control,
             TrafficClass::Produce,
@@ -745,7 +879,8 @@ impl Client {
                 rpc.close(deadline).await;
             }
         }
-        let _ = self.inner.transport.close(deadline).await;
+        self.inner.transport.close(deadline).await?;
+        Ok(())
     }
 }
 

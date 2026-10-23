@@ -79,6 +79,7 @@ pub struct QueueConsumer {
 
 struct Owner {
     core: Arc<Core>,
+    _client: Client,
 }
 impl Drop for Owner {
     fn drop(&mut self) {
@@ -99,7 +100,7 @@ struct State {
     closed: Option<CloseResult>,
 }
 
-struct Core {
+pub(crate) struct Core {
     client: Client,
     topic: String,
     topic_id: Id,
@@ -116,6 +117,8 @@ struct Core {
     memory: Arc<Semaphore>,
     stop: CancellationToken,
     ack_gate: tokio::sync::Mutex<()>,
+    close_deadline: Mutex<Option<Instant>>,
+    lease_until: Mutex<Instant>,
 }
 
 impl Client {
@@ -202,7 +205,7 @@ impl Builder {
         request.action = public::ConsumerAction::JoinConsumer.into();
         let member = Id::from_slice(&request.member_id)?;
         let core = Arc::new(Core {
-            client: self.client,
+            client: self.client.background(),
             topic: self.topic,
             topic_id: info.id,
             subscription: Id::from_slice(&status.subscription_id)?,
@@ -229,15 +232,26 @@ impl Builder {
             memory: Arc::new(Semaphore::new(self.bytes as usize)),
             stop: CancellationToken::new(),
             ack_gate: tokio::sync::Mutex::new(()),
+            close_deadline: Mutex::new(None),
+            lease_until: Mutex::new(Instant::now()),
         });
-        let owner = Arc::new(Owner { core: core.clone() });
-        let operation = Id::new_v7()?;
+        self.client.register_consumer(&core)?;
+        let owner = Arc::new(Owner {
+            core: core.clone(),
+            _client: self.client,
+        });
+        let mut operation = Id::new_v7()?;
         let (ready, result) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            match control(&core.client, operation, &request, deadline).await {
+            let started = Instant::now();
+            let result = join_control(&core.client, &mut operation, &mut request, deadline).await;
+            core.epoch.store(request.member_epoch, Ordering::Release);
+            match result {
                 Ok(status) => {
-                    if let Ok(mut info) = core.info.lock() {
-                        *info = status;
+                    core.epoch.store(status.member_epoch, Ordering::Release);
+                    if let Err(error) = core.update_info(status, started) {
+                        core.record_error(error);
+                        core.stop.cancel();
                     }
                     let _ = ready.send(Ok(()));
                     driver::run(core).await;
@@ -275,7 +289,48 @@ async fn control(
         .await
 }
 
+async fn join_control(
+    client: &Client,
+    operation: &mut Id,
+    request: &mut public::ConsumerControl,
+    deadline: Instant,
+) -> Result<public::ConsumerControlResult> {
+    loop {
+        match control(client, *operation, request, deadline).await {
+            Ok(result) if result.member_status == 2 && result.member_epoch > 0 => {
+                return Ok(result);
+            }
+            Ok(_) => return Err(Error::SessionExpired),
+            Err(Error::Remote {
+                code: tidemq_protocol::common::ErrorCode::RegistrationConflict,
+                outcome: tidemq_protocol::common::Outcome::Rejected,
+                expected_registration_epoch: Some(expected),
+                ..
+            }) => {
+                request.member_epoch = expected;
+                *operation = Id::new_v7()?;
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 impl Core {
+    fn update_info(&self, info: public::ConsumerControlResult, started: Instant) -> Result<()> {
+        if info.remaining_lease_ms > 15_000 {
+            return Err(Error::ResponseMismatch {
+                reason: "consumer lease exceeds its supported bound".into(),
+            });
+        }
+        let expires = started
+            .checked_add(Duration::from_millis(info.remaining_lease_ms))
+            .ok_or(Error::Deadline)?;
+        *self.lease_until.lock().map_err(|_| Error::Closed)? = expires;
+        *self.info.lock().map_err(|_| Error::Closed)? = info;
+        self.changed.notify_waiters();
+        Ok(())
+    }
     fn state(&self) -> Result<std::sync::MutexGuard<'_, State>> {
         self.state.lock().map_err(|_| Error::Closed)
     }
@@ -300,32 +355,36 @@ impl Core {
     }
 
     fn try_receive(&self) -> Result<Option<ReceivedMessage>> {
-        if self.stop.is_cancelled() {
-            return Err(Error::Closed);
-        }
         let mut state = self.state()?;
         if let Some(source) = state.error.take() {
             return Err(Error::Background { source });
         }
-        let Some(mut message) = state.queue.pop_front() else {
-            return Ok(None);
-        };
-        if self.model == SubscriptionKind::Stream {
-            let info = self.info.lock().map_err(|_| Error::Closed)?;
-            if !info.lanes.iter().any(|lane| {
-                message.data.hash >= lane.hash_start
-                    && lane.hash_end.is_none_or(|end| message.data.hash < end)
-            }) {
-                drop(info);
-                drop(state);
-                return self.try_receive();
-            }
+        if self.stop.is_cancelled() {
+            return Err(Error::Closed);
         }
-        let sequence = state.next_delivery;
-        state.next_delivery = sequence.checked_add(1).ok_or(Error::SessionExpired)?;
-        message.delivery_sequence = sequence;
-        state.ledger.insert(sequence, message.clone());
-        Ok(Some(message))
+        if *self.lease_until.lock().map_err(|_| Error::Closed)? <= Instant::now() {
+            return Err(Error::SessionExpired);
+        }
+        while let Some(mut message) = state.queue.pop_front() {
+            if message.data.epoch != self.epoch.load(Ordering::Acquire) {
+                continue;
+            }
+            if self.model == SubscriptionKind::Stream {
+                let info = self.info.lock().map_err(|_| Error::Closed)?;
+                if !info.lanes.iter().any(|lane| {
+                    message.data.hash >= lane.hash_start
+                        && lane.hash_end.is_none_or(|end| message.data.hash < end)
+                }) {
+                    continue;
+                }
+            }
+            let sequence = state.next_delivery;
+            state.next_delivery = sequence.checked_add(1).ok_or(Error::SessionExpired)?;
+            message.delivery_sequence = sequence;
+            state.ledger.insert(sequence, message.clone());
+            return Ok(Some(message));
+        }
+        Ok(None)
     }
 
     async fn receive(&self) -> Result<ReceivedMessage> {
@@ -339,7 +398,20 @@ impl Core {
     }
 
     async fn close(&self) -> CloseResult {
+        self.close_until(Instant::now() + self.client.inner.config.close_timeout)
+            .await
+    }
+
+    pub(crate) async fn close_until(&self, deadline: Instant) -> CloseResult {
+        if let Ok(mut original) = self.close_deadline.lock()
+            && original.is_none()
+        {
+            *original = Some(deadline);
+        }
         self.stop.cancel();
+        if let Ok(mut state) = self.state() {
+            state.error = None;
+        }
         self.changed.notify_waiters();
         loop {
             let notified = self.changed.notified();
@@ -356,11 +428,19 @@ impl Core {
                     });
                 }
             }
-            notified.await;
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return Err(CloseError {
+                    report: CloseReport::default(),
+                    source: Arc::new(Error::Deadline),
+                });
+            }
         }
     }
 
     fn record_error(&self, error: Error) {
+        if self.stop.is_cancelled() {
+            return;
+        }
         if let Ok(mut state) = self.state.lock() {
             state.error = Some(Arc::new(error));
         }

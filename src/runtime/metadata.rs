@@ -899,6 +899,12 @@ impl Service {
 
 fn metadata_rejection(reason: metadata::Rejection) -> Error {
     use metadata::Rejection as R;
+    if let R::MemberEpochConflict { expected } = reason {
+        let mut failure =
+            Error::reject(ErrorCode::RegistrationConflict, Outcome::Rejected, false).failure();
+        failure.expected_registration_epoch = Some(expected);
+        return Error::Rejected { failure };
+    }
     let (code, retryable) = match &reason {
         R::Authorization(_) => (ErrorCode::Forbidden, false),
         R::Capacity => (ErrorCode::QuotaExceeded, true),

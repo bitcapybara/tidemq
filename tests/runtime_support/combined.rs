@@ -187,7 +187,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
     })
     .await
     .unwrap();
-    client.close().await;
+    client.close().await.unwrap();
     for (_, mut process) in processes {
         process.kill().await.unwrap();
         let _ = process.wait().await.unwrap();

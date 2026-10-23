@@ -92,8 +92,8 @@ async fn logical_topic_split_merge_and_credentials_survive_a_real_runtime_restar
         topic.id()
     );
     assert!(app.admin().create_tenant("forbidden").await.is_err());
-    client.close().await;
-    app.close().await;
+    client.close().await.unwrap();
+    app.close().await.unwrap();
     fixture.stop(1).await;
     tokio::fs::remove_file(fixture.directory.join("bootstrap.token"))
         .await
@@ -115,8 +115,8 @@ async fn logical_topic_split_merge_and_credentials_survive_a_real_runtime_restar
         app.admin().topic_info("acme/app/orders").await.is_err(),
         "Revocation must affect an already authenticated connection"
     );
-    app.close().await;
-    root.close().await;
+    app.close().await.unwrap();
+    root.close().await.unwrap();
     fixture.close().await;
 }
 
@@ -157,8 +157,8 @@ async fn tenant_namespace_authorization_is_checked_on_each_resource() {
         .unwrap();
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert!(app.admin().topic_info("acme/app/orders").await.is_err());
-    app.close().await;
-    root.close().await;
+    app.close().await.unwrap();
+    root.close().await.unwrap();
     fixture.close().await;
 }
 
@@ -257,7 +257,7 @@ async fn queue_members_share_messages_and_a_persistent_nack_redelivers_after_lea
     restored.ack(&message).await.unwrap();
     drop(message);
     restored.close().await.unwrap();
-    client.close().await;
+    client.close().await.unwrap();
     fixture.close().await;
 }
 
@@ -340,6 +340,153 @@ async fn stream_clones_share_an_application_prefix_and_reject_a_queue_model_reus
     restored.ack_cumulative(&last).await.unwrap();
     drop(last);
     restored.close().await.unwrap();
-    client.close().await;
+    client.close().await.unwrap();
     fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_client_close_waiter_does_not_cancel_member_cleanup() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic("acme/app/events")
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer("acme/app/events", "state")
+        .build()
+        .await
+        .unwrap();
+    let queue = client
+        .new_queue_consumer("acme/app/events", "jobs")
+        .build()
+        .await
+        .unwrap();
+    {
+        let mut closing = std::pin::pin!(client.close());
+        std::future::poll_fn(|context| {
+            let _ = std::future::Future::poll(closing.as_mut(), context);
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+    let report = client.close().await.unwrap();
+    assert!(report.local_cleanup_complete());
+    assert_eq!(report.members_left(), 2);
+    assert_eq!(client.close().await.unwrap().members_left(), 2);
+    assert!(matches!(
+        stream.try_receive(),
+        Err(tidemq_sdk::Error::Closed)
+    ));
+    assert!(matches!(
+        queue.try_receive(),
+        Err(tidemq_sdk::Error::Closed)
+    ));
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() {
+    let mut fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic("acme/app/jobs")
+        .await
+        .unwrap();
+    let queue = client
+        .new_queue_consumer("acme/app/jobs", "workers")
+        .prefetch_messages(4)
+        .build()
+        .await
+        .unwrap();
+    let topic = client.admin().topic("acme/app/jobs").await.unwrap();
+    let producer = Producer::open(
+        client.clone(),
+        Id::from_slice(&topic.topic_id).unwrap(),
+        0,
+        Id::new_v7().unwrap(),
+    )
+    .await
+    .unwrap();
+    producer
+        .produce(vec![public::Message {
+            key: Bytes::from_static(b"job"),
+            body: Bytes::from_static(b"recover me"),
+        }])
+        .await
+        .unwrap();
+    let old = tokio::time::timeout(Duration::from_secs(15), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.stop(1).await;
+    tokio::time::sleep(Duration::from_secs(16)).await;
+    fixture.restart(1).await;
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut failures = Vec::new();
+    let recovered = loop {
+        match tokio::time::timeout_at(deadline, queue.receive())
+            .await
+            .unwrap()
+        {
+            Ok(message) => break message,
+            Err(error) => {
+                assert!(
+                    recoverable_member_error(&error),
+                    "Unexpected member recovery failure: {error:#}"
+                );
+                if failures.len() < 64 {
+                    failures.push(format!("{error:#}"));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    assert_eq!(old.message_id(), recovered.message_id());
+    assert!(matches!(
+        queue.ack(&old).await,
+        Err(tidemq_sdk::Error::StaleDelivery)
+    ));
+    queue.ack(&recovered).await.unwrap();
+    tokio::fs::write(fixture.directory.join("consumer-rejoin.json"), serde_json::to_vec_pretty(&serde_json::json!({
+        "original_message_id": old.message_id().to_string(), "recovered_message_id": recovered.message_id().to_string(),
+        "old_ack_rejected": true, "recovery_errors": failures,
+    })).unwrap()).await.unwrap();
+    drop(old);
+    drop(recovered);
+    queue.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+fn recoverable_member_error(error: &tidemq_sdk::Error) -> bool {
+    use tidemq_sdk::{Error, common::ErrorCode};
+    error.outcome_unknown()
+        || match error {
+            Error::Background { source } => recoverable_member_error(source),
+            Error::SessionExpired => true,
+            Error::Remote {
+                code:
+                    ErrorCode::Unavailable
+                    | ErrorCode::Fenced
+                    | ErrorCode::StaleDelivery
+                    | ErrorCode::SessionExpired,
+                ..
+            } => true,
+            _ => false,
+        }
 }

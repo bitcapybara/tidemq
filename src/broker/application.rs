@@ -455,6 +455,9 @@ impl DataApplication {
     pub fn producer(&self, partition: PartitionKey) -> Option<&ProducerState> {
         self.partitions.get(&partition).map(|state| &state.producer)
     }
+    pub fn sealed_end(&self, partition: PartitionKey) -> Option<u64> {
+        self.partitions.get(&partition)?.seal.map(|(_, end)| end)
+    }
 
     pub fn subscriptions(&self, partition: PartitionKey) -> Option<&SubscriptionState> {
         self.partitions

@@ -45,7 +45,7 @@ impl PendingAck {
     pub async fn retry(&self) -> Result<AckReceipt> {
         let core = self.work.core.upgrade().ok_or(Error::Closed)?;
         core.client
-            .operation(|deadline| self.retry_until(deadline))
+            .operation(|deadline| self.retry_until(deadline, true))
             .await
     }
 
@@ -60,6 +60,7 @@ impl PendingAck {
     fn retry_until(
         &self,
         deadline: Instant,
+        claim: bool,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<AckReceipt>> + Send + '_>> {
         Box::pin(async move {
             if !self.is_complete()
@@ -87,7 +88,8 @@ impl PendingAck {
                 let notified = self.work.changed.notified();
                 let result = self.work.result.lock().map_err(|_| Error::Closed)?.clone();
                 if let Some(result) = result {
-                    if result.is_ok()
+                    if claim
+                        && result.is_ok()
                         && let Some(core) = self.work.core.upgrade()
                     {
                         core.state()?.pending.remove(&self.work.operation);
@@ -110,12 +112,14 @@ pub(super) async fn start(
     nack: Option<u64>,
     cumulative: bool,
 ) -> Result<AckReceipt> {
-    if core.stop.is_cancelled() {
-        return Err(Error::Closed);
-    }
-    let pending = admit(core, message, nack, cumulative)?;
     core.client
-        .operation(|deadline| pending.retry_until(deadline))
+        .operation(|deadline| async move {
+            if core.stop.is_cancelled() {
+                return Err(Error::Closed);
+            }
+            let pending = admit(core, message, nack, cumulative)?;
+            pending.retry_until(deadline, true).await
+        })
         .await
 }
 
@@ -230,7 +234,7 @@ async fn drive(work: &Arc<Work>, deadline: Instant) -> Result<AckReceipt> {
     let core = work.core.upgrade().ok_or(Error::Closed)?;
     let dependencies = work.dependencies.lock().map_err(|_| Error::Closed)?.clone();
     for dependency in dependencies {
-        Box::pin(dependency.retry_until(deadline)).await?;
+        dependency.retry_until(deadline, false).await?;
     }
     work.dependencies.lock().map_err(|_| Error::Closed)?.clear();
     let _guard = tokio::time::timeout_at(deadline, core.ack_gate.lock())
@@ -321,7 +325,7 @@ pub(super) async fn drain(core: &Core, deadline: Instant) {
         .map(|state| state.pending.values().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     for pending in pending {
-        let _ = pending.retry_until(deadline).await;
+        let _ = pending.retry_until(deadline, false).await;
     }
 }
 

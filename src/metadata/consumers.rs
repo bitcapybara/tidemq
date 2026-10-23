@@ -15,10 +15,15 @@ pub struct ConsumerSubscription {
     pub topic: Id,
     pub name: String,
     pub members: MembersBook,
+    pub open_gates: std::collections::BTreeSet<Id>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ConsumerCommand {
+    OpenedGate {
+        subscription: Id,
+        domain: Id,
+    },
     Create {
         topic: Id,
         name: String,
@@ -56,6 +61,7 @@ pub enum ConsumerCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ConsumerOutcome {
+    GateOpened,
     Created { subscription: Id },
     Joined(MemberInfo),
     Renewed(u64),
@@ -87,6 +93,20 @@ impl MetadataState {
         command: &ConsumerCommand,
     ) -> Result<ConsumerOutcome, Rejection> {
         match command {
+            ConsumerCommand::OpenedGate {
+                subscription,
+                domain,
+            } => {
+                let row = self
+                    .consumer_subscriptions
+                    .get_mut(subscription)
+                    .ok_or(Rejection::NotFound)?;
+                if !row.members.plan().domains.contains(domain) {
+                    return Err(Rejection::InvalidEvidence);
+                }
+                row.open_gates.insert(*domain);
+                Ok(ConsumerOutcome::GateOpened)
+            }
             ConsumerCommand::Create {
                 topic,
                 name,
@@ -229,6 +249,12 @@ impl MetadataState {
             .map(|shard| shard.route.id)
             .collect();
         let members = MembersBook::new(operation, model, initial, layout.revision, domains)?;
+        let open_gates = self
+            .topology
+            .domains(topic)
+            .filter(|shard| model == SubscriptionKind::Queue || shard.predecessors.is_empty())
+            .map(|shard| shard.route.id)
+            .collect();
         self.consumer_subscriptions.insert(
             operation,
             ConsumerSubscription {
@@ -236,6 +262,7 @@ impl MetadataState {
                 topic,
                 name: name.to_owned(),
                 members,
+                open_gates,
             },
         );
         Ok(ConsumerOutcome::Created {
@@ -287,6 +314,13 @@ impl MetadataState {
                 return Err(Rejection::InvalidSubscription);
             }
             row.members.validate()?;
+            if row
+                .open_gates
+                .iter()
+                .any(|domain| !row.members.plan().domains.contains(domain))
+            {
+                return Err(Rejection::InvalidEvidence);
+            }
             if row.members.plan().domains.iter().any(|id| {
                 self.topology
                     .shard(*id)

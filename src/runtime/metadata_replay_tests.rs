@@ -120,7 +120,7 @@ async fn replayed_subscription_creation_preserves_the_original_result() {
             deadline(),
         )
         .await;
-    client.close().await;
+    client.close().await.unwrap();
     fixture.close().await;
     assert_eq!(
         replay

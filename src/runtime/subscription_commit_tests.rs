@@ -183,7 +183,7 @@ async fn committed_claim_expiry_retains_source_and_unknown_wire_semantics() {
         .unwrap()
         .unwrap()
         .unwrap();
-    client.close().await;
+    client.close().await.unwrap();
     drop(client);
     fixture.close().await;
     wire::assert_unknown_response_contract(

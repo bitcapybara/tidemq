@@ -48,6 +48,67 @@ fn read(member: Id, sequence: u64, now_ms: u64) -> GroupRead {
 }
 
 #[test]
+fn replaying_an_assignment_after_renewal_preserves_its_original_result() {
+    let mut cursor = cursor(SubscriptionKind::Queue);
+    let member = id();
+    let grant = grant(member, vec![]);
+    cursor
+        .install_members(1, std::slice::from_ref(&grant), 0)
+        .unwrap();
+    cursor.renew(member, 1, 20_000, 1_000).unwrap();
+    cursor
+        .install_members(1, std::slice::from_ref(&grant), 1_001)
+        .unwrap();
+    let mut altered = grant;
+    altered.client = id();
+    assert_eq!(
+        cursor.install_members(1, &[altered], 1_001),
+        Err(Rejection::IdentityConflict)
+    );
+    cursor.validate().unwrap();
+}
+
+#[test]
+fn a_later_assignment_cannot_revive_an_expired_attempt() {
+    let mut cursor = cursor(SubscriptionKind::Queue);
+    let member = id();
+    let original = grant(member, vec![]);
+    cursor
+        .install_members(1, std::slice::from_ref(&original), 0)
+        .unwrap();
+    let delivered = cursor
+        .read(
+            read(member, 1, 1),
+            &[Candidate {
+                offset: 0,
+                hash: 7,
+                bytes: 1,
+            }],
+        )
+        .unwrap();
+    cursor.retire_read(member, 1, 1).unwrap();
+    let mut extended = original;
+    extended.expires_ms = 40_000;
+    cursor.install_members(2, &[extended], 20_000).unwrap();
+    let retry = cursor.read(read(member, 2, 20_001), &[]).unwrap();
+    assert!(retry.deliveries[0].attempt > delivered.deliveries[0].attempt);
+    assert!(
+        cursor
+            .acknowledge(GroupAck {
+                member,
+                epoch: 1,
+                sequence: 1,
+                now_ms: 20_002,
+                model: SubscriptionKind::Queue,
+                proofs: delivered.deliveries,
+                nack_delay_ms: None
+            })
+            .is_err()
+    );
+    cursor.validate().unwrap();
+}
+
+#[test]
 fn stream_acknowledges_only_the_receiving_members_sparse_prefix() {
     let mut cursor = cursor(SubscriptionKind::Stream);
     let (left, right) = HashRange::FULL.split(100).unwrap();

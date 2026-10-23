@@ -18,7 +18,7 @@ use crate::{
     broker::{DataCommand, DataResponse, WriterFence},
     gateway::Access,
     metadata::{self, ConsumerSubscription, PartitionKey, Route},
-    ownership::Work,
+    ownership::{FinalizationKind, Work},
     subscription::{
         self, AckDisposition, DeliveryProof, GroupCommand, GroupIdentity, GroupOutcome, MemberGrant,
     },
@@ -250,6 +250,16 @@ impl Service {
                 .await?;
                 self.group_commit(
                     &route,
+                    GroupCommand::Reap {
+                        subscription,
+                        now_ms: super::data::unix_millis()?,
+                        recovery_ms: metadata::MEMBER_RECOVERY_MS,
+                    },
+                    deadline,
+                )
+                .await?;
+                self.group_commit(
+                    &route,
                     GroupCommand::InstallMembers {
                         subscription,
                         version,
@@ -267,6 +277,16 @@ impl Service {
                 expires_ms,
                 ..
             } => {
+                self.group_commit(
+                    &route,
+                    GroupCommand::Reap {
+                        subscription,
+                        now_ms: super::data::unix_millis()?,
+                        recovery_ms: metadata::MEMBER_RECOVERY_MS,
+                    },
+                    deadline,
+                )
+                .await?;
                 self.group_commit(
                     &route,
                     GroupCommand::Renew {
@@ -405,11 +425,15 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("read predecessor barriers", source))?;
-        for shard in shards.iter().filter(|shard| !shard.predecessors.is_empty()) {
+        for shard in shards.iter().filter(|shard| {
+            !shard.predecessors.is_empty() && !row.open_gates.contains(&shard.route.id)
+        }) {
             let progress = self
                 .consumer_domain_progress(shard, row.id, deadline)
                 .await?;
             if progress.gate_open {
+                self.record_open_consumer_gate(row.id, shard.route.id, deadline)
+                    .await?;
                 continue;
             }
             let mut complete = true;
@@ -441,6 +465,8 @@ impl Service {
                         deadline,
                     )
                     .await?;
+                self.record_open_consumer_gate(row.id, shard.route.id, deadline)
+                    .await?;
             }
         }
         Ok(())
@@ -471,6 +497,26 @@ impl Service {
         wire::decode_binary(&bytes)
     }
 
+    async fn record_open_consumer_gate(
+        &self,
+        subscription: Id,
+        domain: Id,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.consumer_meta_write(
+            Id::new_v7().map_err(|source| {
+                Error::operation("allocate predecessor completion observation", source)
+            })?,
+            metadata::ConsumerCommand::OpenedGate {
+                subscription,
+                domain,
+            },
+            deadline,
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn group_commit(
         &self,
         route: &Route,
@@ -498,6 +544,23 @@ impl Service {
         lease
             .check(&fence, Work::ControlMutation)
             .map_err(|_| Error::unavailable())?;
+        let finalization = if matches!(
+            command,
+            GroupCommand::Acknowledge { .. } | GroupCommand::RetireAck { .. }
+        ) {
+            Some(
+                lease
+                    .begin_finalization(&fence, FinalizationKind::Ack, deadline.into_std())
+                    .map_err(|_| Error::unavailable())?,
+            )
+        } else {
+            None
+        };
+        let write_deadline = if finalization.is_some() {
+            deadline
+        } else {
+            deadline.min(lease.expires_at().into())
+        };
         let result = self
             .data_write(
                 route.group_id,
@@ -509,9 +572,25 @@ impl Service {
                     },
                     command,
                 },
-                deadline.min(lease.expires_at().into()),
+                write_deadline,
             )
             .await?;
+        let current = replica
+            .state
+            .try_with_application(|state| {
+                state
+                    .ownership()
+                    .and_then(|ownership| ownership.fence(route.partition))
+                    .cloned()
+            })
+            .await
+            .map_err(|source| Error::operation("read committed consumer authority", source))?
+            .ok_or_else(Error::unknown)?;
+        match finalization {
+            Some(finalization) => finalization.check(&current),
+            None => lease.check(&current, Work::ControlMutation),
+        }
+        .map_err(|_| Error::unknown())?;
         match result {
             DataResponse::ConsumerGroup(outcome) => Ok(outcome),
             _ => Err(Error::invalid(
@@ -637,6 +716,21 @@ impl Service {
         let GroupOutcome::Read(read) = result else {
             return Err(Error::invalid("Read returned an invalid result"));
         };
+        let now = super::data::unix_millis()?;
+        let sealed_complete = self
+            .data
+            .get(&route.group_id)
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| {
+                state.sealed_end(route.partition).is_some_and(|end| {
+                    state
+                        .consumer_group_cursor(route.partition, subscription)
+                        .is_some_and(|cursor| cursor.acknowledged_before() >= end)
+                })
+            })
+            .await
+            .map_err(|source| Error::operation("read sealed subscription completion", source))?;
         let deliveries = self
             .data
             .get(&route.group_id)
@@ -657,6 +751,9 @@ impl Service {
                             .next()
                             .ok_or_else(Error::unavailable)?;
                         Ok(public::GroupDelivery {
+                            current_attempt: state
+                                .consumer_group_cursor(route.partition, subscription)
+                                .is_some_and(|cursor| cursor.delivery_is_current(&proof, now)),
                             key_hash: tidemq_protocol::topic::routing_hash(
                                 Some(&message.key),
                                 member,
@@ -682,6 +779,7 @@ impl Service {
             frame,
             FrameKind::GroupDeliveries,
             &public::GroupDeliveries {
+                sealed_complete,
                 sequence: read.sequence,
                 deliveries,
             },

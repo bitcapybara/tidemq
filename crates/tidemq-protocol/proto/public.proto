@@ -102,6 +102,7 @@ message ConsumerControlResult {
   repeated bytes work_shards = 7;
   repeated ConsumerLane lanes = 8;
   uint64 assignment_version = 9;
+  uint64 remaining_lease_ms = 10;
 }
 message ConsumerLane { uint64 hash_start = 1; optional uint64 hash_end = 2; }
 message GroupRead {
@@ -115,8 +116,8 @@ message GroupRead {
   uint64 max_bytes = 8;
 }
 message GroupProof { uint64 offset = 1; uint32 attempt = 2; bytes mac = 3; }
-message GroupDelivery { GroupProof proof = 1; bytes key = 2; bytes body = 3; uint64 key_hash = 4; }
-message GroupDeliveries { uint64 sequence = 1; repeated GroupDelivery deliveries = 2; }
+message GroupDelivery { GroupProof proof = 1; bytes key = 2; bytes body = 3; uint64 key_hash = 4; bool current_attempt = 5; }
+message GroupDeliveries { uint64 sequence = 1; repeated GroupDelivery deliveries = 2; bool sealed_complete = 3; }
 message GroupAck {
   bytes topic_id = 1;
   uint32 partition_id = 2;

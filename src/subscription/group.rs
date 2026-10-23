@@ -855,6 +855,18 @@ impl GroupCursor {
         Ok(())
     }
 
+    pub fn delivery_is_current(&self, proof: &DeliveryProof, now: u64) -> bool {
+        self.slots.get(&proof.offset).is_some_and(|slot| {
+            slot.state == SlotState::InFlight(proof.member, proof.epoch)
+                && slot.attempt == proof.attempt
+                && self
+                    .members
+                    .get(&(proof.member, proof.epoch))
+                    .is_some_and(|member| self.eligible(member, slot.candidate, now))
+                && self.valid_mac(proof).unwrap_or(false)
+        })
+    }
+
     pub fn retire_ack(&mut self, member: Id, epoch: u64, sequence: u64) -> Result<()> {
         let member = self
             .members

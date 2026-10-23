@@ -84,6 +84,28 @@ pub enum Error {
 }
 
 impl Error {
+    pub(crate) fn permission_denied(&self) -> bool {
+        match self {
+            Self::Background { source } => source.permission_denied(),
+            Self::Remote {
+                code: ErrorCode::Forbidden | ErrorCode::Unauthenticated,
+                ..
+            } => true,
+            Self::Transport { source } => matches!(
+                source,
+                tidemq_transport::Error::Authentication { .. }
+                    | tidemq_transport::Error::Authorization { .. }
+            ),
+            Self::Rpc {
+                source: tidemq_transport::rpc::Error::Transport { source },
+            } => matches!(
+                source,
+                tidemq_transport::Error::Authentication { .. }
+                    | tidemq_transport::Error::Authorization { .. }
+            ),
+            _ => false,
+        }
+    }
     pub(crate) fn retry_rejected(&self) -> bool {
         matches!(
             self,

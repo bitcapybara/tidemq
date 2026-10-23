@@ -97,6 +97,8 @@ impl Service {
         let expiry = self
             .consumer_credential_expiry(credential, topic, now)
             .await?;
+        self.refresh_consumer_if_needed(&row, now, deadline).await?;
+        self.resume_consumer(subscription, deadline).await?;
         let digest = *blake3::hash(&frame.payload).as_bytes();
         match action {
             public::ConsumerAction::JoinConsumer => {
@@ -242,6 +244,7 @@ impl Service {
         client: Id,
         credential: Id,
     ) -> Result<public::ConsumerControlResult> {
+        let now = super::data::unix_millis()?;
         let row = self.consumer_row(subscription).await?;
         let member = if request.member_id.is_empty() {
             None
@@ -268,6 +271,7 @@ impl Service {
             Vec::new()
         };
         Ok(public::ConsumerControlResult {
+            remaining_lease_ms: member.map_or(0, |member| member.expires_ms.saturating_sub(now)),
             lanes: row
                 .members
                 .grants(super::data::unix_millis()?)
@@ -330,16 +334,47 @@ impl Service {
             .consumer_after
             .lock()
             .map_err(|_| Error::unavailable())? = Some(subscription);
-        self.consumer_meta_write(
-            new_operation()?,
-            ConsumerCommand::Refresh {
-                subscription,
-                now_ms: super::data::unix_millis()?,
-            },
+        self.refresh_consumer_if_needed(
+            &self.consumer_row(subscription).await?,
+            super::data::unix_millis()?,
             deadline,
         )
         .await?;
         self.resume_consumer(subscription, deadline).await
+    }
+
+    async fn refresh_consumer_if_needed(
+        &self,
+        row: &ConsumerSubscription,
+        now: u64,
+        deadline: Instant,
+    ) -> Result<()> {
+        let revision = self
+            .metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| {
+                state
+                    .topology()
+                    .layout(row.topic)
+                    .map(|layout| layout.revision)
+            })
+            .await
+            .map_err(|source| Error::operation("read consumer topology revision", source))?
+            .ok_or_else(super::metadata::not_found)?;
+        if row.members.needs_refresh(revision, now) {
+            self.consumer_meta_write(
+                new_operation()?,
+                ConsumerCommand::Refresh {
+                    subscription: row.id,
+                    now_ms: now,
+                },
+                deadline,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn resume_consumer(&self, subscription: Id, deadline: Instant) -> Result<()> {

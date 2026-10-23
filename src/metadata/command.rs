@@ -317,6 +317,7 @@ pub enum Rejection {
     Capacity,
     RevisionConflict,
     GenerationConflict,
+    MemberEpochConflict { expected: u64 },
     OperationConflict,
     IdentityRetired,
     NameInUse,
@@ -362,6 +363,12 @@ impl std::fmt::Display for Rejection {
             }
             Self::GenerationConflict => {
                 "Resource generation changed; reread the current resource before retrying"
+            }
+            Self::MemberEpochConflict { expected } => {
+                return write!(
+                    formatter,
+                    "Member epoch was allocated to another member; next epoch is {expected}"
+                );
             }
             Self::OperationConflict => {
                 "Operation identity was already used for a different metadata command"

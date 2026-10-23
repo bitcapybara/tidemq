@@ -164,7 +164,7 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
                 .any(|value| value == b"trace-secret")
         );
     }
-    client.close().await;
+    client.close().await.unwrap();
     for (node, child) in processes.iter_mut().rev() {
         let pid = i32::try_from(child.id().unwrap()).unwrap();
         // The owned child PID is live and SIGINT uses the CLI's normal bounded drain path.

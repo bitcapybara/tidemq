@@ -30,6 +30,30 @@ use crate::{
 pub(super) const AUTH_QUERY: u32 = 1_002;
 const LEASE: Duration = Duration::from_secs(1);
 
+pub(super) fn admit_deadline(deadline: Instant, permission_expires: Instant) -> Result<Instant> {
+    if permission_expires <= Instant::now() {
+        return Err(Error::unavailable());
+    }
+    wire::remaining(deadline)?;
+    // An admitted operation keeps its original finite completion deadline.
+    Ok(deadline)
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    #[test]
+    fn a_valid_permission_lease_does_not_shorten_an_admitted_operation() {
+        let now = Instant::now();
+        let original = now + Duration::from_secs(30);
+        assert_eq!(
+            admit_deadline(original, now + Duration::from_secs(1)).unwrap(),
+            original
+        );
+        assert!(admit_deadline(original, now).is_err());
+    }
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthQuery {
     Ready,

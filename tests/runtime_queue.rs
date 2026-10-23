@@ -168,7 +168,7 @@ async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() 
         "Original SDK producer and consumer recovered after process restart in {:?}",
         started.elapsed()
     );
-    client.close().await;
+    client.close().await.unwrap();
     process.kill().await.unwrap();
     let _ = process.wait().await.unwrap();
     fixture.close().await;
@@ -451,7 +451,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         )
     );
     durable_consume(&consumer, 5..6, b"minority-unknown").await;
-    client.close().await;
+    client.close().await.unwrap();
     for process in processes.values_mut() {
         process.kill().await.unwrap();
         let _ = process.wait().await.unwrap();
@@ -578,7 +578,7 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     )
     .await;
     assert!(invalid.starts_with("HTTP/1.1 400"));
-    client.close().await;
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     drop(client);
@@ -591,7 +591,7 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
         .await
         .unwrap();
     assert_eq!(status.assignment.unwrap().acknowledged_before, 1);
-    client.close().await;
+    client.close().await.unwrap();
     drop(client);
     fixture.close().await;
 }
@@ -752,8 +752,8 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         .unwrap()
         .wait_for_shutdown_request()
         .await;
-    second_client.close().await;
-    client.close().await;
+    second_client.close().await.unwrap();
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     drop(second_client);
@@ -878,7 +878,7 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
         "Stable UDP endpoint recovered original SDK after Gateway SIGKILL in {:?}; actual datagram faults: {observed:?}",
         started.elapsed()
     );
-    client.close().await;
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     drop(client);
@@ -995,7 +995,7 @@ async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_recl
         consumer.ack(&retained).await.unwrap().acknowledged_before,
         2
     );
-    client.close().await;
+    client.close().await.unwrap();
     drop(retained);
     drop(consumer);
     drop(producer);
@@ -1137,7 +1137,7 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
             .unwrap_or(0);
     }
     assert_eq!(published, 1);
-    client.close().await;
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     drop(client);
@@ -1352,7 +1352,7 @@ async fn exercise_runtime_scaling(automatic: bool) {
         3
     );
     assert!(consumer.next().await.unwrap().is_none());
-    client.close().await;
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     drop(client);

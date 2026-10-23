@@ -826,7 +826,7 @@ impl Service {
                             deadline,
                         )
                         .await?;
-                    (access, deadline.min(expires))
+                    (access, super::auth::admit_deadline(deadline, expires)?)
                 } else {
                     (
                         self.access.delegated(
@@ -947,7 +947,7 @@ impl WireService for Service {
                 let (access, deadline) = if self.config.runtime.dynamic_auth {
                     let Authorization::Credential { credential, session_id, .. } = &peer else { return Err(forbidden()); };
                     let (access, expires) = self.dynamic_access(*credential, *session_id, frame, deadline).await?;
-                    (access, deadline.min(expires))
+                    (access, super::auth::admit_deadline(deadline, expires)?)
                 } else { (self.access.external(&peer, kind)?, deadline) };
                 if kind == FrameKind::Cancel {
                     let cancel: CancelRequest =

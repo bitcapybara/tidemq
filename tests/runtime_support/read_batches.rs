@@ -17,7 +17,7 @@ async fn default_credit_live_pages_preserve_every_identity_and_durable_ack() {
     let until = Instant::now() + Duration::from_secs(30);
     tokio::time::timeout_at(until, async {
         exercise_live_pages(&client, until).await;
-        client.close().await;
+        client.close().await.unwrap();
     })
     .await
     .expect("The complete live-page workload must finish within its original 30-second deadline");

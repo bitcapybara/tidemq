@@ -803,7 +803,7 @@ async fn dns_endpoint_connects_to_the_ipv4_local_development_listener() {
     .await
     .unwrap();
     client.admin().topic("events").await.unwrap();
-    client.close().await;
+    client.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -1204,7 +1204,7 @@ async fn cancelling_queued_produce_releases_admission_without_creating_an_identi
     let receipt = second.produce(vec![message]).await.unwrap();
     assert_eq!(receipt.first_offset, 0);
     assert_eq!(client.metrics().snapshot().admitted_bytes, 0);
-    client.close().await;
+    client.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -1225,6 +1225,7 @@ async fn closing_client_cancels_in_flight_production_and_preserves_pending_ident
     wait_for_produces(&peer, 1).await;
     tokio::time::timeout(Duration::from_secs(2), peer.client.close())
         .await
+        .unwrap()
         .unwrap();
     assert!(matches!(
         task.await.unwrap(),
@@ -1342,8 +1343,8 @@ async fn default_timeout_bounds_production_and_cancellation_interrupts_retry_bac
     ));
     assert_eq!(peer.state.lock().unwrap().producer_requests.len(), 3);
     assert_eq!(retrying.pending_batches().await.unwrap().len(), 1);
-    client.close().await;
-    retry_client.close().await;
+    client.close().await.unwrap();
+    retry_client.close().await.unwrap();
 }
 
 #[tokio::test]

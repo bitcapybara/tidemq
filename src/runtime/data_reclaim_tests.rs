@@ -203,7 +203,7 @@ async fn a_live_read_reuses_its_bounded_hot_page_and_preserves_durable_ack_ident
         .unwrap()
         .assignment
         .unwrap();
-    client.close().await;
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     fixture.close().await;
@@ -303,7 +303,7 @@ async fn a_cancelled_read_retains_page_charge_until_its_owned_work_finishes() {
                 .next_delivery_offset
         })
         .await;
-    client.close().await;
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     drop(service);
@@ -396,7 +396,7 @@ async fn an_unknown_delivery_after_a_durable_prefix_cannot_become_partial_succes
                 .collect::<Vec<_>>()
         })
         .await;
-    client.close().await;
+    client.close().await.unwrap();
     drop(later);
     drop(consumer);
     drop(producer);
@@ -519,7 +519,7 @@ async fn a_later_hot_read_rejection_cannot_hide_a_durable_delivery_prefix() {
             )
         })
         .await;
-    client.close().await;
+    client.close().await.unwrap();
     drop(later);
     drop(consumer);
     drop(producer);
@@ -617,7 +617,7 @@ async fn a_real_logical_retention_floor_still_rejects_the_expired_offset() {
         .require_retained_offset(2, partition, 1, deadline())
         .await;
     let seek = consumer.seek(0, Id::new_v7().unwrap()).await;
-    client.close().await;
+    client.close().await.unwrap();
     drop(delivered);
     drop(consumer);
     drop(producer);
@@ -770,7 +770,7 @@ async fn run_reclaimed_read(paused_offset: u64) {
         .find_map(|line| line.strip_prefix("tidemq_runtime_read_hot_reclaim_conflicts_total "))
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
-    client.close().await;
+    client.close().await.unwrap();
     drop(consumer);
     drop(producer);
     drop(client);

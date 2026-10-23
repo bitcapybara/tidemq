@@ -291,7 +291,7 @@ async fn run(args: &Args) -> Result<Report> {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
-    client.close().await;
+    client.close().await?;
     let passed = measured
         .partitions
         .iter()

@@ -10,6 +10,15 @@ pub struct CloseReport {
 }
 
 impl CloseReport {
+    pub(crate) fn merge(&mut self, other: &Self) {
+        self.local_cleanup_complete &= other.local_cleanup_complete;
+        self.members_left = self.members_left.saturating_add(other.members_left);
+        self.unresolved_sends = self.unresolved_sends.saturating_add(other.unresolved_sends);
+        self.unresolved_acks = self.unresolved_acks.saturating_add(other.unresolved_acks);
+        self.unclaimed_results = self
+            .unclaimed_results
+            .saturating_add(other.unclaimed_results);
+    }
     pub fn local_cleanup_complete(&self) -> bool {
         self.local_cleanup_complete
     }

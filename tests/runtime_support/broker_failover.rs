@@ -396,7 +396,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         .unwrap();
     assert_eq!(status.assignment.unwrap().acknowledged_before, 4);
     observer.close().await;
-    client.close().await;
+    client.close().await.unwrap();
     for process in processes.values_mut() {
         if process.try_wait().unwrap().is_none() {
             process.kill().await.unwrap();

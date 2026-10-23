@@ -133,6 +133,13 @@ impl MembersBook {
     pub fn next_epoch(&self) -> u64 {
         self.next_epoch
     }
+    pub fn needs_refresh(&self, revision: u64, now: u64) -> bool {
+        revision != self.plan.layout_revision
+            || self
+                .members
+                .values()
+                .any(|record| record.info.status.assigned() && record.info.expires_ms <= now)
+    }
     pub fn plan(&self) -> &MembersPlan {
         &self.plan
     }
@@ -169,6 +176,13 @@ impl MembersBook {
             };
         }
         if request.expected_epoch < self.next_epoch {
+            if self.members.values().any(|record| {
+                record.info.epoch == request.expected_epoch && record.info.member != request.member
+            }) {
+                return Err(Rejection::MemberEpochConflict {
+                    expected: self.next_epoch,
+                });
+            }
             return Err(Rejection::Superseded);
         }
         if request.expected_epoch != self.next_epoch {

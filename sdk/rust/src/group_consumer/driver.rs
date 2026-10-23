@@ -8,6 +8,9 @@ pub(super) struct Domain {
     sequence: u64,
     assigned: bool,
     busy: bool,
+    complete: bool,
+    empty_reads: u32,
+    next_poll: Instant,
     read: Option<Arc<Mutex<ReadAttempt>>>,
 }
 
@@ -21,6 +24,14 @@ struct ReadAttempt {
     operation: Id,
     applied: bool,
     credit: Option<Credit>,
+    created: Instant,
+    progress: Option<ReadProgress>,
+}
+
+#[derive(Clone, Copy)]
+struct ReadProgress {
+    empty: bool,
+    complete: bool,
 }
 
 pub(super) async fn run(core: Arc<Core>) {
@@ -52,7 +63,12 @@ fn publish_close(core: &Core, result: CloseResult) {
 }
 
 async fn cleanup(core: &Core, original: Option<Arc<Error>>) -> CloseResult {
-    let deadline = Instant::now() + core.client.inner.config.close_timeout;
+    let deadline = core
+        .close_deadline
+        .lock()
+        .ok()
+        .and_then(|deadline| *deadline)
+        .unwrap_or_else(|| Instant::now() + core.client.inner.config.close_timeout);
     ack::drain(core, deadline).await;
     let request = core.request(public::ConsumerAction::LeaveConsumer);
     let leave = match Id::new_v7() {
@@ -93,8 +109,7 @@ async fn cleanup(core: &Core, original: Option<Arc<Error>>) -> CloseResult {
 }
 
 async fn heartbeats(core: Arc<Core>) {
-    let mut sequence = 1_u64;
-    let mut operation = match Id::new_v7() {
+    let operation = match Id::new_v7() {
         Ok(operation) => operation,
         Err(error) => {
             core.record_error(error.into());
@@ -102,44 +117,93 @@ async fn heartbeats(core: Arc<Core>) {
             return;
         }
     };
+    let mut lease = LeaseDriver {
+        sequence: 1,
+        operation,
+        join: None,
+        rejoins: 0,
+    };
     let mut timer = tokio::time::interval(Duration::from_secs(3));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! { _ = core.stop.cancelled() => return, _ = timer.tick() => {} }
-        let mut request = core.request(public::ConsumerAction::HeartbeatConsumer);
-        request.heartbeat_sequence = sequence;
-        let result = core
-            .client
-            .operation(|deadline| control(&core.client, operation, &request, deadline))
-            .await;
-        match result {
-            Ok(info) => {
-                if let Ok(mut current) = core.info.lock() {
-                    *current = info;
-                }
-                core.changed.notify_waiters();
-                let Some(next) = sequence.checked_add(1) else {
-                    core.record_error(Error::SessionExpired);
-                    core.stop.cancel();
-                    return;
-                };
-                sequence = next;
-                operation = match Id::new_v7() {
-                    Ok(operation) => operation,
-                    Err(error) => {
-                        core.record_error(error.into());
-                        core.stop.cancel();
-                        return;
-                    }
-                };
+        if let Err(error) = maintain_lease(&core, &mut lease).await {
+            let terminal = error.permission_denied() || lease.rejoins > 16;
+            core.record_error(error);
+            if terminal {
+                core.stop.cancel();
+                return;
             }
-            Err(error) => core.record_error(error),
+        }
+    }
+}
+
+struct LeaseDriver {
+    sequence: u64,
+    operation: Id,
+    join: Option<(Id, public::ConsumerControl)>,
+    rejoins: u32,
+}
+
+async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
+    let started = Instant::now();
+    if let Some((operation, request)) = &mut lease.join {
+        let status = core
+            .client
+            .operation(|deadline| join_control(&core.client, operation, request, deadline))
+            .await?;
+        core.epoch.store(status.member_epoch, Ordering::Release);
+        core.update_info(status, started)?;
+        lease.join = None;
+        lease.sequence = 1;
+        lease.operation = Id::new_v7()?;
+        return Ok(());
+    }
+    let mut request = core.request(public::ConsumerAction::HeartbeatConsumer);
+    request.heartbeat_sequence = lease.sequence;
+    match core
+        .client
+        .operation(|deadline| control(&core.client, lease.operation, &request, deadline))
+        .await
+    {
+        Ok(status) => {
+            core.update_info(status, started)?;
+            lease.sequence = lease.sequence.checked_add(1).ok_or(Error::SessionExpired)?;
+            lease.operation = Id::new_v7()?;
+            Ok(())
+        }
+        Err(error) if error.permission_denied() => Err(error),
+        Err(error) => {
+            let probe = core.request(public::ConsumerAction::ConsumerStatus);
+            let probe_operation = Id::new_v7()?;
+            let status = core
+                .client
+                .operation(|deadline| control(&core.client, probe_operation, &probe, deadline))
+                .await?;
+            if status.member_status == 5 && status.plan_active {
+                lease.rejoins = lease.rejoins.saturating_add(1);
+                if lease.rejoins > 16 {
+                    return Err(Error::SessionExpired);
+                }
+                // Metadata has observed every data-domain fence before this new join.
+                core.epoch.store(0, Ordering::Release);
+                let mut state = core.state()?;
+                state.queue.clear();
+                state.ledger.clear();
+                state.claims.clear();
+                state.domains.clear();
+                drop(state);
+                let mut request = core.request(public::ConsumerAction::JoinConsumer);
+                request.member_epoch = status.next_member_epoch;
+                lease.join = Some((Id::new_v7()?, request));
+            }
+            Err(error)
         }
     }
 }
 
 async fn reads(core: Arc<Core>) {
-    let mut jobs: JoinSet<(Id, Result<()>)> = JoinSet::new();
+    let mut jobs: JoinSet<(Id, u64, Result<ReadProgress>)> = JoinSet::new();
     let mut timer = tokio::time::interval(Duration::from_millis(25));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut refreshed = Instant::now()
@@ -151,12 +215,19 @@ async fn reads(core: Arc<Core>) {
             _ = timer.tick() => {},
             result = jobs.join_next(), if !jobs.is_empty() => {
                 match result {
-                    Some(Ok((domain, result))) => {
-                        if let Ok(mut state) = core.state() && let Some(record) = state.domains.get_mut(&domain) {
+                    Some(Ok((domain, epoch, result))) => {
+                        if epoch == core.epoch.load(Ordering::Acquire) && let Ok(mut state) = core.state() && let Some(record) = state.domains.get_mut(&domain) {
                             record.busy = false;
-                            if result.is_ok() { record.read = None; record.sequence = record.sequence.saturating_add(1); }
+                            match &result {
+                                Ok(progress) => {
+                                    record.read = None; record.sequence = record.sequence.saturating_add(1); record.complete = progress.complete;
+                                    record.empty_reads = if progress.empty { record.empty_reads.saturating_add(1).min(6) } else { 0 };
+                                    record.next_poll = Instant::now() + Duration::from_millis(10_u64 << record.empty_reads);
+                                }
+                                Err(_) => record.next_poll = Instant::now() + Duration::from_millis(250),
+                            }
                         }
-                        if let Err(error) = result { core.record_error(error); }
+                        if let Err(error) = result && !no_work(&error) { core.record_error(error); }
                     }
                     Some(Err(_)) => { core.record_error(Error::Closed); core.stop.cancel(); return; }
                     None => {},
@@ -176,7 +247,13 @@ async fn reads(core: Arc<Core>) {
             match next_read(&core) {
                 Ok(Some((domain, read))) => {
                     let core = core.clone();
-                    jobs.spawn(async move { (domain, poll_read(&core, domain, read).await) });
+                    let epoch = read
+                        .lock()
+                        .map(|read| read.request.member_epoch)
+                        .unwrap_or(0);
+                    jobs.spawn(
+                        async move { (domain, epoch, poll_read(&core, domain, read).await) },
+                    );
                 }
                 Ok(None) => break,
                 Err(error) => {
@@ -209,6 +286,9 @@ async fn refresh_domains(core: &Core) -> Result<()> {
             sequence: 1,
             assigned,
             busy: false,
+            complete: false,
+            empty_reads: 0,
+            next_poll: Instant::now(),
             read: None,
         });
     }
@@ -258,8 +338,15 @@ fn reserve(core: &Core) -> Result<Option<Credit>> {
 }
 
 fn next_read(core: &Core) -> Result<Option<(Id, Arc<Mutex<ReadAttempt>>)>> {
+    let lease_valid = *core.lease_until.lock().map_err(|_| Error::Closed)? > Instant::now()
+        && core.epoch.load(Ordering::Acquire) > 0;
     let mut state = core.state()?;
-    let eligible = |domain: &&Domain| !domain.busy && (domain.assigned || domain.read.is_some());
+    let eligible = |domain: &&Domain| {
+        !domain.busy
+            && !domain.complete
+            && domain.next_poll <= Instant::now()
+            && (domain.assigned && lease_valid || domain.read.is_some())
+    };
     let selected = state
         .domains
         .values()
@@ -294,6 +381,8 @@ fn next_read(core: &Core) -> Result<Option<(Id, Arc<Mutex<ReadAttempt>>)>> {
             operation: Id::new_v7()?,
             applied: false,
             credit: Some(credit),
+            created: Instant::now(),
+            progress: None,
         })));
     }
     let read = domain.read.as_ref().ok_or(Error::Closed)?.clone();
@@ -301,9 +390,13 @@ fn next_read(core: &Core) -> Result<Option<(Id, Arc<Mutex<ReadAttempt>>)>> {
     Ok(Some((domain.shard, read)))
 }
 
-async fn poll_read(core: &Core, domain: Id, work: Arc<Mutex<ReadAttempt>>) -> Result<()> {
+async fn poll_read(core: &Core, domain: Id, work: Arc<Mutex<ReadAttempt>>) -> Result<ReadProgress> {
     let (request, operation, applied) = {
         let work = work.lock().map_err(|_| Error::Closed)?;
+        if work.created.elapsed() > Duration::from_secs(600) {
+            core.stop.cancel();
+            return Err(Error::SessionExpired);
+        }
         (work.request.clone(), work.operation, work.applied)
     };
     core.client
@@ -341,9 +434,24 @@ async fn poll_read(core: &Core, domain: Id, work: Arc<Mutex<ReadAttempt>>) -> Re
                     deadline,
                 )
                 .await?;
-            Ok(())
+            work.lock()
+                .map_err(|_| Error::Closed)?
+                .progress
+                .ok_or(Error::Closed)
         })
         .await
+}
+
+fn no_work(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Remote {
+            code: tidemq_protocol::common::ErrorCode::AssignmentBusy
+                | tidemq_protocol::common::ErrorCode::QuotaExceeded,
+            outcome: tidemq_protocol::common::Outcome::Rejected,
+            ..
+        }
+    )
 }
 
 fn accept_read(
@@ -388,9 +496,25 @@ fn accept_read(
     if attempt.applied {
         return Ok(());
     }
+    if request.member_epoch != core.epoch.load(Ordering::Acquire) {
+        attempt.applied = true;
+        attempt.credit = None;
+        attempt.progress = Some(ReadProgress {
+            empty: true,
+            complete: false,
+        });
+        return Ok(());
+    }
     let mut credit = attempt.credit.take().ok_or(Error::Closed)?;
+    let progress = ReadProgress {
+        empty: result.deliveries.is_empty(),
+        complete: result.sealed_complete,
+    };
     let mut state = core.state()?;
     for delivery in result.deliveries {
+        if !delivery.current_attempt {
+            continue;
+        }
         let length = delivery
             .key
             .len()
@@ -421,6 +545,7 @@ fn accept_read(
         });
     }
     attempt.applied = true;
+    attempt.progress = Some(progress);
     drop(state);
     core.changed.notify_waiters();
     Ok(())

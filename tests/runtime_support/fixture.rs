@@ -196,7 +196,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if std::thread::panicking() {
+        if std::thread::panicking() || std::env::var_os("TIDEMQ_KEEP_TEST_EVIDENCE").is_some() {
             eprintln!(
                 "Preserved runtime evidence directory {}",
                 self.directory.display()

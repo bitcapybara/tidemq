@@ -170,6 +170,8 @@ pub struct ConsumerControlResult {
     pub lanes: ::prost::alloc::vec::Vec<ConsumerLane>,
     #[prost(uint64, tag = "9")]
     pub assignment_version: u64,
+    #[prost(uint64, tag = "10")]
+    pub remaining_lease_ms: u64,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConsumerLane {
@@ -216,6 +218,8 @@ pub struct GroupDelivery {
     pub body: ::prost::bytes::Bytes,
     #[prost(uint64, tag = "4")]
     pub key_hash: u64,
+    #[prost(bool, tag = "5")]
+    pub current_attempt: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GroupDeliveries {
@@ -223,6 +227,8 @@ pub struct GroupDeliveries {
     pub sequence: u64,
     #[prost(message, repeated, tag = "2")]
     pub deliveries: ::prost::alloc::vec::Vec<GroupDelivery>,
+    #[prost(bool, tag = "3")]
+    pub sealed_complete: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GroupAck {

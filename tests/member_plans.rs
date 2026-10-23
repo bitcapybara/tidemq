@@ -173,3 +173,25 @@ fn queue_worksets_cover_every_domain_without_an_all_to_all_scan() {
             .all(|domain| worksets.values().any(|work| work.contains(domain)))
     );
 }
+
+#[test]
+fn a_concurrent_join_conflict_proves_the_epoch_was_used_by_a_different_member() {
+    let mut book = MembersBook::new(
+        id(),
+        SubscriptionKind::Queue,
+        InitialPosition::Latest,
+        1,
+        vec![id()],
+    )
+    .unwrap();
+    activate(&mut book, 0);
+    let (_, first) = join(&mut book, id(), id(), id(), 1);
+    activate(&mut book, 1);
+    let mut second = first;
+    second.member = id();
+    assert_eq!(
+        book.join(id(), &second),
+        Err(Rejection::MemberEpochConflict { expected: 2 })
+    );
+    book.validate().unwrap();
+}
