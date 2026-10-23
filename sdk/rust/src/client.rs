@@ -651,7 +651,22 @@ impl Client {
             match result {
                 Ok(response) => return Ok(response),
                 Err(error)
-                    if (error.retry_transport() || error.retry_rejected())
+                    if (error.retry_transport()
+                        || error.retry_rejected()
+                        || error.retry_admission()
+                            && matches!(
+                                kind,
+                                FrameKind::PublisherControl
+                                    | FrameKind::Publish
+                                    | FrameKind::RetirePublishes
+                                    | FrameKind::ConsumerControl
+                                    | FrameKind::GroupRead
+                                    | FrameKind::GroupAck
+                                    | FrameKind::GroupRetireAck
+                                    | FrameKind::GroupRetireRead
+                                    | FrameKind::GetTopic
+                                    | FrameKind::GetTopicLayout
+                            ))
                         && attempt + 1 < self.inner.config.max_reconnect_attempts =>
                 {
                     self.inner.metrics.record_retry();
@@ -849,6 +864,7 @@ impl Client {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
+            self.inner.cancellation.cancel();
             let client = self.background();
             tokio::spawn(async move {
                 let result = client.close_owned().await;
@@ -894,6 +910,13 @@ impl Client {
         .await
         .map_err(|_| Error::Deadline)?
         .map_err(|_| Error::Closed)
+    }
+
+    pub(crate) fn closing_token(&self) -> CancellationToken {
+        self.inner.cancellation.clone()
+    }
+    pub(crate) fn is_closing(&self) -> bool {
+        self.inner.closing.load(Ordering::Acquire)
     }
 
     async fn close_owned(&self) -> crate::close::CloseResult {

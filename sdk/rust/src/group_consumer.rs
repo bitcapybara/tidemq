@@ -5,6 +5,12 @@ mod driver;
 #[path = "../../../tests/scalable_support/consumer_views.rs"]
 mod view_tests;
 
+struct JoinAttempt {
+    operation: Id,
+    request: public::ConsumerControl,
+    heartbeat: Option<(Id, public::ConsumerControl)>,
+}
+
 use bytes::Bytes;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -124,6 +130,7 @@ pub(crate) struct Core {
     lease_until: Mutex<Instant>,
     lease_fence_after: Mutex<Instant>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    quarantine: Mutex<Option<tokio::task::JoinHandle<()>>>,
     resource_memory: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 }
 
@@ -209,7 +216,12 @@ impl Builder {
         let status = loop {
             let status = match control(&self.client, ensure_operation, &request, deadline).await {
                 Ok(status) => status,
-                Err(error) if error.outcome_unknown() && Instant::now() < deadline => {
+                Err(error)
+                    if (error.outcome_unknown()
+                        || error.retry_admission()
+                        || error.retry_rejected())
+                        && Instant::now() < deadline =>
+                {
                     pause_control(deadline).await?;
                     continue;
                 }
@@ -225,7 +237,7 @@ impl Builder {
         request.member_epoch = status.next_member_epoch;
         request.action = public::ConsumerAction::JoinConsumer.into();
         let member = Id::from_slice(&request.member_id)?;
-        let mut operation = Id::new_v7()?;
+        let operation = Id::new_v7()?;
         let core = Arc::new(Core {
             client: self.client.background(),
             topic: self.topic,
@@ -257,6 +269,7 @@ impl Builder {
             lease_until: Mutex::new(Instant::now()),
             lease_fence_after: Mutex::new(deadline + Duration::from_secs(15)),
             task: Mutex::new(None),
+            quarantine: Mutex::new(None),
             resource_memory: Mutex::new(Some(resource_memory)),
         });
         self.client.register_consumer(&core)?;
@@ -268,8 +281,14 @@ impl Builder {
         let worker = core.clone();
         let task = tokio::spawn(async move {
             let core = worker;
-            let result = join_control(&core.client, &mut operation, &mut request, deadline).await;
-            core.epoch.store(request.member_epoch, Ordering::Release);
+            let mut joining = JoinAttempt {
+                operation,
+                request,
+                heartbeat: None,
+            };
+            let result = join_control(&core.client, &mut joining, deadline).await;
+            core.epoch
+                .store(joining.request.member_epoch, Ordering::Release);
             match result {
                 Ok((status, started)) => {
                     core.epoch.store(status.member_epoch, Ordering::Release);
@@ -316,11 +335,14 @@ async fn control(
 
 async fn join_control(
     client: &Client,
-    operation: &mut Id,
-    request: &mut public::ConsumerControl,
+    joining: &mut JoinAttempt,
     deadline: Instant,
 ) -> Result<(public::ConsumerControlResult, Instant)> {
-    let mut pending_heartbeat: Option<(Id, public::ConsumerControl)> = None;
+    let JoinAttempt {
+        operation,
+        request,
+        heartbeat: pending_heartbeat,
+    } = joining;
     loop {
         let started = Instant::now();
         match control(client, *operation, request, deadline).await {
@@ -336,13 +358,13 @@ async fn join_control(
                 if pending_heartbeat.as_ref().is_some_and(|(_, request)| {
                     request.heartbeat_sequence < result.next_heartbeat_sequence
                 }) {
-                    pending_heartbeat = None;
+                    *pending_heartbeat = None;
                 }
                 if pending_heartbeat.is_none() {
                     let mut heartbeat = request.clone();
                     heartbeat.action = public::ConsumerAction::HeartbeatConsumer.into();
                     heartbeat.heartbeat_sequence = result.next_heartbeat_sequence;
-                    pending_heartbeat = Some((Id::new_v7()?, heartbeat));
+                    *pending_heartbeat = Some((Id::new_v7()?, heartbeat));
                 }
                 let (heartbeat_operation, heartbeat) =
                     pending_heartbeat.as_ref().ok_or(Error::SessionExpired)?;
@@ -350,13 +372,18 @@ async fn join_control(
                 let status = match control(client, *heartbeat_operation, heartbeat, deadline).await
                 {
                     Ok(status) => status,
-                    Err(error) if error.outcome_unknown() && Instant::now() < deadline => {
+                    Err(error)
+                        if (error.outcome_unknown()
+                            || error.retry_admission()
+                            || error.retry_rejected())
+                            && Instant::now() < deadline =>
+                    {
                         pause_control(deadline).await?;
                         continue;
                     }
                     Err(error) => return Err(error),
                 };
-                pending_heartbeat = None;
+                *pending_heartbeat = None;
                 if status.member_status == 2 && status.plan_active && fresh_view(&status, started) {
                     return Ok((status, started));
                 }
@@ -365,7 +392,7 @@ async fn join_control(
             Ok(result) if matches!(result.member_status, 5 | 7) && result.plan_active => {
                 request.member_epoch = result.next_member_epoch;
                 *operation = Id::new_v7()?;
-                pending_heartbeat = None;
+                *pending_heartbeat = None;
                 pause_control(deadline).await?;
             }
             Ok(_) => return Err(Error::SessionExpired),
@@ -377,10 +404,15 @@ async fn join_control(
             }) => {
                 request.member_epoch = expected;
                 *operation = Id::new_v7()?;
-                pending_heartbeat = None;
+                *pending_heartbeat = None;
                 pause_control(deadline).await?;
             }
-            Err(error) if error.outcome_unknown() && Instant::now() < deadline => {
+            Err(error)
+                if (error.outcome_unknown()
+                    || error.retry_admission()
+                    || error.retry_rejected())
+                    && Instant::now() < deadline =>
+            {
                 pause_control(deadline).await?;
             }
             Err(error) => return Err(error),
@@ -403,8 +435,14 @@ fn fresh_view(status: &public::ConsumerControlResult, started: Instant) -> bool 
 
 impl Core {
     pub(crate) fn retains_work(&self) -> bool {
-        self.state()
-            .is_ok_and(|state| state.closed.is_none() || !state.pending.is_empty())
+        self.state().is_ok_and(|state| {
+            state.closed.is_none()
+                || !state.pending.is_empty()
+                || self
+                    .resource_memory
+                    .lock()
+                    .is_ok_and(|memory| memory.is_some())
+        })
     }
     fn update_info(&self, info: public::ConsumerControlResult, started: Instant) -> Result<()> {
         if info.remaining_lease_ms > 15_000 {
@@ -514,6 +552,7 @@ impl Core {
                 }
             };
             if let Some(result) = closed {
+                ack::stop_tasks(self).await;
                 return self.join_closed(result, deadline).await;
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
@@ -526,6 +565,15 @@ impl Core {
     }
 
     async fn join_closed(&self, result: CloseResult, deadline: Instant) -> CloseResult {
+        if self.client.is_closing() {
+            let task = self.quarantine.lock().ok().and_then(|mut task| task.take());
+            if let Some(mut task) = task
+                && tokio::time::timeout_at(deadline, &mut task).await.is_err()
+                && let Ok(mut stored) = self.quarantine.lock()
+            {
+                *stored = Some(task);
+            }
+        }
         let task = self.task.lock().ok().and_then(|mut task| task.take());
         let Some(mut task) = task else {
             return result;

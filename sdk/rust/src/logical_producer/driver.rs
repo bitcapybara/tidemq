@@ -48,7 +48,12 @@ async fn open(
                 request.registration = expected;
                 operation = Id::new_v7()?;
             }
-            Err(error) if error.outcome_unknown() && Instant::now() < deadline => {
+            Err(error)
+                if (error.outcome_unknown()
+                    || error.retry_admission()
+                    || error.retry_rejected())
+                    && Instant::now() < deadline =>
+            {
                 tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(10)))
                     .await
                     .map_err(|_| Error::Deadline)?;

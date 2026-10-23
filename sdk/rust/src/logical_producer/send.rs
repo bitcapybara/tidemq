@@ -50,6 +50,14 @@ impl PendingSend {
             return self.take(true);
         }
         let core = self.work.core.upgrade().ok_or(Error::Closed)?;
+        if core.stop.is_cancelled() && core.state()?.closed.is_none() {
+            return self.expose(
+                Err(Arc::new(Error::RequestUnknown {
+                    source: Box::new(Error::Closed),
+                })),
+                true,
+            );
+        }
         core.client
             .operation(|deadline| self.retry_until(deadline, true))
             .await
@@ -281,6 +289,9 @@ fn admit(core: &Arc<Core>, mut message: Message, credit: Credit) -> Result<Pendi
         return Err(Error::SessionExpired);
     }
     let mut state = core.state()?;
+    if core.stop.is_cancelled() || core.client.is_closing() {
+        return Err(Error::Closed);
+    }
     let sequence = state.next_sequence;
     let next = sequence.checked_add(1).ok_or(Error::SessionExpired)?;
     let identity = SendIdentity {
@@ -451,6 +462,10 @@ async fn drive_requests(
             .await;
         let result = match result {
             Ok(result) => result,
+            Err(error) if error.retry_admission() && Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
             Err(error) => {
                 let error = error.preserve_uncertainty(work.uncertain.load(Ordering::Acquire));
                 let known = !error.outcome_unknown();
@@ -533,14 +548,15 @@ async fn reroute(
     original: &public::Publish,
     deadline: Instant,
 ) -> Result<()> {
+    let _refresh = tokio::time::timeout_at(deadline, core.refresh.lock())
+        .await
+        .map_err(|_| Error::Deadline)?;
+    let message = original.message.as_ref().ok_or(Error::Closed)?;
+    let hash = routing_hash(message.key.as_deref(), core.producer, original.sequence)?;
     loop {
-        let context = crate::RequestContext::with_deadline(deadline);
-        let layout = context
-            .scope(core.client.admin().topic_info(&core.topic))
-            .await?;
-        let message = original.message.as_ref().ok_or(Error::Closed)?;
-        let hash = routing_hash(message.key.as_deref(), core.producer, original.sequence)?;
-        let target = layout
+        let target = core
+            .state()?
+            .layout
             .wire
             .active
             .iter()
@@ -549,7 +565,6 @@ async fn reroute(
             .ok_or(Error::Closed)?;
         if target.shard_id != original.shard_id {
             let mut state = core.state()?;
-            state.layout = layout;
             state
                 .touched
                 .insert(Id::from_slice(&target.shard_id)?, target.clone());
@@ -558,6 +573,19 @@ async fn reroute(
             request.shard_id = target.shard_id;
             request.partition_id = target.birth_partition;
             return Ok(());
+        }
+        let context = crate::RequestContext::with_deadline(deadline);
+        match context
+            .scope(core.client.admin().topic_info(&core.topic))
+            .await
+        {
+            Ok(layout) => core.state()?.layout = layout,
+            Err(error)
+                if (error.retry_admission()
+                    || error.retry_rejected()
+                    || error.outcome_unknown())
+                    && Instant::now() < deadline => {}
+            Err(error) => return Err(error),
         }
         tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(10)))
             .await

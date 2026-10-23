@@ -168,6 +168,18 @@ impl Error {
         )
     }
 
+    pub(crate) fn retry_admission(&self) -> bool {
+        matches!(
+            self,
+            Self::Remote {
+                code: ErrorCode::QuotaExceeded,
+                outcome: Outcome::Rejected,
+                retryable: true,
+                ..
+            }
+        )
+    }
+
     pub fn outcome_unknown(&self) -> bool {
         match self {
             Self::Background { source }

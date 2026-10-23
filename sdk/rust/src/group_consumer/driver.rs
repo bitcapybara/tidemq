@@ -71,10 +71,14 @@ fn publish_close(core: &Arc<Core>, mut result: CloseResult) {
             .lock()
             .map(|until| *until)
             .unwrap_or_else(|_| Instant::now() + Duration::from_secs(45));
-        tokio::spawn(async move {
-            tokio::time::sleep_until(until).await;
+        let task = tokio::spawn(async move {
+            let closing = retained.client.closing_token();
+            tokio::select! { _ = tokio::time::sleep_until(until) => {}, _ = closing.cancelled() => {} }
             release_local(&retained);
         });
+        if let Ok(mut stored) = core.quarantine.lock() {
+            *stored = Some(task);
+        }
     }
     if let Ok(mut state) = core.state.lock() {
         state.closed = Some(result);
@@ -205,7 +209,7 @@ async fn heartbeats(core: Arc<Core>) {
 struct LeaseDriver {
     sequence: u64,
     operation: Id,
-    join: Option<(Id, public::ConsumerControl)>,
+    join: Option<JoinAttempt>,
     rejoins: u32,
 }
 
@@ -218,10 +222,10 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
         let mut fence_after = core.lease_fence_after.lock().map_err(|_| Error::Closed)?;
         *fence_after = (*fence_after).max(upper);
     }
-    if let Some((operation, request)) = &mut lease.join {
+    if let Some(joining) = &mut lease.join {
         let (status, observed) = core
             .client
-            .operation(|deadline| join_control(&core.client, operation, request, deadline))
+            .operation(|deadline| join_control(&core.client, joining, deadline))
             .await?;
         core.epoch.store(status.member_epoch, Ordering::Release);
         lease.sequence = status.next_heartbeat_sequence;
@@ -269,7 +273,11 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
                 drop(state);
                 let mut request = core.request(public::ConsumerAction::JoinConsumer);
                 request.member_epoch = status.next_member_epoch;
-                lease.join = Some((Id::new_v7()?, request));
+                lease.join = Some(JoinAttempt {
+                    operation: Id::new_v7()?,
+                    request,
+                    heartbeat: None,
+                });
             }
             Err(error)
         }

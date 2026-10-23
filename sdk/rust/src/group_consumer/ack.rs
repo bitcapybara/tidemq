@@ -84,6 +84,14 @@ impl PendingAck {
             return self.expose(result, true);
         }
         let core = self.work.core.upgrade().ok_or(Error::Closed)?;
+        if core.stop.is_cancelled() && core.state()?.closed.is_none() {
+            return self.expose(
+                Err(Arc::new(Error::RequestUnknown {
+                    source: Box::new(Error::Closed),
+                })),
+                true,
+            );
+        }
         core.client
             .operation(|deadline| self.retry_until(deadline, true))
             .await
@@ -248,6 +256,9 @@ fn admit(
         return Err(Error::StaleDelivery);
     }
     let mut state = core.state()?;
+    if core.stop.is_cancelled() || core.client.is_closing() {
+        return Err(Error::Closed);
+    }
     if !state
         .ledger
         .get(&message.delivery_sequence)

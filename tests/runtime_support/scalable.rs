@@ -634,6 +634,66 @@ async fn logical_producer_clones_send_batches_across_a_split_and_preserve_messag
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_preserves_the_admitted_key_order_across_a_split() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic("acme/app/ordered")
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer("acme/app/ordered", "history")
+        .build()
+        .await
+        .unwrap();
+    let producer = client
+        .new_producer("acme/app/ordered")
+        .build()
+        .await
+        .unwrap();
+    let clone = producer.clone();
+    let mut expected = Vec::new();
+    for phase in 0..2 {
+        let batch = (0..8)
+            .map(|index| {
+                tidemq_sdk::Message::new(format!("event-{}", phase * 8 + index)).key("same-key")
+            })
+            .collect();
+        for receipt in clone.send_batch(batch).await.unwrap().outcomes {
+            expected.push(receipt.unwrap().message_id());
+        }
+        if phase == 0 {
+            client
+                .admin()
+                .split_topic_at("acme/app/ordered", 1 << 63)
+                .await
+                .unwrap();
+        }
+    }
+    for (index, identity) in expected.into_iter().enumerate() {
+        let message = tokio::time::timeout(Duration::from_secs(20), stream.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.message_id(), identity);
+        assert_eq!(message.payload(), format!("event-{index}").as_bytes());
+        stream.ack_cumulative(&message).await.unwrap();
+    }
+    assert!(clone.pending_sends().await.unwrap().is_empty());
+    producer.close().await.unwrap();
+    stream.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelling_a_send_waiter_keeps_its_original_owned_send_and_result() {
     let fixture = dynamic_fixture().await;
     let admin = fixture.client(1).await;

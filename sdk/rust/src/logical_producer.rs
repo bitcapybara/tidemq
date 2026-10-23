@@ -84,6 +84,7 @@ pub(crate) struct Core {
     changed: Notify,
     close_deadline: Mutex<Option<Instant>>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    refresh: tokio::sync::Mutex<()>,
     resource_memory: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 }
 
@@ -159,6 +160,7 @@ impl ProducerBuilder {
             changed: Notify::new(),
             close_deadline: Mutex::new(None),
             task: Mutex::new(None),
+            refresh: tokio::sync::Mutex::new(()),
             resource_memory: Mutex::new(Some(resource_memory)),
         });
         self.client.register_producer(&core)?;
@@ -242,6 +244,7 @@ impl Core {
             let notified = self.changed.notified();
             let result = self.state().ok().and_then(|state| state.closed.clone());
             if let Some(result) = result {
+                send::stop_tasks(self).await;
                 let task = self.task.lock().ok().and_then(|mut task| task.take());
                 if let Some(mut task) = task {
                     match tokio::time::timeout_at(deadline, &mut task).await {
