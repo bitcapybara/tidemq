@@ -90,6 +90,13 @@ impl MetadataState {
         copy_bytes: u64,
         revision: u64,
     ) -> Result<Outcome, Rejection> {
+        if self.topology.pending_transfers().any(|transfer| {
+            transfer.source.group_id == plan.group_id
+                || transfer.target.group_id == plan.group_id
+                    && transfer.stage < super::TransferStage::Published
+        }) {
+            return Err(Rejection::RecoveryRequired);
+        }
         let current = self.groups.get(&plan.group_id).ok_or(Rejection::NotFound)?;
         if current.generation > plan.generation {
             return Err(Rejection::Superseded);

@@ -2,6 +2,9 @@ use std::collections::BTreeSet;
 
 use tidemq_protocol::Id;
 
+#[path = "../../tests/scalable_support/authority_metadata.rs"]
+mod transfer_tests;
+
 use crate::ownership::{
     CommitPosition, FenceEvidence, FenceRecord, OwnershipPhase, RecoveredOwnership,
     RecoveryCheckpoint, RecoveryEvidence,

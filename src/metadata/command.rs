@@ -20,6 +20,7 @@ pub struct Command {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Action {
+    Transfer(super::TransferCommand),
     Bootstrap {
         cluster_id: Id,
         metadata_group_id: u64,
@@ -88,6 +89,13 @@ pub(crate) enum Action {
 }
 
 impl Command {
+    pub fn transfer(
+        operation: Id,
+        expected_revision: u64,
+        command: super::TransferCommand,
+    ) -> Self {
+        Self::new(operation, expected_revision, Action::Transfer(command))
+    }
     pub fn publisher(
         operation: Id,
         expected_revision: u64,
@@ -409,6 +417,7 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    AuthorityTransfer(Box<super::AuthorityTransfer>),
     Bootstrapped,
     NodeConfigured(NodeRecord),
     GroupCreated(DataGroup),

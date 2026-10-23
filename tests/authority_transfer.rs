@@ -46,6 +46,7 @@ fn plan() -> AuthorityTransfer {
         target: grant(3, 2, 2),
         source_voters: [1].into(),
         target_voters: [2].into(),
+        checkpoint_voters: [2].into(),
         stage: TransferStage::Prepare,
         frozen_cut: None,
         manifest: None,
@@ -126,6 +127,7 @@ fn import_checks_the_frozen_digest_destination_fence_and_all_required_checkpoint
     let mut plan = plan();
     plan.source_voters = [1, 5, 6].into();
     plan.target_voters = [2, 3, 4].into();
+    plan.checkpoint_voters = [2, 3, 4].into();
     let manifest = export(&mut plan);
     let mut forged = imported(&plan, manifest.clone());
     forged.recovery.recovered.fence.grant.group_id = 2;
@@ -166,6 +168,40 @@ fn import_checks_the_frozen_digest_destination_fence_and_all_required_checkpoint
         checkpoint(4),
     ]))
     .unwrap();
+    plan.validate().unwrap();
+}
+
+#[test]
+fn checkpoints_can_cover_a_replacement_voter_without_rewriting_the_original_import_proof() {
+    let mut plan = plan();
+    let manifest = export(&mut plan);
+    plan.advance(TransferStep::Imported(imported(&plan, manifest.clone())))
+        .unwrap();
+    plan.advance(TransferStep::Published).unwrap();
+    plan.checkpoint_voters = [3].into();
+    assert!(
+        plan.advance(TransferStep::Checkpointed(vec![TransferCheckpoint {
+            voter: 2,
+            position: position(6, 2),
+            manifest_digest: manifest.digest,
+        }]))
+        .is_err()
+    );
+    plan.advance(TransferStep::Checkpointed(vec![TransferCheckpoint {
+        voter: 3,
+        position: position(6, 2),
+        manifest_digest: manifest.digest,
+    }]))
+    .unwrap();
+    assert_eq!(
+        plan.imported
+            .as_ref()
+            .unwrap()
+            .recovery
+            .committed
+            .leader_node,
+        2
+    );
     plan.validate().unwrap();
 }
 

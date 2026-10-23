@@ -16,6 +16,7 @@ pub struct Topology {
     pub(crate) shards: BTreeMap<Id, BirthShard>,
     pub(crate) plans: BTreeMap<Id, LayoutPlan>,
     pub(crate) bindings: BTreeMap<PartitionKey, HistoricalBinding>,
+    pub(crate) transfers: BTreeMap<Id, super::AuthorityTransfer>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -59,6 +60,18 @@ pub enum LayoutChange {
 }
 
 impl Topology {
+    pub fn transfer(&self, id: Id) -> Option<&super::AuthorityTransfer> {
+        self.transfers.get(&id)
+    }
+    pub fn pending_transfers(&self) -> impl Iterator<Item = &super::AuthorityTransfer> {
+        self.transfers
+            .values()
+            .filter(|plan| plan.stage != super::TransferStage::Retired)
+    }
+    pub(crate) fn transfer_blocks(&self, partition: PartitionKey) -> bool {
+        self.pending_transfers()
+            .any(|plan| plan.partition == partition && plan.stage < super::TransferStage::Published)
+    }
     pub fn binding(&self, partition: PartitionKey) -> Option<&HistoricalBinding> {
         self.bindings.get(&partition)
     }
@@ -150,6 +163,20 @@ impl Topology {
     }
 
     pub fn validate(&self, maximum: usize) -> Result<(), Rejection> {
+        if self.transfers.len() > super::MAX_AUTHORITY_TRANSFERS {
+            return Err(Rejection::Capacity);
+        }
+        for (id, plan) in &self.transfers {
+            plan.validate()?;
+            if plan.id != *id
+                || self
+                    .shards
+                    .get(&plan.shard)
+                    .is_none_or(|shard| shard.partition != plan.partition)
+            {
+                return Err(Rejection::InvalidEvidence);
+            }
+        }
         if self.bindings.len() != self.shards.len() {
             return Err(Rejection::InvalidEvidence);
         }
@@ -253,6 +280,13 @@ impl MetadataState {
         expected: u64,
         change: &LayoutChange,
     ) -> Result<LayoutPlan, Rejection> {
+        if self
+            .topology
+            .pending_transfers()
+            .any(|plan| plan.partition.topic_id == topic)
+        {
+            return Err(Rejection::RecoveryRequired);
+        }
         let layout = self.topology.layout(topic).ok_or(Rejection::NotFound)?;
         if layout.revision != expected {
             return Err(Rejection::RevisionConflict);

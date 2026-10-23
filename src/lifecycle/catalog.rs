@@ -24,6 +24,32 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    pub(crate) fn transfer_has_pending(&self, partition: PartitionKey) -> bool {
+        self.objects.values().any(|object| {
+            object
+                .descriptor()
+                .partitions
+                .iter()
+                .any(|index| key(index) == partition)
+                && !matches!(
+                    object.phase,
+                    ObjectPhase::Published | ObjectPhase::Aborted | ObjectPhase::Deleted
+                )
+        })
+    }
+    pub(crate) fn transfer_has_pins(&self, partition: PartitionKey) -> bool {
+        self.pins.values().any(|pin| {
+            pin.objects.iter().any(|id| {
+                self.objects.get(id).is_some_and(|object| {
+                    object
+                        .descriptor()
+                        .partitions
+                        .iter()
+                        .any(|index| key(index) == partition)
+                })
+            })
+        })
+    }
     pub fn object(&self, id: Id) -> Option<&ObjectRecord> {
         self.objects.get(&id)
     }

@@ -179,7 +179,7 @@ impl MetadataState {
         }
         if matches!(
             command.action,
-            Action::Lifecycle(_) | Action::Consumer(_) | Action::Publisher(_)
+            Action::Lifecycle(_) | Action::Consumer(_) | Action::Publisher(_) | Action::Transfer(_)
         ) {
             return self.apply_new(&command);
         }
@@ -282,6 +282,9 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::Transfer(request) => self
+                .transfer_command(command.operation_id, request, revision)
+                .map(|plan| Outcome::AuthorityTransfer(Box::new(plan))),
             Action::Publisher(request) => self
                 .publisher_command(command.operation_id, request)
                 .map(Outcome::Publisher),
@@ -531,6 +534,13 @@ impl MetadataState {
     }
 
     fn retire_topic(&mut self, topic_id: Id, expected: u64) -> Result<Outcome, Rejection> {
+        if self
+            .topology
+            .pending_transfers()
+            .any(|plan| plan.partition.topic_id == topic_id)
+        {
+            return Err(Rejection::RecoveryRequired);
+        }
         let topic = self.topics.get_mut(&topic_id).ok_or(Rejection::NotFound)?;
         if topic.generation != expected {
             return Err(Rejection::GenerationConflict);
@@ -657,6 +667,9 @@ impl MetadataState {
         operation_id: Id,
         revision: u64,
     ) -> Result<Outcome, Rejection> {
+        if self.topology.transfer_blocks(partition) {
+            return Err(Rejection::RecoveryRequired);
+        }
         if self
             .topics
             .get(&partition.topic_id)
@@ -865,6 +878,9 @@ impl MetadataState {
                 return Err(Rejection::InvalidEvidence);
             }
             for grant in &plan.grants {
+                if self.topology.transfer_blocks(grant.partition) {
+                    return Err(Rejection::RecoveryRequired);
+                }
                 if self.grant(grant.partition) != Some(grant)
                     || self.route(grant.partition).is_none()
                 {

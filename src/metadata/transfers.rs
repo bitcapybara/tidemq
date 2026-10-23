@@ -95,6 +95,7 @@ pub struct AuthorityTransfer {
     pub target: Grant,
     pub source_voters: BTreeSet<u64>,
     pub target_voters: BTreeSet<u64>,
+    pub checkpoint_voters: BTreeSet<u64>,
     pub stage: TransferStage,
     pub frozen_cut: Option<CommitPosition>,
     pub manifest: Option<TransferManifest>,
@@ -113,9 +114,24 @@ pub enum TransferStep {
     Retired(CommitPosition),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum TransferCommand {
+    Prepare {
+        shard: Id,
+        layout_revision: u64,
+        target_group: u64,
+        target_owner: u64,
+    },
+    Advance {
+        plan: Id,
+        step: Box<TransferStep>,
+    },
+}
+
 impl AuthorityTransfer {
     pub fn validate(&self) -> Result<(), Rejection> {
-        if self.partition != self.source.partition
+        if !super::control::is_random_operation_id(self.id)
+            || self.partition != self.source.partition
             || self.partition != self.target.partition
             || self.source.cluster_id != self.target.cluster_id
             || self.source.group_id == self.target.group_id
@@ -133,6 +149,8 @@ impl AuthorityTransfer {
             || self.binding_generation == 0
             || !matches!(self.source_voters.len(), 1 | 3)
             || self.target_voters.len() != self.source_voters.len()
+            || self.checkpoint_voters.len() != self.target_voters.len()
+            || self.checkpoint_voters.contains(&0)
             || self.source_voters.contains(&0)
             || self.target_voters.contains(&0)
             || self
@@ -274,13 +292,15 @@ impl AuthorityTransfer {
     }
     fn check_checkpoints(&self, checkpoints: &[TransferCheckpoint]) -> Result<(), Rejection> {
         let imported = self.imported.as_ref().ok_or(Rejection::RecoveryRequired)?;
+        if checkpoints.len() != self.checkpoint_voters.len() {
+            return Err(Rejection::InvalidEvidence);
+        }
         let voters: BTreeSet<_> = checkpoints.iter().map(|row| row.voter).collect();
-        if voters != self.target_voters
+        if voters != self.checkpoint_voters
             || checkpoints.len() != voters.len()
             || checkpoints.iter().any(|row| {
                 row.manifest_digest != imported.manifest.digest
                     || !row.position.validate()
-                    || !self.target_voters.contains(&row.position.leader_node)
                     || row.position.index < imported.recovery.committed.index
             })
         {

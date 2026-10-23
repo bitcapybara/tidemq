@@ -32,6 +32,14 @@ impl MetadataState {
         }
         self.lifecycle.validate().map_err(Rejection::Lifecycle)?;
         self.topology.validate(self.limits.partitions_per_topic)?;
+        if self
+            .topology
+            .shards
+            .values()
+            .any(|shard| self.partition_group(shard.partition) != Some(shard.route.group))
+        {
+            return Err(Rejection::InvalidEvidence);
+        }
         self.auth.validate().map_err(Rejection::Authorization)?;
         self.publishers.validate()?;
         if self
@@ -72,6 +80,7 @@ impl MetadataState {
             || !self.topology.shards.is_empty()
             || !self.topology.plans.is_empty()
             || !self.topology.bindings.is_empty()
+            || !self.topology.transfers.is_empty()
             || self.auth.initialized()
             || !self.control_operations.is_empty()
             || self.decisions.values().any(|decision| {

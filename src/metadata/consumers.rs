@@ -139,6 +139,16 @@ impl MetadataState {
                 subscription,
                 request,
             } => {
+                let topic = self
+                    .consumer_subscriptions
+                    .get(subscription)
+                    .ok_or(Rejection::NotFound)?
+                    .topic;
+                if self.topology.pending_transfers().any(|plan| {
+                    plan.partition.topic_id == topic && plan.stage < super::TransferStage::Published
+                }) {
+                    return Err(Rejection::RecoveryRequired);
+                }
                 let total: usize = self
                     .consumer_subscriptions
                     .values()
@@ -234,6 +244,11 @@ impl MetadataState {
                 Err(Rejection::InvalidSubscription)
             };
         }
+        if self.topology.pending_transfers().any(|plan| {
+            plan.partition.topic_id == topic && plan.stage < super::TransferStage::Published
+        }) {
+            return Err(Rejection::RecoveryRequired);
+        }
         if self.consumer_subscriptions.contains_key(&operation) {
             return Err(Rejection::OperationConflict);
         }
@@ -300,6 +315,11 @@ impl MetadataState {
             .consumer_subscriptions
             .get(&subscription)
             .ok_or(Rejection::NotFound)?;
+        if self.topology.pending_transfers().any(|plan| {
+            plan.partition.topic_id == row.topic && plan.stage < super::TransferStage::Published
+        }) {
+            return Ok(ConsumerOutcome::Plan(row.members.plan().clone()));
+        }
         let layout = self.topology.layout(row.topic).ok_or(Rejection::NotFound)?;
         let domains = self
             .topology
