@@ -67,9 +67,21 @@ impl DataApplication {
         let available_bytes = config
             .max_hot_bytes
             .saturating_sub(self.hot_bytes)
+            .saturating_sub(
+                self.authority
+                    .reservation()
+                    .map_or(0, |capacity| capacity.max_hot_bytes),
+            )
             .saturating_sub(metadata_bytes)
             .saturating_sub(640);
-        let available_messages = config.max_hot_messages.saturating_sub(self.hot_messages);
+        let available_messages = config
+            .max_hot_messages
+            .saturating_sub(self.hot_messages)
+            .saturating_sub(
+                self.authority
+                    .reservation()
+                    .map_or(0, |capacity| capacity.max_hot_messages),
+            );
         let state = self
             .partitions
             .get_mut(&partition)

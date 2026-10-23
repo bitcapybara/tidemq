@@ -3,9 +3,12 @@ use std::collections::BTreeMap;
 use crate::{
     broker::{
         AuthorityDataCommand, DataApplication, DataCommand, DataGroupConfig, DataRejection,
-        DataResponse, TransferCapacity, TransferDataRejection, TransferOutcome, WriterFence,
+        DataResponse, TransferCapacity, TransferDataRejection, TransferOutcome, TransferPage,
+        WriterFence,
     },
-    metadata::{AuthorityTransfer, Command, PartitionKey, TransferStage},
+    metadata::{
+        AuthorityTransfer, Command, PartitionKey, TransferManifest, TransferStage, TransferStep,
+    },
     ownership::{CommitPosition, FenceCommand, Grant},
     producer::{MessageData, ProducerLimits, PublishRequest, PublisherPermit},
     replication::Application,
@@ -55,11 +58,19 @@ fn plan() -> AuthorityTransfer {
 }
 
 fn application(plan: &AuthorityTransfer) -> DataApplication {
+    initialized(
+        plan.source.cluster_id,
+        plan.source.group_id,
+        Some(plan.source.clone()),
+    )
+}
+
+fn initialized(cluster: Id, group: u64, grant: Option<Grant>) -> DataApplication {
     let mut app = DataApplication::default();
     assert_eq!(
         app.apply(DataCommand::Initialize(DataGroupConfig {
-            cluster_id: plan.source.cluster_id,
-            group_id: 2,
+            cluster_id: cluster,
+            group_id: group,
             max_partitions: 4,
             max_hot_bytes: 1 << 20,
             max_hot_messages: 1024,
@@ -69,7 +80,9 @@ fn application(plan: &AuthorityTransfer) -> DataApplication {
         })),
         DataResponse::Initialized
     );
-    install(&mut app, plan.source.clone());
+    if let Some(grant) = grant {
+        install(&mut app, grant);
+    }
     app
 }
 
@@ -99,6 +112,10 @@ fn publish(
 }
 
 fn publish_command(partition: PartitionKey, shard: Id, sequence: u64) -> DataCommand {
+    publish_body(partition, shard, sequence, Bytes::from_static(b"payload"))
+}
+
+fn publish_body(partition: PartitionKey, shard: Id, sequence: u64, body: Bytes) -> DataCommand {
     let producer = partition.topic_id;
     let identity = SendIdentity {
         topic: partition.topic_id,
@@ -135,11 +152,11 @@ fn publish_command(partition: PartitionKey, shard: Id, sequence: u64) -> DataCom
         },
         request: PublishRequest {
             identity,
-            digest: message_digest(identity, None, b"payload", &metadata.properties).unwrap(),
+            digest: message_digest(identity, None, &body, &metadata.properties).unwrap(),
             retired_before: 1,
             message: MessageData {
                 key: Bytes::new(),
-                body: Bytes::from_static(b"payload"),
+                body,
                 context: postcard::to_stdvec(&metadata).unwrap().into(),
             },
         },
@@ -152,6 +169,11 @@ fn capacity() -> TransferCapacity {
         max_bytes: 65_536,
         max_hot_bytes: 1024,
         max_hot_messages: 16,
+        max_window_slots: 16,
+        max_read_results: 16,
+        max_ack_slots: 16,
+        max_members: 16,
+        max_in_flight_bytes: 1024,
     }
 }
 
@@ -382,4 +404,494 @@ async fn a_three_replica_restart_preserves_the_frozen_source_and_original_cut() 
         DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Frozen))
     );
     cluster.shutdown().await;
+}
+
+#[test]
+fn target_import_replays_the_original_publication_after_paged_recovery() {
+    let mut plan = plan();
+    let mut source = application(&plan);
+    let original_command = publish_body(
+        plan.partition,
+        plan.shard,
+        1,
+        Bytes::from(vec![b'p'; 70 * 1024]),
+    );
+    let original = source.apply(original_command.clone());
+    assert!(matches!(original, DataResponse::Published(_)));
+    let mut target = initialized(plan.source.cluster_id, plan.target.group_id, None);
+    let capacity = TransferCapacity {
+        max_hot_bytes: 128 * 1024,
+        max_bytes: 256 * 1024,
+        ..capacity()
+    };
+    let reserve = DataCommand::AuthorityTransfer(AuthorityDataCommand::Reserve {
+        plan: Box::new(plan.clone()),
+        capacity,
+    });
+    let reserved = DataResponse::AuthorityTransfer(TransferOutcome::Reserved { plan: plan.id });
+    assert_eq!(target.apply(reserve.clone()), reserved);
+    assert_eq!(target.apply(reserve), reserved);
+    source.apply(DataCommand::AuthorityTransfer(
+        AuthorityDataCommand::Freeze {
+            plan: Box::new(plan.clone()),
+            capacity,
+        },
+    ));
+    let cut = CommitPosition {
+        term: 1,
+        leader_node: 1,
+        index: 100,
+    };
+    source.apply(DataCommand::AuthorityTransfer(
+        AuthorityDataCommand::RecordCut { plan: plan.id, cut },
+    ));
+    let mut bytes = Vec::new();
+    source.write_transfer_payload(plan.id, &mut bytes).unwrap();
+    plan.advance(TransferStep::Frozen(cut)).unwrap();
+    plan.advance(TransferStep::Exported(TransferManifest {
+        bytes: bytes.len() as u64,
+        digest: *blake3::hash(&bytes).as_bytes(),
+        source_cut: cut,
+        committed_end: 1,
+    }))
+    .unwrap();
+    target.apply(DataCommand::AuthorityTransfer(
+        AuthorityDataCommand::BeginImport {
+            plan: Box::new(plan.clone()),
+        },
+    ));
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::FinishImport { plan: plan.id }
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::NotReady))
+    );
+    let mut offset = 0;
+    for chunk in bytes.chunks(crate::metadata::TRANSFER_PAGE_BYTES) {
+        let page = DataCommand::AuthorityTransfer(AuthorityDataCommand::ImportPage(TransferPage {
+            plan: plan.id,
+            offset,
+            bytes: Bytes::copy_from_slice(chunk),
+            digest: *blake3::hash(chunk).as_bytes(),
+        }));
+        offset += chunk.len() as u64;
+        let expected = DataResponse::AuthorityTransfer(TransferOutcome::ImportProgress {
+            plan: plan.id,
+            received: offset,
+        });
+        let mut bad_page = page.clone();
+        if let DataCommand::AuthorityTransfer(AuthorityDataCommand::ImportPage(page)) =
+            &mut bad_page
+        {
+            let mut damaged = page.bytes.to_vec();
+            damaged[0] ^= 1;
+            page.bytes = damaged.into();
+        }
+        assert_eq!(
+            target.apply(bad_page),
+            DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::InvalidPlan))
+        );
+        assert_eq!(target.apply(page.clone()), expected);
+        assert_eq!(target.apply(page), expected);
+        target = postcard::from_bytes(&postcard::to_stdvec(&target).unwrap()).unwrap();
+        target.validate().unwrap();
+    }
+    let finish =
+        DataCommand::AuthorityTransfer(AuthorityDataCommand::FinishImport { plan: plan.id });
+    let imported = target.apply(finish.clone());
+    assert!(
+        matches!(&imported, DataResponse::AuthorityTransfer(TransferOutcome::Imported(recovered))
+        if recovered.fence.grant == plan.target && recovered.checkpoint.committed_end == 1),
+        "Target import was rejected: {imported:?}"
+    );
+    target.validate().unwrap();
+    assert_eq!(target.apply(finish), imported);
+    let mut changed = bytes
+        .chunks(crate::metadata::TRANSFER_PAGE_BYTES)
+        .next()
+        .unwrap()
+        .to_vec();
+    changed[0] ^= 1;
+    let digest = *blake3::hash(&changed).as_bytes();
+    assert_eq!(
+        target.apply(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::ImportPage(TransferPage {
+                plan: plan.id,
+                offset: 0,
+                bytes: changed.into(),
+                digest,
+            })
+        )),
+        DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Conflict))
+    );
+    let mut retry = original_command;
+    if let DataCommand::Publish { writer, .. } = &mut retry {
+        *writer = WriterFence {
+            node_id: plan.target.owner_node,
+            owner_epoch: plan.target.epoch,
+        };
+    }
+    let replay = target.apply(retry);
+    assert!(
+        matches!((original, replay), (DataResponse::Published(first), DataResponse::Published(repeated))
+        if first.offset == repeated.offset && repeated.duplicate)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_three_replica_groups_preserve_original_reads_and_nack_results_after_import() {
+    use crate::subscription::{
+        GroupAck, GroupCommand, GroupIdentity, GroupOutcome, GroupRead, MemberGrant, SigningKey,
+    };
+    use tidemq_protocol::topic::SubscriptionKind;
+    let source = super::support::Cluster::new(&[1, 2, 3]).await;
+    let mut target =
+        super::support::Cluster::new_group(source.config.cluster_id, 42, &[1, 2, 3]).await;
+    let mut plan = plan();
+    plan.source = source.grant(plan.partition, 1);
+    plan.source_voters = [1, 2, 3].into();
+    plan.target = Grant {
+        cluster_id: source.config.cluster_id,
+        partition: plan.partition,
+        group_id: 42,
+        owner_node: 1,
+        epoch: 2,
+        expected_route_generation: 1,
+        metadata_revision: 2,
+        operation_id: Command::grant_ownership(
+            1,
+            source.config.cluster_id,
+            plan.partition,
+            1,
+            1,
+            1,
+        )
+        .unwrap()
+        .operation_id(),
+    };
+    plan.target_voters = [1, 2, 3].into();
+    plan.checkpoint_voters = plan.target_voters.clone();
+    source.fence_and_recover(&plan.source).await;
+    for sequence in 1..=2 {
+        assert!(matches!(
+            source
+                .write(publish_body(
+                    plan.partition,
+                    plan.shard,
+                    sequence,
+                    Bytes::from(vec![b'p'; 70 * 1024])
+                ))
+                .await,
+            DataResponse::Published(_)
+        ));
+    }
+    let subscription = Id::new_v7().unwrap();
+    let member = Id::new_v7().unwrap();
+    let partition = plan.partition;
+    let data = |writer: &Grant, command| DataCommand::ConsumerGroup {
+        partition,
+        writer: WriterFence {
+            node_id: writer.owner_node,
+            owner_epoch: writer.epoch,
+        },
+        command,
+    };
+    assert_eq!(
+        source
+            .write(data(
+                &plan.source,
+                GroupCommand::Create {
+                    identity: GroupIdentity {
+                        topic: plan.partition.topic_id,
+                        shard: plan.shard,
+                        subscription
+                    },
+                    model: SubscriptionKind::Queue,
+                    start: 0,
+                    signing_key: SigningKey::try_from([41; 32]).unwrap(),
+                    blocked: false,
+                }
+            ))
+            .await,
+        DataResponse::ConsumerGroup(GroupOutcome::Created)
+    );
+    source
+        .write(data(
+            &plan.source,
+            GroupCommand::InstallMembers {
+                subscription,
+                version: 1,
+                grants: vec![MemberGrant {
+                    member,
+                    client: member,
+                    credential: member,
+                    epoch: 1,
+                    expires_ms: 100_000,
+                    lanes: vec![],
+                    max_messages: 8,
+                    max_bytes: 256 * 1024,
+                }],
+                now_ms: 1000,
+            },
+        ))
+        .await;
+    let read = GroupRead {
+        member,
+        epoch: 1,
+        sequence: 1,
+        now_ms: 1000,
+        max_messages: 2,
+        max_bytes: 256 * 1024,
+    };
+    let original_read = source
+        .write(data(
+            &plan.source,
+            GroupCommand::Read {
+                subscription,
+                request: read,
+                cold: vec![],
+            },
+        ))
+        .await;
+    let DataResponse::ConsumerGroup(GroupOutcome::Read(deliveries)) = &original_read else {
+        panic!("Expected an original read result: {original_read:?}");
+    };
+    assert_eq!(deliveries.deliveries.len(), 2);
+    let ack = GroupAck {
+        member,
+        epoch: 1,
+        sequence: 1,
+        now_ms: 1000,
+        model: SubscriptionKind::Queue,
+        proofs: vec![deliveries.deliveries[0].clone()],
+        nack_delay_ms: None,
+    };
+    let original_ack = source
+        .write(data(
+            &plan.source,
+            GroupCommand::Acknowledge {
+                subscription,
+                request: ack.clone(),
+            },
+        ))
+        .await;
+    let nack = GroupAck {
+        sequence: 2,
+        proofs: vec![deliveries.deliveries[1].clone()],
+        nack_delay_ms: Some(100),
+        ..ack.clone()
+    };
+    let original_nack = source
+        .write(data(
+            &plan.source,
+            GroupCommand::Acknowledge {
+                subscription,
+                request: nack.clone(),
+            },
+        ))
+        .await;
+    assert!(matches!(
+        &original_nack,
+        DataResponse::ConsumerGroup(GroupOutcome::Acknowledged(_))
+    ));
+    let capacity = TransferCapacity {
+        max_bytes: 512 * 1024,
+        max_hot_bytes: 256 * 1024,
+        max_in_flight_bytes: 256 * 1024,
+        ..capacity()
+    };
+    assert!(matches!(
+        target
+            .write(DataCommand::AuthorityTransfer(
+                AuthorityDataCommand::Reserve {
+                    plan: Box::new(plan.clone()),
+                    capacity
+                }
+            ))
+            .await,
+        DataResponse::AuthorityTransfer(TransferOutcome::Reserved { .. })
+    ));
+    let frozen = source
+        .node(1)
+        .raft
+        .client_write(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::Freeze {
+                plan: Box::new(plan.clone()),
+                capacity,
+            },
+        ))
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            frozen.data,
+            DataResponse::AuthorityTransfer(TransferOutcome::Frozen { .. })
+        ),
+        "Source freeze failed: {:?}",
+        frozen.data
+    );
+    let cut = CommitPosition {
+        term: frozen.log_id.leader_id.term,
+        leader_node: frozen.log_id.leader_id.node_id,
+        index: frozen.log_id.index,
+    };
+    source
+        .write(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::RecordCut { plan: plan.id, cut },
+        ))
+        .await;
+    let bytes = source
+        .node(1)
+        .state
+        .try_with_application(|app| {
+            let mut bytes = Vec::new();
+            app.write_transfer_payload(plan.id, &mut bytes).unwrap();
+            bytes
+        })
+        .await
+        .unwrap();
+    plan.advance(TransferStep::Frozen(cut)).unwrap();
+    plan.advance(TransferStep::Exported(TransferManifest {
+        bytes: bytes.len() as u64,
+        digest: *blake3::hash(&bytes).as_bytes(),
+        source_cut: cut,
+        committed_end: 2,
+    }))
+    .unwrap();
+    target
+        .write(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::BeginImport {
+                plan: Box::new(plan.clone()),
+            },
+        ))
+        .await;
+    for (index, chunk) in bytes
+        .chunks(crate::metadata::TRANSFER_PAGE_BYTES)
+        .enumerate()
+    {
+        let page = DataCommand::AuthorityTransfer(AuthorityDataCommand::ImportPage(TransferPage {
+            plan: plan.id,
+            offset: (index * crate::metadata::TRANSFER_PAGE_BYTES) as u64,
+            bytes: Bytes::copy_from_slice(chunk),
+            digest: *blake3::hash(chunk).as_bytes(),
+        }));
+        assert!(matches!(
+            target.write(page).await,
+            DataResponse::AuthorityTransfer(TransferOutcome::ImportProgress { .. })
+        ));
+        if index == 0 {
+            target.restart(1).await;
+        }
+    }
+    let imported = target
+        .write(DataCommand::AuthorityTransfer(
+            AuthorityDataCommand::FinishImport { plan: plan.id },
+        ))
+        .await;
+    assert!(
+        matches!(
+            imported,
+            DataResponse::AuthorityTransfer(TransferOutcome::Imported(_))
+        ),
+        "Target import failed: {imported:?}"
+    );
+    target.restart(1).await;
+    assert_eq!(
+        target
+            .write(data(
+                &plan.target,
+                GroupCommand::Read {
+                    subscription,
+                    request: read,
+                    cold: vec![]
+                }
+            ))
+            .await,
+        original_read
+    );
+    assert_eq!(
+        target
+            .write(data(
+                &plan.target,
+                GroupCommand::RetireRead {
+                    subscription,
+                    member,
+                    epoch: 1,
+                    sequence: 1
+                }
+            ))
+            .await,
+        DataResponse::ConsumerGroup(GroupOutcome::ReadRetired)
+    );
+    let second = target
+        .write(data(
+            &plan.target,
+            GroupCommand::Read {
+                subscription,
+                request: GroupRead {
+                    sequence: 2,
+                    now_ms: 1101,
+                    ..read
+                },
+                cold: vec![],
+            },
+        ))
+        .await;
+    let DataResponse::ConsumerGroup(GroupOutcome::Read(second)) = second else {
+        panic!("Expected redelivery after import: {second:?}");
+    };
+    assert_eq!(second.deliveries.len(), 1);
+    assert_eq!(second.deliveries[0].offset, 1);
+    assert_eq!(second.deliveries[0].attempt, 2);
+    assert_eq!(
+        target
+            .write(data(
+                &plan.target,
+                GroupCommand::Acknowledge {
+                    subscription,
+                    request: ack.clone()
+                }
+            ))
+            .await,
+        original_ack
+    );
+    assert_eq!(
+        target
+            .write(data(
+                &plan.target,
+                GroupCommand::Acknowledge {
+                    subscription,
+                    request: nack.clone()
+                }
+            ))
+            .await,
+        original_nack
+    );
+    assert_eq!(
+        target
+            .write(data(
+                &plan.target,
+                GroupCommand::Acknowledge {
+                    subscription,
+                    request: GroupAck {
+                        sequence: 3,
+                        nack_delay_ms: None,
+                        ..nack
+                    }
+                }
+            ))
+            .await,
+        DataResponse::Rejected(DataRejection::Subscription(
+            crate::subscription::Rejection::StaleAttempt
+        ))
+    );
+    target
+        .node(1)
+        .state
+        .try_with_application(|app| app.validate())
+        .await
+        .unwrap()
+        .unwrap();
+    target.shutdown().await;
+    source.shutdown().await;
 }

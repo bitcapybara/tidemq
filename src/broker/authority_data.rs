@@ -11,6 +11,12 @@ pub struct TransferCapacity {
     pub max_bytes: u64,
     pub max_hot_bytes: u64,
     pub max_hot_messages: usize,
+    pub max_window_slots: usize,
+    pub max_read_results: usize,
+    // ACK head receipts are charged to members; this bounds the remaining result slots.
+    pub max_ack_slots: usize,
+    pub max_members: usize,
+    pub max_in_flight_bytes: u64,
 }
 
 impl TransferCapacity {
@@ -19,6 +25,15 @@ impl TransferCapacity {
             || self.max_bytes > MAX_TRANSFER_BYTES
             || self.max_hot_bytes > MAX_TRANSFER_BYTES
             || self.max_hot_messages > 1_048_576
+            || [
+                self.max_window_slots,
+                self.max_read_results,
+                self.max_ack_slots,
+                self.max_members,
+            ]
+            .into_iter()
+            .any(|count| count > 1_048_576)
+            || self.max_in_flight_bytes > MAX_TRANSFER_BYTES
         {
             return Err(TransferDataRejection::Capacity);
         }
@@ -44,6 +59,17 @@ pub enum TransferDataRejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AuthorityDataCommand {
+    Reserve {
+        plan: Box<AuthorityTransfer>,
+        capacity: TransferCapacity,
+    },
+    BeginImport {
+        plan: Box<AuthorityTransfer>,
+    },
+    ImportPage(TransferPage),
+    FinishImport {
+        plan: Id,
+    },
     Freeze {
         plan: Box<AuthorityTransfer>,
         capacity: TransferCapacity,
@@ -54,8 +80,34 @@ pub enum AuthorityDataCommand {
     },
 }
 
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TransferPage {
+    pub plan: Id,
+    pub offset: u64,
+    pub bytes: bytes::Bytes,
+    pub digest: [u8; 32],
+}
+
+impl std::fmt::Debug for TransferPage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransferPage")
+            .field("plan", &self.plan)
+            .field("offset", &self.offset)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TransferOutcome {
+    Reserved {
+        plan: Id,
+    },
+    ImportProgress {
+        plan: Id,
+        received: u64,
+    },
+    Imported(RecoveredOwnership),
     Frozen {
         plan: Id,
         partition: PartitionKey,
@@ -67,6 +119,23 @@ pub enum TransferOutcome {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(super) struct AuthorityDataState {
     sources: BTreeMap<PartitionKey, FrozenSource>,
+    targets: BTreeMap<Id, TargetImport>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct TargetImport {
+    plan: AuthorityTransfer,
+    capacity: TransferCapacity,
+    pages: BTreeMap<u64, ImportedPage>,
+    received: u64,
+    recovered: Option<RecoveredOwnership>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ImportedPage {
+    bytes: Option<bytes::Bytes>,
+    length: usize,
+    digest: [u8; 32],
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -102,7 +171,23 @@ impl AuthorityDataState {
     pub(super) fn is_frozen(&self, partition: PartitionKey) -> bool {
         self.sources.contains_key(&partition)
     }
+
+    pub(super) fn reservation(&self) -> Option<&TransferCapacity> {
+        self.targets
+            .values()
+            .find(|target| target.recovered.is_none())
+            .map(|target| &target.capacity)
+    }
+
+    pub(super) fn is_reserved(&self, partition: PartitionKey) -> bool {
+        self.targets
+            .values()
+            .any(|target| target.plan.partition == partition && target.recovered.is_none())
+    }
 }
+
+#[path = "authority_import.rs"]
+mod target;
 
 impl DataApplication {
     pub(super) fn authority_transfer(
@@ -110,6 +195,12 @@ impl DataApplication {
         command: AuthorityDataCommand,
     ) -> Result<DataResponse, DataRejection> {
         let outcome = match command {
+            AuthorityDataCommand::Reserve { plan, capacity } => {
+                self.reserve_target(*plan, capacity)
+            }
+            AuthorityDataCommand::BeginImport { plan } => self.begin_import(*plan),
+            AuthorityDataCommand::ImportPage(page) => self.import_page(page),
+            AuthorityDataCommand::FinishImport { plan } => self.finish_import(plan),
             AuthorityDataCommand::Freeze { plan, capacity } => self.freeze_source(*plan, capacity),
             AuthorityDataCommand::RecordCut { plan, cut } => self.record_source_cut(plan, cut),
         }
@@ -126,7 +217,7 @@ impl DataApplication {
         plan.validate()
             .map_err(|_| TransferDataRejection::InvalidPlan)?;
         if let Some(original) = self.authority.sources.get(&plan.partition) {
-            if !same_plan(&original.plan, &plan) {
+            if !same_plan(&original.plan, &plan) || original.capacity != capacity {
                 return Err(TransferDataRejection::Conflict);
             }
             return Ok(original.outcome());
@@ -208,8 +299,16 @@ impl DataApplication {
         {
             return Err(TransferDataRejection::InvalidPlan);
         }
-        if state.producer.hot_bytes() > capacity.max_hot_bytes
+        let hot_state = state
+            .producer
+            .hot_bytes()
+            .checked_add(state.producer.publish_state_bytes())
+            .ok_or(TransferDataRejection::Capacity)?;
+        if hot_state > capacity.max_hot_bytes
             || state.producer.diagnostic().hot_messages > capacity.max_hot_messages
+            || !super::groups::transfer_usage(state)
+                .map_err(|_| TransferDataRejection::InvalidPlan)?
+                .fits(capacity)
         {
             return Err(TransferDataRejection::Capacity);
         }
@@ -288,6 +387,7 @@ impl DataApplication {
     }
 
     pub(super) fn validate_transfers(&self) -> Result<(), DataRejection> {
+        self.validate_targets().map_err(DataRejection::Transfer)?;
         let mut metadata_bytes = 0_u64;
         let mut identities = std::collections::BTreeSet::new();
         for (partition, source) in &self.authority.sources {

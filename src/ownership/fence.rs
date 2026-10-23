@@ -139,6 +139,27 @@ impl FenceState {
         self.partitions.get(&partition).map(|record| &record.fence)
     }
 
+    pub(crate) fn import_partition(
+        &mut self,
+        grant: Grant,
+        generation: u64,
+    ) -> Result<(), FenceRejection> {
+        if generation == 0 || self.partitions.contains_key(&grant.partition) {
+            return Err(FenceRejection::InvalidIdentity);
+        }
+        let partition = grant.partition;
+        match self.apply(FenceCommand { grant }) {
+            FenceResponse::Rejected(reason) => return Err(reason),
+            FenceResponse::Installed(_) => {}
+        }
+        self.partitions
+            .get_mut(&partition)
+            .ok_or(FenceRejection::InvalidIdentity)?
+            .fence
+            .fence_generation = generation;
+        Ok(())
+    }
+
     pub fn recovered(&self, partition: PartitionKey) -> Option<RecoveredOwnership> {
         let record = self.partitions.get(&partition)?;
         Some(RecoveredOwnership {

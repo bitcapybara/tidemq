@@ -17,6 +17,42 @@ pub(crate) struct AuthoritySlice {
 }
 
 impl DataState {
+    pub(crate) fn import_authority_slice(&self, slice: AuthoritySlice) -> Result<Self, Rejection> {
+        slice.validate()?;
+        if self.manifests.contains_key(&slice.partition)
+            || self.reclaim_ends.contains_key(&slice.partition)
+            || self.checkpointed_floors.contains_key(&slice.partition)
+        {
+            return Err(Rejection::Conflict);
+        }
+        let mut next = self.clone();
+        for (id, mut intent) in slice.intents {
+            if let Some(original) = next.intents.get(&id) {
+                if original.plan != intent.plan
+                    || original.phase != intent.phase
+                    || original.generation != intent.generation
+                {
+                    return Err(Rejection::Conflict);
+                }
+            } else {
+                // A source group's checkpoint counter cannot certify target durability.
+                intent.checkpoint_generation = None;
+                next.intents.insert(id, intent);
+            }
+        }
+        if let Some(manifest) = slice.manifest {
+            next.manifests.insert(slice.partition, manifest);
+        }
+        if let Some(end) = slice.reclaim_end {
+            next.reclaim_ends.insert(slice.partition, end);
+        }
+        if let Some(floor) = slice.checkpointed_floor {
+            next.checkpointed_floors.insert(slice.partition, floor);
+        }
+        next.validate()?;
+        Ok(next)
+    }
+
     pub(crate) fn authority_slice(
         &self,
         partition: PartitionKey,

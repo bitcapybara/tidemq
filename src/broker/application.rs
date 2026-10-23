@@ -22,7 +22,7 @@ mod groups;
 #[path = "publish.rs"]
 mod publish;
 pub use authority_data::{
-    AuthorityDataCommand, TransferCapacity, TransferDataRejection, TransferOutcome,
+    AuthorityDataCommand, TransferCapacity, TransferDataRejection, TransferOutcome, TransferPage,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -526,7 +526,9 @@ impl DataApplication {
     }
 
     fn install_fence(&mut self, command: FenceCommand) -> Result<DataResponse, DataRejection> {
-        if self.authority.is_frozen(command.grant.partition) {
+        if self.authority.is_frozen(command.grant.partition)
+            || self.authority.is_reserved(command.grant.partition)
+        {
             return Err(DataRejection::Transfer(TransferDataRejection::Frozen));
         }
         let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
@@ -546,7 +548,12 @@ impl DataApplication {
                 .invalidate_assignments(fence.fence_generation)
                 .map_err(DataRejection::Subscription)?;
         } else {
-            if self.partitions.len() >= config.max_partitions {
+            if self
+                .partitions
+                .len()
+                .saturating_add(usize::from(self.authority.reservation().is_some()))
+                >= config.max_partitions
+            {
                 return Err(DataRejection::PartitionCapacity);
             }
             let producer = ProducerState::new(
@@ -586,7 +593,7 @@ impl DataApplication {
         partition: PartitionKey,
         writer: WriterFence,
     ) -> Result<DataResponse, DataRejection> {
-        if self.authority.is_frozen(partition) {
+        if self.authority.is_frozen(partition) || self.authority.is_reserved(partition) {
             return Err(DataRejection::Transfer(TransferDataRejection::Frozen));
         }
         let fences = self
@@ -669,8 +676,15 @@ impl DataApplication {
     ) -> Result<DataResponse, DataRejection> {
         self.check_writer(partition, writer)?;
         let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
-        let available_bytes = config.max_hot_bytes.saturating_sub(self.hot_bytes);
-        let available_messages = config.max_hot_messages.saturating_sub(self.hot_messages);
+        let reservation = self.authority.reservation();
+        let available_bytes = config
+            .max_hot_bytes
+            .saturating_sub(self.hot_bytes)
+            .saturating_sub(reservation.map_or(0, |capacity| capacity.max_hot_bytes));
+        let available_messages = config
+            .max_hot_messages
+            .saturating_sub(self.hot_messages)
+            .saturating_sub(reservation.map_or(0, |capacity| capacity.max_hot_messages));
         let state = self
             .partitions
             .get_mut(&partition)
@@ -835,7 +849,7 @@ impl DataApplication {
         partition: PartitionKey,
         writer: WriterFence,
     ) -> Result<(), DataRejection> {
-        if self.authority.is_frozen(partition) {
+        if self.authority.is_frozen(partition) || self.authority.is_reserved(partition) {
             return Err(DataRejection::Transfer(TransferDataRejection::Frozen));
         }
         self.ownership
@@ -952,7 +966,7 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 8;
+    const VERSION: u32 = 9;
     type Command = DataCommand;
     type Response = DataResponse;
 

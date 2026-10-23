@@ -2,12 +2,109 @@ use super::*;
 use crate::subscription::{Candidate, GroupCommand, GroupCursor, GroupOutcome, GroupRead};
 
 #[derive(Default)]
-struct Usage {
+pub(super) struct Usage {
     windows: usize,
     reads: usize,
     acks: usize,
     members: usize,
     bytes: u64,
+}
+
+impl Usage {
+    fn add(&mut self, other: Self) -> Result<(), DataRejection> {
+        self.windows = self
+            .windows
+            .checked_add(other.windows)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.reads = self
+            .reads
+            .checked_add(other.reads)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.acks = self
+            .acks
+            .checked_add(other.acks)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.members = self
+            .members
+            .checked_add(other.members)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.bytes = self
+            .bytes
+            .checked_add(other.bytes)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        Ok(())
+    }
+
+    fn remove_reservation(&mut self, capacity: TransferCapacity) -> Result<(), DataRejection> {
+        self.windows = self
+            .windows
+            .checked_sub(capacity.max_window_slots)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.reads = self
+            .reads
+            .checked_sub(capacity.max_read_results)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.acks = self
+            .acks
+            .checked_sub(capacity.max_ack_slots.saturating_add(capacity.max_members))
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.members = self
+            .members
+            .checked_sub(capacity.max_members)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        self.bytes = self
+            .bytes
+            .checked_sub(capacity.max_in_flight_bytes)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        Ok(())
+    }
+
+    fn validate(&self, limits: subscription::Limits) -> Result<(), DataRejection> {
+        if self.windows > limits.max_total_window_slots as usize
+            || self.reads > limits.max_total_window_slots as usize
+            || self.acks > (limits.max_total_window_slots as usize).saturating_add(self.members)
+            || self.members > limits.max_total_window_slots as usize
+            || self.bytes > limits.max_total_in_flight_bytes
+        {
+            return Err(DataRejection::InvalidConfiguration);
+        }
+        Ok(())
+    }
+
+    pub(super) fn fits(&self, capacity: TransferCapacity) -> bool {
+        self.windows <= capacity.max_window_slots
+            && self.reads <= capacity.max_read_results
+            && self.acks.saturating_sub(self.members) <= capacity.max_ack_slots
+            && self.members <= capacity.max_members
+            && self.bytes <= capacity.max_in_flight_bytes
+    }
+
+    fn reserved(capacity: TransferCapacity) -> Self {
+        Self {
+            windows: capacity.max_window_slots,
+            reads: capacity.max_read_results,
+            acks: capacity.max_ack_slots.saturating_add(capacity.max_members),
+            members: capacity.max_members,
+            bytes: capacity.max_in_flight_bytes,
+        }
+    }
+}
+
+pub(super) fn transfer_usage(state: &PartitionState) -> Result<Usage, DataRejection> {
+    usage(state.groups.values())
+}
+
+fn usage<'a>(mut cursors: impl Iterator<Item = &'a GroupCursor>) -> Result<Usage, DataRejection> {
+    cursors.try_fold(Usage::default(), |mut total, cursor| {
+        total.add(Usage {
+            windows: cursor.window_slots(),
+            reads: cursor.read_result_slots(),
+            acks: cursor.ack_result_slots(),
+            members: cursor.member_count(),
+            bytes: cursor.in_flight_bytes(),
+        })?;
+        Ok(total)
+    })
 }
 
 impl DataApplication {
@@ -18,14 +115,7 @@ impl DataApplication {
             .ok_or(DataRejection::Uninitialized)?
             .subscription;
         let usage = self.group_usage()?;
-        if usage.windows > limits.max_total_window_slots as usize
-            || usage.reads > limits.max_total_window_slots as usize
-            || usage.acks > (limits.max_total_window_slots as usize).saturating_add(usage.members)
-            || usage.members > limits.max_total_window_slots as usize
-            || usage.bytes > limits.max_total_in_flight_bytes
-        {
-            return Err(DataRejection::InvalidConfiguration);
-        }
+        usage.validate(limits)?;
         for (partition, state) in &self.partitions {
             if state.groups.len() > limits.max_subscription_identities as usize {
                 return Err(DataRejection::InvalidConfiguration);
@@ -149,32 +239,35 @@ impl DataApplication {
     }
 
     fn group_usage(&self) -> Result<Usage, DataRejection> {
-        self.partitions
-            .values()
-            .flat_map(|state| state.groups.values())
-            .try_fold(Usage::default(), |mut usage, cursor| {
-                usage.windows = usage
-                    .windows
-                    .checked_add(cursor.window_slots())
-                    .ok_or(DataRejection::InvalidConfiguration)?;
-                usage.reads = usage
-                    .reads
-                    .checked_add(cursor.read_result_slots())
-                    .ok_or(DataRejection::InvalidConfiguration)?;
-                usage.acks = usage
-                    .acks
-                    .checked_add(cursor.ack_result_slots())
-                    .ok_or(DataRejection::InvalidConfiguration)?;
-                usage.members = usage
-                    .members
-                    .checked_add(cursor.member_count())
-                    .ok_or(DataRejection::InvalidConfiguration)?;
-                usage.bytes = usage
-                    .bytes
-                    .checked_add(cursor.in_flight_bytes())
-                    .ok_or(DataRejection::InvalidConfiguration)?;
-                Ok(usage)
-            })
+        let mut total = usage(
+            self.partitions
+                .values()
+                .flat_map(|state| state.groups.values()),
+        )?;
+        if let Some(capacity) = self.authority.reservation() {
+            total.add(Usage::reserved(*capacity))?;
+        }
+        Ok(total)
+    }
+
+    pub(super) fn validate_target_group_capacity(
+        &self,
+        state: Option<&PartitionState>,
+        capacity: TransferCapacity,
+    ) -> Result<(), DataRejection> {
+        let mut total = self.group_usage()?;
+        if let Some(state) = state {
+            total.remove_reservation(capacity)?;
+            total.add(transfer_usage(state)?)?;
+        } else {
+            total.add(Usage::reserved(capacity))?;
+        }
+        total.validate(
+            self.config
+                .as_ref()
+                .ok_or(DataRejection::Uninitialized)?
+                .subscription,
+        )
     }
 }
 

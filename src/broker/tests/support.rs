@@ -139,6 +139,10 @@ impl Cluster {
 
     pub async fn new(ids: &[u64]) -> Self {
         let cluster_id = Id::new_v7().unwrap();
+        Self::new_group(cluster_id, 41, ids).await
+    }
+
+    pub async fn new_group(cluster_id: Id, group_id: u64, ids: &[u64]) -> Self {
         let directory =
             std::env::temp_dir().join(format!("tidemq-producer-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir(&directory).await.unwrap();
@@ -146,7 +150,7 @@ impl Cluster {
             directory,
             config: DataGroupConfig {
                 cluster_id,
-                group_id: 41,
+                group_id,
                 max_partitions: 8,
                 max_hot_bytes: 32 * 1024 * 1024,
                 max_hot_messages: 65_536,
@@ -297,7 +301,15 @@ impl Cluster {
     }
 
     pub async fn restart(&mut self, id: u64) {
+        let owner = Arc::downgrade(&self.node(id).state.0._owner);
         self.stop(id).await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while owner.strong_count() > 0 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("Stopped replica released its directory ownership and pending IO");
         self.start(id).await;
         self.node(id).raft.trigger().elect().await.unwrap();
         self.wait_leader().await;
@@ -320,7 +332,11 @@ impl Cluster {
 
 impl Drop for Cluster {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.directory);
+        if std::env::var_os("TIDEMQ_KEEP_TEST_EVIDENCE").is_some() {
+            eprintln!("Data Raft test evidence: {}", self.directory.display());
+        } else {
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
     }
 }
 
