@@ -291,6 +291,7 @@ struct PartitionState {
     seal: Option<(Id, u64)>,
     birth: Option<(Id, tidemq_protocol::topic::HashRange)>,
     groups: BTreeMap<Id, subscription::GroupCursor>,
+    deleted_groups: BTreeMap<Id, Id>,
 }
 
 impl PartitionState {
@@ -391,6 +392,14 @@ impl DataApplication {
                     .checked_add(cursor.logical_state_bytes())
                     .ok_or(DataRejection::InvalidConfiguration)?;
             }
+            let tombstone_bytes = u64::try_from(state.deleted_groups.len())
+                .ok()
+                .and_then(|count| count.checked_mul(64))
+                .ok_or(DataRejection::InvalidConfiguration)?;
+            usage.ack_state_logical_bytes = usage
+                .ack_state_logical_bytes
+                .checked_add(tombstone_bytes)
+                .ok_or(DataRejection::InvalidConfiguration)?;
             let backlog = state
                 .retention
                 .logical_backlog_upper_bytes(state.protected_before())
@@ -594,6 +603,7 @@ impl DataApplication {
                     seal: None,
                     birth: None,
                     groups: BTreeMap::new(),
+                    deleted_groups: BTreeMap::new(),
                 },
             );
         }
@@ -635,8 +645,10 @@ impl DataApplication {
             return Err(DataRejection::Fence(FenceRejection::RecoveryRequired));
         }
         let mut digest = blake3::Hasher::new();
-        digest.update(b"tidemq-data-recovery-v1\0");
+        digest.update(b"tidemq-data-recovery-v2\0");
         postcard::to_io(&state.groups, &mut digest)
+            .map_err(|_| DataRejection::InvalidConfiguration)?;
+        postcard::to_io(&state.deleted_groups, &mut digest)
             .map_err(|_| DataRejection::InvalidConfiguration)?;
         postcard::to_io(&state.seal, &mut digest)
             .map_err(|_| DataRejection::InvalidConfiguration)?;
@@ -979,7 +991,7 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 13;
+    const VERSION: u32 = 14;
     type Command = DataCommand;
     type Response = DataResponse;
 

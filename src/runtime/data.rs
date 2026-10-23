@@ -1565,6 +1565,7 @@ fn producer_error(reason: crate::producer::Rejection) -> Error {
 pub(super) fn subscription_error(reason: subscription::Rejection) -> Error {
     use subscription::Rejection as R;
     let code = match &reason {
+        R::RecoveryPending => ErrorCode::Unavailable,
         R::NotFound | R::Deleted => ErrorCode::NotFound,
         R::AssignmentBusy => ErrorCode::AssignmentBusy,
         R::StaleGeneration | R::SessionMismatch => ErrorCode::StaleGeneration,
@@ -1584,7 +1585,7 @@ pub(super) fn subscription_error(reason: subscription::Rejection) -> Error {
     Error::reject_with(
         code,
         Outcome::Rejected,
-        code == ErrorCode::QuotaExceeded,
+        matches!(code, ErrorCode::QuotaExceeded | ErrorCode::Unavailable),
         reason.to_string(),
     )
 }

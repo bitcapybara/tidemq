@@ -7,6 +7,7 @@ use snafu::Snafu;
 use std::io::Write;
 
 const MAX_FROZEN_METADATA_BYTES: u64 = 16 * 1024 * 1024;
+const TRANSFER_FORMAT: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TransferCapacity {
@@ -493,7 +494,7 @@ impl DataApplication {
     ) -> Result<AuthorityExport, TransferDataRejection> {
         let (source, state, cut) = self.export_source(plan)?;
         Ok(AuthorityExport {
-            format: 1,
+            format: TRANSFER_FORMAT,
             plan: source.plan.clone(),
             cut,
             state: state.clone(),
@@ -636,7 +637,7 @@ fn view<'a>(
     cut: CommitPosition,
 ) -> Result<ExportView<'a>, TransferDataRejection> {
     Ok(ExportView {
-        format: 1,
+        format: TRANSFER_FORMAT,
         plan: &source.plan,
         cut,
         state,

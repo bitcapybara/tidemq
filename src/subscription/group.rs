@@ -57,6 +57,11 @@ pub enum GroupCommand {
     OpenGate {
         subscription: Id,
     },
+    Delete {
+        subscription: Id,
+        deletion: Id,
+        now_ms: u64,
+    },
 }
 
 impl GroupCommand {
@@ -71,7 +76,7 @@ impl GroupCommand {
             | Self::Renew { subscription, .. }
             | Self::Reap { subscription, .. }
             | Self::Retry { subscription, .. } => *subscription,
-            Self::OpenGate { subscription } => *subscription,
+            Self::OpenGate { subscription } | Self::Delete { subscription, .. } => *subscription,
         }
     }
 }
@@ -88,6 +93,7 @@ pub enum GroupOutcome {
     Reaped(usize),
     RetryScheduled,
     GateOpened,
+    Deleted { deletion: Id },
 }
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -221,6 +227,19 @@ impl std::fmt::Debug for GroupCursor {
 }
 
 impl GroupCursor {
+    pub(crate) fn ready_to_delete(&self) -> Result<()> {
+        if self.members.values().any(|member| member.active) {
+            return Err(Rejection::AssignmentBusy);
+        }
+        if self.members.values().any(|member| {
+            member.read.as_ref().is_some_and(|read| !read.retired)
+                || member.acks.values().any(|ack| !ack.retired)
+        }) {
+            return Err(Rejection::RecoveryPending);
+        }
+        Ok(())
+    }
+
     pub fn gate_open(&self) -> bool {
         self.gate_open
     }

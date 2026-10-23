@@ -151,7 +151,16 @@ impl DataApplication {
         let usage = self.group_usage()?;
         usage.validate(limits)?;
         for (partition, state) in &self.partitions {
-            if state.groups.len() > limits.max_subscription_identities as usize {
+            if state
+                .groups
+                .len()
+                .saturating_add(state.deleted_groups.len())
+                > limits.max_subscription_identities as usize
+                || state
+                    .groups
+                    .keys()
+                    .any(|id| state.deleted_groups.contains_key(id))
+            {
                 return Err(DataRejection::InvalidConfiguration);
             }
             for (subscription, cursor) in &state.groups {
@@ -185,6 +194,23 @@ impl DataApplication {
         command: GroupCommand,
     ) -> Result<DataResponse, DataRejection> {
         self.check_writer(partition, writer)?;
+        if let GroupCommand::Delete {
+            subscription,
+            deletion,
+            now_ms,
+        } = &command
+        {
+            return self.delete_consumer_group(partition, *subscription, *deletion, *now_ms);
+        }
+        if self
+            .partitions
+            .get(&partition)
+            .is_some_and(|state| state.deleted_groups.contains_key(&command.subscription()))
+        {
+            return Err(DataRejection::Subscription(
+                subscription::Rejection::Deleted,
+            ));
+        }
         let limits = self
             .config
             .as_ref()
@@ -245,7 +271,11 @@ impl DataApplication {
                     ))
                 };
             }
-            if state.groups.len() >= limits.max_subscription_identities as usize
+            if state
+                .groups
+                .len()
+                .saturating_add(state.deleted_groups.len())
+                >= limits.max_subscription_identities as usize
                 || start < state.producer.retained_floor()
                 || start > state.producer.committed_end()
             {
@@ -270,6 +300,47 @@ impl DataApplication {
         let outcome = execute_group(cursor, &state.producer, limits, usage, command)
             .map_err(DataRejection::Subscription)?;
         Ok(DataResponse::ConsumerGroup(outcome))
+    }
+
+    fn delete_consumer_group(
+        &mut self,
+        partition: PartitionKey,
+        subscription: Id,
+        deletion: Id,
+        now: u64,
+    ) -> Result<DataResponse, DataRejection> {
+        use subscription::Rejection;
+        let state = self
+            .partitions
+            .get_mut(&partition)
+            .ok_or(DataRejection::PartitionMissing)?;
+        if let Some(original) = state.deleted_groups.get(&subscription) {
+            return if *original == deletion {
+                Ok(DataResponse::ConsumerGroup(GroupOutcome::Deleted {
+                    deletion,
+                }))
+            } else {
+                Err(DataRejection::Subscription(Rejection::IdentityConflict))
+            };
+        }
+        let cursor = state
+            .groups
+            .get_mut(&subscription)
+            .ok_or(DataRejection::Subscription(Rejection::NotFound))?;
+        cursor
+            .reap_members(now, crate::metadata::MEMBER_RECOVERY_MS)
+            .map_err(DataRejection::Subscription)?;
+        cursor
+            .ready_to_delete()
+            .map_err(DataRejection::Subscription)?;
+        state
+            .groups
+            .remove(&subscription)
+            .ok_or(DataRejection::Subscription(Rejection::NotFound))?;
+        state.deleted_groups.insert(subscription, deletion);
+        Ok(DataResponse::ConsumerGroup(GroupOutcome::Deleted {
+            deletion,
+        }))
     }
 
     fn group_usage(&self) -> Result<Usage, DataRejection> {
@@ -392,7 +463,9 @@ fn execute_group(
             cursor.retry_message(offset, now_ms)?;
             Ok(GroupOutcome::RetryScheduled)
         }
-        GroupCommand::Create { .. } => Err(Rejection::IdentityConflict),
+        GroupCommand::Create { .. } | GroupCommand::Delete { .. } => {
+            Err(Rejection::IdentityConflict)
+        }
         GroupCommand::OpenGate { .. } => {
             cursor.open_gate();
             Ok(GroupOutcome::GateOpened)

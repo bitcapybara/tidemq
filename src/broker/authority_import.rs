@@ -45,7 +45,7 @@ impl TargetImport {
         }
         let payload: Payload =
             postcard::from_bytes(&bytes).map_err(|_| TransferDataRejection::Encoding)?;
-        if payload.format != 1
+        if payload.format != TRANSFER_FORMAT
             || payload.plan.stage != TransferStage::Prepare
             || !same_plan(&payload.plan, &self.plan)
             || payload.cut != manifest.source_cut

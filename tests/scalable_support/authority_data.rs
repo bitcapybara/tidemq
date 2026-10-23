@@ -23,7 +23,7 @@ use tidemq_protocol::{
     topic::{HashRange, MessageMetadata, SendIdentity, message_digest, routing_hash},
 };
 
-fn plan() -> AuthorityTransfer {
+pub(super) fn plan() -> AuthorityTransfer {
     let cluster = Id::new_v7().unwrap();
     let partition = PartitionKey {
         topic_id: Id::new_v7().unwrap(),
@@ -61,7 +61,7 @@ fn plan() -> AuthorityTransfer {
     }
 }
 
-fn application(plan: &AuthorityTransfer) -> DataApplication {
+pub(super) fn application(plan: &AuthorityTransfer) -> DataApplication {
     initialized(
         plan.source.cluster_id,
         plan.source.group_id,
@@ -69,7 +69,7 @@ fn application(plan: &AuthorityTransfer) -> DataApplication {
     )
 }
 
-fn initialized(cluster: Id, group: u64, grant: Option<Grant>) -> DataApplication {
+pub(super) fn initialized(cluster: Id, group: u64, grant: Option<Grant>) -> DataApplication {
     let mut app = DataApplication::default();
     assert_eq!(
         app.apply(DataCommand::Initialize(DataGroupConfig {
@@ -106,7 +106,7 @@ fn install(app: &mut DataApplication, grant: Grant) {
     ));
 }
 
-fn publish(
+pub(super) fn publish(
     app: &mut DataApplication,
     partition: PartitionKey,
     shard: Id,

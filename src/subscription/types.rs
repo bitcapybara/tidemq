@@ -66,6 +66,8 @@ pub enum Rejection {
     CounterOverflow,
     #[snafu(display("The decoded subscription snapshot violates its invariants"))]
     InvalidSnapshot,
+    #[snafu(display("Unretired read or acknowledgement results still protect this subscription"))]
+    RecoveryPending,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
