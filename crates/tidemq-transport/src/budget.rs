@@ -32,6 +32,7 @@ pub struct MemoryBudget {
     normal: Arc<Semaphore>,
     core: Arc<Semaphore>,
     handshake: Arc<Semaphore>,
+    cache: Arc<Semaphore>,
 }
 
 pub struct MemoryPermit {
@@ -83,7 +84,25 @@ impl MemoryBudget {
             normal: Arc::new(Semaphore::new(normal)),
             core: Arc::new(Semaphore::new(core)),
             handshake: Arc::new(Semaphore::new(handshake)),
+            // Cached ownership must leave headroom for new requests, uploads and decoding.
+            cache: Arc::new(Semaphore::new(data / 8)),
         })
+    }
+
+    /// Additional shared retention cap for cached buffers that already hold memory admission.
+    pub fn try_retain_cached(&self, bytes: u32) -> Result<OwnedSemaphorePermit> {
+        if bytes == 0 {
+            return Err(Error::Configuration {
+                reason: "cached bytes must be greater than zero",
+            });
+        }
+        self.cache
+            .clone()
+            .try_acquire_many_owned(bytes)
+            .map_err(|source| Error::Admission {
+                traffic_class: "read cache",
+                source,
+            })
     }
 
     pub fn try_reserve(&self, class: TrafficClass, bytes: u32) -> Result<MemoryPermit> {
@@ -207,6 +226,29 @@ pub fn class_name(class: TrafficClass) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_retention_shares_a_node_cap_without_double_charging_active_buffers() {
+        let budget = MemoryBudget::new(MemoryLimits {
+            total_bytes: 100,
+            control_reserved_bytes: 20,
+        })
+        .unwrap();
+        let buffer = budget.try_reserve(TrafficClass::Bulk, 6).unwrap();
+        let available = budget.available_data_bytes();
+        let first = budget.try_retain_cached(6).unwrap();
+        let other = budget.clone();
+        assert!(other.try_retain_cached(5).is_err());
+        let remaining = other.try_retain_cached(4).unwrap();
+        assert!(budget.try_retain_cached(1).is_err());
+        assert_eq!(budget.available_data_bytes(), available);
+        drop((first, remaining));
+        let replacement = budget.try_retain_cached(10).unwrap();
+        assert_eq!(budget.available_data_bytes(), available);
+        drop((buffer, replacement));
+        assert_eq!(budget.available_data_bytes(), 80);
+        assert!(budget.try_retain_cached(0).is_err());
+    }
 
     #[test]
     fn saturated_data_preserves_control_and_drop_restores_capacity() {

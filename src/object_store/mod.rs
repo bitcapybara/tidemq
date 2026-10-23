@@ -203,6 +203,14 @@ impl S3Store {
         self.admit_with_rate(bytes, bytes, deadline).await
     }
 
+    pub(crate) fn buffer_charge(bytes: usize) -> Result<u32> {
+        let charge = bytes
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(64 * 1024))
+            .ok_or(Error::Overloaded)?;
+        u32::try_from(charge).map_err(|_| Error::Overloaded)
+    }
+
     async fn admit_with_rate(
         &self,
         bytes: usize,
@@ -245,11 +253,7 @@ impl S3Store {
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Overloaded)?;
-        let charge = bytes
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(64 * 1024))
-            .ok_or(Error::Overloaded)?;
-        let charge = u32::try_from(charge).map_err(|_| Error::Overloaded)?;
+        let charge = Self::buffer_charge(bytes)?;
         let memory = self
             .0
             .budget

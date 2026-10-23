@@ -312,6 +312,61 @@ async fn cached_reads_charge_each_record_index_until_its_views_are_dropped() {
 }
 
 #[tokio::test]
+async fn separate_readers_share_cache_retention_and_return_uncached_results_at_the_cap() {
+    let budget = tidemq::budget::MemoryBudget::new(tidemq_transport::budget::MemoryLimits {
+        total_bytes: 1024 * 1024,
+        control_reserved_bytes: 64 * 1024,
+    })
+    .unwrap();
+    let pack = support::pack(&budget, 100, 20);
+    let before = budget.available_data_bytes();
+    let index = pack.descriptor().partitions.first().unwrap();
+    let body = pack
+        .bytes()
+        .get(index.byte_start as usize..index.byte_end as usize)
+        .unwrap()
+        .to_vec();
+    let headers = support::response_headers(&pack, 206, index.byte_start as usize, body.len());
+    let (first_endpoint, first_task) = fixture(
+        headers.clone(),
+        body.clone(),
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+    .await;
+    let (second_endpoint, second_task) =
+        fixture(headers, body, Duration::ZERO, Duration::ZERO).await;
+    let reader = |endpoint: &str| {
+        tidemq::archive::ColdReader::new(
+            support::store(endpoint, &pack, budget.clone(), Duration::from_secs(3)),
+            tidemq::archive::PackLimits::default(),
+            1024 * 1024,
+            4,
+        )
+        .unwrap()
+    };
+    let first = reader(&first_endpoint);
+    let second = reader(&second_endpoint);
+    let first_records = first
+        .read_partition(pack.descriptor(), index.topic_id, index.partition_id)
+        .await
+        .unwrap();
+    assert!(first.cached_bytes().await > 0);
+    let second_records = second
+        .read_partition(pack.descriptor(), index.topic_id, index.partition_id)
+        .await
+        .unwrap();
+    assert_eq!(first_records, second_records);
+    assert_eq!(second.cached_bytes().await, 0);
+    drop((first_records, second_records));
+    first.clear().await;
+    second.clear().await;
+    assert_eq!(budget.available_data_bytes(), before);
+    first_task.await.unwrap();
+    second_task.await.unwrap();
+}
+
+#[tokio::test]
 async fn decoder_admission_is_shared_across_cold_reader_instances() {
     let budget = support::budget();
     let pack = support::pack(&budget, 100, 20);

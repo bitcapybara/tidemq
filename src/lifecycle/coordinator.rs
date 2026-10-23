@@ -272,6 +272,10 @@ impl Coordinator {
         self.0.metrics.clone()
     }
 
+    pub(crate) async fn expire_read_cache(&self) {
+        self.0.reader.expire_idle().await;
+    }
+
     pub fn with_metrics(mut self, metrics: Arc<LifecycleMetrics>) -> Result<Self> {
         Arc::get_mut(&mut self.0)
             .ok_or(Error::Configuration)?

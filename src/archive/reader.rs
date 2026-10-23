@@ -1,8 +1,12 @@
-use std::{collections::VecDeque, sync::Arc, time::Instant};
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use tidemq_protocol::Id;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
 use super::{
     ArchivedRecord, Descriptor, Error, PackIdentity, PackLimits, Result, format::decode_records,
@@ -10,10 +14,51 @@ use super::{
 use crate::object_store::S3Store;
 
 type CacheKey = (PackIdentity, [u8; 32], u64, u64);
+const CACHE_IDLE: Duration = Duration::from_secs(60);
+
+#[cfg(test)]
+#[path = "../../tests/scalable_support/cold_cache_memory.rs"]
+mod memory_tests;
+
+struct CacheEntry {
+    key: CacheKey,
+    bytes: Bytes,
+    last_used: Instant,
+    _retained: OwnedSemaphorePermit,
+}
 
 struct Cache {
-    entries: VecDeque<(CacheKey, Bytes)>,
+    entries: VecDeque<CacheEntry>,
     bytes: usize,
+}
+
+impl Cache {
+    fn get(&mut self, key: CacheKey, now: Instant) -> Option<Bytes> {
+        self.expire_idle(now);
+        let entry = self.entries.iter_mut().find(|entry| entry.key == key)?;
+        entry.last_used = now;
+        Some(entry.bytes.clone())
+    }
+
+    fn evict_oldest(&mut self) -> bool {
+        let Some(entry) = self.entries.pop_front() else {
+            return false;
+        };
+        self.bytes = self.bytes.saturating_sub(entry.bytes.len());
+        true
+    }
+
+    fn expire_idle(&mut self, now: Instant) {
+        let mut released = 0_usize;
+        self.entries.retain(|entry| {
+            let keep = now.saturating_duration_since(entry.last_used) < CACHE_IDLE;
+            if !keep {
+                released = released.saturating_add(entry.bytes.len());
+            }
+            keep
+        });
+        self.bytes = self.bytes.saturating_sub(released);
+    }
 }
 
 /// A bounded range cache; every read still requires a descriptor from an authorized manifest view.
@@ -85,14 +130,7 @@ impl ColdReader {
             index.byte_start,
             length,
         );
-        let hit = self
-            .cache
-            .lock()
-            .await
-            .entries
-            .iter()
-            .find(|(candidate, _)| *candidate == key)
-            .map(|(_, bytes)| bytes.clone());
+        let hit = self.cache.lock().await.get(key, Instant::now());
         let bytes = match hit {
             Some(bytes) => {
                 self.store.metrics().cache_hits.inc();
@@ -132,7 +170,9 @@ impl ColdReader {
             return Ok(());
         }
         let mut cache = self.cache.lock().await;
-        if cache.entries.iter().any(|(candidate, _)| *candidate == key) {
+        let now = Instant::now();
+        cache.expire_idle(now);
+        if cache.entries.iter().any(|entry| entry.key == key) {
             return Ok(());
         }
         while cache.entries.len() >= self.max_cache_entries
@@ -141,18 +181,36 @@ impl ColdReader {
                 .checked_add(bytes.len())
                 .is_none_or(|size| size > self.max_cache_bytes)
         {
-            let Some((_, evicted)) = cache.entries.pop_front() else {
+            if !cache.evict_oldest() {
                 break;
-            };
-            cache.bytes = cache.bytes.saturating_sub(evicted.len());
+            }
         }
+        // Match S3's retained body admission, including its bounded transport allowance.
+        let retained =
+            S3Store::buffer_charge(bytes.len()).map_err(|source| Error::Object { source })?;
+        let retained = loop {
+            match self.store.budget().try_retain_cached(retained) {
+                Ok(permit) => break permit,
+                Err(_) if cache.evict_oldest() => {}
+                Err(_) => return Ok(()),
+            }
+        };
         cache
             .entries
             .try_reserve(1)
             .map_err(|source| Error::Allocation { source })?;
         cache.bytes = cache.bytes.checked_add(bytes.len()).ok_or(Error::Limit)?;
-        cache.entries.push_back((key, bytes));
+        cache.entries.push_back(CacheEntry {
+            key,
+            bytes,
+            last_used: now,
+            _retained: retained,
+        });
         Ok(())
+    }
+
+    pub(crate) async fn expire_idle(&self) {
+        self.cache.lock().await.expire_idle(Instant::now());
     }
 
     pub async fn cached_bytes(&self) -> usize {

@@ -202,6 +202,9 @@ impl Service {
             tokio::select! {
                 _ = shutdown.changed() => break,
                 _ = async {
+                    for coordinator in self.objects.values() {
+                        coordinator.expire_read_cache().await;
+                    }
                     for (group, coordinator) in &self.objects {
                         if active.len() >= 4 { break; }
                         let Some(replica) = self.data.get(group) else { continue; };
