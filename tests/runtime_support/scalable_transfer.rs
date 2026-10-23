@@ -224,13 +224,40 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
     )
     .await
     .unwrap();
-    node.reclaim_local(partition, 4, deadline()).await.unwrap();
+    assert!(
+        node.reclaim_local(partition, 4, deadline()).await.is_err(),
+        "Historical reclaim requires the target's own object checkpoint"
+    );
     producer.close().await.unwrap();
     queue.close().await.unwrap();
     stream.close().await.unwrap();
     client.close().await.unwrap();
     fixture.stop(1).await;
+    fixture
+        .configs
+        .get_mut(&1)
+        .unwrap()
+        .runtime
+        .archive_interval_ms = 1000;
     fixture.restart(1).await;
+    let until = Instant::now() + Duration::from_secs(20);
+    loop {
+        if fixture
+            .running
+            .get(&1)
+            .unwrap()
+            .reclaim_local(partition, 4, until)
+            .await
+            .is_ok()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "Background recovery did not checkpoint transferred history"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let client = fixture.client(1).await;
     let queue = client
         .new_queue_consumer(topic, "jobs")
