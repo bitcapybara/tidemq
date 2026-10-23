@@ -6,7 +6,7 @@ use tidemq_protocol::{
     topic::{HashRange, ShardRoute, TopicLayout},
 };
 
-use super::{MetadataState, PartitionKey, Rejection};
+use super::{HistoricalBinding, MetadataState, PartitionKey, Rejection};
 
 type LayoutTargets = (Vec<Id>, Vec<(HashRange, u64)>);
 
@@ -15,6 +15,7 @@ pub struct Topology {
     pub(crate) layouts: BTreeMap<Id, TopicLayout>,
     pub(crate) shards: BTreeMap<Id, BirthShard>,
     pub(crate) plans: BTreeMap<Id, LayoutPlan>,
+    pub(crate) bindings: BTreeMap<PartitionKey, HistoricalBinding>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -58,6 +59,9 @@ pub enum LayoutChange {
 }
 
 impl Topology {
+    pub fn binding(&self, partition: PartitionKey) -> Option<&HistoricalBinding> {
+        self.bindings.get(&partition)
+    }
     pub fn layout(&self, topic: Id) -> Option<&TopicLayout> {
         self.layouts.get(&topic)
     }
@@ -136,12 +140,19 @@ impl Topology {
 
     pub(crate) fn install_initial(&mut self, layout: TopicLayout, shards: Vec<BirthShard>) {
         for shard in shards {
+            self.bindings.insert(
+                shard.partition,
+                HistoricalBinding::initial(shard.route.id, shard.partition, shard.route.group),
+            );
             self.shards.insert(shard.route.id, shard);
         }
         self.layouts.insert(layout.topic, layout);
     }
 
     pub fn validate(&self, maximum: usize) -> Result<(), Rejection> {
+        if self.bindings.len() != self.shards.len() {
+            return Err(Rejection::InvalidEvidence);
+        }
         for (id, layout) in &self.layouts {
             if *id != layout.topic {
                 return Err(Rejection::InvalidEvidence);
@@ -160,6 +171,22 @@ impl Topology {
             }
         }
         for (id, shard) in &self.shards {
+            let binding = self
+                .bindings
+                .get(&shard.partition)
+                .ok_or(Rejection::InvalidEvidence)?;
+            if binding.partition != shard.partition
+                || binding.shard != *id
+                || binding.authority_group != shard.route.group
+                || binding.generation != shard.route.authority_epoch
+                || binding.origin_group == 0
+                || !binding.accepts_object(binding.origin_group)
+                || !binding.accepts_object(binding.authority_group)
+                || binding.object_groups.len() > 64
+                || binding.object_groups.contains(&0)
+            {
+                return Err(Rejection::InvalidEvidence);
+            }
             if *id != shard.route.id || shard.route.group == 0 || shard.route.authority_epoch == 0 {
                 return Err(Rejection::InvalidEvidence);
             }
@@ -423,6 +450,10 @@ impl MetadataState {
                 .sealed_end = Some(*end);
         }
         for shard in &plan.successors {
+            self.topology.bindings.insert(
+                shard.partition,
+                HistoricalBinding::initial(shard.route.id, shard.partition, shard.route.group),
+            );
             self.topology.shards.insert(shard.route.id, shard.clone());
         }
         self.topology.layouts.insert(layout.topic, layout.clone());

@@ -71,6 +71,7 @@ impl MetadataState {
             || !self.topology.layouts.is_empty()
             || !self.topology.shards.is_empty()
             || !self.topology.plans.is_empty()
+            || !self.topology.bindings.is_empty()
             || self.auth.initialized()
             || !self.control_operations.is_empty()
             || self.decisions.values().any(|decision| {

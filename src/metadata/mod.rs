@@ -14,6 +14,7 @@ mod replicated;
 mod scaling;
 mod state;
 mod topology;
+mod transfers;
 mod types;
 mod validation;
 
@@ -38,6 +39,11 @@ pub use publishers::{
 };
 pub use state::MetadataState;
 pub use topology::{BirthShard, LayoutChange, LayoutPlan, LayoutStage, Topology};
+pub use transfers::{
+    AuthorityTransfer, HistoricalBinding, ImportEvidence, MAX_AUTHORITY_TRANSFERS,
+    MAX_TRANSFER_BYTES, TRANSFER_PAGE_BYTES, TransferCheckpoint, TransferManifest, TransferStage,
+    TransferStep,
+};
 pub use types::{
     DataGroup, DeploymentMode, MetadataLimits, NodeRecord, NodeRole, NodeSpec, Ordering,
     PartitionKey, RecordStatus, Route, SubscriptionConfig, SubscriptionRecord, TopicRecord,
