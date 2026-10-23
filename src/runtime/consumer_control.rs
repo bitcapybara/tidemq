@@ -214,7 +214,12 @@ impl Service {
             .as_ref()
             .ok_or_else(Error::unavailable)?
             .state
-            .try_with_application(|state| state.consumer_subscription(subscription).cloned())
+            .try_with_application(|state| {
+                state
+                    .consumer_subscription(subscription)
+                    .filter(|row| row.deletion.is_none())
+                    .cloned()
+            })
             .await
             .map_err(|source| Error::operation("read durable consumer subscription", source))?
             .ok_or_else(super::metadata::not_found)
@@ -343,9 +348,15 @@ impl Service {
             .try_with_application(|state| {
                 state
                     .consumer_subscriptions()
+                    .filter(|row| row.deletion.is_none())
                     .find(|row| after.is_none_or(|after| row.id > after))
                     .map(|row| row.id)
-                    .or_else(|| state.consumer_subscriptions().next().map(|row| row.id))
+                    .or_else(|| {
+                        state
+                            .consumer_subscriptions()
+                            .find(|row| row.deletion.is_none())
+                            .map(|row| row.id)
+                    })
             })
             .await
             .map_err(|source| Error::operation("page consumer reconciliation", source))?;

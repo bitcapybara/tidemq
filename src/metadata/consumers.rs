@@ -16,6 +16,16 @@ pub struct ConsumerSubscription {
     pub name: String,
     pub members: MembersBook,
     pub open_gates: std::collections::BTreeSet<Id>,
+    pub deletion: Option<super::ConsumerDeletion>,
+}
+
+impl ConsumerSubscription {
+    pub fn is_deleted(&self) -> bool {
+        self.deletion.as_ref().is_some_and(|plan| plan.complete)
+    }
+    pub fn is_deleting(&self) -> bool {
+        self.deletion.as_ref().is_some_and(|plan| !plan.complete)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -64,10 +74,25 @@ pub enum ConsumerCommand {
         subscription: Id,
         now_ms: u64,
     },
+    Delete {
+        subscription: Id,
+        model: SubscriptionKind,
+        now_ms: u64,
+    },
+    ObserveDeleted {
+        subscription: Id,
+        deletion: Id,
+        domain: Id,
+    },
+    FinishDelete {
+        subscription: Id,
+        deletion: Id,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ConsumerOutcome {
+    Deletion(super::ConsumerDeletion),
     Retired,
     GateOpened,
     Created { subscription: Id },
@@ -86,13 +111,15 @@ impl MetadataState {
         topic: Id,
         name: &str,
     ) -> Option<&ConsumerSubscription> {
-        self.consumer_subscriptions
-            .values()
-            .find(|subscription| subscription.topic == topic && subscription.name == name)
+        self.consumer_subscriptions.values().find(|subscription| {
+            subscription.topic == topic && subscription.name == name && !subscription.is_deleted()
+        })
     }
 
     pub fn consumer_subscriptions(&self) -> impl Iterator<Item = &ConsumerSubscription> {
-        self.consumer_subscriptions.values()
+        self.consumer_subscriptions
+            .values()
+            .filter(|row| !row.is_deleted())
     }
 
     pub(super) fn consumer_command(
@@ -101,6 +128,20 @@ impl MetadataState {
         command: &ConsumerCommand,
     ) -> Result<ConsumerOutcome, Rejection> {
         match command {
+            ConsumerCommand::Delete {
+                subscription,
+                model,
+                now_ms,
+            } => self.begin_consumer_delete(operation, *subscription, *model, *now_ms),
+            ConsumerCommand::ObserveDeleted {
+                subscription,
+                deletion,
+                domain,
+            } => self.observe_consumer_delete(*subscription, *deletion, *domain),
+            ConsumerCommand::FinishDelete {
+                subscription,
+                deletion,
+            } => self.finish_consumer_delete(*subscription, *deletion),
             ConsumerCommand::Retire {
                 subscription,
                 member,
@@ -139,11 +180,14 @@ impl MetadataState {
                 subscription,
                 request,
             } => {
-                let topic = self
+                let row = self
                     .consumer_subscriptions
                     .get(subscription)
-                    .ok_or(Rejection::NotFound)?
-                    .topic;
+                    .ok_or(Rejection::NotFound)?;
+                if row.deletion.is_some() {
+                    return Err(Rejection::IdentityRetired);
+                }
+                let topic = row.topic;
                 if self.topology.pending_transfers().any(|plan| {
                     plan.partition.topic_id == topic && plan.stage < super::TransferStage::Published
                 }) {
@@ -236,6 +280,9 @@ impl MetadataState {
             .filter(|topic| topic.status == RecordStatus::Active)
             .ok_or(Rejection::NotFound)?;
         if let Some(previous) = self.consumer_subscription_by_name(topic, name) {
+            if previous.deletion.is_some() {
+                return Err(Rejection::IdentityRetired);
+            }
             return if previous.members.model() == model {
                 Ok(ConsumerOutcome::Created {
                     subscription: previous.id,
@@ -269,9 +316,11 @@ impl MetadataState {
                 .consumer_subscriptions
                 .values()
                 .filter(|subscription| {
-                    self.topics
-                        .get(&subscription.topic)
-                        .is_some_and(|topic| topic.tenant == Some(tenant.id))
+                    !subscription.is_deleted()
+                        && self
+                            .topics
+                            .get(&subscription.topic)
+                            .is_some_and(|topic| topic.tenant == Some(tenant.id))
                 })
                 .count();
             if count >= tenant.max_subscriptions {
@@ -299,6 +348,7 @@ impl MetadataState {
                 name: name.to_owned(),
                 members,
                 open_gates,
+                deletion: None,
             },
         );
         Ok(ConsumerOutcome::Created {
@@ -315,6 +365,9 @@ impl MetadataState {
             .consumer_subscriptions
             .get(&subscription)
             .ok_or(Rejection::NotFound)?;
+        if row.deletion.is_some() {
+            return Err(Rejection::IdentityRetired);
+        }
         if self.topology.pending_transfers().any(|plan| {
             plan.partition.topic_id == row.topic && plan.stage < super::TransferStage::Published
         }) {
@@ -350,11 +403,14 @@ impl MetadataState {
             if *id != row.id
                 || !self.topics.contains_key(&row.topic)
                 || !super::types::valid_name(&row.name, 128)
-                || !names.insert((row.topic, &row.name))
+                || !row.is_deleted() && !names.insert((row.topic, &row.name))
             {
                 return Err(Rejection::InvalidSubscription);
             }
             row.members.validate()?;
+            if let Some(plan) = &row.deletion {
+                plan.validate(row)?;
+            }
             if row
                 .open_gates
                 .iter()
@@ -362,11 +418,13 @@ impl MetadataState {
             {
                 return Err(Rejection::InvalidEvidence);
             }
-            if row.members.plan().domains.iter().any(|id| {
-                self.topology
-                    .shard(*id)
-                    .is_none_or(|shard| shard.partition.topic_id != row.topic)
-            }) {
+            if !row.is_deleted()
+                && row.members.plan().domains.iter().any(|id| {
+                    self.topology
+                        .shard(*id)
+                        .is_none_or(|shard| shard.partition.topic_id != row.topic)
+                })
+            {
                 return Err(Rejection::InvalidEvidence);
             }
         }

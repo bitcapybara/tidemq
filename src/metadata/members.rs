@@ -182,6 +182,16 @@ impl MembersBook {
             .count()
     }
 
+    pub(crate) fn can_delete(&self, now: u64) -> bool {
+        self.plan.active
+            && self.committed.is_empty()
+            && self.plan_grants.is_empty()
+            && self
+                .members
+                .values()
+                .all(|record| !record.info.status.live() || record.info.expires_ms <= now)
+    }
+
     pub fn join(&mut self, operation: Id, request: &MemberJoin) -> Result<MemberInfo, Rejection> {
         if let Some(record) = self.members.get(&(request.member, request.expected_epoch)) {
             return if record.join_operation == operation

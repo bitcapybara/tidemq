@@ -175,10 +175,9 @@ impl MetadataState {
                 .topology
                 .pending()
                 .any(|plan| plan.topic == partition.topic_id)
-            || self
-                .consumer_subscriptions
-                .values()
-                .any(|row| row.topic == partition.topic_id && !row.members.plan().active)
+            || self.consumer_subscriptions.values().any(|row| {
+                row.topic == partition.topic_id && (!row.members.plan().active || row.is_deleting())
+            })
         {
             return Err(Rejection::RecoveryRequired);
         }

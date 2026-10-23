@@ -390,7 +390,8 @@ impl Service {
                     let consumer_expires_ms = state
                         .consumer_subscription(request.subscription)
                         .filter(|row| {
-                            row.topic == request.topic
+                            row.deletion.is_none()
+                                && row.topic == request.topic
                                 && request.version > 0
                                 && row
                                     .members

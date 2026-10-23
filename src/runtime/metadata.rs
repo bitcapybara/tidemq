@@ -912,6 +912,7 @@ fn metadata_rejection(reason: metadata::Rejection) -> Error {
     }
     let (code, retryable) = match &reason {
         R::Authorization(_) => (ErrorCode::Forbidden, false),
+        R::SubscriptionInUse => (ErrorCode::AssignmentBusy, false),
         R::Capacity => (ErrorCode::QuotaExceeded, true),
         R::RevisionConflict | R::GenerationConflict | R::RecoveryRequired | R::Uninitialized => {
             (ErrorCode::Unavailable, true)

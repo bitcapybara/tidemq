@@ -5,6 +5,7 @@
 
 mod auth;
 mod command;
+mod consumer_delete;
 mod consumers;
 mod control;
 mod diagnostics;
@@ -28,6 +29,7 @@ pub use auth::{
 };
 pub(crate) use command::Action;
 pub use command::{Command, OperationResult, Outcome, Rejection, Response};
+pub use consumer_delete::ConsumerDeletion;
 pub use consumers::{ConsumerCommand, ConsumerOutcome, ConsumerSubscription};
 pub(crate) use control::{ControlStage, grant_operation_id, stage_operation_id};
 pub use diagnostics::{MetadataSummary, OwnershipDiagnostic, TopicPage, TopicSummary};

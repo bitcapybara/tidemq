@@ -177,10 +177,19 @@ impl MetadataState {
         ) {
             return self.apply_membership(&command);
         }
-        if matches!(
-            command.action,
-            Action::Lifecycle(_) | Action::Consumer(_) | Action::Publisher(_) | Action::Transfer(_)
-        ) {
+        let deletion = matches!(
+            &command.action,
+            Action::Consumer(super::ConsumerCommand::Delete { .. })
+        );
+        if !deletion
+            && matches!(
+                command.action,
+                Action::Lifecycle(_)
+                    | Action::Consumer(_)
+                    | Action::Publisher(_)
+                    | Action::Transfer(_)
+            )
+        {
             return self.apply_new(&command);
         }
         let digest = match self.command_digest(&command) {

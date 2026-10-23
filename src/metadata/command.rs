@@ -346,11 +346,15 @@ pub enum Rejection {
     CounterExhausted,
     Lifecycle(crate::lifecycle::Rejection),
     Authorization(super::AuthRejection),
+    SubscriptionInUse,
 }
 
 impl std::fmt::Display for Rejection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reason = match self {
+            Self::SubscriptionInUse => {
+                "Subscription still has online members or an unfinished membership handoff"
+            }
             Self::Authorization(reason) => return write!(formatter, "{reason}"),
             Self::Uninitialized => "Metadata group has not been bootstrapped",
             Self::AlreadyInitialized => "Metadata group has already been bootstrapped",
