@@ -11,13 +11,13 @@ use crate::{
 };
 
 impl Service {
-    pub(super) async fn read_consumer_page(
+    async fn prepare_consumer_page(
         &self,
         route: &Route,
         subscription: Id,
-        request: GroupRead,
+        request: &GroupRead,
         deadline: Instant,
-    ) -> Result<(ReadResult, Option<GuardedPage>)> {
+    ) -> Result<Option<GuardedPage>> {
         let replica = self
             .data
             .get(&route.group_id)
@@ -35,7 +35,7 @@ impl Service {
                     .saturating_sub(cursor.window_slots())
                     .min(request.max_messages as usize);
                 Ok::<_, Error>(
-                    (cursor.original_read(&request).is_none()
+                    (cursor.original_read(request).is_none()
                         && cursor.next_offset() < producer.local_reclaim_end()
                         && capacity > 0)
                         .then_some((cursor.next_offset(), capacity)),
@@ -43,48 +43,41 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("prepare consumer cold range", source))??;
-        let mut page = None;
-        let mut cold = Vec::new();
-        let mut committed_deadline = deadline;
-        if let Some((first, count)) = cold_range {
-            let guarded = self
-                .objects
-                .get(&route.group_id)
-                .ok_or_else(Error::unavailable)?
-                .read(
-                    route.partition,
-                    first,
-                    count,
-                    request.max_bytes,
-                    deadline.into_std(),
-                )
-                .await
-                .map_err(|source| Error::operation("read consumer archive candidates", source))?;
-            let mut bytes = 0_u64;
-            for record in guarded
-                .records()
-                .map_err(|source| Error::operation("check consumer archive pin", source))?
-            {
-                let proof = guarded.verified_delivery(record.offset).map_err(|source| {
-                    Error::operation("bind consumer archive candidate", source)
-                })?;
-                let Some(total) = bytes
-                    .checked_add(proof.delivery_bytes)
-                    .filter(|total| *total <= request.max_bytes)
-                else {
-                    break;
-                };
-                bytes = total;
-                cold.push(proof);
+        let Some((first, count)) = cold_range else {
+            return Ok(None);
+        };
+        self.objects
+            .get(&route.group_id)
+            .ok_or_else(Error::unavailable)?
+            .read(
+                route.partition,
+                first,
+                count,
+                request.max_bytes,
+                deadline.into_std(),
+            )
+            .await
+            .map(Some)
+            .map_err(|source| Error::operation("read consumer archive candidates", source))
+    }
+
+    pub(super) async fn read_consumer_page(
+        &self,
+        route: &Route,
+        subscription: Id,
+        request: GroupRead,
+        deadline: Instant,
+    ) -> Result<(ReadResult, Option<GuardedPage>)> {
+        let page = self
+            .prepare_consumer_page(route, subscription, &request, deadline)
+            .await?;
+        let cold = cold_candidates(page.as_ref(), request.max_bytes)?;
+        let committed_deadline = match &page {
+            Some(page) => {
+                deadline.min(page.valid_until().map_err(|_| Error::unavailable())?.into())
             }
-            committed_deadline = deadline.min(
-                guarded
-                    .valid_until()
-                    .map_err(|_| Error::unavailable())?
-                    .into(),
-            );
-            page = Some(guarded);
-        }
+            None => deadline,
+        };
         let result = self
             .group_commit(
                 route,
@@ -221,4 +214,32 @@ impl Service {
         *page = Some(guarded);
         Ok(message)
     }
+}
+
+fn cold_candidates(
+    page: Option<&GuardedPage>,
+    maximum: u64,
+) -> Result<Vec<crate::lifecycle::VerifiedColdDelivery>> {
+    let Some(page) = page else {
+        return Ok(Vec::new());
+    };
+    let mut cold = Vec::new();
+    let mut bytes = 0_u64;
+    for record in page
+        .records()
+        .map_err(|source| Error::operation("check consumer archive pin", source))?
+    {
+        let proof = page
+            .verified_delivery(record.offset)
+            .map_err(|source| Error::operation("bind consumer archive candidate", source))?;
+        let Some(total) = bytes
+            .checked_add(proof.delivery_bytes)
+            .filter(|total| *total <= maximum)
+        else {
+            break;
+        };
+        bytes = total;
+        cold.push(proof);
+    }
+    Ok(cold)
 }
