@@ -94,6 +94,10 @@ async fn logical_topic_split_merge_and_credentials_survive_a_real_runtime_restar
     assert!(app.admin().create_tenant("forbidden").await.is_err());
     client.close().await;
     app.close().await;
+    fixture.stop(1).await;
+    tokio::fs::remove_file(fixture.directory.join("bootstrap.token"))
+        .await
+        .unwrap();
     fixture.restart(1).await;
     let app = token_client(&fixture, token.expose_secret()).await;
     assert_eq!(
