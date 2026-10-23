@@ -15,10 +15,15 @@ use crate::producer::{
 use crate::replication::Application;
 use crate::subscription::{self, DataContext, SubscriptionState};
 
+#[path = "authority_data.rs"]
+mod authority_data;
 #[path = "groups.rs"]
 mod groups;
 #[path = "publish.rs"]
 mod publish;
+pub use authority_data::{
+    AuthorityDataCommand, TransferCapacity, TransferDataRejection, TransferOutcome,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DataGroupConfig {
@@ -98,6 +103,7 @@ pub enum ProducerCommand {
 /// Private service handlers admit these commands; never deserialize this enum from a wire RPC.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataCommand {
+    AuthorityTransfer(AuthorityDataCommand),
     Publish {
         partition: PartitionKey,
         writer: WriterFence,
@@ -161,6 +167,7 @@ pub enum DataCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataRejection {
+    Transfer(TransferDataRejection),
     Uninitialized,
     InvalidConfiguration,
     ConfigurationConflict,
@@ -177,6 +184,7 @@ pub enum DataRejection {
 impl fmt::Display for DataRejection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Transfer(reason) => write!(formatter, "{reason}"),
             Self::Uninitialized => formatter.write_str("Data group has not been initialized"),
             Self::InvalidConfiguration => formatter.write_str(
                 "Data group configuration violates its identity or capacity constraints",
@@ -204,6 +212,7 @@ impl fmt::Display for DataRejection {
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataResponse {
+    AuthorityTransfer(TransferOutcome),
     #[default]
     Noop,
     Initialized,
@@ -229,6 +238,10 @@ pub enum DataResponse {
 impl fmt::Debug for DataResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AuthorityTransfer(outcome) => formatter
+                .debug_tuple("AuthorityTransfer")
+                .field(outcome)
+                .finish(),
             Self::Published(receipt) => formatter.debug_tuple("Published").field(receipt).finish(),
             Self::PublishClosed => formatter.write_str("PublishClosed"),
             Self::Noop => formatter.write_str("Noop"),
@@ -298,6 +311,7 @@ pub struct DataApplication {
     hot_bytes: u64,
     hot_messages: usize,
     lifecycle: crate::lifecycle::DataState,
+    authority: authority_data::AuthorityDataState,
 }
 
 impl fmt::Debug for DataApplication {
@@ -415,7 +429,10 @@ impl DataApplication {
             return Err(DataRejection::InvalidConfiguration);
         }
         let start = after.map_or(Bound::Unbounded, Bound::Excluded);
-        let mut entries = self.partitions.range((start, Bound::Unbounded));
+        let mut entries = self
+            .partitions
+            .range((start, Bound::Unbounded))
+            .filter(|(partition, _)| !self.authority.is_frozen(**partition));
         let mut partitions = Vec::new();
         partitions
             .try_reserve_exact(limit)
@@ -509,6 +526,9 @@ impl DataApplication {
     }
 
     fn install_fence(&mut self, command: FenceCommand) -> Result<DataResponse, DataRejection> {
+        if self.authority.is_frozen(command.grant.partition) {
+            return Err(DataRejection::Transfer(TransferDataRejection::Frozen));
+        }
         let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
         let partition = command.grant.partition;
         let mut fences = self
@@ -566,6 +586,9 @@ impl DataApplication {
         partition: PartitionKey,
         writer: WriterFence,
     ) -> Result<DataResponse, DataRejection> {
+        if self.authority.is_frozen(partition) {
+            return Err(DataRejection::Transfer(TransferDataRejection::Frozen));
+        }
         let fences = self
             .ownership
             .as_ref()
@@ -812,6 +835,9 @@ impl DataApplication {
         partition: PartitionKey,
         writer: WriterFence,
     ) -> Result<(), DataRejection> {
+        if self.authority.is_frozen(partition) {
+            return Err(DataRejection::Transfer(TransferDataRejection::Frozen));
+        }
         self.ownership
             .as_ref()
             .ok_or(DataRejection::Uninitialized)?
@@ -821,6 +847,7 @@ impl DataApplication {
 
     // Full group validation belongs to recovery and snapshot input, outside normal admission.
     fn validate_complete(&self) -> Result<(), DataRejection> {
+        self.validate_transfers()?;
         let Some(config) = &self.config else {
             return if self.ownership.is_none()
                 && self.partitions.is_empty()
@@ -925,12 +952,13 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 7;
+    const VERSION: u32 = 8;
     type Command = DataCommand;
     type Response = DataResponse;
 
     fn apply(&mut self, command: DataCommand) -> DataResponse {
         let result = match command {
+            DataCommand::AuthorityTransfer(command) => self.authority_transfer(command),
             DataCommand::Publish {
                 partition,
                 writer,

@@ -1461,6 +1461,17 @@ pub(crate) fn unix_millis() -> Result<u64> {
 
 pub(crate) fn data_rejection(reason: DataRejection) -> Error {
     match reason {
+        DataRejection::Transfer(reason) => {
+            use crate::broker::TransferDataRejection as R;
+            let (code, retryable) = match reason {
+                R::Frozen => (ErrorCode::Fenced, true),
+                R::Capacity => (ErrorCode::QuotaExceeded, true),
+                R::NotReady => (ErrorCode::Unavailable, true),
+                R::Conflict => (ErrorCode::ContentConflict, false),
+                R::InvalidPlan | R::Encoding => (ErrorCode::InvalidRequest, false),
+            };
+            Error::reject_with(code, Outcome::Rejected, retryable, reason.to_string())
+        }
         reason @ DataRejection::ShardSealed => Error::reject_with(
             ErrorCode::Fenced,
             Outcome::Rejected,

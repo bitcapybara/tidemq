@@ -1,5 +1,6 @@
 //! Durable object publication, replacement, pins and reclamation.
 
+mod authority_slice;
 mod backend;
 mod catalog;
 mod coordinator;
@@ -9,6 +10,7 @@ pub use remote::ReplicaCheckpoint;
 mod telemetry;
 mod types;
 
+pub(crate) use authority_slice::AuthoritySlice;
 pub use backend::MetadataReplica;
 pub use catalog::Catalog;
 pub use coordinator::{CompactionStep, Coordinator, DataReplica, GuardedPage, PreparedObject};

@@ -1,5 +1,7 @@
 mod ack;
 mod authority;
+#[path = "../../../tests/scalable_support/authority_data.rs"]
+mod authority_data;
 mod durability;
 mod fencing;
 #[path = "../../../tests/scalable_support/group_raft.rs"]

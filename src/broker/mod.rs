@@ -16,8 +16,9 @@ mod shard_sealing_tests;
 
 pub use admission::BrokerLimits;
 pub use application::{
-    ArchiveCandidate, ArchivePage, CapacityUsage, DataApplication, DataCommand, DataGroupConfig,
-    DataRejection, DataResponse, ProducerCommand, WriterFence,
+    ArchiveCandidate, ArchivePage, AuthorityDataCommand, CapacityUsage, DataApplication,
+    DataCommand, DataGroupConfig, DataRejection, DataResponse, ProducerCommand, TransferCapacity,
+    TransferDataRejection, TransferOutcome, WriterFence,
 };
 pub use error::{Error, Result};
 pub use runtime::{Broker, HotRead, ProducerStatus, ProducerSubmission, RequestContext};

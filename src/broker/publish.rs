@@ -9,6 +9,7 @@ impl DataApplication {
     ) -> Vec<(PartitionKey, producer::PublisherPermit)> {
         self.partitions
             .iter()
+            .filter(|(partition, _)| !self.authority.is_frozen(**partition))
             .flat_map(|(partition, state)| {
                 state
                     .producer

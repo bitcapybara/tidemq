@@ -20,12 +20,12 @@ pub(crate) struct Intent {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DataState {
-    intents: BTreeMap<Id, Intent>,
-    pending: std::collections::BTreeSet<Id>,
-    manifests: BTreeMap<PartitionKey, super::Manifest>,
-    reclaim_ends: BTreeMap<PartitionKey, u64>,
-    checkpoint_generation: u64,
-    checkpointed_floors: BTreeMap<PartitionKey, u64>,
+    pub(super) intents: BTreeMap<Id, Intent>,
+    pub(super) pending: std::collections::BTreeSet<Id>,
+    pub(super) manifests: BTreeMap<PartitionKey, super::Manifest>,
+    pub(super) reclaim_ends: BTreeMap<PartitionKey, u64>,
+    pub(super) checkpoint_generation: u64,
+    pub(super) checkpointed_floors: BTreeMap<PartitionKey, u64>,
 }
 
 impl DataState {
