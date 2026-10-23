@@ -5,7 +5,7 @@ use tidemq_protocol::Id;
 use crate::ownership::{Grant, OwnershipPhase};
 
 use super::state::PartitionRecord;
-use super::types::valid_name;
+use super::types::{valid_name, valid_topic_name};
 use super::{MetadataState, NodeRole, Outcome, PartitionKey, RecordStatus, Rejection, Response};
 
 impl MetadataState {
@@ -97,7 +97,7 @@ impl MetadataState {
         let mut partitions = 0_usize;
         for (id, topic) in &self.topics {
             if *id != topic.topic_id
-                || !valid_name(&topic.name, 128)
+                || !valid_topic_name(&topic.name)
                 || topic.generation == 0
                 || topic.partition_count == 0
                 || topic.partition_count as usize > self.limits.partitions_per_topic
@@ -303,7 +303,7 @@ impl MetadataState {
                 self.validate_placement(&group.voters, false)?;
             }
             Outcome::TopicConfigured(topic) => {
-                if !valid_name(&topic.name, 128)
+                if !valid_topic_name(&topic.name)
                     || topic.generation == 0
                     || topic.partition_count == 0
                     || topic.partition_count as usize > self.limits.partitions_per_topic

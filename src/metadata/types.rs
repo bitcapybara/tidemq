@@ -234,3 +234,14 @@ pub(crate) fn valid_name(value: &str, maximum: usize) -> bool {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
+
+pub(crate) fn valid_topic_name(value: &str) -> bool {
+    if value.len() > 128 {
+        return false;
+    }
+    let count = value.split('/').count();
+    matches!(count, 1 | 3)
+        && value
+            .split('/')
+            .all(|component| !matches!(component, "." | "..") && valid_name(component, 64))
+}

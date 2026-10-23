@@ -7,7 +7,7 @@ use crate::ownership::{FenceEvidence, Grant, OwnershipPhase, RecoveryEvidence};
 
 use super::command::Action;
 use super::control::{ControlLocation, ControlStage, is_random_operation_id};
-use super::types::valid_name;
+use super::types::{valid_name, valid_topic_name};
 use super::{
     Command, DataGroup, DeploymentMode, MetadataLimits, NodeRecord, NodeRole, Outcome,
     PartitionKey, RecordStatus, Rejection, Response, Route, SubscriptionConfig, SubscriptionRecord,
@@ -800,7 +800,7 @@ fn validate_command_shape(action: &Action, limits: &MetadataLimits) -> Result<()
         Action::PutNode { spec, .. } => spec.validate(),
         Action::CreateGroup { voters, .. } if voters.len() > 3 => Err(Rejection::InvalidGroup),
         Action::CreateTopic { name, groups, .. } => {
-            if !valid_name(name, 128) {
+            if !valid_topic_name(name) {
                 Err(Rejection::InvalidName)
             } else if groups.is_empty() || groups.len() > limits.partitions_per_topic {
                 Err(Rejection::InvalidGroup)

@@ -43,7 +43,7 @@ fn seal_prevents_late_writes_but_replays_committed_results_after_restart() {
         cluster_id: cluster,
         partition,
         group_id: 2,
-        operation_id: id(),
+        operation_id: tidemq::metadata::grant_operation_id(cluster, partition, 1, 1, 0).unwrap(),
         epoch: 1,
         owner_node: 1,
         expected_route_generation: 0,
@@ -64,7 +64,7 @@ fn seal_prevents_late_writes_but_replays_committed_results_after_restart() {
         now_ms: 1000,
         command: ProducerCommand::Register(RegisterProducer {
             producer_id: producer,
-            expected_registration_epoch: 0,
+            expected_registration_epoch: 1,
         }),
     }) else {
         panic!("Expected a registered producer");

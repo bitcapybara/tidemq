@@ -279,3 +279,43 @@ fn initial_layouts_cover_the_whole_space_even_when_the_shard_count_is_not_a_powe
     layout.route(u64::MAX).unwrap();
     state.validate_snapshot().unwrap();
 }
+
+#[test]
+fn qualified_topic_names_are_validated_as_three_components() {
+    let mut state = metadata();
+    assert!(
+        state
+            .apply(Command::create_topic(
+                id(),
+                state.revision(),
+                id(),
+                "acme/app/orders".into(),
+                vec![2]
+            ))
+            .is_applied()
+    );
+    state.validate_snapshot().unwrap();
+    for name in [
+        "acme//orders",
+        "acme/app/../orders",
+        "acme/app/..",
+        "acme/app/orders/extra",
+    ] {
+        assert!(
+            matches!(
+                state.apply(Command::create_topic(
+                    id(),
+                    state.revision(),
+                    id(),
+                    name.into(),
+                    vec![2]
+                )),
+                Response::Rejected {
+                    reason: Rejection::InvalidName,
+                    ..
+                }
+            ),
+            "Invalid qualified name was accepted: {name}"
+        );
+    }
+}

@@ -331,7 +331,7 @@ impl std::fmt::Display for Rejection {
             Self::AlreadyInitialized => "Metadata group has already been bootstrapped",
             Self::InvalidLimit => "Metadata request exceeds its configured item or byte limit",
             Self::InvalidName => {
-                "Resource name must contain 1 to 255 bytes without control characters"
+                "Resource name violates its ASCII component or length rules; a topic path must be tenant/namespace/topic"
             }
             Self::InvalidNode => {
                 "Node configuration violates the node identity or role constraints"
