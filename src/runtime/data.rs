@@ -78,6 +78,9 @@ pub(crate) fn partition(frame: &Frame, limits: &ProtocolLimits) -> Result<Partit
         FrameKind::ProducerStatus => from!(public::ProducerStatus),
         FrameKind::RetireProducer => from!(public::RetireProducer),
         FrameKind::Read => from!(public::ReadRequest),
+        FrameKind::GroupRead => from!(public::GroupRead),
+        FrameKind::GroupAck => from!(public::GroupAck),
+        FrameKind::GroupRetireRead | FrameKind::GroupRetireAck => from!(public::GroupRetire),
         FrameKind::ClaimAssignment => from!(public::ClaimAssignment),
         FrameKind::SubscriptionStatus => from!(public::SubscriptionStatus),
         FrameKind::AckBatch => from!(public::AckBatch),
@@ -1544,7 +1547,7 @@ fn producer_error(reason: crate::producer::Rejection) -> Error {
     }
     error
 }
-fn subscription_error(reason: subscription::Rejection) -> Error {
+pub(super) fn subscription_error(reason: subscription::Rejection) -> Error {
     use subscription::Rejection as R;
     let code = match &reason {
         R::NotFound | R::Deleted => ErrorCode::NotFound,

@@ -239,6 +239,13 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::CreateLogicalTopic
         | FrameKind::ManageIdentity
         | FrameKind::IdentityResult
+        | FrameKind::ConsumerControl
+        | FrameKind::ConsumerControlResult
+        | FrameKind::GroupAck
+        | FrameKind::GroupAckResult
+        | FrameKind::GroupRetireRead
+        | FrameKind::GroupRetireAck
+        | FrameKind::GroupRetired
         | FrameKind::GetSubscription
         | FrameKind::AckBatch
         | FrameKind::AckResult
@@ -247,7 +254,10 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::Diagnose
         | FrameKind::DiagnosticResult => class == TrafficClass::Control,
         FrameKind::ProduceBatch | FrameKind::ProduceResult => class == TrafficClass::Produce,
-        FrameKind::Read | FrameKind::DeliveryBatch => {
+        FrameKind::Read
+        | FrameKind::DeliveryBatch
+        | FrameKind::GroupRead
+        | FrameKind::GroupDeliveries => {
             matches!(class, TrafficClass::Delivery | TrafficClass::Bulk)
         }
         FrameKind::RaftAppend => matches!(class, TrafficClass::Control | TrafficClass::Replication),

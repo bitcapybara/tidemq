@@ -2,6 +2,8 @@
 
 mod auth;
 mod config;
+mod consumer_control;
+mod consumer_data;
 mod data;
 mod drain;
 mod error;

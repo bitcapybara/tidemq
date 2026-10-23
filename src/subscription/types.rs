@@ -8,6 +8,10 @@ pub type Result<T> = std::result::Result<T, Rejection>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Snafu)]
 pub enum Rejection {
+    #[snafu(display("Subscription model does not match the requested consumer operation"))]
+    ModelMismatch,
+    #[snafu(display("Original operation is outside the retained result coverage"))]
+    OutcomeExpired,
     #[snafu(display("Subscription limits are invalid"))]
     InvalidLimits,
     #[snafu(display("Authoritative data boundaries are inconsistent"))]

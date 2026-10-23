@@ -15,6 +15,9 @@ use crate::producer::{
 use crate::replication::Application;
 use crate::subscription::{self, DataContext, SubscriptionState};
 
+#[path = "groups.rs"]
+mod groups;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DataGroupConfig {
     pub cluster_id: Id,
@@ -98,6 +101,11 @@ pub enum DataCommand {
         partition: PartitionKey,
         writer: WriterFence,
         plan: Id,
+    },
+    ConsumerGroup {
+        partition: PartitionKey,
+        writer: WriterFence,
+        command: subscription::GroupCommand,
     },
     Retention {
         partition: PartitionKey,
@@ -189,6 +197,7 @@ pub enum DataResponse {
     TimeAdvanced,
     Retention(crate::retention::Status),
     Subscription(subscription::Outcome),
+    ConsumerGroup(subscription::GroupOutcome),
     Lifecycle(crate::lifecycle::DataResult),
     Rejected(DataRejection),
 }
@@ -224,6 +233,10 @@ impl fmt::Debug for DataResponse {
             Self::TimeAdvanced => formatter.write_str("TimeAdvanced"),
             Self::Retention(status) => formatter.debug_tuple("Retention").field(status).finish(),
             Self::Subscription(_) => formatter.write_str("Subscription(<bounded outcome>)"),
+            Self::ConsumerGroup(result) => formatter
+                .debug_tuple("ConsumerGroup")
+                .field(result)
+                .finish(),
             Self::Lifecycle(result) => formatter.debug_tuple("Lifecycle").field(result).finish(),
             Self::Rejected(reason) => formatter.debug_tuple("Rejected").field(reason).finish(),
         }
@@ -236,6 +249,17 @@ struct PartitionState {
     subscriptions: SubscriptionState,
     retention: crate::retention::RetentionState,
     seal: Option<(Id, u64)>,
+    groups: BTreeMap<Id, subscription::GroupCursor>,
+}
+
+impl PartitionState {
+    fn protected_before(&self) -> Option<u64> {
+        self.subscriptions
+            .protected_before()
+            .into_iter()
+            .chain(self.groups.values().map(|cursor| cursor.protected_before()))
+            .min()
+    }
 }
 
 /// The complete data-group authority: offsets, sessions, writer fences, delivery attempts and ACKs.
@@ -319,9 +343,15 @@ impl DataApplication {
                         .map_err(DataRejection::Subscription)?,
                 )
                 .ok_or(DataRejection::InvalidConfiguration)?;
+            for cursor in state.groups.values() {
+                usage.ack_state_logical_bytes = usage
+                    .ack_state_logical_bytes
+                    .checked_add(cursor.logical_state_bytes())
+                    .ok_or(DataRejection::InvalidConfiguration)?;
+            }
             let backlog = state
                 .retention
-                .logical_backlog_upper_bytes(state.subscriptions.protected_before())
+                .logical_backlog_upper_bytes(state.protected_before())
                 .map_err(DataRejection::Retention)?;
             let published = self.lifecycle.published_end(*partition);
             let unpublished = if published < state.retention.floor() {
@@ -394,7 +424,7 @@ impl DataApplication {
             .advance(
                 command,
                 state.producer.committed_end(),
-                state.subscriptions.protected_before(),
+                state.protected_before(),
             )
             .map_err(DataRejection::Retention)?;
         state
@@ -492,6 +522,7 @@ impl DataApplication {
                     retention: crate::retention::RetentionState::new(config.retention)
                         .map_err(DataRejection::Retention)?,
                     seal: None,
+                    groups: BTreeMap::new(),
                 },
             );
         }
@@ -531,6 +562,8 @@ impl DataApplication {
         }
         let mut digest = blake3::Hasher::new();
         digest.update(b"tidemq-data-recovery-v1\0");
+        postcard::to_io(&state.groups, &mut digest)
+            .map_err(|_| DataRejection::InvalidConfiguration)?;
         postcard::to_io(&state.seal, &mut digest)
             .map_err(|_| DataRejection::InvalidConfiguration)?;
         digest.update(
@@ -772,6 +805,7 @@ impl DataApplication {
         self.lifecycle
             .validate()
             .map_err(DataRejection::Lifecycle)?;
+        self.validate_groups()?;
         let fences = self
             .ownership
             .as_ref()
@@ -848,13 +882,18 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 3;
+    const VERSION: u32 = 4;
     type Command = DataCommand;
     type Response = DataResponse;
 
     fn apply(&mut self, command: DataCommand) -> DataResponse {
         let result = match command {
             DataCommand::Initialize(config) => self.initialize(config),
+            DataCommand::ConsumerGroup {
+                partition,
+                writer,
+                command,
+            } => self.consumer_group(partition, writer, command),
             DataCommand::SealShard {
                 partition,
                 writer,

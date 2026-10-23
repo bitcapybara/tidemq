@@ -1,0 +1,300 @@
+use serde::{Deserialize, Serialize};
+use tidemq_protocol::{
+    Id,
+    topic::{InitialPosition, SubscriptionKind},
+};
+
+use super::{
+    MemberHeartbeat, MemberInfo, MemberJoin, MembersBook, MembersPlan, MetadataState, RecordStatus,
+    Rejection,
+};
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConsumerSubscription {
+    pub id: Id,
+    pub topic: Id,
+    pub name: String,
+    pub members: MembersBook,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ConsumerCommand {
+    Create {
+        topic: Id,
+        name: String,
+        model: SubscriptionKind,
+        initial: InitialPosition,
+    },
+    Join {
+        subscription: Id,
+        request: MemberJoin,
+    },
+    Heartbeat {
+        subscription: Id,
+        request: MemberHeartbeat,
+    },
+    Leave {
+        subscription: Id,
+        member: Id,
+        epoch: u64,
+        client: Id,
+        credential: Id,
+        now_ms: u64,
+    },
+    Observe {
+        subscription: Id,
+        version: u64,
+        fenced: bool,
+        domain: Id,
+        now_ms: u64,
+    },
+    Refresh {
+        subscription: Id,
+        now_ms: u64,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum ConsumerOutcome {
+    Created { subscription: Id },
+    Joined(MemberInfo),
+    Renewed(u64),
+    Plan(MembersPlan),
+}
+
+impl MetadataState {
+    pub fn consumer_subscription(&self, subscription: Id) -> Option<&ConsumerSubscription> {
+        self.consumer_subscriptions.get(&subscription)
+    }
+
+    pub fn consumer_subscription_by_name(
+        &self,
+        topic: Id,
+        name: &str,
+    ) -> Option<&ConsumerSubscription> {
+        self.consumer_subscriptions
+            .values()
+            .find(|subscription| subscription.topic == topic && subscription.name == name)
+    }
+
+    pub fn consumer_subscriptions(&self) -> impl Iterator<Item = &ConsumerSubscription> {
+        self.consumer_subscriptions.values()
+    }
+
+    pub(super) fn consumer_command(
+        &mut self,
+        operation: Id,
+        command: &ConsumerCommand,
+    ) -> Result<ConsumerOutcome, Rejection> {
+        match command {
+            ConsumerCommand::Create {
+                topic,
+                name,
+                model,
+                initial,
+            } => self.create_consumer_subscription(operation, *topic, name, *model, *initial),
+            ConsumerCommand::Join {
+                subscription,
+                request,
+            } => {
+                let total: usize = self
+                    .consumer_subscriptions
+                    .values()
+                    .map(|record| {
+                        record
+                            .members
+                            .live_for_client(request.client, request.now_ms)
+                    })
+                    .sum();
+                let row = self
+                    .consumer_subscriptions
+                    .get_mut(subscription)
+                    .ok_or(Rejection::NotFound)?;
+                if total >= 128
+                    && row
+                        .members
+                        .member(request.member, request.expected_epoch)
+                        .is_none()
+                {
+                    return Err(Rejection::Capacity);
+                }
+                row.members.reap(request.now_ms);
+                row.members
+                    .join(operation, request)
+                    .map(ConsumerOutcome::Joined)
+            }
+            ConsumerCommand::Heartbeat {
+                subscription,
+                request,
+            } => self
+                .consumer_subscriptions
+                .get_mut(subscription)
+                .ok_or(Rejection::NotFound)?
+                .members
+                .heartbeat(operation, request.clone())
+                .map(ConsumerOutcome::Renewed),
+            ConsumerCommand::Leave {
+                subscription,
+                member,
+                epoch,
+                client,
+                credential,
+                now_ms,
+            } => self
+                .consumer_subscriptions
+                .get_mut(subscription)
+                .ok_or(Rejection::NotFound)?
+                .members
+                .leave(operation, *member, *epoch, *client, *credential, *now_ms)
+                .map(ConsumerOutcome::Plan),
+            ConsumerCommand::Observe {
+                subscription,
+                version,
+                fenced,
+                domain,
+                now_ms,
+            } => self
+                .consumer_subscriptions
+                .get_mut(subscription)
+                .ok_or(Rejection::NotFound)?
+                .members
+                .observe_installed(*version, *fenced, *domain, *now_ms)
+                .map(ConsumerOutcome::Plan),
+            ConsumerCommand::Refresh {
+                subscription,
+                now_ms,
+            } => self.refresh_consumer_subscription(*subscription, *now_ms),
+        }
+    }
+
+    fn create_consumer_subscription(
+        &mut self,
+        operation: Id,
+        topic: Id,
+        name: &str,
+        model: SubscriptionKind,
+        initial: InitialPosition,
+    ) -> Result<ConsumerOutcome, Rejection> {
+        if !super::types::valid_name(name, 128) {
+            return Err(Rejection::InvalidName);
+        }
+        let topic_record = self
+            .topics
+            .get(&topic)
+            .filter(|topic| topic.status == RecordStatus::Active)
+            .ok_or(Rejection::NotFound)?;
+        if let Some(previous) = self.consumer_subscription_by_name(topic, name) {
+            return if previous.members.model() == model {
+                Ok(ConsumerOutcome::Created {
+                    subscription: previous.id,
+                })
+            } else {
+                Err(Rejection::InvalidSubscription)
+            };
+        }
+        if self.consumer_subscriptions.contains_key(&operation) {
+            return Err(Rejection::OperationConflict);
+        }
+        if self
+            .consumer_subscriptions
+            .len()
+            .saturating_add(self.subscriptions.len())
+            >= self.limits.subscriptions
+        {
+            return Err(Rejection::Capacity);
+        }
+        if self.auth.initialized() {
+            let (tenant, _, _) = self
+                .auth
+                .resolve_topic(&topic_record.name)
+                .map_err(Rejection::Authorization)?;
+            let prefix = format!("{}/", tenant.name);
+            let count = self
+                .consumer_subscriptions
+                .values()
+                .filter(|subscription| {
+                    self.topics
+                        .get(&subscription.topic)
+                        .is_some_and(|topic| topic.name.starts_with(&prefix))
+                })
+                .count();
+            if count >= tenant.max_subscriptions {
+                return Err(Rejection::Capacity);
+            }
+        }
+        let layout = self.topology.layout(topic).ok_or(Rejection::NotFound)?;
+        let domains = self
+            .topology
+            .domains(topic)
+            .map(|shard| shard.route.id)
+            .collect();
+        let members = MembersBook::new(operation, model, initial, layout.revision, domains)?;
+        self.consumer_subscriptions.insert(
+            operation,
+            ConsumerSubscription {
+                id: operation,
+                topic,
+                name: name.to_owned(),
+                members,
+            },
+        );
+        Ok(ConsumerOutcome::Created {
+            subscription: operation,
+        })
+    }
+
+    fn refresh_consumer_subscription(
+        &mut self,
+        subscription: Id,
+        now: u64,
+    ) -> Result<ConsumerOutcome, Rejection> {
+        let row = self
+            .consumer_subscriptions
+            .get(&subscription)
+            .ok_or(Rejection::NotFound)?;
+        let layout = self.topology.layout(row.topic).ok_or(Rejection::NotFound)?;
+        let domains = self
+            .topology
+            .domains(row.topic)
+            .map(|shard| shard.route.id)
+            .collect();
+        let row = self
+            .consumer_subscriptions
+            .get_mut(&subscription)
+            .ok_or(Rejection::NotFound)?;
+        row.members.reap(now);
+        row.members
+            .refresh(layout.revision, domains, now)
+            .map(ConsumerOutcome::Plan)
+    }
+
+    pub(super) fn validate_consumer_subscriptions(&self) -> Result<(), Rejection> {
+        let mut names = std::collections::BTreeSet::new();
+        if self
+            .consumer_subscriptions
+            .len()
+            .saturating_add(self.subscriptions.len())
+            > self.limits.subscriptions
+        {
+            return Err(Rejection::Capacity);
+        }
+        for (id, row) in &self.consumer_subscriptions {
+            if *id != row.id
+                || !self.topics.contains_key(&row.topic)
+                || !super::types::valid_name(&row.name, 128)
+                || !names.insert((row.topic, &row.name))
+            {
+                return Err(Rejection::InvalidSubscription);
+            }
+            row.members.validate()?;
+            if row.members.plan().domains.iter().any(|id| {
+                self.topology
+                    .shard(*id)
+                    .is_none_or(|shard| shard.partition.topic_id != row.topic)
+            }) {
+                return Err(Rejection::InvalidEvidence);
+            }
+        }
+        Ok(())
+    }
+}

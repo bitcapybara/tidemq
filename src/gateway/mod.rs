@@ -14,6 +14,7 @@ use crate::transport::{Authorization, TokenGrant};
 pub(crate) struct Access {
     pub principal: Arc<str>,
     pub scope: Arc<str>,
+    pub session: Option<tidemq_protocol::Id>,
 }
 
 #[derive(Clone)]
@@ -131,6 +132,7 @@ impl AccessTable {
         Ok(Access {
             principal: Arc::clone(principal),
             scope: Arc::clone(scope),
+            session: None,
         })
     }
 }
@@ -167,6 +169,11 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
             | FrameKind::GetTopicLayout
             | FrameKind::ChangeTopicLayout
             | FrameKind::ManageIdentity
+            | FrameKind::ConsumerControl
+            | FrameKind::GroupRead
+            | FrameKind::GroupAck
+            | FrameKind::GroupRetireRead
+            | FrameKind::GroupRetireAck
             | FrameKind::GetTopic
             | FrameKind::CreateSubscription
             | FrameKind::GetSubscription

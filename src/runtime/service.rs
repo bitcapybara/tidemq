@@ -33,7 +33,7 @@ pub(crate) struct CachedRoute {
     pub topic_name: String,
     pub expires: Instant,
 }
-type CancelKey = (Arc<str>, Arc<str>, Id);
+type CancelKey = (Arc<str>, Arc<str>, Option<Id>, Id);
 type LeaseSlot = Arc<Mutex<Option<Arc<crate::ownership::ControlLease>>>>;
 
 pub(crate) struct Service {
@@ -47,6 +47,7 @@ pub(crate) struct Service {
     pub authority: Arc<RemoteMetadataAuthority>,
     pub access: AccessTable,
     pub(super) auth_cache: super::auth::AuthCache,
+    pub(super) consumer_after: std::sync::Mutex<Option<Id>>,
     pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
     pub metrics: Metrics,
@@ -146,6 +147,7 @@ impl Service {
             authority,
             access,
             auth_cache: super::auth::AuthCache::default(),
+            consumer_after: std::sync::Mutex::new(None),
             delivery_key,
             budget,
             metrics,
@@ -424,6 +426,7 @@ impl Service {
                 | FrameKind::GetTopicLayout
                 | FrameKind::ChangeTopicLayout
                 | FrameKind::ManageIdentity
+                | FrameKind::ConsumerControl
                 | FrameKind::GetTopic
                 | FrameKind::CreateSubscription
                 | FrameKind::GetSubscription
@@ -507,7 +510,19 @@ impl Service {
                 .await;
         }
         let group = route.group_id;
-        let result = self.data_public(&forwarded, route, deadline, order).await;
+        let result = if matches!(
+            kind,
+            FrameKind::GroupRead
+                | FrameKind::GroupAck
+                | FrameKind::GroupRetireRead
+                | FrameKind::GroupRetireAck
+        ) {
+            drop(order);
+            self.group_data_public(&access, &forwarded, route, deadline)
+                .await
+        } else {
+            self.data_public(&forwarded, route, deadline, order).await
+        };
         if let Err(error) = &result {
             self.invalidate_forward(&forwarded, group, error.failure().code)
                 .await;
@@ -539,6 +554,10 @@ impl Service {
             principal: access.principal.to_string(),
             scope: access.scope.to_string(),
             hops,
+            client_session: access
+                .session
+                .map(super::metadata::bytes_id)
+                .unwrap_or_default(),
         };
         let affinity = super::data::affinity(frame, &self.config.protocol)?;
         let pending = self
@@ -611,6 +630,16 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::consumer_data::GROUP_CONTROL => {
+                drop(order);
+                if !matches!(peer.role.as_str(), "metadata" | "combined")
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.group_control_command(group, &request.body, deadline)
+                    .await?
+            }
             super::auth::AUTH_QUERY => {
                 drop(order);
                 if group != self.config.runtime.metadata_group
@@ -783,8 +812,19 @@ impl Service {
                         Error::operation("validate delegated public frame", source)
                     })?;
                 let (access, deadline) = if self.config.runtime.dynamic_auth {
+                    let credential: Id = request
+                        .principal
+                        .strip_prefix("credential:")
+                        .ok_or_else(forbidden)?
+                        .parse()
+                        .map_err(|_| forbidden())?;
                     let (access, expires) = self
-                        .dynamic_access(&request.principal, &inner, deadline)
+                        .dynamic_access(
+                            credential,
+                            wire::id(&request.client_session)?,
+                            &inner,
+                            deadline,
+                        )
                         .await?;
                     (access, deadline.min(expires))
                 } else {
@@ -902,10 +942,11 @@ impl WireService for Service {
         crate::observability::tracing::observe_until(async {
         let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
         let result = match &peer {
-            Authorization::External { principal, .. } => {
+            Authorization::External { .. } | Authorization::Credential { .. } => {
                 let kind = frame_kind(frame)?;
                 let (access, deadline) = if self.config.runtime.dynamic_auth {
-                    let (access, expires) = self.dynamic_access(principal, frame, deadline).await?;
+                    let Authorization::Credential { credential, session_id, .. } = &peer else { return Err(forbidden()); };
+                    let (access, expires) = self.dynamic_access(*credential, *session_id, frame, deadline).await?;
                     (access, deadline.min(expires))
                 } else { (self.access.external(&peer, kind)?, deadline) };
                 if kind == FrameKind::Cancel {
@@ -915,6 +956,7 @@ impl WireService for Service {
                     let key = (
                         access.principal,
                         access.scope,
+                        access.session,
                         wire::id(&cancel.request_id)?,
                     );
                     if let Ok(cancellations) = self.cancellations.lock()
@@ -927,6 +969,7 @@ impl WireService for Service {
                 let key = (
                     access.principal.clone(),
                     access.scope.clone(),
+                    access.session,
                     wire::id(&frame.request_id)?,
                 );
                 let (cancel, mut cancelled) = watch::channel(false);

@@ -71,6 +71,13 @@ impl Service {
                     "Metadata startup reconciliation will retry"
                 );
             }
+            if let Err(error) = self.reconcile_consumers(deadline).await {
+                tracing::debug!(
+                    event_code = "consumer_reconcile_wait",
+                    error_code = error.failure().code,
+                    "Durable consumer assignment will resume after authority becomes available"
+                );
+            }
             let plans = replica
                 .state
                 .try_with_application(|state| {
@@ -256,6 +263,9 @@ impl Service {
             .await?
             .map_err(|_| Error::unavailable())?;
         let operation = wire::id(&frame.operation_id)?;
+        if super::service::frame_kind(frame)? == FrameKind::ConsumerControl {
+            return self.consumer_control_public(&access, frame, deadline).await;
+        }
         if super::service::frame_kind(frame)? == FrameKind::ManageIdentity {
             return self.identity_public(&access, frame, deadline).await;
         }

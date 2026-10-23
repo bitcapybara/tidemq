@@ -161,3 +161,185 @@ async fn tenant_namespace_authorization_is_checked_on_each_resource() {
     root.close().await;
     fixture.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_members_share_messages_and_a_persistent_nack_redelivers_after_leave() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic("acme/app/jobs")
+        .await
+        .unwrap();
+    let first = client
+        .new_queue_consumer("acme/app/jobs", "workers")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let second = client
+        .new_queue_consumer("acme/app/jobs", "workers")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let topic = client.admin().topic("acme/app/jobs").await.unwrap();
+    let producer = Producer::open(
+        client.clone(),
+        Id::from_slice(&topic.topic_id).unwrap(),
+        0,
+        Id::new_v7().unwrap(),
+    )
+    .await
+    .unwrap();
+    producer
+        .produce(vec![
+            public::Message {
+                key: Bytes::from_static(b"a"),
+                body: Bytes::from_static(b"first"),
+            },
+            public::Message {
+                key: Bytes::from_static(b"b"),
+                body: Bytes::from_static(b"second"),
+            },
+        ])
+        .await
+        .unwrap();
+    let a = tokio::time::timeout(Duration::from_secs(15), first.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let b = tokio::time::timeout(Duration::from_secs(15), second.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(a.message_id(), b.message_id());
+    first.clone().ack(&a).await.unwrap();
+    let retry_id = b.message_id();
+    assert!(matches!(
+        second.nack(&b, Duration::from_millis(100)).await.unwrap(),
+        tidemq_sdk::AckReceipt::RedeliveryScheduled { .. }
+    ));
+    drop(a);
+    drop(b);
+    second.close().await.unwrap();
+    let retry = tokio::time::timeout(Duration::from_secs(15), first.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry.message_id(), retry_id);
+    first.ack(&retry).await.unwrap();
+    drop(retry);
+    assert_eq!(first.close().await.unwrap().members_left(), 1);
+    producer
+        .produce(vec![public::Message {
+            key: Bytes::from_static(b"c"),
+            body: Bytes::from_static(b"offline backlog"),
+        }])
+        .await
+        .unwrap();
+    let restored = client
+        .new_queue_consumer("acme/app/jobs", "workers")
+        .build()
+        .await
+        .unwrap();
+    let message = tokio::time::timeout(Duration::from_secs(15), restored.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.payload(), b"offline backlog");
+    restored.ack(&message).await.unwrap();
+    drop(message);
+    restored.close().await.unwrap();
+    client.close().await;
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stream_clones_share_an_application_prefix_and_reject_a_queue_model_reuse() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic("acme/app/events")
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer("acme/app/events", "state")
+        .build()
+        .await
+        .unwrap();
+    assert!(
+        client
+            .new_queue_consumer("acme/app/events", "state")
+            .build()
+            .await
+            .is_err()
+    );
+    let clone = stream.clone();
+    let topic = client.admin().topic("acme/app/events").await.unwrap();
+    let producer = Producer::open(
+        client.clone(),
+        Id::from_slice(&topic.topic_id).unwrap(),
+        0,
+        Id::new_v7().unwrap(),
+    )
+    .await
+    .unwrap();
+    producer
+        .produce(
+            (0..3)
+                .map(|index| public::Message {
+                    key: Bytes::from_static(b"same"),
+                    body: Bytes::from(format!("event-{index}")),
+                })
+                .collect(),
+        )
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(15), stream.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(15), clone.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.payload(), b"event-0");
+    assert_eq!(second.payload(), b"event-1");
+    clone.ack_cumulative(&second).await.unwrap();
+    drop(first);
+    drop(second);
+    stream.close().await.unwrap();
+    assert!(matches!(
+        clone.receive().await,
+        Err(tidemq_sdk::Error::Closed)
+    ));
+    let restored = client
+        .new_stream_consumer("acme/app/events", "state")
+        .build()
+        .await
+        .unwrap();
+    let last = tokio::time::timeout(Duration::from_secs(15), restored.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(last.payload(), b"event-2");
+    restored.ack_cumulative(&last).await.unwrap();
+    drop(last);
+    restored.close().await.unwrap();
+    client.close().await;
+    fixture.close().await;
+}

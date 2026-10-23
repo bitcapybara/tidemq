@@ -37,6 +37,7 @@ impl MetadataState {
         self.validate_migrations()?;
         self.validate_topics()?;
         self.validate_subscriptions()?;
+        self.validate_consumer_subscriptions()?;
         for (partition, record) in &self.partitions {
             self.validate_partition(*partition, record)?;
         }
@@ -51,6 +52,7 @@ impl MetadataState {
             || !self.topics.is_empty()
             || !self.partitions.is_empty()
             || !self.subscriptions.is_empty()
+            || !self.consumer_subscriptions.is_empty()
             || !self.topic_names.is_empty()
             || !self.subscription_names.is_empty()
             || !self.nodes.is_empty()

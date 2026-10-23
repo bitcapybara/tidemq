@@ -126,6 +126,148 @@ pub struct IdentityResult {
     pub secret_unavailable: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConsumerControl {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(string, tag = "2")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(enumeration = "ConsumerModel", tag = "4")]
+    pub model: i32,
+    #[prost(bool, tag = "5")]
+    pub start_at_latest: bool,
+    #[prost(enumeration = "ConsumerAction", tag = "6")]
+    pub action: i32,
+    #[prost(bytes = "bytes", tag = "7")]
+    pub member_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "8")]
+    pub member_epoch: u64,
+    #[prost(uint64, tag = "9")]
+    pub heartbeat_sequence: u64,
+    #[prost(uint32, tag = "10")]
+    pub max_messages: u32,
+    #[prost(uint64, tag = "11")]
+    pub max_bytes: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ConsumerControlResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub next_member_epoch: u64,
+    #[prost(uint64, tag = "3")]
+    pub member_epoch: u64,
+    #[prost(uint64, tag = "4")]
+    pub expires_ms: u64,
+    #[prost(uint32, tag = "5")]
+    pub member_status: u32,
+    #[prost(bool, tag = "6")]
+    pub plan_active: bool,
+    #[prost(bytes = "bytes", repeated, tag = "7")]
+    pub work_shards: ::prost::alloc::vec::Vec<::prost::bytes::Bytes>,
+    #[prost(message, repeated, tag = "8")]
+    pub lanes: ::prost::alloc::vec::Vec<ConsumerLane>,
+    #[prost(uint64, tag = "9")]
+    pub assignment_version: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ConsumerLane {
+    #[prost(uint64, tag = "1")]
+    pub hash_start: u64,
+    #[prost(uint64, optional, tag = "2")]
+    pub hash_end: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupRead {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub member_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub member_epoch: u64,
+    #[prost(uint64, tag = "6")]
+    pub sequence: u64,
+    #[prost(uint32, tag = "7")]
+    pub max_messages: u32,
+    #[prost(uint64, tag = "8")]
+    pub max_bytes: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupProof {
+    #[prost(uint64, tag = "1")]
+    pub offset: u64,
+    #[prost(uint32, tag = "2")]
+    pub attempt: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub mac: ::prost::bytes::Bytes,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupDelivery {
+    #[prost(message, optional, tag = "1")]
+    pub proof: ::core::option::Option<GroupProof>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub key: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub body: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub key_hash: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GroupDeliveries {
+    #[prost(uint64, tag = "1")]
+    pub sequence: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub deliveries: ::prost::alloc::vec::Vec<GroupDelivery>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GroupAck {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub member_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub member_epoch: u64,
+    #[prost(uint64, tag = "6")]
+    pub sequence: u64,
+    #[prost(message, repeated, tag = "7")]
+    pub proofs: ::prost::alloc::vec::Vec<GroupProof>,
+    #[prost(uint64, optional, tag = "8")]
+    pub nack_delay_ms: ::core::option::Option<u64>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupAckResult {
+    #[prost(bool, tag = "1")]
+    pub redelivery_scheduled: bool,
+    #[prost(uint64, tag = "2")]
+    pub due_ms: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupRetire {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub member_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub member_epoch: u64,
+    #[prost(uint64, tag = "6")]
+    pub sequence: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupRetired {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct CreateSubscription {
     #[prost(bytes = "bytes", tag = "1")]
     pub topic_id: ::prost::bytes::Bytes,
@@ -520,6 +662,73 @@ impl IdentityAction {
             "ISSUE_CREDENTIAL" => Some(Self::IssueCredential),
             "REVOKE_CREDENTIAL" => Some(Self::RevokeCredential),
             "SET_TENANT_ENABLED" => Some(Self::SetTenantEnabled),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ConsumerAction {
+    Unspecified = 0,
+    EnsureConsumerSubscription = 1,
+    JoinConsumer = 2,
+    HeartbeatConsumer = 3,
+    LeaveConsumer = 4,
+    ConsumerStatus = 5,
+}
+impl ConsumerAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONSUMER_ACTION_UNSPECIFIED",
+            Self::EnsureConsumerSubscription => "ENSURE_CONSUMER_SUBSCRIPTION",
+            Self::JoinConsumer => "JOIN_CONSUMER",
+            Self::HeartbeatConsumer => "HEARTBEAT_CONSUMER",
+            Self::LeaveConsumer => "LEAVE_CONSUMER",
+            Self::ConsumerStatus => "CONSUMER_STATUS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONSUMER_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "ENSURE_CONSUMER_SUBSCRIPTION" => Some(Self::EnsureConsumerSubscription),
+            "JOIN_CONSUMER" => Some(Self::JoinConsumer),
+            "HEARTBEAT_CONSUMER" => Some(Self::HeartbeatConsumer),
+            "LEAVE_CONSUMER" => Some(Self::LeaveConsumer),
+            "CONSUMER_STATUS" => Some(Self::ConsumerStatus),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ConsumerModel {
+    Unspecified = 0,
+    StreamConsumer = 1,
+    QueueConsumer = 2,
+}
+impl ConsumerModel {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CONSUMER_MODEL_UNSPECIFIED",
+            Self::StreamConsumer => "STREAM_CONSUMER",
+            Self::QueueConsumer => "QUEUE_CONSUMER",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CONSUMER_MODEL_UNSPECIFIED" => Some(Self::Unspecified),
+            "STREAM_CONSUMER" => Some(Self::StreamConsumer),
+            "QUEUE_CONSUMER" => Some(Self::QueueConsumer),
             _ => None,
         }
     }

@@ -74,6 +74,7 @@ pub struct MetadataState {
     pub(crate) migrations: BTreeMap<u64, crate::scaling::MigrationRecord>,
     pub(crate) partitions: BTreeMap<PartitionKey, PartitionRecord>,
     pub(crate) subscriptions: BTreeMap<Id, SubscriptionRecord>,
+    pub(crate) consumer_subscriptions: BTreeMap<Id, super::ConsumerSubscription>,
     pub(crate) subscription_names: BTreeMap<Id, BTreeMap<String, Id>>,
     // shortcut: Retain CRUD decisions to the hard cap; review retirement fences before raising lifecycle capacity.
     pub(super) decisions: BTreeMap<Id, Decision>,
@@ -175,7 +176,7 @@ impl MetadataState {
         ) {
             return self.apply_membership(&command);
         }
-        if matches!(command.action, Action::Lifecycle(_)) {
+        if matches!(command.action, Action::Lifecycle(_) | Action::Consumer(_)) {
             return self.apply_new(&command);
         }
         let digest = match self.command_digest(&command) {
@@ -277,6 +278,9 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::Consumer(request) => self
+                .consumer_command(command.operation_id, request)
+                .map(Outcome::Consumer),
             Action::PutNode {
                 spec,
                 expected_generation,

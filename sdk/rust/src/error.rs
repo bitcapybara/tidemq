@@ -6,6 +6,12 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display(
+        "This delivery already has an unresolved ACK or NACK with different semantics"
+    ))]
+    AcknowledgementInProgress,
+    #[snafu(display("An owned SDK operation failed"))]
+    Background { source: std::sync::Arc<Error> },
+    #[snafu(display(
         "Credential {id} was committed but its one-time secret is unavailable; revoke it and issue a new credential"
     ))]
     CredentialSecretUnavailable { id: crate::CredentialId },
@@ -92,6 +98,7 @@ impl Error {
 
     pub fn outcome_unknown(&self) -> bool {
         match self {
+            Self::Background { source } => source.outcome_unknown(),
             Self::ProduceUnknown { .. }
             | Self::RegistrationUnknown { .. }
             | Self::RequestUnknown { .. } => true,

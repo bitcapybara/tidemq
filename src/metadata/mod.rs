@@ -5,8 +5,10 @@
 
 mod auth;
 mod command;
+mod consumers;
 mod control;
 mod diagnostics;
+mod members;
 mod replicated;
 mod scaling;
 mod state;
@@ -23,8 +25,13 @@ pub use auth::{
 };
 pub(crate) use command::Action;
 pub use command::{Command, OperationResult, Outcome, Rejection, Response};
+pub use consumers::{ConsumerCommand, ConsumerOutcome, ConsumerSubscription};
 pub(crate) use control::{ControlStage, grant_operation_id, stage_operation_id};
 pub use diagnostics::{MetadataSummary, OwnershipDiagnostic, TopicPage, TopicSummary};
+pub use members::{
+    MEMBER_LEASE_MS, MEMBER_RECOVERY_MS, MemberHeartbeat, MemberInfo, MemberJoin, MemberStatus,
+    MembersBook, MembersPlan,
+};
 pub use state::MetadataState;
 pub use topology::{BirthShard, LayoutChange, LayoutPlan, LayoutStage, Topology};
 pub use types::{

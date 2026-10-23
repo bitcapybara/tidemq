@@ -74,6 +74,12 @@ impl Topology {
             .filter(move |shard| shard.partition.topic_id == topic && shard.sealed_end.is_some())
     }
 
+    pub fn domains(&self, topic: Id) -> impl Iterator<Item = &BirthShard> {
+        self.shards
+            .values()
+            .filter(move |shard| shard.partition.topic_id == topic)
+    }
+
     pub fn pending(&self) -> impl Iterator<Item = &LayoutPlan> {
         self.plans
             .values()

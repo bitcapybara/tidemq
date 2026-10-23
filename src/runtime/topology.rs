@@ -251,6 +251,7 @@ impl Service {
         for successor in &plan.successors {
             self.ensure_route(successor.partition, deadline).await?;
         }
+        self.protect_layout_successors(&plan, deadline).await?;
         for source in &plan.sources {
             if plan.sealed.contains_key(source) {
                 continue;

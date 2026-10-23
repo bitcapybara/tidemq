@@ -83,9 +83,17 @@ pub(crate) enum Action {
         plan: Id,
     },
     Identity(super::AuthCommand),
+    Consumer(super::ConsumerCommand),
 }
 
 impl Command {
+    pub fn consumer(
+        operation: Id,
+        expected_revision: u64,
+        command: super::ConsumerCommand,
+    ) -> Self {
+        Self::new(operation, expected_revision, Action::Consumer(command))
+    }
     pub fn bootstrap(
         operation_id: Id,
         cluster_id: Id,
@@ -401,6 +409,7 @@ pub enum Outcome {
     LayoutPrepared(super::LayoutPlan),
     LayoutActivated(tidemq_protocol::topic::TopicLayout),
     Identity(super::AuthResult),
+    Consumer(super::ConsumerOutcome),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -13,8 +13,8 @@ mod session;
 mod telemetry;
 
 pub use auth::{
-    Authorization, ClientCredentials, NodeGrant, ServerAuthorization, TokenAuthenticator,
-    TokenGrant,
+    Authorization, ClientCredentials, CredentialGrant, NodeGrant, ServerAuthorization,
+    TokenAuthenticator, TokenGrant,
 };
 pub use endpoint::{Client, ClientTls, Server, ServerTls, TlsIdentity};
 pub use error::{Error, Result};

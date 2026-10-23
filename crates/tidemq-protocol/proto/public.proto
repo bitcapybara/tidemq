@@ -69,6 +69,74 @@ message IdentityResult {
   uint64 expires_at_ms = 4;
   bool secret_unavailable = 5;
 }
+
+enum ConsumerAction {
+  CONSUMER_ACTION_UNSPECIFIED = 0;
+  ENSURE_CONSUMER_SUBSCRIPTION = 1;
+  JOIN_CONSUMER = 2;
+  HEARTBEAT_CONSUMER = 3;
+  LEAVE_CONSUMER = 4;
+  CONSUMER_STATUS = 5;
+}
+enum ConsumerModel { CONSUMER_MODEL_UNSPECIFIED = 0; STREAM_CONSUMER = 1; QUEUE_CONSUMER = 2; }
+message ConsumerControl {
+  bytes topic_id = 1;
+  string name = 2;
+  bytes subscription_id = 3;
+  ConsumerModel model = 4;
+  bool start_at_latest = 5;
+  ConsumerAction action = 6;
+  bytes member_id = 7;
+  uint64 member_epoch = 8;
+  uint64 heartbeat_sequence = 9;
+  uint32 max_messages = 10;
+  uint64 max_bytes = 11;
+}
+message ConsumerControlResult {
+  bytes subscription_id = 1;
+  uint64 next_member_epoch = 2;
+  uint64 member_epoch = 3;
+  uint64 expires_ms = 4;
+  uint32 member_status = 5;
+  bool plan_active = 6;
+  repeated bytes work_shards = 7;
+  repeated ConsumerLane lanes = 8;
+  uint64 assignment_version = 9;
+}
+message ConsumerLane { uint64 hash_start = 1; optional uint64 hash_end = 2; }
+message GroupRead {
+  bytes topic_id = 1;
+  uint32 partition_id = 2;
+  bytes subscription_id = 3;
+  bytes member_id = 4;
+  uint64 member_epoch = 5;
+  uint64 sequence = 6;
+  uint32 max_messages = 7;
+  uint64 max_bytes = 8;
+}
+message GroupProof { uint64 offset = 1; uint32 attempt = 2; bytes mac = 3; }
+message GroupDelivery { GroupProof proof = 1; bytes key = 2; bytes body = 3; uint64 key_hash = 4; }
+message GroupDeliveries { uint64 sequence = 1; repeated GroupDelivery deliveries = 2; }
+message GroupAck {
+  bytes topic_id = 1;
+  uint32 partition_id = 2;
+  bytes subscription_id = 3;
+  bytes member_id = 4;
+  uint64 member_epoch = 5;
+  uint64 sequence = 6;
+  repeated GroupProof proofs = 7;
+  optional uint64 nack_delay_ms = 8;
+}
+message GroupAckResult { bool redelivery_scheduled = 1; uint64 due_ms = 2; }
+message GroupRetire {
+  bytes topic_id = 1;
+  uint32 partition_id = 2;
+  bytes subscription_id = 3;
+  bytes member_id = 4;
+  uint64 member_epoch = 5;
+  uint64 sequence = 6;
+}
+message GroupRetired {}
 enum DeliveryMode {
   DELIVERY_MODE_UNSPECIFIED = 0;
   PARALLEL = 1;

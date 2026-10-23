@@ -1,0 +1,52 @@
+use std::{fmt, sync::Arc};
+
+#[derive(Clone, Debug, Default)]
+pub struct CloseReport {
+    pub(crate) local_cleanup_complete: bool,
+    pub(crate) members_left: usize,
+    pub(crate) unresolved_sends: usize,
+    pub(crate) unresolved_acks: usize,
+    pub(crate) unclaimed_results: usize,
+}
+
+impl CloseReport {
+    pub fn local_cleanup_complete(&self) -> bool {
+        self.local_cleanup_complete
+    }
+    pub fn members_left(&self) -> usize {
+        self.members_left
+    }
+    pub fn unresolved_sends(&self) -> usize {
+        self.unresolved_sends
+    }
+    pub fn unresolved_acks(&self) -> usize {
+        self.unresolved_acks
+    }
+    pub fn unclaimed_results(&self) -> usize {
+        self.unclaimed_results
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CloseError {
+    pub(crate) report: CloseReport,
+    pub(crate) source: Arc<crate::Error>,
+}
+
+impl CloseError {
+    pub fn report(&self) -> &CloseReport {
+        &self.report
+    }
+}
+impl fmt::Display for CloseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SDK cleanup did not finish completely")
+    }
+}
+impl std::error::Error for CloseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+pub(crate) type CloseResult = Result<CloseReport, CloseError>;

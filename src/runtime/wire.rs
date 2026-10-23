@@ -32,6 +32,8 @@ pub(crate) struct Request {
     pub scope: String,
     #[prost(uint32, tag = "5")]
     pub hops: u32,
+    #[prost(bytes = "bytes", tag = "6")]
+    pub client_session: Bytes,
 }
 
 impl Request {
@@ -42,6 +44,7 @@ impl Request {
             principal: String::new(),
             scope: String::new(),
             hops: 0,
+            client_session: Bytes::new(),
         })
     }
 }
@@ -55,6 +58,40 @@ pub(crate) fn json<T: Serialize>(value: &T) -> Result<Bytes> {
         ));
     }
     Ok(bytes.into())
+}
+
+pub(crate) fn binary<T: Serialize>(value: &T) -> Result<Bytes> {
+    let bytes = postcard::to_stdvec(value)
+        .map_err(|source| Error::operation("encode internal typed value", source))?;
+    if bytes.len() > 12 * 1024 {
+        return Err(Error::invalid(
+            "Internal typed value exceeds its finite bound",
+        ));
+    }
+    Ok(bytes.into())
+}
+
+pub(crate) fn decode_binary<T: DeserializeOwned>(value: &[u8]) -> Result<T> {
+    if value.len() > 12 * 1024 {
+        return Err(Error::invalid(
+            "Internal typed value exceeds its finite bound",
+        ));
+    }
+    postcard::from_bytes(value)
+        .map_err(|source| Error::operation("decode internal typed value", source))
+}
+
+impl Request {
+    pub fn typed<T: Serialize>(kind: u32, value: &T) -> Result<Self> {
+        Ok(Self {
+            kind,
+            body: binary(value)?,
+            principal: String::new(),
+            scope: String::new(),
+            hops: 0,
+            client_session: Bytes::new(),
+        })
+    }
 }
 
 pub(crate) fn decode_json<T: DeserializeOwned>(value: &[u8]) -> Result<T> {

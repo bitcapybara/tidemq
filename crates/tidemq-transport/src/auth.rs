@@ -170,7 +170,12 @@ pub trait TokenAuthenticator: Send + Sync {
         &'a self,
         token: &'a str,
         deadline: Instant,
-    ) -> Pin<Box<dyn Future<Output = Result<TokenGrant>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<CredentialGrant>> + Send + 'a>>;
+}
+
+pub struct CredentialGrant {
+    pub credential: Id,
+    pub allowed_kinds: Vec<FrameKind>,
 }
 
 impl ServerAuthorization {
@@ -219,7 +224,22 @@ impl ServerAuthorization {
                 let grant = authenticator
                     .authenticate(&hello.access_token, deadline)
                     .await?;
-                bind_external(frame, class, &hello, &grant)
+                let token = TokenGrant::new(
+                    &hello.access_token,
+                    grant.credential.to_string(),
+                    "*".into(),
+                    grant.allowed_kinds.clone(),
+                )?;
+                let (session_id, class, _) = bind_external(frame, class, &hello, &token)?;
+                Ok((
+                    session_id,
+                    class,
+                    Authorization::Credential {
+                        credential: grant.credential,
+                        session_id,
+                        allowed_kinds: grant.allowed_kinds,
+                    },
+                ))
             }
             Self::External(grants) => {
                 let hello: Hello = decode_payload(frame.payload.clone(), limits)
@@ -296,6 +316,11 @@ fn bind_external(
 /// Transport checks operation classes. Business code must also resolve scope/resource ownership.
 #[derive(Clone, Debug)]
 pub enum Authorization {
+    Credential {
+        credential: Id,
+        session_id: Id,
+        allowed_kinds: Vec<FrameKind>,
+    },
     External {
         principal: String,
         scope: String,
@@ -320,7 +345,9 @@ impl Authorization {
             });
         }
         match self {
-            Self::External { allowed_kinds, .. } if !allowed_kinds.contains(&kind) => {
+            Self::External { allowed_kinds, .. } | Self::Credential { allowed_kinds, .. }
+                if !allowed_kinds.contains(&kind) =>
+            {
                 Err(Error::Authorization {
                     reason: "token does not permit this operation",
                 })

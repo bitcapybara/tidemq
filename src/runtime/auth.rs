@@ -24,7 +24,7 @@ use super::{
 use crate::{
     gateway::Access,
     metadata::{AuthRejection, Permission, TokenDigest},
-    transport::{TokenAuthenticator, TokenGrant},
+    transport::{CredentialGrant, TokenAuthenticator},
 };
 
 pub(super) const AUTH_QUERY: u32 = 1_002;
@@ -58,7 +58,7 @@ impl TokenAuthenticator for Authenticator {
         &'a self,
         token: &'a str,
         deadline: Instant,
-    ) -> Pin<Box<dyn Future<Output = crate::transport::Result<TokenGrant>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = crate::transport::Result<CredentialGrant>> + Send + 'a>> {
         Box::pin(async move {
             let service = self.0.get().and_then(Weak::upgrade).ok_or(
                 crate::transport::Error::Authentication {
@@ -84,7 +84,10 @@ impl TokenAuthenticator for Authenticator {
                 .ok_or(crate::transport::Error::Authentication {
                     reason: "credential authority omitted its identity",
                 })?;
-            TokenGrant::new(token, format!("credential:{credential}"), "*".into(), kinds)
+            Ok(CredentialGrant {
+                credential,
+                allowed_kinds: kinds,
+            })
         })
     }
 }
@@ -257,15 +260,11 @@ impl Service {
 
     pub(super) async fn dynamic_access(
         &self,
-        principal: &str,
+        credential: Id,
+        session: Id,
         frame: &Frame,
         deadline: Instant,
     ) -> Result<(Access, Instant)> {
-        let credential: Id = principal
-            .strip_prefix("credential:")
-            .ok_or_else(super::service::forbidden)?
-            .parse()
-            .map_err(|_| super::service::forbidden())?;
         let kind = super::service::frame_kind(frame)?;
         let permission = match kind {
             FrameKind::ManageIdentity => Permission::ManageCredentials,
@@ -299,8 +298,9 @@ impl Service {
             .await?;
         Ok((
             Access {
-                principal: Arc::from(principal),
+                principal: Arc::from(format!("credential:{credential}")),
                 scope: Arc::from("*"),
+                session: Some(session),
             },
             expires,
         ))
@@ -322,6 +322,9 @@ impl Service {
             }
             FrameKind::ChangeTopicLayout => {
                 wire::id(&decode::<public::ChangeTopicLayout>(self, frame)?.topic_id)?
+            }
+            FrameKind::ConsumerControl => {
+                wire::id(&decode::<public::ConsumerControl>(self, frame)?.topic_id)?
             }
             FrameKind::CreateSubscription => {
                 wire::id(&decode::<public::CreateSubscription>(self, frame)?.topic_id)?

@@ -127,6 +127,15 @@ pub enum FrameKind {
     CreateLogicalTopic = 65,
     ManageIdentity = 66,
     IdentityResult = 67,
+    ConsumerControl = 68,
+    ConsumerControlResult = 69,
+    GroupRead = 70,
+    GroupDeliveries = 71,
+    GroupAck = 72,
+    GroupAckResult = 73,
+    GroupRetireRead = 74,
+    GroupRetireAck = 75,
+    GroupRetired = 76,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -181,6 +190,15 @@ impl FrameKind {
             Self::CreateLogicalTopic => "CREATE_LOGICAL_TOPIC",
             Self::ManageIdentity => "MANAGE_IDENTITY",
             Self::IdentityResult => "IDENTITY_RESULT",
+            Self::ConsumerControl => "CONSUMER_CONTROL",
+            Self::ConsumerControlResult => "CONSUMER_CONTROL_RESULT",
+            Self::GroupRead => "GROUP_READ",
+            Self::GroupDeliveries => "GROUP_DELIVERIES",
+            Self::GroupAck => "GROUP_ACK",
+            Self::GroupAckResult => "GROUP_ACK_RESULT",
+            Self::GroupRetireRead => "GROUP_RETIRE_READ",
+            Self::GroupRetireAck => "GROUP_RETIRE_ACK",
+            Self::GroupRetired => "GROUP_RETIRED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -232,6 +250,15 @@ impl FrameKind {
             "CREATE_LOGICAL_TOPIC" => Some(Self::CreateLogicalTopic),
             "MANAGE_IDENTITY" => Some(Self::ManageIdentity),
             "IDENTITY_RESULT" => Some(Self::IdentityResult),
+            "CONSUMER_CONTROL" => Some(Self::ConsumerControl),
+            "CONSUMER_CONTROL_RESULT" => Some(Self::ConsumerControlResult),
+            "GROUP_READ" => Some(Self::GroupRead),
+            "GROUP_DELIVERIES" => Some(Self::GroupDeliveries),
+            "GROUP_ACK" => Some(Self::GroupAck),
+            "GROUP_ACK_RESULT" => Some(Self::GroupAckResult),
+            "GROUP_RETIRE_READ" => Some(Self::GroupRetireRead),
+            "GROUP_RETIRE_ACK" => Some(Self::GroupRetireAck),
+            "GROUP_RETIRED" => Some(Self::GroupRetired),
             _ => None,
         }
     }
