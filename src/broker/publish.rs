@@ -60,19 +60,14 @@ impl DataApplication {
             return Err(DataRejection::Producer(producer::Rejection::WrongPartition));
         }
         let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
-        let metadata_bytes = self.partitions.values().try_fold(0_u64, |sum, state| {
-            sum.checked_add(state.producer.publish_state_bytes())
-                .ok_or(DataRejection::InvalidConfiguration)
-        })?;
         let available_bytes = config
             .max_hot_bytes
-            .saturating_sub(self.hot_bytes)
+            .saturating_sub(self.hot_state_bytes()?)
             .saturating_sub(
                 self.authority
                     .reservation()
                     .map_or(0, |capacity| capacity.max_hot_bytes),
             )
-            .saturating_sub(metadata_bytes)
             .saturating_sub(640);
         let available_messages = config
             .max_hot_messages

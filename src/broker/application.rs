@@ -488,6 +488,16 @@ impl DataApplication {
         self.hot_messages
     }
 
+    fn hot_state_bytes(&self) -> Result<u64, DataRejection> {
+        self.partitions
+            .values()
+            .try_fold(self.hot_bytes, |bytes, state| {
+                bytes
+                    .checked_add(state.producer.publish_state_bytes())
+                    .ok_or(DataRejection::InvalidConfiguration)
+            })
+    }
+
     pub fn config(&self) -> Option<&DataGroupConfig> {
         self.config.as_ref()
     }
@@ -679,7 +689,7 @@ impl DataApplication {
         let reservation = self.authority.reservation();
         let available_bytes = config
             .max_hot_bytes
-            .saturating_sub(self.hot_bytes)
+            .saturating_sub(self.hot_state_bytes()?)
             .saturating_sub(reservation.map_or(0, |capacity| capacity.max_hot_bytes));
         let available_messages = config
             .max_hot_messages

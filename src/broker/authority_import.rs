@@ -86,6 +86,46 @@ impl TargetImport {
 }
 
 impl DataApplication {
+    pub fn transfer_capacity(&self, plan: Id) -> Result<TransferCapacity, TransferDataRejection> {
+        if let Some(target) = self.authority.targets.get(&plan) {
+            return Ok(target.capacity);
+        }
+        if self.authority.reservation().is_some()
+            || self.authority.targets.len() >= MAX_AUTHORITY_TRANSFERS
+        {
+            return Err(TransferDataRejection::Capacity);
+        }
+        let config = self
+            .config
+            .as_ref()
+            .ok_or(TransferDataRejection::InvalidPlan)?;
+        if self.partitions.len() >= config.max_partitions {
+            return Err(TransferDataRejection::Capacity);
+        }
+        let capacity = TransferCapacity {
+            max_bytes: MAX_TRANSFER_BYTES,
+            max_hot_bytes: config
+                .max_hot_bytes
+                .checked_sub(
+                    self.hot_state_bytes()
+                        .map_err(|_| TransferDataRejection::Capacity)?,
+                )
+                .ok_or(TransferDataRejection::Capacity)?
+                .min(MAX_TRANSFER_BYTES),
+            max_hot_messages: config
+                .max_hot_messages
+                .checked_sub(self.hot_messages)
+                .ok_or(TransferDataRejection::Capacity)?,
+            max_window_slots: 0,
+            max_read_results: 0,
+            max_ack_slots: 0,
+            max_members: 0,
+            max_in_flight_bytes: 0,
+        };
+        self.available_transfer_windows(capacity)
+            .map_err(|_| TransferDataRejection::Capacity)
+    }
+
     pub(super) fn reserve_target(
         &mut self,
         plan: AuthorityTransfer,
@@ -342,12 +382,8 @@ impl DataApplication {
             return Err(TransferDataRejection::InvalidPlan);
         }
         let producer_bytes = self
-            .partitions
-            .values()
-            .try_fold(self.hot_bytes, |bytes, state| {
-                bytes.checked_add(state.producer.publish_state_bytes())
-            })
-            .ok_or(TransferDataRejection::Capacity)?;
+            .hot_state_bytes()
+            .map_err(|_| TransferDataRejection::Capacity)?;
         if self.partitions.len() >= config.max_partitions
             || producer_bytes
                 .checked_add(capacity.max_hot_bytes)

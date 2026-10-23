@@ -431,6 +431,7 @@ fn target_import_replays_the_original_publication_after_paged_recovery() {
     let reserved = DataResponse::AuthorityTransfer(TransferOutcome::Reserved { plan: plan.id });
     assert_eq!(target.apply(reserve.clone()), reserved);
     assert_eq!(target.apply(reserve), reserved);
+    assert_eq!(target.transfer_capacity(plan.id).unwrap(), capacity);
     source.apply(DataCommand::AuthorityTransfer(
         AuthorityDataCommand::Freeze {
             plan: Box::new(plan.clone()),

@@ -108,6 +108,37 @@ fn usage<'a>(mut cursors: impl Iterator<Item = &'a GroupCursor>) -> Result<Usage
 }
 
 impl DataApplication {
+    pub(super) fn available_transfer_windows(
+        &self,
+        mut capacity: TransferCapacity,
+    ) -> Result<TransferCapacity, DataRejection> {
+        let limits = self
+            .config
+            .as_ref()
+            .ok_or(DataRejection::Uninitialized)?
+            .subscription;
+        let used = self.group_usage()?;
+        let maximum = limits.max_total_window_slots as usize;
+        capacity.max_window_slots = maximum
+            .checked_sub(used.windows)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        capacity.max_read_results = maximum
+            .checked_sub(used.reads)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        capacity.max_ack_slots = maximum
+            .checked_sub(used.acks.saturating_sub(used.members))
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        capacity.max_members = maximum
+            .checked_sub(used.members)
+            .ok_or(DataRejection::InvalidConfiguration)?;
+        capacity.max_in_flight_bytes = limits
+            .max_total_in_flight_bytes
+            .checked_sub(used.bytes)
+            .ok_or(DataRejection::InvalidConfiguration)?
+            .min(crate::metadata::MAX_TRANSFER_BYTES);
+        Ok(capacity)
+    }
+
     pub(super) fn validate_groups(&self) -> Result<(), DataRejection> {
         let limits = self
             .config
