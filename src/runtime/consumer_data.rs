@@ -2,7 +2,7 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use tidemq_protocol::{
     Id,
-    common::{Frame, FrameKind},
+    common::{ErrorCode, Frame, FrameKind},
     framing::decode_payload,
     public,
     topic::{InitialPosition, SubscriptionKind},
@@ -110,7 +110,15 @@ impl Service {
                 )?,
                 deadline,
             )
-            .await?;
+            .await
+            .map_err(|error| match error {
+                Error::Rejected { failure }
+                    if failure.code == i32::from(ErrorCode::StaleGeneration) =>
+                {
+                    Error::unavailable()
+                }
+                error => error,
+            })?;
         Ok(())
     }
 

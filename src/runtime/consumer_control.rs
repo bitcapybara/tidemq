@@ -411,6 +411,10 @@ impl Service {
                 return Ok(());
             }
             let grants = row.members.grants(now).map_err(|_| Error::unavailable())?;
+            if grants.iter().any(|grant| grant.expires_ms <= now) {
+                self.refresh_consumer_if_needed(&row, now, deadline).await?;
+                return Ok(());
+            }
             let version = plan
                 .version
                 .checked_mul(2)

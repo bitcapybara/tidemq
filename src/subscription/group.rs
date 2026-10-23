@@ -442,8 +442,10 @@ impl GroupCursor {
         let mut identities = BTreeSet::new();
         let mut lanes = Vec::new();
         for grant in grants {
+            if grant.expires_ms <= now {
+                return Err(Rejection::StaleGeneration);
+            }
             if grant.epoch == 0
-                || grant.expires_ms <= now
                 || grant.max_messages == 0
                 || grant.max_bytes == 0
                 || grant.max_messages > self.limits.max_in_flight_messages
