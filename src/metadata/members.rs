@@ -79,6 +79,7 @@ pub struct MembersPlan {
     pub installed: BTreeSet<Id>,
     pub active: bool,
     pub fenced: bool,
+    pub grant_after_ms: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -118,6 +119,7 @@ impl MembersBook {
                 installed: BTreeSet::new(),
                 active: false,
                 fenced: false,
+                grant_after_ms: 0,
             },
             committed: BTreeMap::new(),
             plan_grants: Vec::new(),
@@ -356,6 +358,9 @@ impl MembersBook {
         if !self.plan.domains.contains(&domain) {
             return Err(Rejection::InvalidEvidence);
         }
+        if fenced && now < self.plan.grant_after_ms {
+            return Err(Rejection::RecoveryRequired);
+        }
         self.plan.installed.insert(domain);
         if self.plan.installed.len() == self.plan.domains.len() {
             if !self.plan.fenced {
@@ -461,6 +466,30 @@ impl MembersBook {
 
     fn begin_plan(&mut self, version: u64, now: u64) -> Result<(), Rejection> {
         self.plan_grants = self.desired_grants(now)?;
+        let mut grant_after = if self.plan.active {
+            now
+        } else {
+            self.plan.grant_after_ms.max(now)
+        };
+        if self.model == SubscriptionKind::Stream {
+            for old in self.committed.values() {
+                let retained = self
+                    .plan_grants
+                    .iter()
+                    .find(|grant| grant.member == old.member && grant.epoch == old.epoch);
+                if old
+                    .lanes
+                    .iter()
+                    .any(|lane| retained.is_none_or(|grant| !grant.lanes.contains(lane)))
+                    && let Some(member) = self.member(old.member, old.epoch)
+                    && member.status.assigned()
+                {
+                    // A disconnected SDK may still deliver its prefetch until this lease ends.
+                    grant_after = grant_after.max(member.expires_ms);
+                }
+            }
+        }
+        self.plan.grant_after_ms = grant_after;
         self.plan.version = version;
         self.plan.active = false;
         self.plan.fenced = false;
@@ -469,14 +498,13 @@ impl MembersBook {
     }
 
     pub fn grants(&self, now: u64) -> Result<Vec<crate::subscription::MemberGrant>, Rejection> {
-        let _ = now;
         let mut desired = self.plan_grants.clone();
         for grant in &mut desired {
             if let Some(member) = self.member(grant.member, grant.epoch) {
                 grant.expires_ms = grant.expires_ms.max(member.expires_ms);
             }
         }
-        if self.plan.fenced {
+        if self.plan.fenced && now >= self.plan.grant_after_ms {
             return Ok(desired);
         }
         Ok(desired

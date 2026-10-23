@@ -9,6 +9,7 @@ fn id() -> Id {
 }
 
 fn activate(book: &mut MembersBook, now: u64) {
+    let now = now.max(book.plan().grant_after_ms);
     while !book.plan().active {
         let plan = book.plan().clone();
         for domain in &plan.domains {
@@ -174,7 +175,13 @@ fn a_new_owner_cannot_be_installed_until_every_domain_has_fenced() {
     book.observe_installed(plan.version, false, *domains.last().unwrap(), 200)
         .unwrap();
     assert!(book.plan().fenced);
-    assert_eq!(book.grants(200).unwrap().len(), 2);
+    assert_eq!(book.grants(200).unwrap().len(), 1);
+    assert_eq!(
+        book.observe_installed(plan.version, true, domains[0], 200),
+        Err(Rejection::RecoveryRequired)
+    );
+    assert_eq!(book.plan().grant_after_ms, 15_100);
+    assert_eq!(book.grants(15_100).unwrap().len(), 2);
     assert_eq!(
         book.observe_installed(plan.version, false, domains[0], 200),
         Err(Rejection::Superseded)

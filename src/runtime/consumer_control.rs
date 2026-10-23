@@ -407,6 +407,9 @@ impl Service {
                 return self.open_consumer_gates(&row, deadline).await;
             }
             let now = super::data::unix_millis()?;
+            if plan.fenced && now < plan.grant_after_ms {
+                return Ok(());
+            }
             let grants = row.members.grants(now).map_err(|_| Error::unavailable())?;
             let version = plan
                 .version
