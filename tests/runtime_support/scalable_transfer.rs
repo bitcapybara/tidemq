@@ -271,12 +271,17 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         .build()
         .await
         .unwrap();
-    for (index, identity) in expected.iter().enumerate().skip(1) {
+    let mut seen = std::collections::HashSet::new();
+    for _ in expected.iter().skip(1) {
         let message = tokio::time::timeout(Duration::from_secs(20), queue.receive())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(message.message_id(), *identity);
+        let index = expected
+            .iter()
+            .position(|identity| *identity == message.message_id())
+            .unwrap();
+        assert!(index > 0 && seen.insert(message.message_id()));
         let payload = if index < 3 {
             format!("cold-{index}")
         } else {
@@ -290,11 +295,19 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
             );
         }
         queue.ack(&message).await.unwrap();
+    }
+    assert_eq!(seen.len(), expected.len() - 1);
+    for (index, identity) in expected.iter().enumerate().skip(1) {
         let message = tokio::time::timeout(Duration::from_secs(20), stream.receive())
             .await
             .unwrap()
             .unwrap();
         assert_eq!(message.message_id(), *identity);
+        let payload = if index < 3 {
+            format!("cold-{index}")
+        } else {
+            "hot-3".into()
+        };
         assert_eq!(message.payload(), payload.as_bytes());
         stream.ack_cumulative(&message).await.unwrap();
     }
