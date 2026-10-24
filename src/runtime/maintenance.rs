@@ -294,7 +294,11 @@ impl Service {
                 {
                     position.blocked = true;
                 }
-                let _ = self.maintain_partitions(*group, position, deadline).await;
+                if let Err(error) = self.maintain_partitions(*group, position, deadline).await {
+                    let error = anyhow::Error::new(error);
+                    tracing::debug!(event_code = "partition_maintenance_wait", group_id = group,
+                        error = %format_args!("{error:#}"), "Partition maintenance will resume from durable progress");
+                }
             }
                 } => {}
             }
@@ -585,13 +589,8 @@ impl Service {
         let (status, fence) = replica
             .state
             .try_with_application(|state| {
-                let protected = state
-                    .subscriptions(partition)
-                    .and_then(|subscriptions| subscriptions.protected_before());
                 (
-                    state
-                        .retention(partition)
-                        .map(|retention| retention.status(now_ms, protected)),
+                    state.retention_status(partition, now_ms),
                     state
                         .ownership()
                         .and_then(|ownership| ownership.fence(partition))

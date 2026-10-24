@@ -368,6 +368,16 @@ impl DataApplication {
             .map(|state| &state.retention)
     }
 
+    pub fn retention_status(
+        &self,
+        partition: PartitionKey,
+        now_ms: u64,
+    ) -> Option<crate::retention::Status> {
+        self.partitions
+            .get(&partition)
+            .map(|state| state.retention.status(now_ms, state.protected_before()))
+    }
+
     /// At most the configured partition count, with logarithmic time-index lookups and no body scan.
     pub fn capacity_usage(&self) -> Result<CapacityUsage, DataRejection> {
         self.config.as_ref().ok_or(DataRejection::Uninitialized)?;

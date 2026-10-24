@@ -888,6 +888,7 @@ async fn wait_runtime_counter(fixture: &Fixture, node: u64, name: &str) -> Strin
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
 async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_reclaims_sources() {
+    maintenance_test_logging();
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
@@ -989,6 +990,7 @@ async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_recl
 }
 
 async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) {
+    maintenance_test_logging();
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
     let mut fixture = Fixture::new(nodes, metadata, storage).await;
@@ -1144,6 +1146,15 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     fixture.close().await;
 }
 
+fn maintenance_test_logging() {
+    if std::env::var_os("TIDEMQ_TEST_MAINTENANCE_LOG").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_test_writer()
+            .with_env_filter("tidemq::runtime::maintenance=debug")
+            .try_init();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn native_runtime_scaling_explicit_replacement_preserves_original_sdk_traffic_and_ack() {
     exercise_runtime_scaling(false).await;
@@ -1171,6 +1182,7 @@ async fn exercise_runtime_scaling(automatic: bool) {
         &[21, 22, 23],
     )
     .await;
+    fixture.enable_dynamic_auth().await;
     for config in fixture.configs.values_mut() {
         config.runtime.groups.first_mut().unwrap().standby = vec![24];
         // The replacement keeps the removed replica's availability zone.
@@ -1212,29 +1224,29 @@ async fn exercise_runtime_scaling(automatic: bool) {
         "The scaling fixture lacks the required disk headroom before copying: available={available}, reserved={reserved}, minimum_extra=1073741824"
     );
     let client = fixture.client(41).await;
-    let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
+    create_logical_resources(&client).await;
+    let consumer = client
+        .new_queue_consumer(RUNTIME_TOPIC, "jobs")
+        .build()
         .await
         .unwrap();
-    let message = || public::Message {
-        key: Bytes::from_static(b"scaling-key"),
-        body: Bytes::from_static(b"scaling-body"),
-    };
-    producer.produce(vec![message(), message()]).await.unwrap();
-    let consumer = Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        ConsumerConfig::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(consumer.fill().await.unwrap(), 2);
-    let first = consumer.next().await.unwrap().unwrap();
-    assert_eq!(consumer.ack(&first).await.unwrap().acknowledged_before, 1);
-    let held = consumer.next().await.unwrap().unwrap();
-    assert_eq!(held.offset(), 1);
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let message = || tidemq_sdk::Message::new("scaling-body").key("scaling-key");
+    let receipts = producer
+        .send_batch(vec![message(), message()])
+        .await
+        .unwrap();
+    let expected = receipts
+        .outcomes
+        .into_iter()
+        .map(|result| result.unwrap().message_id())
+        .collect::<Vec<_>>();
+    let first = consumer.receive().await.unwrap();
+    assert!(expected.contains(&first.message_id()));
+    consumer.ack(&first).await.unwrap();
+    let held = consumer.receive().await.unwrap();
+    assert!(expected.contains(&held.message_id()));
+    assert_ne!(held.message_id(), first.message_id());
     if let Some(child) = storage_process.as_mut() {
         child.kill().await.unwrap();
         assert!(!child.wait().await.unwrap().success());
@@ -1274,11 +1286,10 @@ async fn exercise_runtime_scaling(automatic: bool) {
     };
     let traffic = async {
         let ack = consumer.ack(&held).await;
-        let produced = producer.produce(vec![message()]).await;
-        let read = consumer.fill().await;
-        (ack, produced, read)
+        let produced = producer.send(message()).await;
+        (ack, produced)
     };
-    let (plan, (ack, produced, read)) = tokio::join!(migration, traffic);
+    let (plan, (ack, produced)) = tokio::join!(migration, traffic);
     if let Some(plan) = plan {
         assert_eq!(plan.previous(), &[21, 22, 23].into());
         assert_eq!(plan.target(), &[21, 22, 24].into());
@@ -1313,45 +1324,21 @@ async fn exercise_runtime_scaling(automatic: bool) {
         Ok(ack) => ack,
         Err(_) => consumer.ack(&held).await.unwrap(),
     };
-    assert_eq!(ack.acknowledged_before, 2);
-    let receipt = match produced {
-        Ok(receipt) => receipt,
+    assert_eq!(ack, tidemq_sdk::AckReceipt::Acknowledged);
+    let identity = match produced {
+        Ok(receipt) => receipt.message_id(),
         Err(error) if error.outcome_unknown() => {
-            let pending = producer.pending_batches().await.unwrap();
+            let pending = producer.pending_sends().await.unwrap();
             assert_eq!(pending.len(), 1);
-            let batch = pending.first().unwrap();
-            let identity = (
-                batch.operation_id(),
-                batch.producer_epoch(),
-                batch.first_sequence(),
-                batch.digest().to_vec(),
-            );
-            let receipt = producer.retry(batch).await.unwrap();
-            assert_eq!(
-                identity,
-                (
-                    batch.operation_id(),
-                    batch.producer_epoch(),
-                    batch.first_sequence(),
-                    batch.digest().to_vec()
-                )
-            );
-            receipt
+            logical_retry(pending.first().unwrap(), deadline()).await
         }
-        Err(_) => producer.produce(vec![message()]).await.unwrap(),
+        Err(error) => panic!("Replica replacement rejected admitted traffic: {error:?}"),
     };
-    assert_eq!(receipt.first_offset, 2);
-    assert!(producer.pending_batches().await.unwrap().is_empty());
-    let during = read.unwrap_or(0);
-    assert_eq!(during + consumer.fill().await.unwrap(), 1);
-    let delivered = consumer.next().await.unwrap().unwrap();
-    assert_eq!(delivered.offset(), 2);
-    assert_eq!(delivered.body(), b"scaling-body");
-    assert_eq!(
-        consumer.ack(&delivered).await.unwrap().acknowledged_before,
-        3
-    );
-    assert!(consumer.next().await.unwrap().is_none());
+    assert!(!expected.contains(&identity));
+    assert!(producer.pending_sends().await.unwrap().is_empty());
+    logical_consume(&consumer, &[identity], b"scaling-body").await;
+    consumer.close().await.unwrap();
+    producer.close().await.unwrap();
     client.close().await.unwrap();
     drop(consumer);
     drop(producer);
