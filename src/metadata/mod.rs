@@ -10,6 +10,7 @@ mod consumers;
 mod control;
 mod diagnostics;
 mod members;
+mod nodes;
 mod policies;
 mod publishers;
 mod quotas;
@@ -41,6 +42,10 @@ pub use diagnostics::{MetadataSummary, OwnershipDiagnostic, TopicPage, TopicSumm
 pub use members::{
     MEMBER_LEASE_MS, MEMBER_RECOVERY_MS, MemberHeartbeat, MemberInfo, MemberJoin, MemberStatus,
     MembersBook, MembersPlan,
+};
+pub use nodes::{
+    ClusterAction, ClusterCommand, ClusterOutcome, ClusterResult, NodeIdentity, RegisteredNode,
+    RegistryPage,
 };
 pub use policies::QuotaPolicy;
 pub use publishers::{

@@ -20,6 +20,7 @@ pub struct Command {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Action {
+    Cluster(super::ClusterCommand),
     Transfer(super::TransferCommand),
     Bootstrap {
         cluster_id: Id,
@@ -96,6 +97,9 @@ pub(crate) enum Action {
 }
 
 impl Command {
+    pub fn cluster(operation: Id, expected_revision: u64, command: super::ClusterCommand) -> Self {
+        Self::new(operation, expected_revision, Action::Cluster(command))
+    }
     pub fn observe_quota_policy(operation: Id, revision: u64, policy: Id, now_ms: u64) -> Self {
         Self::new(
             operation,
@@ -452,6 +456,7 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    Cluster(Box<super::ClusterResult>),
     QuotaPolicy(super::QuotaPolicy),
     ResourceLease(Option<super::ResourceLease>),
     Quota(super::QuotaGrant),

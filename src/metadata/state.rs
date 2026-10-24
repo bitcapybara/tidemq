@@ -74,6 +74,8 @@ pub struct MetadataState {
     pub(crate) topics: BTreeMap<Id, TopicRecord>,
     pub(crate) topic_names: BTreeMap<String, Id>,
     pub(crate) nodes: BTreeMap<u64, NodeRecord>,
+    pub(crate) node_identities: BTreeMap<u64, super::NodeIdentity>,
+    pub(crate) registry_revision: u64,
     pub(crate) groups: BTreeMap<u64, DataGroup>,
     pub(crate) migrations: BTreeMap<u64, crate::scaling::MigrationRecord>,
     pub(crate) partitions: BTreeMap<PartitionKey, PartitionRecord>,
@@ -251,9 +253,26 @@ impl MetadataState {
         let Some(next_revision) = self.revision.checked_add(1) else {
             return self.reject(Rejection::CounterExhausted);
         };
+        let changes_registry = matches!(
+            command.action,
+            Action::Bootstrap { .. }
+                | Action::PutNode { .. }
+                | Action::CreateGroup { .. }
+                | Action::CompleteMembership(_)
+                | Action::Cluster(_)
+        );
+        let next_registry = if changes_registry {
+            let Some(next) = self.registry_revision.checked_add(1) else {
+                return self.reject(Rejection::CounterExhausted);
+            };
+            next
+        } else {
+            self.registry_revision
+        };
         match self.execute(command, next_revision) {
             Ok(outcome) => {
                 self.revision = next_revision;
+                self.registry_revision = next_registry;
                 Response::Applied {
                     revision: next_revision,
                     outcome,
@@ -310,6 +329,9 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::Cluster(request) => self
+                .cluster_command(request)
+                .map(|result| Outcome::Cluster(Box::new(result))),
             Action::ObserveQuotaPolicy { policy, now_ms } => self
                 .observe_quota_policy(*policy, *now_ms)
                 .map(Outcome::QuotaPolicy),
@@ -401,8 +423,28 @@ impl MetadataState {
         }
     }
 
-    fn put_node(&mut self, spec: &super::NodeSpec, expected: u64) -> Result<Outcome, Rejection> {
+    pub(super) fn put_node(
+        &mut self,
+        spec: &super::NodeSpec,
+        expected: u64,
+    ) -> Result<Outcome, Rejection> {
         spec.validate()?;
+        if let Some(identity) = self.node_identities.get(&spec.node_id) {
+            if identity.retired {
+                return Err(Rejection::IdentityRetired);
+            }
+            identity.validate(spec)?;
+            let previous = self
+                .nodes
+                .get(&spec.node_id)
+                .ok_or(Rejection::InvalidNode)?;
+            if previous.spec.endpoint != spec.endpoint
+                || previous.spec.zone != spec.zone
+                || previous.spec.roles != spec.roles
+            {
+                return Err(Rejection::InvalidNode);
+            }
+        }
         let previous = self.nodes.get(&spec.node_id);
         let generation = previous.map_or(0, |node| node.generation);
         if generation != expected {
@@ -441,7 +483,7 @@ impl MetadataState {
         Ok(Outcome::NodeConfigured(record))
     }
 
-    fn create_group(
+    pub(super) fn create_group(
         &mut self,
         group_id: u64,
         voters: &BTreeSet<u64>,

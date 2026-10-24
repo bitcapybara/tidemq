@@ -50,6 +50,7 @@ impl MetadataState {
             return Err(Rejection::InvalidEvidence);
         }
         self.validate_nodes_groups()?;
+        self.validate_node_registry()?;
         self.validate_migrations()?;
         self.validate_topics()?;
         self.validate_subscriptions()?;
@@ -80,6 +81,8 @@ impl MetadataState {
             || !self.topic_names.is_empty()
             || !self.subscription_names.is_empty()
             || !self.nodes.is_empty()
+            || !self.node_identities.is_empty()
+            || self.registry_revision != 0
             || !self.groups.is_empty()
             || !self.migrations.is_empty()
             || self.lifecycle.object_count() != 0
