@@ -13,10 +13,10 @@ use tidemq_protocol::internal::{InternalCommand, RaftRequest, SnapshotChunk};
 use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio::time::Instant;
 
-use crate::broker::{Broker, BrokerLimits, DataApplication, ProducerMetrics};
+use crate::broker::{DataApplication, ProducerMetrics};
 use crate::budget::MemoryBudget;
 use crate::config::Config;
-use crate::gateway::{Access, AccessTable};
+use crate::gateway::Access;
 use crate::metadata::{DataGroup, MetadataState, PartitionKey, Route};
 use crate::observability::metrics::{Metrics, Operation};
 use crate::ownership::remote::{Query, RemoteMetadataAuthority, Value};
@@ -24,7 +24,7 @@ use crate::replication::rpc::{GroupRole, RaftService};
 use crate::server::{SubmissionOrder, WireService};
 use crate::transport::{Authorization, StreamPurpose};
 
-use super::node::{Replica, data_config};
+use super::node::Replica;
 use super::wire::{self, PeerRpc, Request};
 use super::{Error, Result};
 
@@ -42,14 +42,11 @@ pub(crate) struct Service {
     pub metadata: Option<Replica<MetadataState>>,
     pub data: BTreeMap<u64, Replica<DataApplication>>,
     pub objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
-    pub brokers: BTreeMap<(u64, u64), Broker>,
     pub rpc: PeerRpc,
     pub authority: Arc<RemoteMetadataAuthority>,
-    pub access: AccessTable,
     pub(super) auth_cache: super::auth::AuthCache,
     pub(super) consumer_after: std::sync::Mutex<Option<Id>>,
     pub(super) consumer_delete_after: std::sync::Mutex<Option<Id>>,
-    pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
     pub metrics: Metrics,
     pub(super) producer_metrics: ProducerMetrics,
@@ -76,7 +73,6 @@ pub(crate) struct Service {
     pub leases: std::sync::Mutex<BTreeMap<PartitionKey, LeaseSlot>>,
     pub metadata_mutation: Mutex<()>,
     pub(super) transfer_serial: Mutex<()>,
-    pub subscriptions: std::sync::Mutex<BTreeMap<Id, (Id, Instant)>>,
     cancellations: Arc<std::sync::Mutex<BTreeMap<CancelKey, watch::Sender<bool>>>>,
 }
 
@@ -91,8 +87,6 @@ impl Service {
         objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
         rpc: PeerRpc,
         authority: Arc<RemoteMetadataAuthority>,
-        access: AccessTable,
-        delivery_key: [u8; 32],
         budget: MemoryBudget,
         producer: ProducerMetrics,
         mut metrics: Metrics,
@@ -114,47 +108,17 @@ impl Service {
             repair.clone(),
             metrics.registry_mut(),
         )?;
-        let mut brokers = BTreeMap::new();
-        for (group, replica) in &data {
-            let group = config.runtime.group(*group)?;
-            for owner in config
-                .runtime
-                .peers
-                .iter()
-                .filter(|peer| peer.role.serves_broker())
-            {
-                let mut broker = Broker::new(
-                    owner.node_id,
-                    replica.raft.clone(),
-                    replica.state.clone(),
-                    data_config(cluster, group, &config),
-                    budget.clone(),
-                    BrokerLimits::default(),
-                    producer.clone(),
-                )
-                .map_err(|source| {
-                    Error::operation("create bounded data authority adapter", source)
-                })?;
-                if let Some(stages) = metrics.operation(Operation::Produce) {
-                    broker = broker.with_stages(stages);
-                }
-                brokers.insert((group.group_id, owner.node_id), broker);
-            }
-        }
         Ok(Self {
             config,
             cluster,
             metadata,
             data,
             objects,
-            brokers,
             rpc,
             authority,
-            access,
             auth_cache: super::auth::AuthCache::default(),
             consumer_after: std::sync::Mutex::new(None),
             consumer_delete_after: std::sync::Mutex::new(None),
-            delivery_key,
             budget,
             producer_metrics: producer,
             metrics,
@@ -181,18 +145,12 @@ impl Service {
             leases: std::sync::Mutex::new(BTreeMap::new()),
             metadata_mutation: Mutex::new(()),
             transfer_serial: Mutex::new(()),
-            subscriptions: std::sync::Mutex::new(BTreeMap::new()),
             cancellations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
         })
     }
 
     pub async fn close(&self, deadline: Instant) -> Result<()> {
         let mut failure = None;
-        for broker in self.brokers.values() {
-            if let Err(source) = broker.drain(deadline.into_std()).await {
-                failure.get_or_insert_with(|| Error::operation("drain owned broker work", source));
-            }
-        }
         for replica in self.data.values() {
             if let Err(error) = Self::close_replica(replica, deadline).await {
                 failure.get_or_insert(error);
@@ -388,21 +346,13 @@ impl Service {
         order: Option<SubmissionOrder>,
         hops: u32,
     ) -> Result<Frame> {
-        let operation = match FrameKind::try_from(frame.kind) {
-            Ok(FrameKind::Read | FrameKind::GroupRead) => Some(Operation::Read),
-            Ok(FrameKind::AckBatch | FrameKind::GroupAck) => Some(Operation::Ack),
-            Ok(FrameKind::Publish) => Some(Operation::Produce),
-            Ok(
-                FrameKind::ProduceBatch
-                | FrameKind::OpenProducer
-                | FrameKind::ProducerStatus
-                | FrameKind::RetireProducer,
-            ) => None,
-            _ => Some(Operation::Control),
+        let operation = match frame_kind(frame)? {
+            FrameKind::GroupRead => Operation::Read,
+            FrameKind::GroupAck => Operation::Ack,
+            FrameKind::Publish => Operation::Produce,
+            _ => Operation::Control,
         };
-        let mut timer = super::telemetry::OperationTimer::new(
-            operation.and_then(|operation| self.metrics.operation(operation)),
-        );
+        let mut timer = super::telemetry::OperationTimer::new(self.metrics.operation(operation));
         let result = self
             .public_dispatch(access, frame, deadline, order, hops)
             .await;
@@ -419,21 +369,17 @@ impl Service {
         hops: u32,
     ) -> Result<Frame> {
         if self.draining.load(Ordering::Acquire)
-            && !matches!(
-                frame_kind(frame)?,
-                FrameKind::AckBatch
-                    | FrameKind::ProducerStatus
-                    | FrameKind::SubscriptionStatus
-                    | FrameKind::ReceiveBarrier
-            )
+            && !super::drain::allows_completion(frame, &self.config.protocol)?
         {
             return Err(Error::unavailable());
+        }
+        if !crate::gateway::external_kind(frame_kind(frame)?) {
+            return Err(forbidden());
         }
         let kind = frame_kind(frame)?;
         if matches!(
             kind,
-            FrameKind::CreateTopic
-                | FrameKind::CreateLogicalTopic
+            FrameKind::CreateLogicalTopic
                 | FrameKind::GetTopicLayout
                 | FrameKind::ChangeTopicLayout
                 | FrameKind::ManageIdentity
@@ -441,8 +387,6 @@ impl Service {
                 | FrameKind::SubscriptionAdmin
                 | FrameKind::PublisherControl
                 | FrameKind::GetTopic
-                | FrameKind::CreateSubscription
-                | FrameKind::GetSubscription
         ) {
             let leader = self
                 .leader(self.config.runtime.metadata_group, deadline)
@@ -464,41 +408,17 @@ impl Service {
                 .await;
         }
         let partition = super::data::partition(frame, &self.config.protocol)?;
-        let mut route = self
+        let route = self
             .authorize_partition(&access, partition, deadline)
             .await?;
         self.admit_partition(partition, route.epoch, kind)?;
-        let mut forwarded = frame.clone();
-        let epoch = super::data::set_owner_epoch(
-            &mut forwarded,
-            route.epoch,
-            &self.config.protocol,
-            hops == 0,
-        );
-        if epoch
-            .as_ref()
-            .is_err_and(|error| hops > 0 && error.failure().code == i32::from(ErrorCode::Fenced))
-        {
-            self.routes.write().await.remove(&partition);
-            route = self
-                .authorize_partition(&access, partition, deadline)
-                .await?;
-            super::data::set_owner_epoch(
-                &mut forwarded,
-                route.epoch,
-                &self.config.protocol,
-                false,
-            )?;
-        } else {
-            epoch?;
-        }
         if route.owner_node != self.config.node_id && hops < 2 {
             return self
                 .forward(
                     route.owner_node,
                     route.group_id,
                     access,
-                    &forwarded,
+                    frame,
                     deadline,
                     order,
                     hops + 1,
@@ -511,21 +431,13 @@ impl Service {
         let leader = self.leader(route.group_id, deadline).await?;
         if leader != self.config.node_id {
             return self
-                .forward(
-                    leader,
-                    route.group_id,
-                    access,
-                    &forwarded,
-                    deadline,
-                    order,
-                    2,
-                )
+                .forward(leader, route.group_id, access, frame, deadline, order, 2)
                 .await;
         }
         let group = route.group_id;
         let result = if matches!(kind, FrameKind::Publish | FrameKind::RetirePublishes) {
             drop(order);
-            self.publishing_public(&access, &forwarded, route, deadline)
+            self.publishing_public(&access, frame, route, deadline)
                 .await
         } else if matches!(
             kind,
@@ -535,13 +447,14 @@ impl Service {
                 | FrameKind::GroupRetireAck
         ) {
             drop(order);
-            self.group_data_public(&access, &forwarded, route, deadline)
+            self.group_data_public(&access, frame, route, deadline)
                 .await
         } else {
-            self.data_public(&forwarded, route, deadline, order).await
+            drop(order);
+            Err(forbidden())
         };
         if let Err(error) = &result {
-            self.invalidate_forward(&forwarded, group, error.failure().code)
+            self.invalidate_forward(frame, group, error.failure().code)
                 .await;
         }
         result
@@ -576,7 +489,6 @@ impl Service {
                 .map(super::metadata::bytes_id)
                 .unwrap_or_default(),
         };
-        let affinity = super::data::affinity(frame, &self.config.protocol)?;
         let pending = self
             .rpc
             .submit(
@@ -586,7 +498,7 @@ impl Service {
                 wire::id(&frame.operation_id)?,
                 request,
                 deadline,
-                affinity,
+                0,
             )
             .await?;
         drop(order);
@@ -791,14 +703,6 @@ impl Service {
                 self.ownership_command(group, &request.body, deadline)
                     .await?
             }
-            wire::CREATE_SUBSCRIPTION => {
-                drop(order);
-                if !matches!(peer.role.as_str(), "metadata" | "combined") {
-                    return Err(forbidden());
-                }
-                self.create_data_subscription(group, &request.body, deadline)
-                    .await?
-            }
             crate::lifecycle::remote::LIFECYCLE_QUERY
             | crate::lifecycle::remote::LIFECYCLE_COMMAND => {
                 drop(order);
@@ -861,32 +765,21 @@ impl Service {
                     decode_frame(request.body, class, &self.config.protocol).map_err(|source| {
                         Error::operation("validate delegated public frame", source)
                     })?;
-                let (access, deadline) = if self.config.runtime.dynamic_auth {
-                    let credential: Id = request
-                        .principal
-                        .strip_prefix("credential:")
-                        .ok_or_else(forbidden)?
-                        .parse()
-                        .map_err(|_| forbidden())?;
-                    let (access, expires) = self
-                        .dynamic_access(
-                            credential,
-                            wire::id(&request.client_session)?,
-                            &inner,
-                            deadline,
-                        )
-                        .await?;
-                    (access, super::auth::admit_deadline(deadline, expires)?)
-                } else {
-                    (
-                        self.access.delegated(
-                            &request.principal,
-                            &request.scope,
-                            frame_kind(&inner)?,
-                        )?,
+                let credential: Id = request
+                    .principal
+                    .strip_prefix("credential:")
+                    .ok_or_else(forbidden)?
+                    .parse()
+                    .map_err(|_| forbidden())?;
+                let (access, expires) = self
+                    .dynamic_access(
+                        credential,
+                        wire::id(&request.client_session)?,
+                        &inner,
                         deadline,
                     )
-                };
+                    .await?;
+                let deadline = super::auth::admit_deadline(deadline, expires)?;
                 if request.hops == 2 {
                     let partition = super::data::partition(&inner, &self.config.protocol)?;
                     let mut route = self
@@ -1011,11 +904,9 @@ impl WireService for Service {
         let result = match &peer {
             Authorization::External { .. } | Authorization::Credential { .. } => {
                 let kind = frame_kind(frame)?;
-                let (access, deadline) = if self.config.runtime.dynamic_auth {
-                    let Authorization::Credential { credential, session_id, .. } = &peer else { return Err(forbidden()); };
-                    let (access, expires) = self.dynamic_access(*credential, *session_id, frame, deadline).await?;
-                    (access, super::auth::admit_deadline(deadline, expires)?)
-                } else { (self.access.external(&peer, kind)?, deadline) };
+                let Authorization::Credential { credential, session_id, .. } = &peer else { return Err(forbidden()); };
+                let (access, expires) = self.dynamic_access(*credential, *session_id, frame, deadline).await?;
+                let deadline = super::auth::admit_deadline(deadline, expires)?;
                 if kind == FrameKind::Cancel {
                     let cancel: CancelRequest =
                         decode_payload(frame.payload.clone(), &self.config.protocol)

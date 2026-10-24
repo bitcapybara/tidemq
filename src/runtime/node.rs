@@ -12,7 +12,6 @@ use tokio::task::JoinHandle;
 use crate::broker::{DataApplication, DataGroupConfig, ProducerMetrics};
 use crate::budget::MemoryBudget;
 use crate::config::Config;
-use crate::gateway::AccessTable;
 use crate::metadata::{MetadataState, NodeRole};
 use crate::observability::metrics::{Metrics, Operation};
 use crate::ownership::ControlPolicy;
@@ -67,17 +66,7 @@ impl RunningNode {
         .map_err(|source| Error::operation("load process TLS identity", source))?;
         let roots = super::read_bounded(&config.tls.trust_roots, 65_536).await?;
         let grants = grants(&config, cluster).await?;
-        let access = if config.runtime.dynamic_auth {
-            AccessTable::empty()
-        } else {
-            AccessTable::load(&config.runtime.access_file).await?
-        };
         let auth_service = Arc::new(std::sync::OnceLock::new());
-        let delivery_key = super::read_secret(&config.runtime.delivery_key_file, 32).await?;
-        let delivery_key: [u8; 32] = delivery_key
-            .as_ref()
-            .try_into()
-            .map_err(|_| Error::invalid("Delivery signing root must contain exactly 32 bytes"))?;
         let transport = transport_config(&config);
         let bind_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         let internal = bind_server(
@@ -100,13 +89,9 @@ impl RunningNode {
                         identity: identity.clone(),
                         client_trust_roots: None,
                     },
-                    if config.runtime.dynamic_auth {
-                        ServerAuthorization::Dynamic(Arc::new(super::auth::Authenticator(
-                            auth_service.clone(),
-                        )))
-                    } else {
-                        ServerAuthorization::External(access.tokens())
-                    },
+                    ServerAuthorization::Dynamic(Arc::new(super::auth::Authenticator(
+                        auth_service.clone(),
+                    ))),
                     transport.clone(),
                     budget.clone(),
                     bind_deadline,
@@ -265,8 +250,6 @@ impl RunningNode {
             objects,
             rpc,
             authority,
-            access,
-            delivery_key,
             budget.clone(),
             producer,
             metrics,

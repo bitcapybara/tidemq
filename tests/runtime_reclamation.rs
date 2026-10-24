@@ -52,7 +52,6 @@ async fn run_reclaimed_read(paused_offset: u64) {
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    fixture.enable_dynamic_auth().await;
     enable_objects(&mut fixture, &rustfs).await;
     fixture
         .configs

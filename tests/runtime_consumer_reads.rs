@@ -49,7 +49,6 @@ struct ReadFixture {
 impl ReadFixture {
     async fn new() -> Self {
         let mut runtime = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-        runtime.enable_dynamic_auth().await;
         runtime.start_all().await;
         let client = runtime.client(1).await;
         let tenant = client.admin().create_tenant("test").await.unwrap();

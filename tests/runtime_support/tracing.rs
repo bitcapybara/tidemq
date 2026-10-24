@@ -40,7 +40,6 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
         &[2],
     )
     .await;
-    fixture.enable_dynamic_auth().await;
     for node in fixture.configs.values_mut() {
         node.tracing = config.clone();
     }

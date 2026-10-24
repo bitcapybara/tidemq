@@ -104,8 +104,7 @@ async fn wait_process(fixture: &Fixture, node: u64, child: &mut tokio::process::
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    fixture.enable_dynamic_auth().await;
+    let fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
     let mut process = start_process(&fixture, 1).await;
     let client = fixture.client(1).await;
     create_logical_resources(&client).await;
@@ -294,7 +293,6 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         (41, Role::Gateway),
     ];
     let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
-    fixture.enable_dynamic_auth().await;
     for config in fixture.configs.values_mut() {
         config.runtime.capacity.process_memory = tidemq::quota::Limits::default().process_memory;
     }
@@ -384,7 +382,6 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    fixture.enable_dynamic_auth().await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let topic = create_logical_resources(&client).await.id().to_string();
@@ -528,7 +525,6 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
         (42, Role::Gateway),
     ];
     let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
-    fixture.enable_dynamic_auth().await;
     fixture.start_all().await;
     let client = fixture.client(41).await;
     let topic = create_logical_resources(&client).await;
@@ -634,7 +630,6 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
         &[1],
     )
     .await;
-    fixture.enable_dynamic_auth().await;
     fixture
         .configs
         .get_mut(&41)
@@ -784,7 +779,6 @@ async fn actual_runtime_sdk_automatically_compacts_partial_cold_objects_and_recl
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    fixture.enable_dynamic_auth().await;
     enable_objects(&mut fixture, &rustfs).await;
     let config = fixture.configs.get_mut(&1).unwrap();
     config.runtime.archive_interval_ms = 60_000;
@@ -886,7 +880,6 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
     let mut fixture = Fixture::new(nodes, metadata, storage).await;
-    fixture.enable_dynamic_auth().await;
     enable_objects(&mut fixture, &rustfs).await;
     if nodes.len() == 1 {
         for config in fixture.configs.values_mut() {
@@ -1099,7 +1092,6 @@ async fn exercise_runtime_scaling(automatic: bool) {
         &[21, 22, 23],
     )
     .await;
-    fixture.enable_dynamic_auth().await;
     for config in fixture.configs.values_mut() {
         config.runtime.groups.first_mut().unwrap().standby = vec![24];
         // The replacement keeps the removed replica's availability zone.

@@ -67,19 +67,9 @@ impl ConfigFile {
                 reason: "storage section is not supported by gateway, broker, or metadata roles",
             });
         }
-        let authorization = self.authorization.as_ref().ok_or(Error::Configuration {
+        self.authorization.as_ref().ok_or(Error::Configuration {
             reason: "role-scoped configuration requires the shared authorization section",
         })?;
-        if authorization.access_file.as_os_str().is_empty() {
-            return Err(Error::Configuration {
-                reason: "authorization.access_file must not be empty",
-            });
-        }
-        if authorization.delivery_key_file.as_os_str().is_empty() {
-            return Err(Error::Configuration {
-                reason: "authorization.delivery_key_file must not be empty",
-            });
-        }
         Ok(role)
     }
 }
@@ -87,10 +77,6 @@ impl ConfigFile {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorizationConfig {
-    access_file: PathBuf,
-    delivery_key_file: PathBuf,
-    #[serde(default)]
-    dynamic_auth: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bootstrap_admin_token_file: Option<PathBuf>,
 }
@@ -175,9 +161,6 @@ impl TryFrom<ConfigFile> for Config {
         let role = file.validate_layout()?;
         let mut runtime = file.runtime.into_runtime();
         if let Some(authorization) = file.authorization {
-            runtime.access_file = authorization.access_file;
-            runtime.delivery_key_file = authorization.delivery_key_file;
-            runtime.dynamic_auth = authorization.dynamic_auth;
             runtime.bootstrap_admin_token_file = authorization.bootstrap_admin_token_file;
         }
         if let Some(storage) = file.storage {
@@ -229,9 +212,6 @@ impl From<Config> for ConfigFile {
             tracing: config.tracing,
             tls: config.tls,
             authorization: Some(AuthorizationConfig {
-                access_file: config.runtime.access_file.clone(),
-                delivery_key_file: config.runtime.delivery_key_file.clone(),
-                dynamic_auth: config.runtime.dynamic_auth,
                 bootstrap_admin_token_file: config.runtime.bootstrap_admin_token_file.clone(),
             }),
             runtime: RuntimeFile::from(config.runtime),

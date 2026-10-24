@@ -3,7 +3,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {configurationEvidence, normalizeConfiguration, validateConfigurationEvidence} from './configuration.mjs';
 
-function legacy(cluster, node = 1, nodes = [1, 2, 3]) {
+function effective(cluster, node = 1, nodes = [1, 2, 3]) {
   return {node_id: node, cluster_id: '12345678-1234-4234-8234-123456789012', role: 'combined',
     listen: `127.0.0.1:${7400 + node * 10}`, management_listen: `127.0.0.1:${8400 + node * 10}`,
     data_dir: path.join(cluster, `data-${node}`), replication_factor: nodes.length,
@@ -20,25 +20,25 @@ function legacy(cluster, node = 1, nodes = [1, 2, 3]) {
       capacity: {max_sample_age_ms: 1000, logical_backlog: {low: 100663296, high: 134217728},
         physical_storage: {low: 201326592, high: 268435456}, process_memory: {low: 201326592, high: 268435456},
         shared_reclaim_lag: {low: 50331648, high: 67108864}},
-      access_file: path.join(cluster, 'access.toml'), delivery_key_file: path.join(cluster, 'delivery.key'),
+      bootstrap_admin_token_file: path.join(cluster, 'bootstrap.token'),
       peers: nodes.map(peer => ({node_id: peer, role: 'combined', zone: `zone-${peer % 3}`,
         internal_address: `127.0.0.1:${7401 + peer * 10}`, server_name: `node-${peer}.local`,
         certificate_der: path.join(cluster, `node-${peer}.der`)}))}};
 }
 
 function roles(cluster, node, nodes) {
-  const value = legacy(cluster, node, nodes);
-  value.authorization = {access_file: value.runtime.access_file, delivery_key_file: value.runtime.delivery_key_file};
+  const value = effective(cluster, node, nodes);
+  value.authorization = {bootstrap_admin_token_file: value.runtime.bootstrap_admin_token_file};
   value.gateway = {listen: value.listen};
   value.storage = {retention: value.runtime.retention, archive_interval_ms: value.runtime.archive_interval_ms};
   delete value.listen;
-  for (const field of ['access_file', 'delivery_key_file', 'objects', 'retention', 'archive_interval_ms']) delete value.runtime[field];
+  for (const field of ['bootstrap_admin_token_file', 'objects', 'retention', 'archive_interval_ms']) delete value.runtime[field];
   return value;
 }
 
-test('test-harness normalization permits only role layout and per-trial identity changes', () => {
+test('test-harness normalization permits only per-trial identity changes', () => {
   for (const nodes of [[1], [1, 2, 3]]) for (const node of nodes) {
-    const old = normalizeConfiguration(legacy('/old', node, nodes), '/old', node, nodes);
+    const old = normalizeConfiguration(roles('/old', node, nodes), '/old', node, nodes);
     const proposed = roles('/new', node, nodes);
     proposed.cluster_id = '87654321-4321-4321-8321-210987654321';
     const next = normalizeConfiguration(proposed, '/new', node, nodes);
@@ -50,11 +50,14 @@ test('test-harness normalization permits only role layout and per-trial identity
 
 test('missing fields, mixed schemas, topology and resource changes fail before launch', () => {
   const mutations = [
-    value => delete value.authorization.access_file,
+    value => delete value.authorization.bootstrap_admin_token_file,
     value => delete value.gateway.listen,
     value => delete value.storage.retention,
     value => {value.listen = '127.0.0.1:7410';},
-    value => {value.runtime.access_file = '/other';},
+    value => {value.authorization.access_file = '/other';},
+    value => {value.authorization.dynamic_auth = false;},
+    value => {value.authorization.delivery_key_file = '/other';},
+    value => {value.runtime.bootstrap_admin_token_file = '/other';},
     value => {value.runtime.unreviewed_budget = 100;},
     value => {value.storage.unreviewed_budget = 100;},
     value => {value.node_id = 2;},
@@ -75,7 +78,7 @@ test('missing fields, mixed schemas, topology and resource changes fail before l
 });
 
 test('effective defaults for quotas, retention, logging and tracing are retained for exact comparison', () => {
-  const baseline = normalizeConfiguration(legacy('/old'), '/old', 1, [1, 2, 3]);
+  const baseline = normalizeConfiguration(roles('/old'), '/old', 1, [1, 2, 3]);
   for (const mutate of [
     value => {value.runtime.capacity.max_sample_age_ms++;},
     value => {value.storage.retention.minimum_age_ms++;},
@@ -93,7 +96,7 @@ test('effective defaults for quotas, retention, logging and tracing are retained
 test('promotion rechecks both frozen generator identities and every recorded effective budget', () => {
   const generators = {baseline: {source_commit: '1'.repeat(40), script_sha256: '2'.repeat(64)},
     candidate: {source_commit: '3'.repeat(40), script_sha256: '4'.repeat(64)}};
-  const evidence = [1, 2, 3].map(node => configurationEvidence(normalizeConfiguration(legacy('/old', node), '/old', node, [1, 2, 3])));
+  const evidence = [1, 2, 3].map(node => configurationEvidence(normalizeConfiguration(roles('/old', node), '/old', node, [1, 2, 3])));
   const report = {configuration_generators: generators, topologies: {'rf3-combined': {pairs: [{
     baseline: {workloads: {effective_configurations: evidence}}, candidate: {workloads: {effective_configurations: structuredClone(evidence)}}}]}}};
   validateConfigurationEvidence(report, generators, ['rf3-combined']);

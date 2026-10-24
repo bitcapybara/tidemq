@@ -18,7 +18,6 @@ pub(crate) const AUTHORITY: u32 = 1;
 pub(crate) const OWNERSHIP: u32 = 2;
 pub(crate) const FORWARD: u32 = 3;
 pub(crate) const LEADER: u32 = 4;
-pub(crate) const CREATE_SUBSCRIPTION: u32 = 5;
 
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Request {
@@ -352,32 +351,6 @@ fn decode_error(frame: &Frame, limits: &ProtocolLimits) -> Result<Error> {
 
 pub(crate) fn id(value: &[u8]) -> Result<Id> {
     Id::from_slice(value).map_err(|source| Error::operation("validate business identity", source))
-}
-
-#[cfg(test)]
-pub(crate) fn assert_unknown_response_contract(
-    actual: &Frame,
-    expected: &Frame,
-    limits: &ProtocolLimits,
-    stage: &str,
-) {
-    let actual_error: ErrorReply = decode_payload(actual.payload.clone(), limits).unwrap();
-    assert!(
-        actual_error.message.contains(stage),
-        "Diagnostic must identify {stage}: {}",
-        actual_error.message
-    );
-    assert!(actual_error.message.contains("outcome is unknown"));
-    assert!(actual_error.message.contains("original operation identity"));
-    let mut expected_error: ErrorReply = decode_payload(expected.payload.clone(), limits).unwrap();
-    expected_error.message = actual_error.message;
-    let mut expected = expected.clone();
-    let class = TrafficClass::try_from(expected.traffic_class).unwrap();
-    expected.payload = encode_payload(&expected_error, frame_limit(class, limits)).unwrap();
-    assert_eq!(
-        actual, &expected,
-        "Only the diagnostic message may change the unknown reply"
-    );
 }
 
 #[cfg(test)]

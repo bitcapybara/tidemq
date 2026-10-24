@@ -271,6 +271,28 @@ mod tests {
     }
 
     #[test]
+    fn static_credentials_and_shared_delivery_secrets_are_rejected() {
+        for (name, value) in [
+            ("access_file", toml::Value::String("access.toml".into())),
+            (
+                "delivery_key_file",
+                toml::Value::String("delivery.key".into()),
+            ),
+            ("dynamic_auth", toml::Value::Boolean(false)),
+        ] {
+            let mut document = toml::Value::try_from(Config::default()).unwrap();
+            document
+                .get_mut("authorization")
+                .unwrap()
+                .as_table_mut()
+                .unwrap()
+                .insert(name.into(), value);
+            let text = toml::to_string(&document).unwrap();
+            assert!(toml::from_str::<Config>(&text).is_err(), "Accepted {name}");
+        }
+    }
+
+    #[test]
     fn role_sections_round_trip_only_applicable_settings() {
         for role in [
             Role::Combined,
@@ -283,8 +305,7 @@ mod tests {
                 role,
                 ..Config::default()
             };
-            original.runtime.access_file = "private/access.toml".into();
-            original.runtime.delivery_key_file = "private/delivery.key".into();
+            original.runtime.bootstrap_admin_token_file = Some("private/bootstrap.token".into());
             original.runtime.archive_interval_ms = 2_000;
             if role.stores_data() {
                 original.runtime.retention.minimum_age_ms = 1234;
@@ -306,10 +327,9 @@ mod tests {
             assert!(!document.contains_key("listen"));
             let parsed: Config = toml::from_str(&text).unwrap();
             assert_eq!(parsed.role, role);
-            assert_eq!(parsed.runtime.access_file, original.runtime.access_file);
             assert_eq!(
-                parsed.runtime.delivery_key_file,
-                original.runtime.delivery_key_file
+                parsed.runtime.bootstrap_admin_token_file,
+                original.runtime.bootstrap_admin_token_file
             );
             if role.stores_data() {
                 assert_eq!(parsed.runtime.archive_interval_ms, 2_000);
@@ -344,8 +364,7 @@ max_time_boundaries = 512
 
     #[test]
     fn role_sections_reject_inactive_missing_mixed_and_unknown_settings() {
-        let authorization =
-            "[authorization]\naccess_file = 'access.toml'\ndelivery_key_file = 'delivery.key'\n";
+        let authorization = "[authorization]\nbootstrap_admin_token_file = 'bootstrap.token'\n";
         for text in [
             format!("role = 'broker'\n{authorization}[gateway]\nlisten = '127.0.0.1:7443'"),
             format!("role = 'metadata'\n{authorization}[storage]\n"),

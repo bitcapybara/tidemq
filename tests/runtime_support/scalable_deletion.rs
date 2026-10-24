@@ -140,7 +140,6 @@ async fn partial_domain_deletion_resumes_after_restart_and_old_replay_cannot_del
     let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Storage)], &[1], &[1]).await;
     configure_dynamic_fixture(&mut fixture).await;
     for config in fixture.configs.values_mut() {
-        config.runtime.dynamic_auth = true;
         config.runtime.groups.retain(|group| group.group_id != 3);
         config.runtime.groups.push(GroupConfig {
             group_id: 3,

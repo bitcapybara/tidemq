@@ -33,8 +33,11 @@ for source in "$output"/init/node-*.toml; do
   role=$(awk -F "'" '$1 == "role = " {print $2; exit}' "$source")
   run="$output/run/node-$node"
   mkdir -m 0700 "$run"
-  cp "$output/init/ca.pem" "$output/init/access.toml" "$output/init/delivery.key" \
+  cp "$output/init/ca.pem" \
     "$output/init/node-$node.pem" "$output/init/node-$node.key" "$run/"
+  case "$role" in
+    combined|metadata) cp "$output/init/bootstrap.token" "$run/" ;;
+  esac
   cp "$output"/init/node-*.der "$run/"
   awk -v root="$output/init/" '
     /^data_dir = / { print "data_dir = '\''/var/lib/tidemq'\''"; next }

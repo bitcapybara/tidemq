@@ -9,15 +9,14 @@ function keys(value, expected, label) {
 
 export function normalizeConfiguration(configuration, cluster, node, nodes) {
   const value = structuredClone(configuration);
-  // Only the comparison harness maps historical layouts; production accepts the current schema.
-  if (value.authorization !== undefined) {
-    keys(value.authorization, ['access_file', 'delivery_key_file'], 'authorization');
+  {
+    keys(value.authorization, ['bootstrap_admin_token_file'], 'authorization');
     keys(value.gateway, ['listen'], 'gateway');
     assert.ok(value.storage, 'Missing combined storage configuration');
     keys(value.storage, value.storage.objects === undefined ? ['retention', 'archive_interval_ms']
       : ['objects', 'retention', 'archive_interval_ms'], 'storage');
     assert.ok(!('listen' in value), 'Mixed configuration layouts');
-    const oldFields = ['access_file', 'delivery_key_file', 'objects', 'retention', 'archive_interval_ms'];
+    const oldFields = ['access_file', 'delivery_key_file', 'dynamic_auth', 'bootstrap_admin_token_file', 'objects', 'retention', 'archive_interval_ms'];
     assert.ok(oldFields.every(field => !(field in value.runtime)), 'Mixed runtime configuration layouts');
     value.listen = value.gateway.listen;
     Object.assign(value.runtime, value.authorization, {objects: value.storage.objects ?? null,
@@ -29,7 +28,7 @@ export function normalizeConfiguration(configuration, cluster, node, nodes) {
   keys(value, ['node_id', 'cluster_id', 'role', 'listen', 'management_listen', 'data_dir', 'replication_factor',
     'memory', 'protocol', 'logging', 'tracing', 'tls', 'runtime'], 'effective node configuration');
   keys(value.runtime, ['internal_listen', 'metadata_group', 'metadata_voters', 'groups', 'peers', 'bootstrap',
-    'access_file', 'delivery_key_file', 'objects', 'retention', 'archive_interval_ms', 'capacity'], 'effective runtime');
+    'bootstrap_admin_token_file', 'objects', 'retention', 'archive_interval_ms', 'capacity'], 'effective runtime');
   assert.equal(value.node_id, node, 'Node identity changed');
   assert.match(value.cluster_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/, 'Invalid generated cluster identity');
   assert.equal(value.role, 'combined', 'Each CI node must host all roles');
@@ -51,8 +50,7 @@ export function normalizeConfiguration(configuration, cluster, node, nodes) {
   assert.deepEqual(value.runtime.peers, nodes.map(peer => ({node_id: peer, role: 'combined', zone: `zone-${peer % 3}`,
     internal_address: `127.0.0.1:${7401 + peer * 10}`, server_name: `node-${peer}.local`,
     certificate_der: path.join(cluster, `node-${peer}.der`)})), 'Peer topology changed');
-  assert.equal(value.runtime.access_file, path.join(cluster, 'access.toml'), 'Authorization source changed');
-  assert.equal(value.runtime.delivery_key_file, path.join(cluster, 'delivery.key'), 'Delivery signing source changed');
+  assert.equal(value.runtime.bootstrap_admin_token_file, path.join(cluster, 'bootstrap.token'), 'Bootstrap credential source changed');
   const mask = item => {
     if (item === value.cluster_id) return '<cluster-id>';
     if (typeof item === 'string' && item.startsWith(`${cluster}${path.sep}`)) return `<cluster>/${path.relative(cluster, item)}`;

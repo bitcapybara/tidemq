@@ -10,7 +10,6 @@ const RECEIVE_CREDIT: u32 = 256;
 async fn configured_credit_live_pages_preserve_every_identity_and_durable_ack() {
     maintenance_test_logging();
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    fixture.enable_dynamic_auth().await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let until = Instant::now() + Duration::from_secs(90);

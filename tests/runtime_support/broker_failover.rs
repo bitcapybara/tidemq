@@ -295,7 +295,6 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         (41, Role::Gateway),
     ];
     let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
-    fixture.enable_dynamic_auth().await;
     for config in fixture.configs.values_mut() {
         config.runtime.capacity.process_memory = tidemq::quota::Limits::default().process_memory;
     }

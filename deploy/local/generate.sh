@@ -21,7 +21,6 @@ if [[ "$output" == *"'"* || "$output" == *$'\n'* || "$output" == *$'\r'* ]]; the
 hex=$(openssl rand -hex 16)
 cluster="${hex:0:8}-${hex:8:4}-4${hex:13:3}-8${hex:17:3}-${hex:20:12}"
 token=$(openssl rand -hex 32)
-openssl rand -out "$output/delivery.key" 32
 cat > "$output/ca.cnf" <<'EOF'
 [req]
 distinguished_name=dn
@@ -35,13 +34,7 @@ keyUsage=critical,keyCertSign,cRLSign
 EOF
 openssl req -new -x509 -sha256 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve -nodes -days 7 \
   -config "$output/ca.cnf" -keyout "$output/ca.key" -out "$output/ca.pem" >/dev/null 2>&1
-cat > "$output/access.toml" <<EOF
-[[tokens]]
-value = '$token'
-principal = 'local-development'
-scope = '*'
-operations = ['CREATE_TOPIC','GET_TOPIC','CREATE_SUBSCRIPTION','GET_SUBSCRIPTION','OPEN_PRODUCER','PRODUCER_STATUS','RETIRE_PRODUCER','PRODUCE_BATCH','READ','ACK_BATCH','RECEIVE_BARRIER','CLAIM_ASSIGNMENT','SEEK_SUBSCRIPTION','DELETE_SUBSCRIPTION','SUBSCRIPTION_STATUS','CANCEL']
-EOF
+printf '%s\n' "$token" > "$output/bootstrap.token"
 printf '%s\n' "$token" > "$output/access.token"
 for entry in $nodes; do
   node=${entry%:*}
@@ -85,9 +78,13 @@ private_key = '$output/node-$node.key'
 trust_roots = '$output/ca.pem'
 
 [authorization]
-access_file = '$output/access.toml'
-delivery_key_file = '$output/delivery.key'
+
 EOF
+  case "$role" in
+    combined|metadata)
+      printf "bootstrap_admin_token_file = '%s/bootstrap.token'\n" "$output" >> "$output/node-$node.toml"
+      ;;
+  esac
   case "$role" in
     combined|gateway)
       cat >> "$output/node-$node.toml" <<EOF
@@ -134,4 +131,4 @@ EOF
 done
 printf 'Created %s runtime configuration in %s\n' "$mode" "$output"
 printf 'Start each node with: tidemq serve --config %s/node-<id>.toml\n' "$output"
-printf 'Private SDK access token: %s/access.token\n' "$output"
+printf 'Private bootstrap administrator token: %s/access.token\n' "$output"

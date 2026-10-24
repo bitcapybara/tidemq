@@ -383,7 +383,6 @@ async fn an_independent_three_replica_target_snapshots_every_voter_before_source
     tokio::fs::write(&bootstrap, TOKEN).await.unwrap();
     private_file(bootstrap.clone()).await;
     for config in fixture.configs.values_mut() {
-        config.runtime.dynamic_auth = true;
         config.runtime.bootstrap_admin_token_file = Some(bootstrap.clone());
         config.runtime.groups.push(GroupConfig {
             group_id: 3,

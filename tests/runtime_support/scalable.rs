@@ -21,7 +21,6 @@ async fn dynamic_fixture() -> Fixture {
 }
 
 async fn configure_dynamic_fixture(fixture: &mut Fixture) {
-    fixture.enable_dynamic_auth().await;
     let config = fixture.configs.get_mut(&1).unwrap();
     config.runtime.groups.push(GroupConfig {
         group_id: 3,

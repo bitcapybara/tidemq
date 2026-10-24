@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks() {
-    let mut fixture = Fixture::new(
+    let fixture = Fixture::new(
         &[
             (1, Role::Combined),
             (2, Role::Combined),
@@ -13,7 +13,6 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
         &[1, 2, 3],
     )
     .await;
-    fixture.enable_dynamic_auth().await;
     let mut processes = Vec::new();
     for node in [1, 2, 3] {
         processes.push((node, spawn_process(&fixture, node).await));

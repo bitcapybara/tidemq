@@ -265,9 +265,6 @@ impl Service {
 
     pub(super) async fn bootstrap_credentials(&self, deadline: Instant) -> Result<()> {
         use crate::metadata::{AuthAction, AuthCommand, Command};
-        if !self.config.runtime.dynamic_auth {
-            return Ok(());
-        }
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         if replica
             .state
@@ -599,6 +596,9 @@ impl Service {
         deadline: Instant,
     ) -> Result<(Access, Instant)> {
         let kind = super::service::frame_kind(frame)?;
+        if !crate::gateway::external_kind(kind) {
+            return Err(super::service::forbidden());
+        }
         let permission = match kind {
             FrameKind::SubscriptionAdmin => match decode::<public::SubscriptionAdmin>(self, frame)?
                 .action
@@ -620,23 +620,15 @@ impl Service {
                 }
             },
             FrameKind::ManageIdentity => Permission::ManageCredentials,
-            FrameKind::GetTopic
-            | FrameKind::GetTopicLayout
-            | FrameKind::GetSubscription
-            | FrameKind::Cancel => Permission::Inspect,
-            FrameKind::CreateTopic
-            | FrameKind::CreateLogicalTopic
-            | FrameKind::CreateSubscription
-            | FrameKind::DeleteSubscription
-            | FrameKind::SeekSubscription
-            | FrameKind::ChangeTopicLayout => Permission::ManageTopics,
-            FrameKind::ProduceBatch
-            | FrameKind::PublisherControl
-            | FrameKind::Publish
-            | FrameKind::RetirePublishes
-            | FrameKind::OpenProducer
-            | FrameKind::ProducerStatus
-            | FrameKind::RetireProducer => Permission::Produce,
+            FrameKind::GetTopic | FrameKind::GetTopicLayout | FrameKind::Cancel => {
+                Permission::Inspect
+            }
+            FrameKind::CreateLogicalTopic | FrameKind::ChangeTopicLayout => {
+                Permission::ManageTopics
+            }
+            FrameKind::PublisherControl | FrameKind::Publish | FrameKind::RetirePublishes => {
+                Permission::Produce
+            }
             FrameKind::Diagnose => Permission::ManageTenants,
             _ => Permission::Consume,
         };
@@ -667,9 +659,6 @@ impl Service {
             FrameKind::CreateLogicalTopic => {
                 return Ok(Some(decode::<public::LogicalTopic>(self, frame)?.name));
             }
-            FrameKind::CreateTopic => {
-                return Ok(Some(decode::<public::CreateTopic>(self, frame)?.name));
-            }
             FrameKind::GetTopic => return Ok(Some(decode::<public::GetTopic>(self, frame)?.name)),
             FrameKind::GetTopicLayout => {
                 wire::id(&decode::<public::GetTopicLayout>(self, frame)?.topic_id)?
@@ -685,12 +674,6 @@ impl Service {
             }
             FrameKind::PublisherControl => {
                 wire::id(&decode::<public::PublisherControl>(self, frame)?.topic_id)?
-            }
-            FrameKind::CreateSubscription => {
-                wire::id(&decode::<public::CreateSubscription>(self, frame)?.topic_id)?
-            }
-            FrameKind::GetSubscription => {
-                wire::id(&decode::<public::GetSubscription>(self, frame)?.topic_id)?
             }
             FrameKind::Cancel | FrameKind::Diagnose | FrameKind::ManageIdentity => return Ok(None),
             _ => super::data::partition(frame, &self.config.protocol)?.topic_id,

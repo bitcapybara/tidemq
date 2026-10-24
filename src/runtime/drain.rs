@@ -49,6 +49,46 @@ struct Probe {
     accepting: bool,
 }
 
+pub(super) fn allows_completion(
+    frame: &tidemq_protocol::common::Frame,
+    limits: &tidemq_protocol::ProtocolLimits,
+) -> Result<bool> {
+    use tidemq_protocol::{framing::decode_payload, public};
+    Ok(match super::service::frame_kind(frame)? {
+        FrameKind::GroupAck
+        | FrameKind::GroupRetireRead
+        | FrameKind::GroupRetireAck
+        | FrameKind::RetirePublishes
+        | FrameKind::GetTopic
+        | FrameKind::GetTopicLayout
+        | FrameKind::Cancel => true,
+        FrameKind::ConsumerControl => {
+            let request: public::ConsumerControl = decode_payload(frame.payload.clone(), limits)
+                .map_err(|source| Error::operation("decode draining consumer action", source))?;
+            matches!(
+                public::ConsumerAction::try_from(request.action),
+                Ok(public::ConsumerAction::LeaveConsumer
+                    | public::ConsumerAction::RetireConsumer
+                    | public::ConsumerAction::HeartbeatConsumer
+                    | public::ConsumerAction::ConsumerStatus)
+            )
+        }
+        FrameKind::PublisherControl => {
+            let request: public::PublisherControl = decode_payload(frame.payload.clone(), limits)
+                .map_err(|source| {
+                Error::operation("decode draining publisher action", source)
+            })?;
+            matches!(
+                public::PublisherAction::try_from(request.action),
+                Ok(public::PublisherAction::ClosePublisher
+                    | public::PublisherAction::HeartbeatPublisher
+                    | public::PublisherAction::PublisherStatus)
+            )
+        }
+        _ => false,
+    })
+}
+
 impl Service {
     pub(super) async fn probe_broker(
         &self,
@@ -115,13 +155,7 @@ impl Service {
         if let Some(expected) = drains.get(&partition) {
             if *expected != epoch {
                 drains.remove(&partition);
-            } else if matches!(
-                kind,
-                FrameKind::ProduceBatch
-                    | FrameKind::OpenProducer
-                    | FrameKind::Read
-                    | FrameKind::ClaimAssignment
-            ) {
+            } else if matches!(kind, FrameKind::Publish | FrameKind::GroupRead) {
                 return Err(Error::unavailable());
             }
         }
@@ -545,5 +579,80 @@ impl DrainActions for Service {
         .await
         .map_err(scaling_error)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use tidemq_protocol::{ProtocolLimits, common::Frame, framing::encode_payload, public};
+
+    #[test]
+    fn draining_keeps_member_and_publisher_cleanup_live_without_admitting_new_work() {
+        let limits = ProtocolLimits::default();
+        for (action, allowed) in [
+            (public::ConsumerAction::JoinConsumer, false),
+            (public::ConsumerAction::EnsureConsumerSubscription, false),
+            (public::ConsumerAction::HeartbeatConsumer, true),
+            (public::ConsumerAction::LeaveConsumer, true),
+            (public::ConsumerAction::RetireConsumer, true),
+            (public::ConsumerAction::ConsumerStatus, true),
+        ] {
+            let frame = Frame {
+                kind: FrameKind::ConsumerControl.into(),
+                payload: encode_payload(
+                    &public::ConsumerControl {
+                        action: action.into(),
+                        ..Default::default()
+                    },
+                    limits.max_control_frame_bytes,
+                )
+                .unwrap(),
+                ..Default::default()
+            };
+            assert_eq!(allows_completion(&frame, &limits).unwrap(), allowed);
+        }
+        for (action, allowed) in [
+            (public::PublisherAction::OpenPublisher, false),
+            (public::PublisherAction::HeartbeatPublisher, true),
+            (public::PublisherAction::ClosePublisher, true),
+            (public::PublisherAction::PublisherStatus, true),
+        ] {
+            let frame = Frame {
+                kind: FrameKind::PublisherControl.into(),
+                payload: encode_payload(
+                    &public::PublisherControl {
+                        action: action.into(),
+                        ..Default::default()
+                    },
+                    limits.max_control_frame_bytes,
+                )
+                .unwrap(),
+                ..Default::default()
+            };
+            assert_eq!(allows_completion(&frame, &limits).unwrap(), allowed);
+        }
+        for (kind, allowed) in [
+            (FrameKind::Publish, false),
+            (FrameKind::GroupRead, false),
+            (FrameKind::CreateLogicalTopic, false),
+            (FrameKind::GroupAck, true),
+            (FrameKind::GroupRetireRead, true),
+            (FrameKind::GroupRetireAck, true),
+            (FrameKind::RetirePublishes, true),
+            (FrameKind::GetTopicLayout, true),
+        ] {
+            assert_eq!(
+                allows_completion(
+                    &Frame {
+                        kind: kind.into(),
+                        ..Default::default()
+                    },
+                    &limits
+                )
+                .unwrap(),
+                allowed
+            );
+        }
     }
 }

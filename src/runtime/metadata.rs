@@ -13,11 +13,9 @@ use crate::broker::{DataCommand, DataResponse, WriterFence};
 use crate::gateway::Access;
 use crate::metadata::{
     self, Command, DeploymentMode, MetadataLimits, NodeSpec, PartitionKey, RecordStatus, Response,
-    SubscriptionConfig,
 };
-use crate::ownership::remote::{DataProof, Query, Value};
+use crate::ownership::remote::DataProof;
 use crate::ownership::{ControlPolicy, DataAuthority, Grant};
-use crate::subscription::{self, SigningKey};
 
 use super::node::{data_config, random_id, roles};
 use super::service::{Service, forbidden};
@@ -28,14 +26,6 @@ use super::{Error, Result};
 pub(crate) struct OwnershipRequest {
     pub grant: Grant,
     pub recover: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct CreateSubscriptionRequest {
-    pub partition: PartitionKey,
-    pub subscription: Id,
-    pub operation: Id,
-    pub start: u64,
 }
 
 impl Service {
@@ -270,7 +260,6 @@ impl Service {
         wire::within(deadline, replica.raft.ensure_linearizable())
             .await?
             .map_err(|_| Error::unavailable())?;
-        let operation = wire::id(&frame.operation_id)?;
         if super::service::frame_kind(frame)? == FrameKind::PublisherControl {
             return self
                 .publisher_control_public(&access, frame, deadline)
@@ -296,64 +285,6 @@ impl Service {
             return self.topology_public(&access, frame, deadline).await;
         }
         match super::service::frame_kind(frame)? {
-            FrameKind::CreateTopic => {
-                let request: public::CreateTopic =
-                    decode_payload(frame.payload.clone(), &self.config.protocol)
-                        .map_err(|source| Error::operation("decode topic creation", source))?;
-                access.authorize_topic(&request.name)?;
-                if request.partitions == 0 || request.partitions > 128 {
-                    return Err(Error::invalid(
-                        "Topic partition count must be between one and 128",
-                    ));
-                }
-                let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
-                let groups: Vec<_> = self
-                    .config
-                    .runtime
-                    .groups
-                    .iter()
-                    .cycle()
-                    .take(request.partitions as usize)
-                    .map(|group| group.group_id)
-                    .collect();
-                let outcome = self
-                    .meta_write(
-                        Command::create_topic(
-                            operation,
-                            self.metadata_request_revision(operation).await?,
-                            operation,
-                            request.name,
-                            groups,
-                        ),
-                        deadline,
-                    )
-                    .await?;
-                let metadata::Outcome::TopicConfigured(topic) = outcome else {
-                    return Err(Error::invalid(
-                        "Metadata returned the wrong topic creation outcome",
-                    ));
-                };
-                for partition in 0..topic.partition_count {
-                    self.ensure_route(
-                        PartitionKey {
-                            topic_id: topic.topic_id,
-                            partition,
-                        },
-                        deadline,
-                    )
-                    .await?;
-                }
-                wire::response(
-                    frame,
-                    FrameKind::TopicResult,
-                    &public::TopicResult {
-                        topic_id: bytes_id(topic.topic_id),
-                        name: topic.name,
-                        partitions: topic.partition_count,
-                    },
-                    &self.config.protocol,
-                )
-            }
             FrameKind::GetTopic => {
                 let request: public::GetTopic =
                     decode_payload(frame.payload.clone(), &self.config.protocol)
@@ -377,119 +308,6 @@ impl Service {
                         topic_id: bytes_id(topic.topic_id),
                         name: topic.name,
                         partitions: topic.partition_count,
-                    },
-                    &self.config.protocol,
-                )
-            }
-            FrameKind::CreateSubscription => {
-                let request: public::CreateSubscription =
-                    decode_payload(frame.payload.clone(), &self.config.protocol).map_err(
-                        |source| Error::operation("decode subscription creation", source),
-                    )?;
-                let topic_id = wire::id(&request.topic_id)?;
-                let topic = replica
-                    .state
-                    .try_with_application(|state| {
-                        state
-                            .topic(topic_id)
-                            .filter(|record| record.status == RecordStatus::Active)
-                            .cloned()
-                    })
-                    .await
-                    .map_err(|source| Error::operation("read subscription topic", source))?
-                    .ok_or_else(not_found)?;
-                access.authorize_topic(&topic.name)?;
-                let ordering = match public::DeliveryMode::try_from(request.delivery_mode)
-                    .map_err(|_| Error::invalid("Unknown subscription delivery mode"))?
-                {
-                    public::DeliveryMode::Parallel | public::DeliveryMode::Unspecified => {
-                        metadata::Ordering::Parallel
-                    }
-                    public::DeliveryMode::KeySerial => metadata::Ordering::PerKey,
-                };
-                let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
-                let outcome = self
-                    .meta_write(
-                        Command::put_subscription(
-                            operation,
-                            self.metadata_request_revision(operation).await?,
-                            operation,
-                            topic_id,
-                            request.name,
-                            0,
-                            SubscriptionConfig {
-                                ordering,
-                                ..SubscriptionConfig::default()
-                            },
-                        ),
-                        deadline,
-                    )
-                    .await?;
-                let metadata::Outcome::SubscriptionConfigured(subscription) = outcome else {
-                    return Err(Error::invalid(
-                        "Metadata returned the wrong subscription creation outcome",
-                    ));
-                };
-                for partition in 0..topic.partition_count {
-                    let partition = PartitionKey {
-                        topic_id,
-                        partition,
-                    };
-                    let route = self.ensure_route(partition, deadline).await?;
-                    let target = self.leader(route.group_id, deadline).await?;
-                    let body = CreateSubscriptionRequest {
-                        partition,
-                        subscription: subscription.subscription_id,
-                        operation,
-                        start: request.start_offset,
-                    };
-                    self.rpc
-                        .call(
-                            target,
-                            route.group_id,
-                            Request::control(wire::CREATE_SUBSCRIPTION, &body)?,
-                            deadline,
-                        )
-                        .await?;
-                }
-                wire::response(
-                    frame,
-                    FrameKind::SubscriptionResult,
-                    &public::SubscriptionResult {
-                        subscription_id: bytes_id(subscription.subscription_id),
-                        topic_id: bytes_id(topic_id),
-                        cursor_generation: 1,
-                    },
-                    &self.config.protocol,
-                )
-            }
-            FrameKind::GetSubscription => {
-                let request: public::GetSubscription =
-                    decode_payload(frame.payload.clone(), &self.config.protocol)
-                        .map_err(|source| Error::operation("decode subscription query", source))?;
-                let topic_id = wire::id(&request.topic_id)?;
-                let topic = replica
-                    .state
-                    .try_with_application(|state| state.topic(topic_id).cloned())
-                    .await
-                    .map_err(|source| Error::operation("read subscription topic", source))?
-                    .ok_or_else(not_found)?;
-                access.authorize_topic(&topic.name)?;
-                let subscription = replica
-                    .state
-                    .try_with_application(|state| {
-                        state.subscription_by_name(topic_id, &request.name).cloned()
-                    })
-                    .await
-                    .map_err(|source| Error::operation("read subscription", source))?
-                    .ok_or_else(not_found)?;
-                wire::response(
-                    frame,
-                    FrameKind::SubscriptionResult,
-                    &public::SubscriptionResult {
-                        subscription_id: bytes_id(subscription.subscription_id),
-                        topic_id: bytes_id(topic_id),
-                        cursor_generation: 1,
                     },
                     &self.config.protocol,
                 )
@@ -854,48 +672,6 @@ impl Service {
         result
     }
 
-    pub async fn create_data_subscription(
-        &self,
-        group: u64,
-        bytes: &[u8],
-        deadline: Instant,
-    ) -> Result<Bytes> {
-        let request: CreateSubscriptionRequest = wire::decode_json(bytes)?;
-        let Value::Subscription(Some(record)) = self
-            .authority
-            .query(Query::Subscription(request.subscription), deadline)
-            .await?
-        else {
-            return Err(not_found());
-        };
-        if record.topic_id != request.partition.topic_id {
-            return Err(forbidden());
-        }
-        let lease = self.data_lease(group, request.partition, deadline).await?;
-        let mut hasher = blake3::Hasher::new_keyed(&self.delivery_key);
-        hasher.update(b"tidemq:delivery-signing:v1");
-        hasher.update(request.subscription.as_bytes());
-        hasher.update(request.partition.topic_id.as_bytes());
-        hasher.update(&request.partition.partition.to_be_bytes());
-        let signing_key =
-            SigningKey::try_from(*hasher.finalize().as_bytes()).map_err(subscription_rejection)?;
-        self.subscription_write(
-            group,
-            request.partition,
-            &lease,
-            subscription::Command::Create {
-                subscription_id: request.subscription,
-                operation_id: request.operation,
-                start_offset: request.start,
-                signing_key,
-            },
-            deadline,
-            false,
-        )
-        .await?;
-        wire::json(&())
-    }
-
     pub async fn data_write(
         &self,
         group: u64,
@@ -944,8 +720,4 @@ pub(crate) fn not_found() -> Error {
 }
 pub(crate) fn bytes_id(id: Id) -> Bytes {
     Bytes::copy_from_slice(id.as_bytes())
-}
-
-fn subscription_rejection(reason: subscription::Rejection) -> Error {
-    super::data::data_rejection(crate::broker::DataRejection::Subscription(reason))
 }

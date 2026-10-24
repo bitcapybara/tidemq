@@ -106,7 +106,6 @@ pub(in crate::runtime) async fn after_group_commit(
 
 async fn setup() -> (Fixture, Client) {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    fixture.enable_dynamic_auth().await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let tenant = client.admin().create_tenant("test").await.unwrap();
@@ -208,9 +207,8 @@ async fn committed_consumer_mutation_expiry_preserves_unknown_semantics_and_sour
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_advanced_logical_retention_floor_rejects_expired_positions() {
+async fn an_advanced_retention_floor_starts_new_subscriptions_at_available_history() {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    fixture.enable_dynamic_auth().await;
     let config = fixture.configs.get_mut(&1).unwrap();
     config.runtime.retention.minimum_age_ms = 0;
     config.runtime.archive_interval_ms = 60_000;
@@ -270,15 +268,17 @@ async fn an_advanced_logical_retention_floor_rejects_expired_positions() {
             .unwrap(),
         DataResponse::Retention(_)
     ));
-    assert!(
-        matches!(service.require_retained_offset(2, partition, 0, deadline()).await,
-        Err(Error::Rejected { failure }) if failure.code == i32::from(ErrorCode::OffsetExpired)
-            && failure.outcome == i32::from(Outcome::Rejected) && !failure.retryable)
-    );
-    service
-        .require_retained_offset(2, partition, 1, deadline())
+    let late = client
+        .new_queue_consumer(TOPIC, "after-retention")
+        .build()
         .await
         .unwrap();
+    let next = producer.send("after-retention").await.unwrap();
+    let available = late.receive().await.unwrap();
+    assert_eq!(available.message_id(), next.message_id());
+    assert_eq!(available.payload(), b"after-retention");
+    late.ack(&available).await.unwrap();
+    late.close().await.unwrap();
     queue.close().await.unwrap();
     producer.close().await.unwrap();
     client.close().await.unwrap();

@@ -16,7 +16,7 @@
 | `runtime.metadata_group` / `metadata_voters` / `groups` / `peers` | 元数据独立组、数据组和有限节点目录；RF3 voter 须具备不同 zone，元数据不承载正文和逐条 ACK |
 | `runtime.groups[].standby` | 有限空副本候选；不属于 voter，不自行初始化，待安全 learner/joint/stable 迁移 |
 | `runtime.bootstrap` | 仅在原始身份的全空持久目录初始化；发现 vote/log/commit/snapshot 时走恢复，不能靠删除目录消除未知结果 |
-| `authorization.access_file` / `delivery_key_file` | 所有角色共用的静态授权和投递签名根路径；内部 delegated 请求也检查授权，Metadata 还派生投递密钥。秘密文件须为当前用户私有，令牌不直接写进配置和日志。授权指定 principal、topic scope、操作白名单 |
+| `authorization.bootstrap_admin_token_file` | 仅首次初始化的 Metadata/Combined 节点读取私有管理员 token 文件，将校验摘要提交到 Metadata Raft；集群初始化后不再读取。其他角色无需业务 token 清单。凭据、授权、到期和撤销在线管理；确认域密钥由数据 Raft 持久保存，无共享密钥文件 |
 | `storage.objects` | 仅 Storage/Combined 配置；显式 endpoint/region/bucket/prefix/credentials_file，不使用隐式机器默认凭据链。仅显式开启时允许 loopback HTTP；公网使用 HTTPS |
 | `runtime.capacity` / `storage.retention` | 各进程共同使用容量水位；数据角色配置最短保留与有界时间索引。新鲜采样缺失或超限拒绝新写，已有 ACK/read/control/GC 保留各自准入 |
 | `storage.archive_interval_ms` | 仅 Storage/Combined 的后台归档/回收工作间隔；对象上传不进入 Producer ACK 关键路径，未知任务按原对象身份对账 |

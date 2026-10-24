@@ -42,11 +42,10 @@ for mode in rf1 rf3; do
     node=${run##*/node-}
     expected_services+=("node-$node")
     found=$((found + 1))
-    [[ $(count_files "$run" '*.key') == 2 ]] || fail 'Unexpected node private key'
+    [[ $(count_files "$run" '*.key') == 1 ]] || fail 'Unexpected node private key'
     [[ $(count_files "$run" '*.pem') == 2 ]] || fail 'Unexpected node certificate'
     [[ $(count_files "$run" '*.der') == "$expected" ]] || fail 'Peer certificate set is incomplete'
     cmp "$state/init/node-$node.key" "$run/node-$node.key"
-    cmp "$state/init/delivery.key" "$run/delivery.key"
     for peer in "$state"/init/node-*.der; do cmp "$peer" "$run/$(basename "$peer")"; done
     [[ ! -e $run/ca.key && ! -e $run/access.token ]] || fail 'Initialization or SDK secret entered a node directory'
     if grep -Fq "$state/init/" "$config"; then fail 'Host initialization path entered runtime configuration'; fi
@@ -57,6 +56,14 @@ for mode in rf1 rf3; do
     if grep -Eq '^\[runtime\.(objects|retention)\]' "$config"; then
       fail 'Legacy storage settings entered a role-scoped configuration'
     fi
+    case "$role" in
+      combined|metadata)
+        cmp "$state/init/bootstrap.token" "$run/bootstrap.token"
+        grep -Fq "bootstrap_admin_token_file = '/run/tidemq/bootstrap.token'" "$config" || fail 'Bootstrap credential path differs'
+        ;;
+      *) [[ ! -e $run/bootstrap.token ]] || fail 'Bootstrap credential entered an inactive role' ;;
+    esac
+    [[ ! -e $run/access.toml && ! -e $run/delivery.key ]] || fail 'Static authorization entered a node directory'
     case "$role" in
       combined|gateway) grep -Fxq '[gateway]' "$config" || fail 'Gateway settings are missing' ;;
       *) if grep -Fxq '[gateway]' "$config"; then fail 'Gateway settings entered an inactive role'; fi ;;

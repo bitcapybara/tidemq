@@ -97,9 +97,7 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
                 .query(Query::TopicName("__readiness".into()), deadline)
                 .await
                 .is_ok();
-        if service.config.runtime.dynamic_auth {
-            ready &= service.auth_ready(deadline).await;
-        }
+        ready &= service.auth_ready(deadline).await;
         let memory = sampler.sample(deadline).await.ok();
         let capacity = sample_capacity(
             &service,
