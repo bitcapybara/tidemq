@@ -57,6 +57,8 @@ TLS trust contains the server CA certificate; a CA private key is never a client
 
 Administrators configure tenant or namespace budgets with `ResourceLimits::builder()` and `admin.set_tenant_limits(id, limits)` or `set_namespace_limits(id, limits)`. A builder changes only configured fields; namespace fields initially inherit the tenant's current limits. `ResourceLimits::default()` explicitly restores the standard limits. Namespaces share their tenant's total budget. `PolicyUpdate::Applied` means the persistent policy and required data admission fences are installed; `Superseded` means a newer update replaced it before completion. Interrupted updates retain the original `PendingAdmin`. Lowering a budget preserves protected data and allows ACK and recovery to release existing occupancy.
 
+`admin.tenants()`, `namespaces(tenant)`, `principals(tenant)`, `platform_principals()` and `credentials(principal)` return typed listings. Use `page_size(1..=32)` and `next_page().await?`; None ends that enumeration. Pages contain identities and effective limits, without token values or verification digests. A concurrent identity change returns `CatalogChanged`; start a new listing. Routine message, membership and quota activity does not invalidate identity pagination.
+
 Connection limits count physical connections across gateways and traffic classes. Reusing a Client shares its connection pool; distinct Client instances consume separate capacity. Connection admission and cold-read batches use finite Metadata Raft leases, so adding a node or changing a data leader does not duplicate their allowance. `set_principal_enabled(id, false)` disables a principal's credentials for new admission.
 
 ## Sending and receiving

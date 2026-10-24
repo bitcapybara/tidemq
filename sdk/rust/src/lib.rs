@@ -10,6 +10,7 @@ mod context;
 mod error;
 mod group_consumer;
 mod identity;
+mod identity_list;
 mod logical_producer;
 mod message;
 mod metrics;
@@ -32,6 +33,7 @@ pub use group_consumer::{
 pub use identity::{
     AccessToken, CredentialId, NamespaceId, Permission, PrincipalBuilder, PrincipalId, TenantId,
 };
+pub use identity_list::{CredentialInfo, NamespaceInfo, PrincipalInfo, ResourceList, TenantInfo};
 pub use logical_producer::{PendingSend, Producer, ProducerBuilder, SendBatchResult, SendReceipt};
 pub use message::{Message, MessageId, ReceivedMessage};
 pub use metrics::{Metrics, MetricsSnapshot};

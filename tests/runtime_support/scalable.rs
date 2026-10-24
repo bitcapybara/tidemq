@@ -6,6 +6,8 @@ mod deletion;
 mod deploy;
 #[path = "scalable_handoff.rs"]
 mod handoff;
+#[path = "scalable_identity_list.rs"]
+mod identity_list;
 #[path = "scalable_message_limits.rs"]
 mod message_limits;
 #[path = "scalable_quotas.rs"]

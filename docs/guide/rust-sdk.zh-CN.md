@@ -54,6 +54,8 @@ TlsTrust 接受服务端 CA 文件或 PEM，不接收 CA 私钥。Credentials �
 
 连接限额按各 Gateway、各流量类别的物理连接合计；Client clone 共享连接池，独立 Client 分别占用容量。连接和冷读批次采用 Metadata Raft 中的有限租约，失联或 Leader 变更不会复制额度。管理员可通过 `set_principal_enabled(principal, false)` 禁用主体，新准入同时受到凭据及主体有效性的约束。
 
+`admin.tenants()`、`namespaces(tenant)`、`principals(tenant)`、`platform_principals()` 和 `credentials(principal)` 返回强类型分页对象。使用 `page_size(1..=32)` 与 `next_page().await?` 逐页读取，None 表示本次枚举结束。页面按真实父资源和主体作用域过滤，返回身份及有效限额，不含 token 原值或校验摘要。身份目录在翻页中发生变化时返回 `CatalogChanged`，应重新创建分页对象；常规消息、成员和额度操作不使身份分页失效。
+
 ## 生产与并发
 
 send 接受 Into<Message>，简单消息可写 producer.send("hello").await。Message 用于设置 key 和属性。成功回执表示数据 Raft 已持久提交；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。

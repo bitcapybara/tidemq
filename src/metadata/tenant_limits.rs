@@ -142,6 +142,24 @@ impl Default for TenantLimits {
 }
 
 impl TenantLimits {
+    pub fn to_wire(self) -> Result<tidemq_protocol::public::ResourceLimits, AuthRejection> {
+        self.validate()?;
+        let count = |value| u32::try_from(value).map_err(|_| AuthRejection::Invalid);
+        Ok(tidemq_protocol::public::ResourceLimits {
+            topics: count(self.max_topics)?,
+            subscriptions: count(self.max_subscriptions)?,
+            principals: count(self.max_principals)?,
+            credentials: count(self.max_credentials)?,
+            connections: count(self.max_connections)?,
+            members: count(self.max_members)?,
+            backlog_bytes: self.capacity.backlog_bytes,
+            inflight_bytes: self.capacity.inflight_bytes,
+            inflight_messages: self.capacity.inflight_messages,
+            publish_bytes_per_second: self.capacity.publish_bytes_per_second,
+            consume_bytes_per_second: self.capacity.consume_bytes_per_second,
+            cold_reads: self.capacity.cold_reads,
+        })
+    }
     pub fn from_wire(
         limits: &tidemq_protocol::public::ResourceLimits,
         previous: Self,

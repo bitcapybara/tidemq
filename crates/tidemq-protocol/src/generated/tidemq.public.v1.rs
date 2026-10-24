@@ -159,6 +159,47 @@ pub struct IdentityResult {
     pub policy_superseded: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ListIdentities {
+    #[prost(enumeration = "IdentityKind", tag = "1")]
+    pub kind: i32,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub parent_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub after_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "4")]
+    pub limit: u32,
+    #[prost(uint64, tag = "5")]
+    pub expected_revision: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct IdentityInfo {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub parent_id: ::prost::bytes::Bytes,
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(bool, tag = "4")]
+    pub enabled: bool,
+    #[prost(bytes = "bytes", tag = "5")]
+    pub namespace_id: ::prost::bytes::Bytes,
+    #[prost(string, repeated, tag = "6")]
+    pub permissions: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    #[prost(uint64, tag = "7")]
+    pub expires_at_ms: u64,
+    #[prost(message, optional, tag = "8")]
+    pub limits: ::core::option::Option<ResourceLimits>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct IdentityPage {
+    #[prost(message, repeated, tag = "1")]
+    pub entries: ::prost::alloc::vec::Vec<IdentityInfo>,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub next_after_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "3")]
+    pub revision: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubscriptionAdmin {
     #[prost(bytes = "bytes", tag = "1")]
     pub topic_id: ::prost::bytes::Bytes,
@@ -523,6 +564,41 @@ impl IdentityAction {
             "SET_TENANT_LIMITS" => Some(Self::SetTenantLimits),
             "SET_NAMESPACE_LIMITS" => Some(Self::SetNamespaceLimits),
             "SET_PRINCIPAL_ENABLED" => Some(Self::SetPrincipalEnabled),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum IdentityKind {
+    Unspecified = 0,
+    TenantIdentities = 1,
+    NamespaceIdentities = 2,
+    PrincipalIdentities = 3,
+    CredentialIdentities = 4,
+}
+impl IdentityKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "IDENTITY_KIND_UNSPECIFIED",
+            Self::TenantIdentities => "TENANT_IDENTITIES",
+            Self::NamespaceIdentities => "NAMESPACE_IDENTITIES",
+            Self::PrincipalIdentities => "PRINCIPAL_IDENTITIES",
+            Self::CredentialIdentities => "CREDENTIAL_IDENTITIES",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "IDENTITY_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "TENANT_IDENTITIES" => Some(Self::TenantIdentities),
+            "NAMESPACE_IDENTITIES" => Some(Self::NamespaceIdentities),
+            "PRINCIPAL_IDENTITIES" => Some(Self::PrincipalIdentities),
+            "CREDENTIAL_IDENTITIES" => Some(Self::CredentialIdentities),
             _ => None,
         }
     }

@@ -22,6 +22,10 @@ use super::service::{Service, forbidden};
 use super::wire::{self, Request};
 use super::{Error, Result};
 
+#[cfg(test)]
+#[path = "../../tests/scalable_support/metadata_errors.rs"]
+mod error_tests;
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct OwnershipRequest {
     pub grant: Grant,
@@ -285,6 +289,9 @@ impl Service {
         }
         if super::service::frame_kind(frame)? == FrameKind::ManageIdentity {
             return self.identity_public(&access, frame, deadline).await;
+        }
+        if super::service::frame_kind(frame)? == FrameKind::ListIdentities {
+            return self.identity_list_public(&access, frame).await;
         }
         if matches!(
             super::service::frame_kind(frame)?,
@@ -709,6 +716,7 @@ pub(super) fn metadata_rejection(reason: metadata::Rejection) -> Error {
         return Error::Rejected { failure };
     }
     let (code, retryable) = match &reason {
+        R::Authorization(metadata::AuthRejection::Capacity) => (ErrorCode::QuotaExceeded, true),
         R::Authorization(_) => (ErrorCode::Forbidden, false),
         R::SubscriptionInUse => (ErrorCode::AssignmentBusy, false),
         R::Capacity => (ErrorCode::QuotaExceeded, true),

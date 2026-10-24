@@ -120,6 +120,8 @@ pub enum Error {
         "The original topic was deleted and its name now belongs to a different topic"
     ))]
     TopicReplaced,
+    #[snafu(display("The resource catalog changed during pagination; start a new listing"))]
+    CatalogChanged,
     #[snafu(display("The SDK client is closed"))]
     Closed,
 }
@@ -144,7 +146,9 @@ impl Error {
             Self::Deadline => ErrorKind::DeadlineExceeded,
             Self::StaleDelivery => ErrorKind::StaleDelivery,
             Self::TopicReplaced => ErrorKind::NotFound,
-            Self::AcknowledgementInProgress | Self::SendInProgress => ErrorKind::Conflict,
+            Self::AcknowledgementInProgress | Self::SendInProgress | Self::CatalogChanged => {
+                ErrorKind::Conflict
+            }
             Self::SessionExpired
             | Self::SendRecoveryExpired
             | Self::CredentialSecretUnavailable { .. } => ErrorKind::RecoveryExpired,

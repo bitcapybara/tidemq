@@ -25,6 +25,29 @@ impl ResourceLimits {
     }
 }
 
+macro_rules! configured_limit {
+    ($name:ident, $ty:ty) => {
+        pub fn $name(&self) -> Option<$ty> {
+            (self.0.$name > 0).then_some(self.0.$name)
+        }
+    };
+}
+
+impl ResourceLimits {
+    configured_limit!(topics, u32);
+    configured_limit!(subscriptions, u32);
+    configured_limit!(principals, u32);
+    configured_limit!(credentials, u32);
+    configured_limit!(connections, u32);
+    configured_limit!(members, u32);
+    configured_limit!(backlog_bytes, u64);
+    configured_limit!(inflight_bytes, u64);
+    configured_limit!(inflight_messages, u64);
+    configured_limit!(publish_bytes_per_second, u64);
+    configured_limit!(consume_bytes_per_second, u64);
+    configured_limit!(cold_reads, u64);
+}
+
 macro_rules! limit {
     ($name:ident, $ty:ty) => {
         pub fn $name(mut self, value: $ty) -> Self {

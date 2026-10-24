@@ -18,6 +18,33 @@ use tidemq_protocol::{
 use tokio::time::Instant;
 
 impl Service {
+    pub(super) async fn identity_list_public(
+        &self,
+        access: &Access,
+        frame: &Frame,
+    ) -> Result<Frame> {
+        let credential = access
+            .principal
+            .strip_prefix("credential:")
+            .ok_or_else(forbidden)?
+            .parse()
+            .map_err(|_| forbidden())?;
+        let request =
+            tidemq_protocol::framing::decode_payload(frame.payload.clone(), &self.config.protocol)
+                .map_err(|source| Error::operation("decode identity listing", source))?;
+        let now_ms = super::data::unix_millis()?;
+        let page = self
+            .metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| state.auth().identity_page(credential, now_ms, &request))
+            .await
+            .map_err(|source| Error::operation("read authorized identity page", source))?
+            .map_err(super::metadata::metadata_rejection)?;
+        wire::response(frame, FrameKind::IdentityPage, &page, &self.config.protocol)
+    }
+
     pub(super) async fn identity_public(
         &self,
         access: &Access,

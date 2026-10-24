@@ -51,6 +51,8 @@ enum FrameKind {
   SUBSCRIPTION_ADMIN_RESULT = 84;
   REMOVE_TOPIC = 85;
   TOPIC_REMOVED = 86;
+  LIST_IDENTITIES = 87;
+  IDENTITY_PAGE = 88;
 }
 
 enum ErrorCode {

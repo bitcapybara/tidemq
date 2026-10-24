@@ -621,7 +621,7 @@ impl Service {
                     ));
                 }
             },
-            FrameKind::ManageIdentity => Permission::ManageCredentials,
+            FrameKind::ManageIdentity | FrameKind::ListIdentities => Permission::ManageCredentials,
             FrameKind::GetTopic | FrameKind::GetTopicLayout | FrameKind::Cancel => {
                 Permission::Inspect
             }
@@ -680,7 +680,10 @@ impl Service {
             FrameKind::PublisherControl => {
                 wire::id(&decode::<public::PublisherControl>(self, frame)?.topic_id)?
             }
-            FrameKind::Cancel | FrameKind::Diagnose | FrameKind::ManageIdentity => return Ok(None),
+            FrameKind::Cancel
+            | FrameKind::Diagnose
+            | FrameKind::ManageIdentity
+            | FrameKind::ListIdentities => return Ok(None),
             _ => super::data::partition(frame, &self.config.protocol)?.topic_id,
         };
         let (reply, _) = self

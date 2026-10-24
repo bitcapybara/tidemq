@@ -5,7 +5,7 @@ use tidemq_protocol::{Id, public};
 macro_rules! resource_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-        pub struct $name(Id);
+        pub struct $name(pub(crate) Id);
         impl std::fmt::Display for $name {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 self.0.fmt(formatter)

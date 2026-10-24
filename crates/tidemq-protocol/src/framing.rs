@@ -280,6 +280,8 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::CreateLogicalTopic
         | FrameKind::ManageIdentity
         | FrameKind::IdentityResult
+        | FrameKind::ListIdentities
+        | FrameKind::IdentityPage
         | FrameKind::ConsumerControl
         | FrameKind::ConsumerControlResult
         | FrameKind::SubscriptionAdmin

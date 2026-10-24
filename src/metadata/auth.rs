@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use tidemq_protocol::Id;
 
+#[path = "identity_list.rs"]
+mod listing;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Snafu)]
 pub enum AuthRejection {
     #[snafu(display("Authentication or authorization was rejected"))]

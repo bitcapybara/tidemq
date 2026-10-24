@@ -385,6 +385,7 @@ impl Service {
                 | FrameKind::GetTopicLayout
                 | FrameKind::ChangeTopicLayout
                 | FrameKind::ManageIdentity
+                | FrameKind::ListIdentities
                 | FrameKind::ConsumerControl
                 | FrameKind::SubscriptionAdmin
                 | FrameKind::RemoveTopic
