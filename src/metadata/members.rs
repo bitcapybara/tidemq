@@ -3,11 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use tidemq_protocol::{
     Id,
-    topic::{HashRange, InitialPosition, SubscriptionKind},
+    topic::{HashRange, InitialPosition, STREAM_FENCE_COUNT, STREAM_FENCE_SHIFT, SubscriptionKind},
 };
+
+mod lanes;
 
 pub const MEMBER_LEASE_MS: u64 = 15_000;
 pub const MEMBER_RECOVERY_MS: u64 = 620_000;
+const MIN_STREAM_LANES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MemberStatus {
@@ -93,6 +96,7 @@ pub struct MembersBook {
     committed: BTreeMap<Id, crate::subscription::MemberGrant>,
     plan_grants: Vec<crate::subscription::MemberGrant>,
     lane_fences: Vec<u64>,
+    lanes: Vec<HashRange>,
 }
 
 impl MembersBook {
@@ -125,7 +129,21 @@ impl MembersBook {
             committed: BTreeMap::new(),
             plan_grants: Vec::new(),
             lane_fences: if model == SubscriptionKind::Stream {
-                vec![0; 64]
+                vec![0; STREAM_FENCE_COUNT]
+            } else {
+                Vec::new()
+            },
+            lanes: if model == SubscriptionKind::Stream {
+                (0..MIN_STREAM_LANES as u64)
+                    .map(|index| HashRange {
+                        start: index << 62,
+                        end: if index + 1 == MIN_STREAM_LANES as u64 {
+                            None
+                        } else {
+                            Some((index + 1) << 62)
+                        },
+                    })
+                    .collect()
             } else {
                 Vec::new()
             },
@@ -497,7 +515,8 @@ impl MembersBook {
         } else {
             self.committed.values().cloned().collect()
         };
-        let desired = self.desired_grants(now)?;
+        self.resize_lanes(now)?;
+        let desired = self.desired_grants(now, &issued)?;
         self.plan.grant_after_ms = self.record_revocations(&issued, &desired, version, now)?;
         self.committed = issued
             .into_iter()
@@ -540,10 +559,17 @@ impl MembersBook {
                     if retained.is_some_and(|grant| grant.lanes.contains(lane)) {
                         continue;
                     }
-                    let index = usize::try_from(lane.start >> 58)
+                    let start = usize::try_from(lane.start >> STREAM_FENCE_SHIFT)
                         .map_err(|_| Rejection::InvalidEvidence)?;
-                    let fence = fences.get_mut(index).ok_or(Rejection::InvalidEvidence)?;
-                    *fence = (*fence).max(fence_version);
+                    let end = lane.end.map_or(STREAM_FENCE_COUNT, |end| {
+                        (end >> STREAM_FENCE_SHIFT) as usize
+                    });
+                    for fence in fences
+                        .get_mut(start..end)
+                        .ok_or(Rejection::InvalidEvidence)?
+                    {
+                        *fence = (*fence).max(fence_version);
+                    }
                     if let Some(member) = self.member(old.member, old.epoch)
                         && member.status.assigned()
                     {
@@ -580,8 +606,12 @@ impl MembersBook {
             .collect())
     }
 
-    fn desired_grants(&self, now: u64) -> Result<Vec<crate::subscription::MemberGrant>, Rejection> {
-        let lanes = self.lane_assignments(now)?;
+    fn desired_grants(
+        &self,
+        now: u64,
+        issued: &[crate::subscription::MemberGrant],
+    ) -> Result<Vec<crate::subscription::MemberGrant>, Rejection> {
+        let lanes = self.lane_assignments(now, issued)?;
         Ok(self
             .assigned(now)
             .map(|member| crate::subscription::MemberGrant {
@@ -595,40 +625,6 @@ impl MembersBook {
                 max_bytes: member.max_bytes,
             })
             .collect())
-    }
-
-    pub fn lane_assignments(&self, now: u64) -> Result<BTreeMap<Id, Vec<HashRange>>, Rejection> {
-        let members: Vec<_> = self.assigned(now).collect();
-        let mut result = BTreeMap::new();
-        if members.is_empty() || self.model == SubscriptionKind::Queue {
-            return Ok(result);
-        }
-        for index in 0..64_u64 {
-            let end = if index == 63 {
-                None
-            } else {
-                Some((index + 1) << 58)
-            };
-            let lane = HashRange {
-                start: index << 58,
-                end,
-            };
-            let owner = members
-                .iter()
-                .max_by_key(|member| {
-                    let mut hash = blake3::Hasher::new();
-                    hash.update(b"tidemq/stream-lane/v1\0");
-                    hash.update(&index.to_be_bytes());
-                    hash.update(member.member.as_bytes());
-                    *hash.finalize().as_bytes()
-                })
-                .ok_or(Rejection::InvalidEvidence)?;
-            result
-                .entry(owner.member)
-                .or_insert_with(Vec::new)
-                .push(lane);
-        }
-        Ok(result)
     }
 
     pub fn queue_worksets(&self, now: u64) -> Result<BTreeMap<Id, Vec<Id>>, Rejection> {
@@ -673,7 +669,7 @@ impl MembersBook {
             || self.plan.version == 0
             || self.lane_fences.len()
                 != if self.model == SubscriptionKind::Stream {
-                    64
+                    STREAM_FENCE_COUNT
                 } else {
                     0
                 }
@@ -695,6 +691,7 @@ impl MembersBook {
         {
             return Err(Rejection::InvalidEvidence);
         }
+        self.validate_lanes()?;
         let mut live = BTreeSet::new();
         for ((id, epoch), record) in &self.members {
             if *id != record.info.member

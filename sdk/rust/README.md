@@ -65,6 +65,8 @@ Connection limits count physical connections across gateways and traffic classes
 
 ## Sending and receiving
 
+Stream lanes are independent of storage shards. The server keeps a bounded, sticky range assignment, splits or merges lanes as membership changes, and fences only changed ranges before granting them again. The initial four lanes and 128-lane cap are functional defaults awaiting later capacity calibration.
+
 `send` accepts `Into<Message>`: use `producer.send("hello").await?` for a plain message, or `Message` for keys and properties. Success means durable data Raft commitment. One logical producer concurrently sends to multiple shards; use a bounded task pool or FuturesOrdered/FuturesUnordered to drive concurrent calls. Awaiting each call before creating the next call deliberately serializes the application.
 
 Stream preserves effective delivery order for the same key. Only Stream provides cumulative ACK, which covers the application's shared delivery prefix, including messages received through other clones. Coordinate concurrent business work before advancing that prefix. Queue distributes each message to one member and provides individual `ack` and `nack(message, delay)`. NACK durably schedules redelivery; it does not acknowledge successful processing. Delivery is at least once, so business effects should be idempotent.

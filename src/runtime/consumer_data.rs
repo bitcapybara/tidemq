@@ -26,6 +26,73 @@ use crate::{
 
 pub(super) const GROUP_CONTROL: u32 = 1_003;
 
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    use tidemq_protocol::topic::{HashRange, STREAM_FENCE_COUNT, STREAM_FENCE_SHIFT};
+
+    #[test]
+    fn maximum_member_install_fits_the_internal_control_frame() {
+        let id = Id::new_v7().unwrap();
+        let grants = (0..STREAM_FENCE_COUNT)
+            .map(|index| MemberGrant {
+                member: Id::new_v7().unwrap(),
+                client: id,
+                credential: id,
+                epoch: u64::MAX,
+                expires_ms: u64::MAX,
+                max_messages: 256,
+                max_bytes: 8 * 1024 * 1024,
+                lanes: vec![HashRange {
+                    start: (index as u64) << STREAM_FENCE_SHIFT,
+                    end: if index + 1 == STREAM_FENCE_COUNT {
+                        None
+                    } else {
+                        Some(((index + 1) as u64) << STREAM_FENCE_SHIFT)
+                    },
+                }],
+            })
+            .collect();
+        let request = Request::typed(
+            GROUP_CONTROL,
+            &Control::Install {
+                partition: PartitionKey {
+                    topic_id: id,
+                    partition: u32::MAX,
+                },
+                shard: id,
+                subscription: id,
+                model: SubscriptionKind::Stream,
+                initial: InitialPosition::EarliestAvailable,
+                version: u64::MAX,
+                grants,
+                blocked: true,
+            },
+        )
+        .unwrap();
+        let limits = tidemq_protocol::ProtocolLimits::default();
+        let envelope = tidemq_protocol::internal::InternalCommand {
+            group_id: u64::MAX,
+            operation_id: Bytes::copy_from_slice(id.as_bytes()),
+            encoded_command: tidemq_protocol::framing::encode_payload(
+                &request,
+                limits.max_control_frame_bytes,
+            )
+            .unwrap(),
+        };
+        tidemq_protocol::framing::new_frame(
+            FrameKind::InternalCommand,
+            tidemq_protocol::common::TrafficClass::Control,
+            id,
+            id,
+            &envelope,
+            30_000,
+            &limits,
+        )
+        .unwrap();
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 enum Control {
     Delete {

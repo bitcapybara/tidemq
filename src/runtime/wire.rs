@@ -19,6 +19,9 @@ pub(crate) const OWNERSHIP: u32 = 2;
 pub(crate) const FORWARD: u32 = 3;
 pub(crate) const LEADER: u32 = 4;
 
+// A full 128-member grant plan needs room for maximum-width counters and both RPC envelopes.
+const MAX_TYPED_BYTES: usize = 14 * 1024;
+
 pub(super) fn native_leader<A: crate::replication::Application>(
     raft: &crate::replication::Raft<A>,
 ) -> Option<u64> {
@@ -78,7 +81,7 @@ pub(crate) fn json<T: Serialize>(value: &T) -> Result<Bytes> {
 pub(crate) fn binary<T: Serialize>(value: &T) -> Result<Bytes> {
     let bytes = postcard::to_stdvec(value)
         .map_err(|source| Error::operation("encode internal typed value", source))?;
-    if bytes.len() > 12 * 1024 {
+    if bytes.len() > MAX_TYPED_BYTES {
         return Err(Error::invalid(
             "Internal typed value exceeds its finite bound",
         ));
@@ -87,7 +90,7 @@ pub(crate) fn binary<T: Serialize>(value: &T) -> Result<Bytes> {
 }
 
 pub(crate) fn decode_binary<T: DeserializeOwned>(value: &[u8]) -> Result<T> {
-    if value.len() > 12 * 1024 {
+    if value.len() > MAX_TYPED_BYTES {
         return Err(Error::invalid(
             "Internal typed value exceeds its finite bound",
         ));

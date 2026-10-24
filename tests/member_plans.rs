@@ -282,7 +282,7 @@ fn an_abandoned_handoff_keeps_its_revocation_history_and_original_lease_bound() 
     .unwrap();
     let regained = book.plan().version;
     assert_eq!(regained, 4);
-    assert!(book.grants(203).unwrap()[0].lanes.len() < 64);
+    assert!(book.grants(203).unwrap()[0].lanes.len() < 4);
     book.heartbeat(
         id(),
         MemberHeartbeat {
@@ -305,9 +305,9 @@ fn an_abandoned_handoff_keeps_its_revocation_history_and_original_lease_bound() 
             .unwrap();
     }
     assert!(book.plan().fenced);
-    assert!(book.grants(1001).unwrap()[0].lanes.len() < 64);
+    assert!(book.grants(1001).unwrap()[0].lanes.len() < 4);
     activate(&mut book, 15_100);
-    assert_eq!(book.grants(15_100).unwrap()[0].lanes.len(), 64);
+    assert_eq!(book.grants(15_100).unwrap()[0].lanes.len(), 4);
     assert!(book.lane_fences().contains(&6));
     book.validate().unwrap();
     let fresh = MembersBook::new(
@@ -370,4 +370,119 @@ fn a_concurrent_join_conflict_proves_the_epoch_was_used_by_a_different_member() 
         Err(Rejection::MemberEpochConflict { expected: 2 })
     );
     book.validate().unwrap();
+}
+
+#[test]
+fn stream_lanes_resize_independently_of_storage_and_keep_unaffected_owners() {
+    let domains = vec![id()];
+    let mut book = MembersBook::new(
+        id(),
+        SubscriptionKind::Stream,
+        InitialPosition::Latest,
+        1,
+        domains.clone(),
+    )
+    .unwrap();
+    activate(&mut book, 0);
+    let mut previous = Vec::new();
+    let mut last = None;
+    for count in 1..=5 {
+        let now = count as u64 * 100;
+        let (_, request) = join(&mut book, id(), id(), id(), now);
+        activate(&mut book, now);
+        let grants = book.grants(now).unwrap();
+        assert_eq!(
+            grants.iter().map(|grant| grant.lanes.len()).sum::<usize>(),
+            count.max(4)
+        );
+        assert!(grants.iter().all(|grant| !grant.lanes.is_empty()));
+        assert_eq!(book.plan().domains, domains);
+        if count == 4 {
+            previous = grants;
+        }
+        last = Some(request);
+    }
+    let current = book.grants(100).unwrap();
+    let unchanged = previous
+        .iter()
+        .filter(|old| {
+            current.iter().any(|new| {
+                old.member == new.member && old.epoch == new.epoch && old.lanes == new.lanes
+            })
+        })
+        .count();
+    assert_eq!(
+        unchanged, 3,
+        "Only the split range may move on a one-member join"
+    );
+    let request = last.unwrap();
+    book.leave(
+        id(),
+        request.member,
+        request.expected_epoch,
+        request.client,
+        request.credential,
+        101,
+    )
+    .unwrap();
+    activate(&mut book, 101);
+    assert_eq!(
+        book.grants(101)
+            .unwrap()
+            .iter()
+            .map(|grant| grant.lanes.len())
+            .sum::<usize>(),
+        4
+    );
+    let recovered: MembersBook =
+        postcard::from_bytes(&postcard::to_stdvec(&book).unwrap()).unwrap();
+    recovered.validate().unwrap();
+    assert_eq!(book, recovered);
+}
+
+#[test]
+fn stream_lane_capacity_and_revocation_atoms_remain_bounded_through_full_membership_churn() {
+    let mut book = MembersBook::new(
+        id(),
+        SubscriptionKind::Stream,
+        InitialPosition::Latest,
+        1,
+        vec![id()],
+    )
+    .unwrap();
+    activate(&mut book, 0);
+    let mut requests = Vec::new();
+    for index in 1..=128 {
+        let now = index * 100;
+        let (_, request) = join(&mut book, id(), id(), id(), now);
+        activate(&mut book, now);
+        book.validate().unwrap();
+        requests.push(request);
+    }
+    assert_eq!(book.grants(12_800).unwrap().len(), 128);
+    assert!(
+        book.grants(12_800)
+            .unwrap()
+            .iter()
+            .all(|grant| grant.lanes.len() == 1)
+    );
+    for (index, request) in requests.into_iter().enumerate().rev() {
+        book.leave(
+            id(),
+            request.member,
+            request.expected_epoch,
+            request.client,
+            request.credential,
+            12_801,
+        )
+        .unwrap();
+        activate(&mut book, 12_801);
+        book.validate().unwrap();
+        assert_eq!(book.grants(12_801).unwrap().len(), index);
+    }
+    assert!(book.grants(12_801).unwrap().is_empty());
+    assert_eq!(
+        book.lane_fences().len(),
+        tidemq_protocol::topic::STREAM_FENCE_COUNT
+    );
 }

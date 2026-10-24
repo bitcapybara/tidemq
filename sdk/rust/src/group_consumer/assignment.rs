@@ -50,7 +50,7 @@ impl Core {
             || info.plan_active && !info.assignment_fenced
             || info.lane_fences.len()
                 != if self.model == SubscriptionKind::Stream {
-                    64
+                    tidemq_protocol::topic::STREAM_FENCE_COUNT
                 } else {
                     0
                 }
@@ -69,15 +69,18 @@ fn valid_lanes(model: SubscriptionKind, lanes: &[public::ConsumerLane]) -> bool 
     if model == SubscriptionKind::Queue {
         return lanes.is_empty();
     }
-    lanes.len() <= 64
+    let atom = 1 << tidemq_protocol::topic::STREAM_FENCE_SHIFT;
+    lanes.len() <= tidemq_protocol::topic::STREAM_FENCE_COUNT
         && lanes.iter().all(|lane| {
-            lane.hash_start.is_multiple_of(1 << 58)
-                && lane.hash_end == lane.hash_start.checked_add(1 << 58)
+            lane.hash_start.is_multiple_of(atom)
+                && lane
+                    .hash_end
+                    .is_none_or(|end| end > lane.hash_start && end.is_multiple_of(atom))
         })
         && lanes.windows(2).all(|pair| {
-            pair.first()
-                .zip(pair.get(1))
-                .is_some_and(|(left, right)| left.hash_start < right.hash_start)
+            pair.first().zip(pair.get(1)).is_some_and(|(left, right)| {
+                left.hash_end.is_some_and(|end| end <= right.hash_start)
+            })
         })
 }
 
@@ -98,7 +101,7 @@ fn revocation(
     }
     let fence = info
         .lane_fences
-        .get((data.hash >> 58) as usize)
+        .get((data.hash >> tidemq_protocol::topic::STREAM_FENCE_SHIFT) as usize)
         .copied()
         .ok_or(Error::Closed)?;
     Ok((data.assignment_version < fence).then_some(fence))

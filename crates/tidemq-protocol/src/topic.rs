@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 
 use crate::{Error, Id, Result};
 
+/// Fixed revocation atoms allow logical lanes to split without invalidating other ranges.
+pub const STREAM_FENCE_COUNT: usize = 128;
+pub const STREAM_FENCE_SHIFT: u32 = 57;
+
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MessageMetadata {
     pub key_present: bool,
