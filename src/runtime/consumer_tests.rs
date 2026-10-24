@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
     KeyPair, KeyUsagePurpose,
@@ -16,7 +17,7 @@ use tidemq_protocol::{
     framing::decode_payload,
     public,
 };
-use tidemq_sdk::{Bytes, Client};
+use tidemq_sdk::Client;
 use tokio::{sync::Notify, time::Instant};
 
 use super::super::{Error, data::unix_millis, service::Service};
@@ -144,7 +145,7 @@ async fn access(service: &Service, frame: &Frame) -> crate::gateway::Access {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn committed_consumer_mutation_expiry_preserves_unknown_semantics_and_source() {
     let (fixture, client) = setup().await;
-    let topic = client.admin().create_logical_topic(TOPIC).await.unwrap();
+    let topic = client.admin().create_topic(TOPIC).await.unwrap();
     let queue = client
         .new_queue_consumer(TOPIC, "durable")
         .build()
@@ -221,7 +222,7 @@ async fn an_advanced_logical_retention_floor_rejects_expired_positions() {
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    let topic = client.admin().create_logical_topic(TOPIC).await.unwrap();
+    let topic = client.admin().create_topic(TOPIC).await.unwrap();
     let queue = client
         .new_queue_consumer(TOPIC, "durable")
         .build()

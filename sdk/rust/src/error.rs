@@ -105,26 +105,12 @@ pub enum Error {
     },
     #[snafu(display("Invalid server response: {reason}"))]
     ResponseMismatch { reason: String },
-    #[snafu(display("Producer has unresolved batches; retry their original identities first"))]
-    ProducerBlocked,
+    #[snafu(display("Send result is still being resolved"))]
+    SendInProgress,
     #[snafu(display("Producer session has expired; unresolved outcomes cannot be recreated"))]
     SessionExpired,
-    #[snafu(display(
-        "Producer registration result is unknown for {producer_id} at epoch {registration_epoch}"
-    ))]
-    RegistrationUnknown {
-        producer_id: tidemq_protocol::Id,
-        registration_epoch: u64,
-        source: Box<Error>,
-    },
-    #[snafu(display(
-        "Producer result is unknown; inspect pending_batches and retry the original batch"
-    ))]
-    ProduceUnknown { source: Box<Error> },
     #[snafu(display("Delivery belongs to an obsolete assignment"))]
     StaleDelivery,
-    #[snafu(display("A failed delivery blocks this key until the application retries it"))]
-    KeyBlocked,
     #[snafu(display("The SDK client is closed"))]
     Closed,
 }
@@ -138,9 +124,7 @@ impl Error {
             | Self::SendUnresolved { source, .. }
             | Self::BatchSendInterrupted { source, .. }
             | Self::SendNotSubmitted { source } => source.kind(),
-            Self::RequestUnknown { source }
-            | Self::ProduceUnknown { source }
-            | Self::RegistrationUnknown { source, .. } => source.kind(),
+            Self::RequestUnknown { source } => source.kind(),
             Self::Configuration { .. } | Self::Material { .. } | Self::Memory { .. } => {
                 ErrorKind::InvalidArgument
             }
@@ -149,9 +133,7 @@ impl Error {
             Self::Cancelled => ErrorKind::Cancelled,
             Self::Deadline => ErrorKind::DeadlineExceeded,
             Self::StaleDelivery => ErrorKind::StaleDelivery,
-            Self::AcknowledgementInProgress | Self::ProducerBlocked | Self::KeyBlocked => {
-                ErrorKind::Conflict
-            }
+            Self::AcknowledgementInProgress | Self::SendInProgress => ErrorKind::Conflict,
             Self::SessionExpired
             | Self::SendRecoveryExpired
             | Self::CredentialSecretUnavailable { .. } => ErrorKind::RecoveryExpired,
@@ -252,10 +234,7 @@ impl Error {
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }
             | Self::BatchSendInterrupted { source, .. } => source.outcome_unknown(),
-            Self::ProduceUnknown { .. }
-            | Self::SendRecoveryExpired
-            | Self::RegistrationUnknown { .. }
-            | Self::RequestUnknown { .. } => true,
+            Self::SendRecoveryExpired | Self::RequestUnknown { .. } => true,
             Self::Transport { source } => transient_transport(source),
             Self::Rpc { source } => match source {
                 tidemq_transport::rpc::Error::Closed

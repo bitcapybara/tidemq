@@ -6,10 +6,7 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    time::Instant,
-};
+use tokio::{io::AsyncWriteExt, time::Instant};
 
 pub struct Output(PathBuf);
 
@@ -150,22 +147,6 @@ pub fn request_deadline(total: Instant) -> Result<Instant> {
     ))
 }
 
-pub async fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let file = tokio::fs::File::open(path)
-        .await
-        .context("Open bounded credential file")?;
-    let cap = limit.checked_add(1).context("File read bound overflow")?;
-    let mut bytes = Vec::new();
-    file.take(u64::try_from(cap)?)
-        .read_to_end(&mut bytes)
-        .await?;
-    ensure!(
-        bytes.len() <= limit,
-        "Credential file exceeded its size bound"
-    );
-    Ok(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,7 +155,7 @@ mod tests {
     async fn private_atomic_outputs_reject_reuse_and_oversized_or_symlink_markers() {
         let path = std::env::temp_dir().join(format!(
             "tidemq-deploy-output-{}",
-            tidemq_sdk::Id::new_v7().unwrap()
+            tidemq_protocol::Id::new_v7().unwrap()
         ));
         let output = Output::create(&path).await.unwrap();
         assert!(Output::create(&path).await.is_err());

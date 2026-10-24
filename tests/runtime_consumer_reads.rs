@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
     KeyPair, KeyUsagePurpose,
@@ -17,7 +18,8 @@ use tidemq::{
         test_hooks::{InstalledPause, InstalledReadFault},
     },
 };
-use tidemq_sdk::{Bytes, Client, Id};
+use tidemq_protocol::Id;
+use tidemq_sdk::Client;
 use tokio::time::Instant;
 
 // Shared fixtures provide the same private credentials and runtime configuration as the fault suites.
@@ -39,7 +41,7 @@ static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 struct ReadFixture {
     runtime: Fixture,
     client: Client,
-    producer: tidemq_sdk::TopicProducer,
+    producer: tidemq_sdk::Producer,
     partition: PartitionKey,
     expected: HashMap<tidemq_sdk::MessageId, u64>,
 }
@@ -56,7 +58,7 @@ impl ReadFixture {
             .create_namespace(tenant, "app")
             .await
             .unwrap();
-        let topic = client.admin().create_logical_topic(TOPIC).await.unwrap();
+        let topic = client.admin().create_topic(TOPIC).await.unwrap();
         let partition = PartitionKey {
             topic_id: topic.id().to_string().parse().unwrap(),
             partition: 0,

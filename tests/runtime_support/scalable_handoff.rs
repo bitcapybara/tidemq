@@ -11,7 +11,7 @@ async fn a_live_queue_member_keeps_unacknowledged_work_past_cached_data_lease_ex
         .await
         .unwrap();
     let topic = "acme/app/held-work";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let first = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)
@@ -61,7 +61,7 @@ async fn a_stream_handoff_keeps_cumulative_ack_usable_for_retained_ranges() {
         .await
         .unwrap();
     let topic = "acme/app/ack-handoff";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let first = client
         .new_stream_consumer(topic, "history")
         .prefetch_messages(64)
@@ -130,7 +130,7 @@ async fn a_stream_handoff_stops_disconnected_members_from_delivering_old_prefetc
     let tenant = admin.admin().create_tenant("acme").await.unwrap();
     admin.admin().create_namespace(tenant, "app").await.unwrap();
     let topic = "acme/app/handoff";
-    admin.admin().create_logical_topic(topic).await.unwrap();
+    admin.admin().create_topic(topic).await.unwrap();
     let backend = fixture.configs.get(&1).unwrap().listen;
     let proxy = udp_proxy::Proxy::start([backend, backend]).await;
     let client = Client::builder(

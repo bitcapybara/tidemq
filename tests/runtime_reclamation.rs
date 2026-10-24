@@ -5,6 +5,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::Bytes;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
     KeyPair, KeyUsagePurpose,
@@ -14,7 +15,8 @@ use tidemq::{
     metadata::PartitionKey,
     runtime::{GroupConfig, PeerConfig, RunningNode, RuntimeConfig, test_hooks::InstalledPause},
 };
-use tidemq_sdk::{Bytes, Client, Id};
+use tidemq_protocol::Id;
+use tidemq_sdk::Client;
 use tokio::time::Instant;
 
 // Shared fixtures also provide helpers exercised by the other runtime suites.
@@ -66,7 +68,7 @@ async fn run_reclaimed_read(paused_offset: u64) {
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    let topic = client.admin().create_logical_topic(TOPIC).await.unwrap();
+    let topic = client.admin().create_topic(TOPIC).await.unwrap();
     let partition = PartitionKey {
         topic_id: topic.id().to_string().parse().unwrap(),
         partition: 0,

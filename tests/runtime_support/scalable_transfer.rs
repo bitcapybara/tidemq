@@ -13,7 +13,7 @@ async fn a_cancelled_transfer_waiter_resumes_the_original_manifest_automatically
         .await
         .unwrap();
     let topic = "acme/app/resumable";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)
@@ -141,7 +141,7 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         .await
         .unwrap();
     let topic = "acme/app/transferred-cold";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)
@@ -402,7 +402,7 @@ async fn an_independent_three_replica_target_snapshots_every_voter_before_source
         .await
         .unwrap();
     let topic = "acme/app/independent";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)
@@ -516,7 +516,7 @@ async fn online_stream_and_queue_keep_original_deliveries_across_authority_trans
         .await
         .unwrap();
     let topic = "acme/app/transferred";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)

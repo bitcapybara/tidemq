@@ -22,7 +22,7 @@ curl --fail http://127.0.0.1:8410/metrics
 
 `/healthz` 表示进程能响应，`/readyz` 还检查权威与新鲜容量；启动初期可能尚未 ready。SDK 连接 `127.0.0.1:7410`，TLS 服务名 `node-1.local`，信任生成目录的 `ca.pem`，访问令牌读取 `access.token`。不要输出或提交令牌和私钥。
 
-同仓库的 [Rust SDK 指南](rust-sdk.zh-CN.md)提供 `Client → Admin → Producer → Consumer` 的实际网络用法。先创建 Topic 和订阅，再提交消息；Producer 成功表示 WAL quorum 持久提交，业务处理完成后 `ack()` 成功才表示持久 ACK。冷读的接收屏障不代替业务 ACK。未知生产结果保留 `PendingBatch` 原身份重试，详情见[生产指南](production.zh-CN.md)。
+同仓库的 [Rust SDK 指南](rust-sdk.zh-CN.md)提供 `Client → Producer / StreamConsumer / QueueConsumer` 的实际网络用法。先创建 Topic 和订阅，再提交消息；Producer 成功表示 WAL quorum 持久提交，业务处理完成后 `ack()` 成功才表示持久 ACK。网络收包和冷读不代替业务 ACK。未知生产结果通过原 `PendingSend::retry()` 恢复，详情见[生产指南](production.zh-CN.md)。
 
 不配置对象存储时仍可运行热数据路径；达到有界热数据或物理容量上限会拒绝新写。需要冷数据和本地正文回收时，按[本地 RustFS](../operations/local-rustfs.zh-CN.md)创建隔离后端，再添加运行指南中的 S3 配置。
 

@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "scalable_deletion.rs"]
 mod deletion;
+#[path = "scalable_deploy.rs"]
+mod deploy;
 #[path = "scalable_handoff.rs"]
 mod handoff;
 #[path = "scalable_message_limits.rs"]
@@ -51,7 +53,7 @@ async fn stream_and_queue_recover_archived_context_and_nack_after_local_reclaim_
         .await
         .unwrap();
     let topic = "acme/app/cold";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .build()
@@ -194,7 +196,7 @@ async fn logical_topic_split_merge_and_credentials_survive_a_real_runtime_restar
         .unwrap();
     let topic = client
         .admin()
-        .create_logical_topic("acme/app/orders")
+        .create_topic("acme/app/orders")
         .await
         .unwrap();
     assert_eq!(topic.shard_count(), 1);
@@ -258,14 +260,8 @@ async fn tenant_namespace_authorization_is_checked_on_each_resource() {
     let namespace = root.admin().create_namespace(tenant, "app").await.unwrap();
     let other = root.admin().create_tenant("other").await.unwrap();
     root.admin().create_namespace(other, "app").await.unwrap();
-    root.admin()
-        .create_logical_topic("acme/app/orders")
-        .await
-        .unwrap();
-    root.admin()
-        .create_logical_topic("other/app/orders")
-        .await
-        .unwrap();
+    root.admin().create_topic("acme/app/orders").await.unwrap();
+    root.admin().create_topic("other/app/orders").await.unwrap();
     let principal = root
         .admin()
         .new_principal(tenant, "reader", [tidemq_sdk::Permission::Consume])
@@ -304,11 +300,7 @@ async fn consumers_finish_paginated_domain_installation_and_retire_cleanly() {
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    client
-        .admin()
-        .create_logical_topic("acme/app/paged")
-        .await
-        .unwrap();
+    client.admin().create_topic("acme/app/paged").await.unwrap();
     for boundary in 1..=17_u64 {
         client
             .admin()
@@ -353,11 +345,7 @@ async fn queue_members_share_messages_and_a_persistent_nack_redelivers_after_lea
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    client
-        .admin()
-        .create_logical_topic("acme/app/jobs")
-        .await
-        .unwrap();
+    client.admin().create_topic("acme/app/jobs").await.unwrap();
     let first = client
         .new_queue_consumer("acme/app/jobs", "workers")
         .prefetch_messages(1)
@@ -440,7 +428,7 @@ async fn stream_clones_share_an_application_prefix_and_reject_a_queue_model_reus
         .unwrap();
     client
         .admin()
-        .create_logical_topic("acme/app/events")
+        .create_topic("acme/app/events")
         .await
         .unwrap();
     let stream = client
@@ -517,7 +505,7 @@ async fn cancelling_a_client_close_waiter_does_not_cancel_member_cleanup() {
         .unwrap();
     client
         .admin()
-        .create_logical_topic("acme/app/events")
+        .create_topic("acme/app/events")
         .await
         .unwrap();
     let stream = client
@@ -563,11 +551,7 @@ async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() 
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    client
-        .admin()
-        .create_logical_topic("acme/app/jobs")
-        .await
-        .unwrap();
+    client.admin().create_topic("acme/app/jobs").await.unwrap();
     let queue = client
         .new_queue_consumer("acme/app/jobs", "workers")
         .prefetch_messages(4)
@@ -624,7 +608,8 @@ async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() 
 }
 
 fn recoverable_member_error(error: &tidemq_sdk::Error) -> bool {
-    use tidemq_sdk::{Error, common::ErrorCode};
+    use tidemq_protocol::common::ErrorCode;
+    use tidemq_sdk::Error;
     error.outcome_unknown()
         || match error {
             Error::Background { source } => recoverable_member_error(source),
@@ -654,7 +639,7 @@ async fn logical_producer_clones_send_batches_across_a_split_and_preserve_messag
         .unwrap();
     client
         .admin()
-        .create_logical_topic("acme/app/messages")
+        .create_topic("acme/app/messages")
         .await
         .unwrap();
     let queue = client
@@ -745,7 +730,7 @@ async fn a_stream_preserves_the_admitted_key_order_across_a_split() {
         .unwrap();
     client
         .admin()
-        .create_logical_topic("acme/app/ordered")
+        .create_topic("acme/app/ordered")
         .await
         .unwrap();
     let stream = client
@@ -801,7 +786,7 @@ async fn cancelling_a_send_waiter_keeps_its_original_owned_send_and_result() {
     admin.admin().create_namespace(tenant, "app").await.unwrap();
     admin
         .admin()
-        .create_logical_topic("acme/app/cancelled-send")
+        .create_topic("acme/app/cancelled-send")
         .await
         .unwrap();
     let backend = fixture.configs.get(&1).unwrap().listen;

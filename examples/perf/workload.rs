@@ -1,15 +1,17 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
+use bytes::Bytes;
 use serde::Serialize;
+use tidemq_protocol::Id;
 use tidemq_sdk::{
-    Bytes, Client, Consumer, ConsumerConfig, Id, ProduceReceipt, Producer, RequestContext, public,
+    AckReceipt, Client, Message, MessageId, Producer, QueueConsumer, RequestContext, SendReceipt,
 };
 use tokio::{
     sync::{Mutex, watch},
@@ -32,7 +34,7 @@ pub struct PhaseReport {
     pub planned_messages: u64,
     pub committed_messages: u64,
     pub acknowledged_messages: u64,
-    pub durable_acknowledged_before: u64,
+    pub durable_acknowledged_messages: u64,
     pub logical_bytes: u64,
     pub committed_logical_bytes: u64,
     pub acknowledged_logical_bytes: u64,
@@ -93,10 +95,9 @@ enum Background {
 
 struct Prepared {
     name: String,
-    topic: Id,
-    subscription: Id,
+    topic: String,
     producers: Vec<Producer>,
-    consumer: Option<Consumer>,
+    consumer: Option<QueueConsumer>,
 }
 
 #[derive(Serialize)]
@@ -146,28 +147,20 @@ pub async fn group(
 }
 
 async fn prepare(client: &Client, args: &Args, label: &str, run: Id) -> Result<Prepared> {
-    let name = format!("perf-{run}-{label}");
-    let topic = client.admin().create_topic(&name, 1).await?;
-    let topic = Id::from_slice(&topic.topic_id)?;
-    let subscription = client
-        .admin()
-        .create_subscription(topic, "load", 0, public::DeliveryMode::Parallel)
-        .await?;
-    let subscription = Id::from_slice(&subscription.subscription_id)?;
-    let mut producers = Vec::new();
-    producers.try_reserve_exact(args.workers)?;
-    for _ in 0..args.workers {
-        producers.push(open(client, topic).await?);
-    }
+    let name = format!("validation/default/perf-{run}-{label}");
+    client.admin().create_topic(&name).await?;
+    let producer = client.new_producer(&name).build().await?;
+    let producers = vec![producer; args.workers];
+    let consumer = join(client, &name).await?;
     let consumer = if matches!(args.mode, Mode::Live) {
-        Some(claim(client, topic, subscription).await?)
+        Some(consumer)
     } else {
+        consumer.close().await?;
         None
     };
     Ok(Prepared {
+        topic: name.clone(),
         name,
-        topic,
-        subscription,
         producers,
         consumer,
     })
@@ -185,7 +178,6 @@ async fn phase(
     let Prepared {
         name,
         topic,
-        subscription,
         producers,
         consumer,
     } = prepared;
@@ -228,8 +220,7 @@ async fn phase(
         deadline,
         count,
         consumer,
-        topic,
-        subscription,
+        &topic,
         run,
         offer_offset_ms,
     )
@@ -277,16 +268,20 @@ async fn phase(
     for producer in producers {
         if Instant::now() >= cleanup_deadline {
             terminal_error.get_or_insert(
-                "Producer retirement exceeded the shared five-second cleanup budget".into(),
+                "Producer close exceeded the shared five-second cleanup budget".into(),
             );
             break;
         }
-        if let Err(error) = RequestContext::with_deadline(cleanup_deadline)
-            .scope(producer.retire())
-            .await
-        {
-            let error = anyhow::Error::new(error);
-            terminal_error.get_or_insert(format!("Producer retirement failed: {error:#}"));
+        match tokio::time::timeout_at(cleanup_deadline, producer.close()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                let error = anyhow::Error::new(error);
+                terminal_error.get_or_insert(format!("Producer close failed: {error:#}"));
+            }
+            Err(error) => {
+                terminal_error
+                    .get_or_insert(format!("Producer close exceeded its deadline: {error:#}"));
+            }
         }
     }
     let resource_summary = sample::summarize(&resources);
@@ -306,7 +301,7 @@ async fn phase(
         planned_messages: count,
         committed_messages: produce.messages,
         acknowledged_messages: consume.acknowledged,
-        durable_acknowledged_before: consume.frontier,
+        durable_acknowledged_messages: consume.frontier,
         logical_bytes: count
             .checked_mul(u64::try_from(args.message_bytes + 8)?)
             .context("Logical byte count overflow")?,
@@ -349,7 +344,7 @@ fn client_metrics(client: &Client) -> serde_json::Value {
         "requests":snapshot.requests,"retries":snapshot.retries,"unknown":snapshot.unknown,
         "deliveries":snapshot.deliveries,"acknowledged":snapshot.acknowledged,
         "request_duration_ns":snapshot.request_duration_ns,"admission_wait_ns":snapshot.admission_wait_ns,
-        "admitted_bytes":snapshot.admitted_bytes,"pending_batches":snapshot.pending_batches,"active_deliveries":snapshot.active_deliveries,
+        "admitted_bytes":snapshot.admitted_bytes,"pending_sends":snapshot.pending_sends,"active_deliveries":snapshot.active_deliveries,
     })
 }
 
@@ -363,36 +358,19 @@ async fn produce_all(
     started: Instant,
     deadline: Instant,
     count: u64,
-    consumer: Option<Consumer>,
-    topic: Id,
-    subscription: Id,
+    consumer: Option<QueueConsumer>,
+    topic: &str,
     run: Id,
     offer_offset_ms: u64,
 ) -> Result<(ProduceStats, ConsumeStats, u64)> {
-    let done = Arc::new(AtomicBool::new(false));
     let mut consuming = JoinSet::new();
     if let Some(consumer) = consumer {
-        let client = client.clone();
         let args = args.clone();
-        let done = done.clone();
-        consuming.spawn(async move {
-            consume(
-                consumer,
-                client,
-                &args,
-                started,
-                deadline,
-                count,
-                topic,
-                subscription,
-                run,
-                done,
-            )
-            .await
-        });
+        consuming
+            .spawn(async move { consume(consumer, &args, started, deadline, count, run).await });
     }
     let next = Arc::new(AtomicU64::new(0));
-    let offsets = Arc::new(Mutex::new(Seen::new(count)?));
+    let offsets = Arc::new(Mutex::new(std::collections::HashSet::<MessageId>::new()));
     let mut workers = JoinSet::new();
     for (worker, producer) in producers.iter().enumerate() {
         let args = args.clone();
@@ -437,7 +415,6 @@ async fn produce_all(
         }
     }
     let elapsed = nanos(started.elapsed())?;
-    done.store(true, Ordering::Release);
     if matches!(args.mode, Mode::Replay) {
         tokio::time::sleep_until(
             deadline.min(
@@ -447,24 +424,10 @@ async fn produce_all(
             ),
         )
         .await;
-        let consumer = claim(client, topic, subscription).await?;
-        let client = client.clone();
+        let consumer = join(client, topic).await?;
         let args = args.clone();
-        consuming.spawn(async move {
-            consume(
-                consumer,
-                client,
-                &args,
-                started,
-                deadline,
-                count,
-                topic,
-                subscription,
-                run,
-                done,
-            )
-            .await
-        });
+        consuming
+            .spawn(async move { consume(consumer, &args, started, deadline, count, run).await });
     }
     let consumed = consuming
         .join_next()
@@ -473,35 +436,14 @@ async fn produce_all(
     Ok((produced, consumed, elapsed))
 }
 
-async fn open(client: &Client, topic: Id) -> Result<Producer> {
-    let producer = Id::new_v7()?;
-    match Producer::open(client.clone(), topic, 0, producer).await {
-        Ok(producer) => Ok(producer),
-        Err(tidemq_sdk::Error::RegistrationUnknown {
-            producer_id,
-            registration_epoch,
-            ..
-        }) => {
-            // The original identity is preserved; no new producer is registered after an unknown result.
-            Ok(
-                Producer::open_at(client.clone(), topic, 0, producer_id, registration_epoch)
-                    .await?,
-            )
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-async fn claim(client: &Client, topic: Id, subscription: Id) -> Result<Consumer> {
-    Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        ConsumerConfig::default(),
-    )
-    .await
-    .context("Claim performance consumer assignment")
+async fn join(client: &Client, topic: &str) -> Result<QueueConsumer> {
+    client
+        .new_queue_consumer(topic, "load")
+        .prefetch_messages(256)
+        .prefetch_bytes(4 * 1024 * 1024)
+        .build()
+        .await
+        .context("Join performance queue")
 }
 
 // Worker inputs belong to one fixed phase and are not retained between runs.
@@ -511,7 +453,7 @@ async fn produce(
     args: &Args,
     worker: usize,
     next: Arc<AtomicU64>,
-    offsets: Arc<Mutex<Seen>>,
+    offsets: Arc<Mutex<std::collections::HashSet<MessageId>>>,
     started: Instant,
     deadline: Instant,
     count: u64,
@@ -551,29 +493,21 @@ async fn produce(
             )?;
             let messages = messages(args.message_bytes, worker, first, size, run, offered)?;
             let result = RequestContext::with_deadline(deadline)
-                .scope(producer.produce(messages))
+                .scope(producer.send_batch(messages))
                 .await;
-            let receipt = recover(&producer, result, deadline, &mut stats).await?;
+            let receipts = recover(result, deadline, &mut stats).await?;
             stats.latency.record(
                 nanos(started.elapsed())?
                     .checked_sub(offered)
                     .context("Produce completion predates its planned offer")?,
             )?;
-            ensure!(
-                u64::from(receipt.message_count) == size,
-                "Produce receipt count mismatch"
-            );
-            let end = receipt
-                .first_offset
-                .checked_add(size)
-                .context("Receipt offset overflow")?;
-            ensure!(
-                end <= count,
-                "Produce receipt exceeded the fresh topic range"
-            );
+            ensure!(receipts.len() as u64 == size, "Send receipt count mismatch");
             let mut offsets = offsets.lock().await;
-            for offset in receipt.first_offset..end {
-                offsets.insert(offset)?;
+            for receipt in receipts {
+                ensure!(
+                    offsets.insert(receipt.message_id()),
+                    "Duplicate committed message identity"
+                );
             }
             stats.messages += size;
         }
@@ -613,57 +547,63 @@ async fn offer_time(
 }
 
 async fn recover(
-    producer: &Producer,
-    result: tidemq_sdk::Result<ProduceReceipt>,
+    result: tidemq_sdk::Result<tidemq_sdk::SendBatchResult>,
     deadline: Instant,
     stats: &mut ProduceStats,
-) -> Result<ProduceReceipt> {
-    match result {
-        Ok(receipt) => Ok(receipt),
-        Err(error) if error.outcome_unknown() => {
-            stats.unknown += 1;
-            let pending = producer.pending_batches().await?;
-            ensure!(
-                pending.len() == 1,
-                "Sequential worker must retain exactly one original pending batch"
-            );
-            let batch = pending
-                .first()
-                .context("Original pending batch is unavailable")?;
-            let mut last = error;
-            for _ in 0..4 {
-                match RequestContext::with_deadline(deadline)
-                    .scope(producer.retry(batch))
-                    .await
-                {
-                    Ok(receipt) => {
-                        stats.recovered += 1;
-                        return Ok(receipt);
+) -> Result<Vec<SendReceipt>> {
+    let outcomes = match result {
+        Ok(batch) => batch.outcomes,
+        Err(tidemq_sdk::Error::BatchSendInterrupted { pending, source }) => pending
+            .into_iter()
+            .map(|pending| {
+                Err(tidemq_sdk::Error::SendUnresolved {
+                    pending,
+                    source: source.clone(),
+                })
+            })
+            .collect(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut receipts = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Ok(receipt) => receipts.push(receipt),
+            Err(tidemq_sdk::Error::SendUnresolved { mut pending, .. }) => {
+                stats.unknown += 1;
+                for attempt in 0..4 {
+                    match RequestContext::with_deadline(deadline)
+                        .scope(pending.retry())
+                        .await
+                    {
+                        Ok(receipt) => {
+                            receipts.push(receipt);
+                            stats.recovered += 1;
+                            break;
+                        }
+                        Err(tidemq_sdk::Error::SendUnresolved {
+                            pending: original, ..
+                        }) if attempt < 3 => pending = original,
+                        Err(error) => {
+                            return Err(anyhow::Error::new(error)).context("Recover original send");
+                        }
                     }
-                    Err(error) if error.outcome_unknown() => last = error,
-                    Err(error) => return Err(error.into()),
                 }
             }
-            Err(last)
-                .context("Original producer outcome remained unknown within the recovery budget")
+            Err(error) => return Err(error.into()),
         }
-        Err(error) => Err(error.into()),
     }
+    Ok(receipts)
 }
 
 // The consumer validates the same immutable run context as the producer workers.
 #[allow(clippy::too_many_arguments)]
 async fn consume(
-    consumer: Consumer,
-    client: Client,
+    consumer: QueueConsumer,
     args: &Args,
     started: Instant,
     deadline: Instant,
     count: u64,
-    topic: Id,
-    subscription: Id,
     run: Id,
-    done: Arc<AtomicBool>,
 ) -> Result<ConsumeStats> {
     let mut stats = ConsumeStats {
         receive: Histogram::new()?,
@@ -676,40 +616,32 @@ async fn consume(
         error: None,
     };
     let consuming_started = Instant::now();
-    let result = consume_loop(
-        &consumer, args, started, deadline, count, run, &done, &mut stats,
-    )
-    .await;
+    let result = consume_loop(&consumer, args, started, deadline, count, run, &mut stats).await;
     stats.elapsed_ns = nanos(consuming_started.elapsed())?;
     stats.error = result.err().map(|error| format!("{error:#}"));
     if stats.error.is_none() {
-        let status = RequestContext::with_deadline(deadline)
-            .scope(client.admin().subscription_status(topic, 0, subscription))
-            .await
-            .context("Verify final durable subscription frontier")?;
-        stats.frontier = status
-            .assignment
-            .context("Durable subscription assignment is unavailable")?
-            .acknowledged_before;
+        ensure!(
+            consumer.pending_acks().await?.is_empty(),
+            "Original ACKs remain unresolved"
+        );
     }
+    consumer.close().await?;
     Ok(stats)
 }
 
 // Validation and measurements share this single bounded consumption loop.
 #[allow(clippy::too_many_arguments)]
 async fn consume_loop(
-    consumer: &Consumer,
+    consumer: &QueueConsumer,
     args: &Args,
     started: Instant,
     deadline: Instant,
     count: u64,
     run: Id,
-    done: &AtomicBool,
     stats: &mut ConsumeStats,
 ) -> Result<()> {
     let mut identities = Seen::new(count)?;
-    let mut offsets = Seen::new(count)?;
-    let mut empty_after_done = 0_u32;
+    let mut message_ids = std::collections::HashSet::new();
     while stats.acknowledged < count {
         ensure!(
             Instant::now() < deadline,
@@ -717,28 +649,16 @@ async fn consume_loop(
         );
         let begin = Instant::now();
         let delivery = RequestContext::with_deadline(deadline)
-            .scope(consumer.recv())
+            .scope(consumer.receive())
             .await
             .context("Receive performance delivery")?;
         stats.receive.record(nanos(begin.elapsed())?)?;
-        let Some(delivery) = delivery else {
-            if done.load(Ordering::Acquire) {
-                empty_after_done += 1;
-            }
-            ensure!(
-                empty_after_done < 100,
-                "Production finished without all expected unique deliveries"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-            continue;
-        };
         let mut batch = Vec::new();
         batch.try_reserve_exact(args.ack_messages)?;
         batch.push(delivery);
         while batch.len() < args.ack_messages {
             let Some(delivery) = consumer
-                .next()
-                .await
+                .try_receive()
                 .context("Read buffered performance delivery")?
             else {
                 break;
@@ -749,37 +669,42 @@ async fn consume_loop(
         offered.try_reserve_exact(batch.len())?;
         for delivery in &batch {
             ensure!(
-                delivery.body().len() == args.message_bytes && delivery.key().len() == 8,
+                delivery.payload().len() == args.message_bytes
+                    && delivery.key().is_some_and(|key| key.len() == 8),
                 "Delivery payload shape mismatch"
             );
-            let (identity, sent) = decode(delivery.body(), run)?;
+            let (identity, sent) = decode(delivery.payload(), run)?;
             identities.insert(identity)?;
-            offsets.insert(delivery.offset())?;
+            ensure!(
+                message_ids.insert(delivery.message_id()),
+                "Duplicate received message identity"
+            );
             offered.push(sent);
         }
         if args.consumer_delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(args.consumer_delay_ms)).await;
         }
         let begin = Instant::now();
-        let mut attempts = 0;
-        loop {
-            match RequestContext::with_deadline(deadline)
-                .scope(consumer.ack_many(&batch))
-                .await
-            {
-                Ok(result) => {
-                    stats.frontier = result.acknowledged_before;
-                    break;
-                }
-                Err(error) if error.outcome_unknown() && attempts < 4 => {
-                    stats.unknown += 1;
-                    attempts += 1;
-                }
-                Err(error) => {
-                    return Err(anyhow::Error::new(error)
-                        .context("Commit durable performance consumer ACK"));
+        for delivery in &batch {
+            let mut result = RequestContext::with_deadline(deadline)
+                .scope(consumer.ack(delivery))
+                .await;
+            for _ in 0..4 {
+                match &result {
+                    Ok(AckReceipt::Acknowledged) => break,
+                    Err(tidemq_sdk::Error::Acknowledgement { pending, .. }) => {
+                        stats.unknown += 1;
+                        result = RequestContext::with_deadline(deadline)
+                            .scope(pending.retry())
+                            .await;
+                    }
+                    _ => break,
                 }
             }
+            ensure!(
+                result? == AckReceipt::Acknowledged,
+                "Queue ACK returned a redelivery receipt"
+            );
         }
         stats.ack.record(nanos(begin.elapsed())?)?;
         let completed = nanos(started.elapsed())?;
@@ -791,6 +716,7 @@ async fn consume_loop(
             )?;
         }
         stats.acknowledged += u64::try_from(batch.len())?;
+        stats.frontier = stats.acknowledged;
     }
     Ok(())
 }
@@ -833,7 +759,7 @@ async fn control(
         tokio::select! { _ = stop.changed() => break, _ = ticker.tick() => {} }
         let begin = Instant::now();
         let result = RequestContext::with_deadline(deadline)
-            .scope(client.admin().topic(&topic))
+            .scope(client.admin().topic_info(&topic))
             .await;
         match result {
             Ok(_) => {
@@ -858,7 +784,7 @@ fn messages(
     count: u64,
     run: Id,
     sent_ns: u64,
-) -> Result<Vec<public::Message>> {
+) -> Result<Vec<Message>> {
     let mut messages = Vec::new();
     messages.try_reserve_exact(usize::try_from(count)?)?;
     let key = Bytes::copy_from_slice(&u64::try_from(worker)?.to_be_bytes());
@@ -867,27 +793,29 @@ fn messages(
             .checked_add(count)
             .context("Message identity overflow")?
     {
-        let mut body = Vec::new();
-        body.try_reserve_exact(bytes)?;
-        body.resize(bytes, 0x5a);
-        body.get_mut(..8)
-            .context("Missing payload magic")?
-            .copy_from_slice(MAGIC);
-        body.get_mut(8..16)
-            .context("Missing run nonce")?
-            .copy_from_slice(run.as_bytes().get(..8).context("Invalid run nonce")?);
-        body.get_mut(16..24)
-            .context("Missing message identity")?
-            .copy_from_slice(&identity.to_be_bytes());
-        body.get_mut(24..32)
-            .context("Missing offered timestamp")?
-            .copy_from_slice(&sent_ns.to_be_bytes());
-        messages.push(public::Message {
-            key: key.clone(),
-            body: body.into(),
-        });
+        let body = payload(bytes, identity, run, sent_ns)?;
+        messages.push(Message::new(body).key(key.clone()));
     }
     Ok(messages)
+}
+
+fn payload(bytes: usize, identity: u64, run: Id, sent_ns: u64) -> Result<Vec<u8>> {
+    let mut body = Vec::new();
+    body.try_reserve_exact(bytes)?;
+    body.resize(bytes, 0x5a);
+    body.get_mut(..8)
+        .context("Missing payload magic")?
+        .copy_from_slice(MAGIC);
+    body.get_mut(8..16)
+        .context("Missing run nonce")?
+        .copy_from_slice(run.as_bytes().get(..8).context("Invalid run nonce")?);
+    body.get_mut(16..24)
+        .context("Missing message identity")?
+        .copy_from_slice(&identity.to_be_bytes());
+    body.get_mut(24..32)
+        .context("Missing offered timestamp")?
+        .copy_from_slice(&sent_ns.to_be_bytes());
+    Ok(body)
 }
 
 fn decode(body: &[u8], run: Id) -> Result<(u64, u64)> {
@@ -929,14 +857,11 @@ mod tests {
     #[test]
     fn payload_round_trip_preserves_identity_and_rejects_foreign_or_truncated_data() {
         let run = Id::new_v7().unwrap();
-        let messages = messages(128, 3, 20, 2, run, 5_000).unwrap();
-        assert_eq!(
-            decode(&messages.first().unwrap().body, run).unwrap(),
-            (20, 5_000)
-        );
-        assert!(decode(&messages.first().unwrap().body, Id::new_v7().unwrap()).is_err());
+        let body = payload(128, 20, run, 5_000).unwrap();
+        assert_eq!(decode(&body, run).unwrap(), (20, 5_000));
+        assert!(decode(&body, Id::new_v7().unwrap()).is_err());
         assert!(decode(b"TIDEPF01", run).is_err());
-        assert_eq!(messages.len(), 2);
+        assert_eq!(messages(128, 3, 20, 2, run, 5_000).unwrap().len(), 2);
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@
 
 | 入口 | 应保留的诊断 |
 | --- | --- |
-| SDK ClientConfig、ConsumerConfig、Admin、Producer | 配置项、资源名、注册 epoch、准入资源与响应约束 |
+| SDK ClientBuilder、ProducerBuilder、具名 ConsumerBuilder、Admin | 配置项、资源名、准入资源与响应约束 |
 | ProtocolLimits | frame、message、batch、payload field 与 traceparent 各自的限制 |
 | QUIC / RPC / MemoryBudget | connection、stream、窗口、时限、内存保留与具体设置阶段 |
 | TOML 与运行时拓扑 | 角色对应的节、授权文件路径、监听地址、node/group/voter/zone 约束 |

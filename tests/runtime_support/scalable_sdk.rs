@@ -20,7 +20,7 @@ async fn producer_close_wakes_unadmitted_senders_and_keeps_a_completed_receipt_r
         .await
         .unwrap();
     let topic = "closing/app/events";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .build()
@@ -114,7 +114,7 @@ async fn send_pressure(requests: u32, payload_bytes: usize) {
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    client.admin().create_logical_topic("events").await.unwrap();
+    client.admin().create_topic("events").await.unwrap();
     let queue = client
         .new_queue_consumer("events", "jobs")
         .prefetch_messages(1)
@@ -197,7 +197,7 @@ async fn ordinary_builders_connect_to_a_combined_node_and_share_logical_handles(
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    client.admin().create_logical_topic("events").await.unwrap();
+    client.admin().create_topic("events").await.unwrap();
     let queue = client
         .new_queue_consumer("events", "jobs")
         .build()
@@ -230,7 +230,7 @@ async fn ordinary_builders_connect_to_a_combined_node_and_share_logical_handles(
     producer.clone().close().await.unwrap();
     assert!(producer.send("closed").await.is_err());
     assert_eq!(client.metrics().snapshot().active_deliveries, 0);
-    assert_eq!(client.metrics().snapshot().pending_batches, 0);
+    assert_eq!(client.metrics().snapshot().pending_sends, 0);
     assert_eq!(client.metrics().snapshot().admitted_bytes, 0);
     let metrics = http(
         fixture.running.get(&1).unwrap().management_address,
@@ -252,5 +252,115 @@ async fn ordinary_builders_connect_to_a_combined_node_and_share_logical_handles(
         );
     }
     client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_handles() {
+    let fixture = dynamic_fixture().await;
+    let backend = fixture.configs.get(&1).unwrap().listen;
+    let proxy = udp_proxy::Proxy::start([backend, backend]).await;
+    let client = Client::builder(
+        proxy.address.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(TOKEN),
+    )
+    .build()
+    .await
+    .unwrap();
+    let tenant = client.admin().create_tenant("batch").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = "batch/app/events";
+    client.admin().create_topic(topic).await.unwrap();
+    let queue = client
+        .new_queue_consumer(topic, "jobs")
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(topic).build().await.unwrap();
+    producer.send("warmup").await.unwrap();
+    let warmup = queue.receive().await.unwrap();
+    queue.ack(&warmup).await.unwrap();
+    drop(warmup);
+    queue.close().await.unwrap();
+    drop(queue);
+    proxy.set_mtu(1199);
+    let payload = vec![7; 96 * 1024];
+    let retained =
+        tidemq_protocol::topic::delivery_bytes(b"large", &payload, &BTreeMap::new()).unwrap() * 2
+            + 8192;
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(10)).unwrap();
+    let waiting_context = context.clone();
+    let sending = producer.clone();
+    let waiting = tokio::spawn(async move {
+        waiting_context
+            .scope(sending.send_batch(vec![
+                tidemq_sdk::Message::new("known-small").key("small"),
+                tidemq_sdk::Message::new(payload).key("large"),
+            ]))
+            .await
+    });
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        if client.metrics().snapshot().admitted_bytes == retained {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "The first send must settle before cancelling its batch"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let metrics = http(
+        fixture.running.get(&1).unwrap().management_address,
+        "/metrics",
+    )
+    .await;
+    assert!(metrics.contains("tidemq_producer_new_messages_total 2"));
+    context.cancellation_token().cancel();
+    let error = waiting.await.unwrap().unwrap_err();
+    assert!(error.outcome_unknown());
+    let pending = producer.pending_sends().await.unwrap();
+    assert_eq!(
+        pending.len(),
+        2,
+        "Cancellation must retain completed results until the batch returns"
+    );
+    let tidemq_sdk::Error::BatchSendInterrupted {
+        pending: original, ..
+    } = error
+    else {
+        panic!("Cancellation must return the original handles for this batch");
+    };
+    assert_eq!(original.len(), 2);
+    proxy.set_mtu(1200);
+    let mut expected = BTreeSet::new();
+    for send in original {
+        assert!(expected.insert(send.retry().await.unwrap().message_id().to_string()));
+    }
+    let queue = client
+        .new_queue_consumer(topic, "jobs")
+        .build()
+        .await
+        .unwrap();
+    let mut bodies = BTreeSet::new();
+    for _ in 0..2 {
+        let delivery = queue.receive().await.unwrap();
+        assert!(expected.remove(&delivery.message_id().to_string()));
+        bodies.insert(delivery.payload().len());
+        queue.ack(&delivery).await.unwrap();
+    }
+    assert!(expected.is_empty());
+    assert_eq!(bodies, BTreeSet::from([11, 96 * 1024]));
+    assert!(producer.pending_sends().await.unwrap().is_empty());
+    queue.close().await.unwrap();
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    drop((pending, queue, producer, client));
+    proxy.close().await;
     fixture.close().await;
 }

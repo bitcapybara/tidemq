@@ -31,7 +31,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
     let mut work = Vec::new();
     for index in 0..4 {
         let name = format!("combined/app/read-barrier-{index}");
-        let topic = client.admin().create_logical_topic(&name).await.unwrap();
+        let topic = client.admin().create_topic(&name).await.unwrap();
         let consumer = client
             .new_stream_consumer(&name, "durable")
             .build()

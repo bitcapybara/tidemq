@@ -99,7 +99,7 @@ impl Drop for Owner {
 }
 
 #[derive(Clone)]
-pub struct TopicProducer {
+pub struct Producer {
     owner: Arc<Owner>,
 }
 
@@ -112,7 +112,7 @@ impl ProducerBuilder {
         self.bytes = bytes;
         self
     }
-    pub async fn build(self) -> Result<TopicProducer> {
+    pub async fn build(self) -> Result<Producer> {
         if self.sends == 0 || self.sends > 256 || self.bytes < 4096 || self.bytes > 8 * 1024 * 1024
         {
             return Err(Error::Configuration {
@@ -125,7 +125,7 @@ impl ProducerBuilder {
             .await
     }
 
-    async fn build_until(self, deadline: Instant) -> Result<TopicProducer> {
+    async fn build_until(self, deadline: Instant) -> Result<Producer> {
         let resource_memory = self.client.reserve_resource(deadline).await?;
         let layout = self.client.admin().topic_info(&self.topic).await?;
         let producer = Id::new_v7()?;
@@ -178,7 +178,7 @@ impl ProducerBuilder {
             .await
             .map_err(|_| Error::Closed)?
             .map_err(|source| Error::Background { source })?;
-        Ok(TopicProducer { owner })
+        Ok(Producer { owner })
     }
 }
 
@@ -283,7 +283,7 @@ impl Core {
     }
 }
 
-impl TopicProducer {
+impl Producer {
     #[tracing::instrument(target = "tidemq_trace", name = "tidemq.sdk.send", skip_all)]
     pub async fn send(&self, message: impl Into<Message>) -> Result<SendReceipt> {
         send::one(&self.owner.core, message.into()).await

@@ -116,7 +116,7 @@ wait_marker() {
   local name=$1 OP_DEADLINE=$((SECONDS + 120))
   while [[ $SECONDS -lt $OP_DEADLINE ]]; do
     if marker_read "$name" 4096 "$evidence/$name.partial"; then
-      jq -e 'type == "object" and .schema_version == 1' "$evidence/$name.partial" > /dev/null || return 1
+      jq -e 'type == "object" and .schema_version == 2' "$evidence/$name.partial" > /dev/null || return 1
       mv "$evidence/$name.partial" "$evidence/$name"
       return 0
     fi
@@ -186,17 +186,17 @@ validate_stage() {
   local name=$1
   if [[ $name == waiting-fault.json ]]; then
     jq -e --argjson unavailable "$require_unavailable" '
-      .schema_version == 1 and .partition_id == 0 and .ack_frontier == 64 and
+      .schema_version == 2 and .partition_id == 0 and .business_acknowledged_before == 64 and
       .fault_batch_first_sequence == 64 and .fault_batch_messages == 8 and .require_unavailable == $unavailable
     ' "$evidence/$name" > /dev/null
   else
     jq -e --argjson unavailable "$require_unavailable" '
-      .schema_version == 1 and .require_unavailable == $unavailable and
+      .schema_version == 2 and .require_unavailable == $unavailable and
       (if $unavailable then
-        .ack_frontier == 64 and .ledger.committed == 64 and .ledger.received == 64 and .ledger.acknowledged == 64 and .ledger.frontier == 64 and
-        .batch.receipt_seen == false and .batch.original_pending != null
+        .business_acknowledged_before == 64 and .ledger.committed == 64 and .ledger.received == 64 and .ledger.acknowledged == 64 and .ledger.frontier == 64 and
+        .batch.receipt_seen == false and .batch.original_pending > 0
       else
-        .ack_frontier == 72 and .ledger.committed == 72 and .ledger.received == 72 and
+        .business_acknowledged_before == 72 and .ledger.committed == 72 and .ledger.received == 72 and
         .ledger.acknowledged == 72 and .ledger.frontier == 72 and .batch.receipt_seen == true
       end)
     ' "$evidence/$name" > /dev/null
@@ -351,7 +351,7 @@ finish() {
 validate_report() {
   jq -e --argjson expected "$expected" --argjson bytes "$message_bytes" --argjson settle "$settle_ms" \
     --argjson staged "$staged" --argjson unavailable "$require_unavailable" '
-    .schema_version == 1 and .status == "passed" and .client_close_completed == true and .same_consumer_session_verified == true and
+    .schema_version == 2 and .status == "passed" and .client_close_completed == true and .original_consumer_reused == true and
     .configuration.messages == 64 and .configuration.message_bytes == $bytes and .configuration.replay_settle_ms == $settle and
     .configuration.stage_fault == $staged and .configuration.require_unavailable == $unavailable and
     .ledger.expected == $expected and .ledger.committed == $expected and .ledger.received == $expected and
@@ -407,7 +407,7 @@ main() {
   launch_state=uncertain
   validator=$(dc --profile tools run --detach --no-deps --name "$validator_name" --label "io.tidemq.validation.case=$validator_case" \
     validator --endpoint "127.0.0.1:$((7400 + gateway * 10))" \
-    --server-name "node-$gateway.local" --ca /run/client/ca.pem --token-file /run/client/access.token \
+    --ca /run/client/ca.pem --token-file /run/client/access.token \
     --output-dir "$case_dir" --message-bytes "$message_bytes" --replay-settle-ms "$settle_ms" "${args[@]}")
   verify "$validator" validator
   launch_state=verified

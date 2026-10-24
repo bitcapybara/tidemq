@@ -95,7 +95,10 @@ impl PendingAck {
             );
         }
         core.client
-            .operation(|deadline| self.retry_until(deadline, true))
+            .operation(|deadline| {
+                crate::request::retain(crate::request::Recovery::Ack(self.clone()));
+                self.retry_until(deadline, true)
+            })
             .await
     }
 
@@ -239,6 +242,7 @@ pub(super) async fn start(
             .map_err(|_| Error::Deadline)?
             .map_err(|_| Error::Closed)?;
             let pending = admit(core, message, nack, cumulative, memory, slot)?;
+            crate::request::retain(crate::request::Recovery::Ack(pending.clone()));
             pending.retry_until(deadline, true).await
         })
         .await

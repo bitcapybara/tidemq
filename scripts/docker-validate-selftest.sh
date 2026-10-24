@@ -118,7 +118,7 @@ check marker_write fault-injected
 reject marker_write fault-injected
 ln -s "$case_dir/fault-injected" "$case_dir/recovered"
 reject marker_write recovered
-printf '{"schema_version":1}\n' > "$case_dir/waiting-fault.json"
+printf '{"schema_version":2}\n' > "$case_dir/waiting-fault.json"
 check marker_read waiting-fault.json 4096 "$task_dir/read.json"
 cmp "$case_dir/waiting-fault.json" "$task_dir/read.json"
 head -c 4097 /dev/zero > "$case_dir/waiting-fault.json"
@@ -160,7 +160,7 @@ jq '.revision = 4' "$task_dir/owner-11.json" > "$task_dir/owner-change.json"
 reject valid_owner "$task_dir/owner-change.json"
 
 require_unavailable=false
-printf '{"schema_version":1,"require_unavailable":false,"ack_frontier":72,"ledger":{"committed":72,"received":72,"acknowledged":72,"frontier":72},"batch":{"receipt_seen":true}}\n' > "$evidence/fault-observed.json"
+printf '{"schema_version":2,"require_unavailable":false,"business_acknowledged_before":72,"ledger":{"committed":72,"received":72,"acknowledged":72,"frontier":72},"batch":{"receipt_seen":true}}\n' > "$evidence/fault-observed.json"
 check validate_stage fault-observed.json
 jq '.ledger.frontier = 71' "$evidence/fault-observed.json" > "$task_dir/stage.json"
 mv "$task_dir/stage.json" "$evidence/fault-observed.json"
@@ -185,7 +185,7 @@ reject wait_exit
 mock_status=exited:0
 check wait_exit
 expected=64; message_bytes=1024; settle_ms=0; staged=false; require_unavailable=false
-printf '{"schema_version":1,"status":"passed","client_close_completed":true,"same_consumer_session_verified":true,"configuration":{"messages":64,"message_bytes":1024,"replay_settle_ms":0,"stage_fault":false,"require_unavailable":false},"ledger":{"expected":64,"committed":64,"received":64,"acknowledged":64,"frontier":64}}\n' > "$evidence/report.json"
+printf '{"schema_version":2,"status":"passed","client_close_completed":true,"original_consumer_reused":true,"configuration":{"messages":64,"message_bytes":1024,"replay_settle_ms":0,"stage_fault":false,"require_unavailable":false},"ledger":{"expected":64,"committed":64,"received":64,"acknowledged":64,"frontier":64}}\n' > "$evidence/report.json"
 check validate_report
 jq '.ledger.acknowledged = 63' "$evidence/report.json" > "$task_dir/report.json"
 mv "$task_dir/report.json" "$evidence/report.json"

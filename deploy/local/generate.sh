@@ -55,7 +55,7 @@ CN=node-$node.local
 basicConstraints=critical,CA:FALSE
 keyUsage=critical,digitalSignature
 extendedKeyUsage=serverAuth,clientAuth
-subjectAltName=DNS:node-$node.local
+subjectAltName=DNS:node-$node.local,DNS:localhost,IP:127.0.0.1
 EOF
   openssl req -new -sha256 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve -nodes \
     -config "$output/node-$node.cnf" -keyout "$output/node-$node.key" -out "$output/node-$node.csr" >/dev/null 2>&1

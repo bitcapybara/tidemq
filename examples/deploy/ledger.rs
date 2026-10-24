@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, ensure};
+use bytes::Bytes;
 use serde::Serialize;
-use tidemq_sdk::{Bytes, Id, public};
+use tidemq_protocol::Id;
+use tidemq_sdk::Message;
 
 const MAX_MESSAGES: u64 = 272;
 const TAG: &[u8] = b"TDMQDEV1";
@@ -18,6 +20,8 @@ pub struct Ledger {
     body_bytes: usize,
     #[serde(skip)]
     seen: Vec<bool>,
+    #[serde(skip)]
+    message_ids: Vec<Option<String>>,
     #[serde(skip)]
     acked: Vec<bool>,
 }
@@ -43,12 +47,13 @@ impl Ledger {
             frontier: 0,
             run,
             body_bytes,
+            message_ids: vec![None; seen.len()],
             seen,
             acked,
         })
     }
 
-    pub fn messages(&self, first: u64, count: u64) -> Result<Vec<public::Message>> {
+    pub fn messages(&self, first: u64, count: u64) -> Result<Vec<Message>> {
         let end = first.checked_add(count).context("Message range overflow")?;
         ensure!(
             count > 0 && count <= 8 && end <= self.expected,
@@ -57,37 +62,58 @@ impl Ledger {
         let mut messages = Vec::new();
         messages.try_reserve_exact(usize::try_from(count)?)?;
         for identity in first..end {
-            let mut body = Vec::new();
-            body.try_reserve_exact(self.body_bytes)?;
-            body.extend_from_slice(self.run.as_bytes());
-            body.extend_from_slice(&identity.to_be_bytes());
-            body.extend_from_slice(TAG);
-            body.resize(self.body_bytes, 0x5a);
-            messages.push(public::Message {
-                key: Bytes::copy_from_slice(&identity.to_be_bytes()),
-                body: body.into(),
-            });
+            let body = self.payload(identity)?;
+            messages.push(Message::new(body).key(Bytes::copy_from_slice(&identity.to_be_bytes())));
         }
         Ok(messages)
     }
 
-    pub fn commit(&mut self, first: u64, count: u32) -> Result<()> {
+    fn payload(&self, identity: u64) -> Result<Vec<u8>> {
+        let mut body = Vec::new();
+        body.try_reserve_exact(self.body_bytes)?;
+        body.extend_from_slice(self.run.as_bytes());
+        body.extend_from_slice(&identity.to_be_bytes());
+        body.extend_from_slice(TAG);
+        body.resize(self.body_bytes, 0x5a);
+        Ok(body)
+    }
+
+    pub fn commit(&mut self, first: u64, receipts: &[String]) -> Result<()> {
         let end = first
-            .checked_add(u64::from(count))
+            .checked_add(u64::try_from(receipts.len())?)
             .context("Receipt overflow")?;
         ensure!(
-            first == self.committed && end <= self.expected && count > 0,
-            "Receipt must cover the next original batch"
+            first == self.committed && end <= self.expected && !receipts.is_empty(),
+            "Receipts must cover the next original business range"
         );
+        for (index, receipt) in receipts.iter().enumerate() {
+            let id = receipt.clone();
+            ensure!(
+                !self.message_ids.contains(&Some(id.clone())),
+                "Duplicate committed message identity"
+            );
+            let index = usize::try_from(first)?
+                .checked_add(index)
+                .context("Receipt index overflow")?;
+            *self
+                .message_ids
+                .get_mut(index)
+                .context("Receipt outside ledger")? = Some(id);
+        }
         self.committed = end;
         Ok(())
     }
 
-    pub fn observe(&mut self, offset: u64, key: &[u8], body: &[u8]) -> Result<()> {
+    pub fn observe(&mut self, message_id: &str, key: &[u8], body: &[u8]) -> Result<u64> {
         let identity = u64::from_be_bytes(key.try_into().context("Invalid key shape")?);
         ensure!(
-            offset == identity && offset < self.committed,
-            "Delivery identity or offset mismatch"
+            identity < self.committed
+                && self
+                    .message_ids
+                    .get(usize::try_from(identity)?)
+                    .and_then(Option::as_deref)
+                    == Some(message_id),
+            "Delivery message identity differs from its original committed receipt"
         );
         ensure!(body.len() == self.body_bytes, "Delivery body size mismatch");
         ensure!(
@@ -106,18 +132,18 @@ impl Ledger {
         );
         let slot = self
             .seen
-            .get_mut(usize::try_from(offset)?)
-            .context("Offset outside ledger")?;
-        ensure!(!*slot, "Duplicate delivery offset or identity");
+            .get_mut(usize::try_from(identity)?)
+            .context("Business identity outside ledger")?;
+        ensure!(!*slot, "Duplicate delivery identity");
         *slot = true;
         self.received = self
             .received
             .checked_add(1)
             .context("Receive count overflow")?;
-        Ok(())
+        Ok(identity)
     }
 
-    pub fn ack(&mut self, offset: u64, returned_frontier: u64) -> Result<()> {
+    pub fn ack(&mut self, offset: u64) -> Result<()> {
         let index = usize::try_from(offset)?;
         ensure!(
             self.seen.get(index) == Some(&true),
@@ -131,7 +157,6 @@ impl Ledger {
             }
             next = next.checked_add(1).context("ACK frontier overflow")?;
         }
-        ensure!(returned_frontier == next, "Durable ACK frontier mismatch");
         *self.acked.get_mut(index).context("ACK outside ledger")? = true;
         self.acknowledged = self
             .acknowledged
@@ -158,35 +183,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reordered_parallel_delivery_preserves_identity_uniqueness_and_contiguous_ack() {
-        let mut ledger = Ledger::new(3, 32, Id::new_v7().unwrap()).unwrap();
-        let messages = ledger.messages(0, 3).unwrap();
-        ledger.commit(0, 3).unwrap();
-        for (offset, frontier) in [(2_u64, 0), (0, 1), (1, 3)] {
-            let message = messages.get(offset as usize).unwrap();
-            ledger.observe(offset, &message.key, &message.body).unwrap();
-            ledger.ack(offset, frontier).unwrap();
+    fn reordered_messages_keep_business_prefix_separate_from_birth_offsets() {
+        let mut ledger = Ledger::new(3, 64, Id::new_v7().unwrap()).unwrap();
+        let ids = ["topic:shard-a:9", "topic:shard-b:9", "topic:shard-a:42"].map(str::to_owned);
+        ledger.commit(0, &ids).unwrap();
+        for (identity, frontier) in [(2_u64, 0), (0, 1), (1, 3)] {
+            let body = ledger.payload(identity).unwrap();
+            assert_eq!(
+                ledger
+                    .observe(
+                        ids.get(identity as usize).unwrap(),
+                        &identity.to_be_bytes(),
+                        &body
+                    )
+                    .unwrap(),
+                identity
+            );
+            ledger.ack(identity).unwrap();
+            assert_eq!(ledger.frontier, frontier);
         }
         ledger.complete(3).unwrap();
-        let message = messages.first().unwrap();
-        assert!(ledger.observe(0, &message.key, &message.body).is_err());
-        assert!(ledger.ack(0, 3).is_err());
+        assert!(ledger.ack(0).is_err());
+        assert!(
+            ledger
+                .observe(
+                    ids.first().unwrap(),
+                    &0_u64.to_be_bytes(),
+                    &ledger.payload(0).unwrap()
+                )
+                .is_err()
+        );
     }
 
     #[test]
-    fn corruption_wrong_offsets_and_premature_ack_fail() {
+    fn foreign_identity_corrupt_content_and_unseen_ack_are_rejected() {
         let mut ledger = Ledger::new(2, 64, Id::new_v7().unwrap()).unwrap();
-        let messages = ledger.messages(0, 2).unwrap();
-        let message = messages.first().unwrap();
-        assert!(ledger.observe(0, &message.key, &message.body).is_err());
-        ledger.commit(0, 2).unwrap();
-        assert!(ledger.observe(1, &message.key, &message.body).is_err());
-        assert!(ledger.ack(0, 1).is_err());
-        let mut body = message.body.to_vec();
-        *body.last_mut().unwrap() = 0;
-        assert!(ledger.observe(0, &message.key, &body).is_err());
-        ledger.observe(0, &message.key, &message.body).unwrap();
-        assert!(ledger.ack(0, 2).is_err());
+        let body = ledger.payload(0).unwrap();
+        let key = 0_u64.to_be_bytes();
+        assert!(ledger.observe("a", &key, &body).is_err());
+        ledger.commit(0, &["a".into(), "b".into()]).unwrap();
+        assert!(ledger.observe("b", &key, &body).is_err());
+        assert!(ledger.ack(0).is_err());
+        let mut corrupt = body.clone();
+        *corrupt.last_mut().unwrap() = 0;
+        assert!(ledger.observe("a", &key, &corrupt).is_err());
+        ledger.observe("a", &key, &body).unwrap();
+        ledger.ack(0).unwrap();
         assert!(ledger.complete(2).is_err());
     }
 }

@@ -61,14 +61,17 @@ impl PendingSend {
             );
         }
         core.client
-            .operation(|deadline| self.retry_until(deadline, true))
+            .operation(|deadline| {
+                crate::request::retain(crate::request::Recovery::Send(self.clone()));
+                self.retry_until(deadline, true)
+            })
             .await
     }
     fn take(&self, claim: bool) -> Result<SendReceipt> {
         let (result, complete) = {
             let result = self.work.result.lock().map_err(|_| Error::Closed)?;
             (
-                result.clone().ok_or(Error::ProducerBlocked)?,
+                result.clone().ok_or(Error::SendInProgress)?,
                 self.complete(),
             )
         };
@@ -79,6 +82,19 @@ impl PendingSend {
             release_requests(&self.work)?;
         }
         self.expose(result, claim)
+    }
+    fn claim_observed(&self, observed: Result<SendReceipt>) -> Result<SendReceipt> {
+        let ready = self
+            .work
+            .result
+            .lock()
+            .map_err(|_| Error::Closed)?
+            .is_some();
+        if ready {
+            self.take(true)
+        } else {
+            self.expose(observed.map_err(Arc::new), true)
+        }
     }
     fn expose(
         &self,
@@ -177,6 +193,7 @@ pub(super) async fn one(core: &Arc<Core>, message: Message) -> Result<SendReceip
             let mut credit = reserve(core, 1, size, deadline).await?;
             let pending = admit(core, message, split_credit(&mut credit, size)?)?;
             *admitted_ref.lock().map_err(|_| Error::Closed)? = Some(pending.clone());
+            crate::request::retain(crate::request::Recovery::Send(pending.clone()));
             pending.ensure_running(deadline)?;
             pending.retry_until(deadline, true).await
         })
@@ -229,10 +246,17 @@ pub(super) async fn batch(core: &Arc<Core>, messages: Vec<Message>) -> Result<Se
                 send.ensure_running(deadline)?;
                 pending.push(send);
             }
-            let mut outcomes = Vec::new();
-            for send in pending {
-                outcomes.push(send.retry_until(deadline, true).await);
+            crate::request::retain(crate::request::Recovery::Batch(pending.clone()));
+            let mut observations = Vec::new();
+            for send in &pending {
+                observations.push(send.retry_until(deadline, false).await);
             }
+            // No await separates claiming the individual outcomes from returning the whole batch.
+            let outcomes = pending
+                .into_iter()
+                .zip(observations)
+                .map(|(send, observed)| send.claim_observed(observed))
+                .collect();
             Ok(SendBatchResult { outcomes })
         })
         .await;
@@ -350,8 +374,8 @@ fn admit(core: &Arc<Core>, mut message: Message, mut credit: Credit) -> Result<P
     message.wire.key = message
         .wire
         .key
-        .map(|key| crate::Bytes::copy_from_slice(&key));
-    message.wire.payload = crate::Bytes::copy_from_slice(&message.wire.payload);
+        .map(|key| bytes::Bytes::copy_from_slice(&key));
+    message.wire.payload = bytes::Bytes::copy_from_slice(&message.wire.payload);
     message.wire.properties = message
         .wire
         .properties
@@ -359,7 +383,7 @@ fn admit(core: &Arc<Core>, mut message: Message, mut credit: Credit) -> Result<P
         .map(|(name, value)| {
             (
                 name.as_str().to_owned(),
-                crate::Bytes::copy_from_slice(&value),
+                bytes::Bytes::copy_from_slice(&value),
             )
         })
         .collect();
@@ -370,7 +394,7 @@ fn admit(core: &Arc<Core>, mut message: Message, mut credit: Credit) -> Result<P
         producer_id: bytes(core.producer),
         registration: identity.registration,
         sequence,
-        digest: crate::Bytes::copy_from_slice(&digest),
+        digest: bytes::Bytes::copy_from_slice(&digest),
         message: Some(message.wire),
         retired_before: state
             .pending
@@ -458,7 +482,7 @@ async fn drive(
         if !dependency.complete() {
             return Err((
                 Error::RequestUnknown {
-                    source: Box::new(Error::ProducerBlocked),
+                    source: Box::new(Error::SendInProgress),
                 },
                 false,
             ));

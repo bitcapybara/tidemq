@@ -11,7 +11,7 @@ async fn deletion_rejects_online_members_and_releases_only_the_original_subscrip
         .await
         .unwrap();
     let topic = "acme/app/delete";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .build()
@@ -157,7 +157,7 @@ async fn partial_domain_deletion_resumes_after_restart_and_old_replay_cannot_del
         .await
         .unwrap();
     let topic = "acme/app/delete-recovery";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     client.admin().split_topic_at(topic, 1 << 63).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")

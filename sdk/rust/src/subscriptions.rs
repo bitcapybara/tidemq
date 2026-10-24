@@ -127,6 +127,9 @@ impl PendingSubscriptionDeletion {
         let client_ref = &client;
         client
             .operation(|deadline| async move {
+                crate::request::retain(crate::request::Recovery::SubscriptionDeletion(
+                    self.clone(),
+                ));
                 self.launch(client_ref, deadline)?;
                 self.wait(client_ref, deadline).await
             })
@@ -420,6 +423,9 @@ impl Admin {
                 }
                 let pending = PendingSubscriptionDeletion { work };
                 *admitted_ref.lock().map_err(|_| Error::Closed)? = Some(pending.clone());
+                crate::request::retain(crate::request::Recovery::SubscriptionDeletion(
+                    pending.clone(),
+                ));
                 pending.launch(&self.client, deadline)?;
                 pending.wait(&self.client, deadline).await
             })

@@ -100,7 +100,7 @@ impl TopicInfo {
 }
 
 impl Admin {
-    pub async fn create_logical_topic(&self, name: &str) -> Result<TopicInfo> {
+    pub async fn create_topic(&self, name: &str) -> Result<TopicInfo> {
         let name = self.client.topic_name(name)?;
         self.client
             .operation(|deadline| async move {

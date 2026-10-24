@@ -28,7 +28,7 @@ async fn full_size_roundtrip(maximum: usize) {
         .await
         .unwrap();
     let topic = "acme/app/full-message";
-    client.admin().create_logical_topic(topic).await.unwrap();
+    client.admin().create_topic(topic).await.unwrap();
     let producer = client.new_producer(topic).build().await.unwrap();
     let payload = Bytes::from(vec![7; maximum]);
     let identity = producer

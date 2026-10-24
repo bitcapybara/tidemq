@@ -282,7 +282,7 @@ async fn reconnect_uses_the_same_logical_session_after_a_physical_connection_clo
     assert_eq!(
         peer.client
             .admin()
-            .create_logical_topic(TOPIC)
+            .create_topic(TOPIC)
             .await
             .unwrap()
             .shard_count(),

@@ -226,7 +226,7 @@ if [[ -n "$collector_pid" ]]; then
     exit 1
   fi
 fi
-env -i PATH=/usr/bin:/bin "$build/perf_load" --endpoint 127.0.0.1:7410 --server-name node-1.local \
+env -i PATH=/usr/bin:/bin "$build/perf_load" --endpoint 127.0.0.1:7410 \
   --ca "$output/cluster/ca.pem" --token-file "$output/cluster/access.token" \
   --management 127.0.0.1:8410 --service-pid "$service_pid" --service-binary "$build/tidemq" \
   --service-config "$config" --build-identity "$build/identity.json" --output "$output/report.json" \

@@ -112,7 +112,7 @@ function p99(distributions) {
 
 export function summarizeReport(report, policy, sourceCommit, scenario = 'throughput') {
   const workload = workloadFor(policy, scenario);
-  assert.equal(report.schema_version, 3, 'Load report must preserve scheduled offers and lateness');
+  assert.equal(report.schema_version, 4, 'Load report must preserve scheduled offers and lateness');
   assert.equal(report.status, 'passed', 'The durable workload did not pass');
   assert.equal(report.identity.build.source_commit, sourceCommit, 'Service source identity mismatch');
   assert.equal(report.identity.build.allocator_feature, policy.allocator_feature, 'Allocator mismatch');
@@ -124,7 +124,7 @@ export function summarizeReport(report, policy, sourceCommit, scenario = 'throug
     const planned = name === 'warmup' ? workload.warmup_messages : workload.messages;
     for (const phase of group.partitions) {
       assert.equal(phase.terminal_error, null, 'Partition validation failed');
-      for (const field of ['planned_messages', 'committed_messages', 'acknowledged_messages', 'durable_acknowledged_before']) {
+      for (const field of ['planned_messages', 'committed_messages', 'acknowledged_messages', 'durable_acknowledged_messages']) {
         assert.equal(phase[field], planned, `Incomplete durable ${name}: ${field}`);
       }
       assert.equal(phase.produce_batch.samples, planned, 'Missing durable producer samples');

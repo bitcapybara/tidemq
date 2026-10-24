@@ -1,25 +1,27 @@
 # 生产消息指南
 
-服务端、Gateway 和同仓库 Rust SDK 已提供实际 QUIC 生产链路。先按[运行指南](running.zh-CN.md)启动，再按[SDK 示例](rust-sdk.zh-CN.md)创建客户端、Topic 和 Producer。下列身份约束同时适用于热数据、重连和所有权迁移。
+应用围绕逻辑 Topic、可选业务 key 和持久订阅使用 SDK。先按[运行指南](running.zh-CN.md)启动服务，由管理端创建租户、Namespace、凭据与 Topic，再按[SDK 指南](rust-sdk.zh-CN.md)连接。
 
-1. 创建 Topic，保存返回的不可复用 Topic UUID。partition 只有分区内顺序，没有跨分区全局顺序。按 key 路由时用 SDK 导出的 `partition_for_key(key, topic.partitions)` 计算分区，然后复用该分区的 Producer；同一批次只能属于同一分区。首版 Topic 分区数固定，所有生产者使用同一版本哈希；副本和 Broker 迁移不改变映射。
-2. 在有效控制授权下读取 `ProducerStatus` 的 `next_registration_epoch`，用 producer UUID 与该 expected epoch 显式 `OpenProducer`。并发 open 冲突可以重新读取提示；成功后固定此会话身份。
-3. 从 sequence 0 开始构造有界批次，使用协议 crate 的 canonical 摘要函数。每个批次固定消息边界、内容与首序号，按消息条数推进下一序号。
-4. 只有 durable produce result 才向业务报告成功。收到 timeout、连接丢失、取消或结果未知时，保留原 producer/epoch/sequence/内容，恢复路由和连接后重试同一批次。
-5. 重复返回会保留原 offset 和条数。冲突、序号缺口和过期需要按下面契约处理，不能换一个随机身份立即重发。
-6. 不再使用会话时显式退休。会话也会在固定期限结束，不因持续发消息而自动续期。期限届满前应停止旧会话新追加，先确定其未决结果，再由业务明确决定新会话及去重边界。
+1. 使用完整 `tenant/namespace/topic` 名称，或在 Client builder 中设置 Namespace。管理端用 `admin.create_topic(name)` 创建 Topic；Producer 不隐式创建资源。
+2. 使用 `client.new_producer(topic).build().await` 创建 Producer。SDK 管理生产身份、路由和会话维护，应用不选择物理分区或填写 epoch。
+3. 调用 `send(message).await`，或通过有界任务池、FuturesOrdered/FuturesUnordered 并发驱动发送。需要保持批次输入关联时使用 `send_batch`；它允许跨组部分完成，不提供事务。
+4. 成功回执包含稳定 MessageId，表示数据 Raft 已持久提交。S3 归档在后台进行，不改变生产成功的完成点。
+5. 超时、取消或断线后检查错误的 `outcome_unknown()` 与原 PendingSend。调用原句柄的 `retry()` 恢复，不重新 send 同一内容来替代未知操作。部分批次逐条处理原 outcomes/pending。
+6. 先收束应用任务并恢复必要结果，再调用 Producer 和 Client 的 `close()`，检查 CloseReport 或 CloseError 中的未决与未领取结果。
 
-| 服务端结果 | 使用方动作 |
+同 key 按同一逻辑 Producer 的准入顺序发送，不同 key 可并行；回执返回顺序不建立跨 key 顺序。SDK 自动跟踪分片切分、合并和权威转移，消息出生身份在迁移后保持不变。同一 Producer 的 clone 共享身份、队列、预算和关闭状态；再次 new_producer 才创建独立实例。
+
+| 状态 | 应用动作 |
 | --- | --- |
-| 原结果 duplicate | 按原 offset 接受成功，不重复计算业务吞吐 |
-| sequence gap | 对照 expected sequence 与本地未决批次账本；服务端不会缓存未来批次等待补缺口 |
-| content/overlap conflict | 停止该会话，检查重试时内容或批次边界是否变化 |
-| original result expired | 结果可能已经持久化；按业务幂等键或业务账本核实，不能自动重发成新消息 |
-| session expired/retired | 禁止自动重建并复制旧未决消息；新的显式会话属于新的业务生产身份 |
-| fenced/control authorization expired | 刷新路由和授权；原业务身份保留，不能把旧 writer epoch 固定带到新 owner |
-| capacity rejected | 有限退避并保持本地队列有界；消费、ACK 与回收走各自保留资源 |
-| result unknown | 重试原身份或查询权威状态；网络超时不等于没有提交 |
+| 成功回执 | 记录原 MessageId；不要将恢复取得的同一回执计为新业务消息 |
+| InvalidArgument / PermissionDenied | 修复输入或授权，保留完整 source 链辅助诊断 |
+| ResourceExhausted | 保持本地并发有界；区分明确未准入与已持有原恢复句柄的操作 |
+| OutcomeUnknown | 查询或继续原 PendingSend；网络超时不证明未提交 |
+| RecoveryExpired | 结果可能已持久化；通过业务幂等键或账本核实，不自动换身份重发 |
+| Closed | 先检查原 close 报告；新实例无法自动恢复旧实例的本地账本 |
 
-首版 SDK 没有持久 outbox。同一 SDK 进程重连应保留身份和未决批次；进程重启后必须由业务恢复这些信息或明确采用新的业务幂等边界。系统不提供跨业务外部副作用的 exactly-once。
+错误的 ErrorKind 与结果是否未知是两个维度，不能仅凭错误字符串或一次 Unavailable 决定重发。完整 source 链通过 `anyhow::Error::new(error)` 与 `"{error:#}"` 输出。
 
-排查重复、过期或吞吐停滞见[生产排障手册](../operations/producer-troubleshooting.zh-CN.md)，权威与资源边界见[生产幂等设计](../design/producer-idempotency.zh-CN.md)。
+需要保护未来写入时先创建 Stream/Queue 订阅。零成员保留订阅与积压；Consumer 关闭不会删除订阅。SDK 没有持久 outbox，进程重启后需由应用明确处理业务幂等边界；不承诺跨业务外部副作用的 exactly-once。
+
+排障见[SDK 指南](rust-sdk.zh-CN.md)和[错误诊断](../operations/error-diagnostics.zh-CN.md)。功能测试不证明吞吐、扩容线性关系或已校准容量。

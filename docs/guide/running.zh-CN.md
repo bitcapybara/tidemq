@@ -56,8 +56,8 @@ allow_http_loopback = true
 
 ## SDK 与关闭
 
-Rust SDK 位于同仓库 `sdk/rust`。初始化时配置固定 Gateway endpoint、CA、访问令牌及预算；生产者按主题/分区/生产者/epoch 维护顺序。客户端收到 Producer ACK 后表示复制 WAL 已 quorum 持久提交。消费者 `ack()` 成功表示游标的持久 ACK，和 SDK 接收到消息、receive barrier 是不同状态。
+Rust SDK 位于同仓库 `sdk/rust`。通过 Client builder 提供 Gateway endpoint、服务端 CA 和访问令牌，`build().await` 成功返回已连接实例。Producer 使用逻辑 Topic 和可选 key，SDK 管理分片路由与身份。发送成功表示数据 Raft 持久提交；Stream 累计 ACK 或 Queue 单条 ACK 成功表示相应业务确认已持久化。
 
-超时或断线可能留下未知结果。使用 `Producer::pending_batches()` 与 `retry()` 保留原 operation、producer ID、epoch、sequence 和 digest；不以新批次重建相同业务消息。消费者保留原 assignment，并在 fencing 后重新获取状态。SDK 显式拒绝和未知结果的处理见 `sdk/rust/README.md`。
+超时、取消和断线可能留下未知结果。通过 `producer.pending_sends()`、`consumer.pending_acks()` 获取原操作句柄，再调用其 `retry()`。不要创建替代发送或扩大原确认范围。所有 close 返回报告，消费退出保留持久订阅。完整接口与恢复约束见 [SDK 指南](rust-sdk.zh-CN.md)。
 
 向进程发送 SIGTERM 或 Ctrl-C 会停止新准入并关闭 owned worker、Raft/WAL 与原生 QUIC 端点。关闭使用同一个五秒总期限，失败会返回错误。下次启动对真实 `AddressInUse` 在共用三秒绑定期限内做短退避重试；不设置 `SO_REUSEPORT`，不掩盖重复进程。

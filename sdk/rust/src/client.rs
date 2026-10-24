@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::{
     Arc,
@@ -28,7 +27,7 @@ use crate::{Admin, Error, Metrics, Result};
 
 /// Queues, reconnects and native transport all have finite application-owned bounds.
 #[derive(Clone, Debug)]
-pub struct ClientConfig {
+pub(crate) struct ClientConfig {
     pub endpoint: String,
     pub namespace: Option<String>,
     pub close_timeout: Duration,
@@ -202,6 +201,46 @@ impl ClientConfig {
     }
 }
 
+/// Effective finite bounds, suitable for host diagnostics without exposing transport configuration.
+#[derive(Clone, Copy, Debug)]
+pub struct ClientLimits {
+    pub request_lanes: usize,
+    pub max_pending_requests: u32,
+    pub max_pending_bytes: u64,
+    pub transport_memory_bytes: u64,
+    pub transport_control_reserved_bytes: u64,
+    pub max_connections: usize,
+    pub max_handshakes: usize,
+    pub max_streams: usize,
+    pub core_streams: usize,
+    pub max_ack_streams: usize,
+    pub connection_window_bytes: u32,
+    pub stream_window_bytes: u32,
+    pub send_buffer_bytes: u32,
+    pub liveness_timeout: Duration,
+}
+
+impl From<&ClientConfig> for ClientLimits {
+    fn from(config: &ClientConfig) -> Self {
+        Self {
+            request_lanes: config.request_lanes,
+            max_pending_requests: config.max_pending_requests,
+            max_pending_bytes: config.max_pending_bytes,
+            transport_memory_bytes: config.transport_memory_bytes,
+            transport_control_reserved_bytes: config.transport_control_reserved_bytes,
+            max_connections: config.transport.max_connections,
+            max_handshakes: config.transport.max_handshakes,
+            max_streams: config.transport.max_streams,
+            core_streams: config.transport.core_streams,
+            max_ack_streams: config.transport.max_ack_streams,
+            connection_window_bytes: config.transport.connection_window_bytes,
+            stream_window_bytes: config.transport.stream_window_bytes,
+            send_buffer_bytes: config.transport.send_buffer_bytes,
+            liveness_timeout: config.liveness_timeout,
+        }
+    }
+}
+
 struct Pool {
     control: Mutex<Option<RpcClient>>,
     produce: Mutex<Option<RpcClient>>,
@@ -238,7 +277,6 @@ pub(crate) struct Inner {
     pub resource_memory: Arc<Semaphore>,
     _reserved_memory: tokio::sync::OwnedSemaphorePermit,
     pub metrics: Arc<Metrics>,
-    pub consumer_claims: std::sync::Mutex<HashSet<(Id, u32, Id)>>,
     pub(crate) consumers: std::sync::Mutex<Vec<Arc<crate::group_consumer::Core>>>,
     pub(crate) deletions: crate::subscriptions::Deletions,
     producers: std::sync::Mutex<Vec<Arc<crate::logical_producer::Core>>>,
@@ -277,7 +315,7 @@ impl Drop for ClientOwner {
 
 impl Client {
     /// Resolves the stable endpoint once; each reconnect uses the same total request deadline.
-    pub async fn connect(
+    pub(crate) async fn connect(
         config: ClientConfig,
         trust_roots: Bytes,
         access_token: String,
@@ -349,21 +387,6 @@ impl Client {
         .await
     }
 
-    pub async fn with_target(
-        config: ClientConfig,
-        tls: ClientTls,
-        target: PeerTarget,
-        access_token: String,
-    ) -> Result<Self> {
-        config.validate()?;
-        crate::request::run(
-            Duration::from_millis(config.request_timeout_ms),
-            &CancellationToken::new(),
-            |deadline| Self::with_target_inner(config, tls, target, access_token, deadline),
-        )
-        .await
-    }
-
     async fn with_target_inner(
         mut config: ClientConfig,
         tls: ClientTls,
@@ -428,7 +451,6 @@ impl Client {
                 bulk: Mutex::new(None),
             },
             metrics: Arc::new(Metrics::default()),
-            consumer_claims: std::sync::Mutex::new(HashSet::new()),
             consumers: std::sync::Mutex::new(Vec::new()),
             deletions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             producers: std::sync::Mutex::new(Vec::new()),
@@ -451,18 +473,15 @@ impl Client {
             client: self.clone(),
         }
     }
+    pub fn limits(&self) -> ClientLimits {
+        (&self.inner.config).into()
+    }
     pub fn metrics(&self) -> Arc<Metrics> {
         self.inner.metrics.clone()
     }
     /// Register the fixed native transport collector in the host registry alongside SDK metrics.
     pub fn transport_metrics(&self) -> Arc<tidemq_transport::TransportMetrics> {
         self.inner.transport.metrics.clone()
-    }
-    pub fn session_id(&self) -> Id {
-        match &self.inner.credentials {
-            ClientCredentials::External { session_id, .. } => *session_id,
-            ClientCredentials::Internal { session_id, .. } => *session_id,
-        }
     }
     pub(crate) async fn operation<T, F: std::future::Future<Output = Result<T>>>(
         &self,
@@ -629,25 +648,24 @@ impl Client {
                 .and_then(|request| self.frame(kind, class, request, operation, payload, deadline))
                 .map_err(|error| error.preserve_uncertainty(uncertain))?;
             self.inner.metrics.record_request();
-            let response = if kind == FrameKind::AckBatch {
-                self.ack_attempt(frame, deadline).await
-            } else {
-                match self.rpc(class, deadline).await {
-                    Ok(rpc) => {
-                        crate::request::mark_sent();
-                        match affinity {
-                            Some(affinity) => rpc
-                                .call_affinity(frame, deadline, affinity)
-                                .await
-                                .map_err(Error::from),
-                            None => rpc.call(frame, deadline).await.map_err(Error::from),
-                        }
+            let response = match self.rpc(class, deadline).await {
+                Ok(rpc) => {
+                    crate::request::mark_sent();
+                    match affinity {
+                        Some(affinity) => rpc
+                            .call_affinity(frame, deadline, affinity)
+                            .await
+                            .map_err(Error::from),
+                        None => rpc.call(frame, deadline).await.map_err(Error::from),
                     }
-                    Err(error) => Err(error),
                 }
+                Err(error) => Err(error),
             };
             let result = response.and_then(|response| self.decode(response, response_kind));
             if let Err(error) = &result {
+                if error.outcome_unknown() {
+                    self.inner.metrics.record_unknown();
+                }
                 uncertain |= error.outcome_unknown()
                     || matches!(
                         error,
@@ -691,43 +709,6 @@ impl Client {
             }
         }
         Err(Error::Deadline.preserve_uncertainty(uncertain))
-    }
-
-    async fn ack_attempt(&self, frame: Frame, deadline: Instant) -> Result<ReceivedFrame> {
-        self.rpc(TrafficClass::Control, deadline).await?;
-        let session = self
-            .inner
-            .transport
-            .pooled(
-                self.inner.target.clone(),
-                &self.inner.credentials,
-                TrafficClass::Control,
-                deadline,
-            )
-            .await?;
-        let mut stream = session
-            .connection()
-            .open(tidemq_transport::StreamPurpose::Ack, deadline)
-            .await?;
-        crate::request::mark_sent();
-        stream.sender.send(&frame, deadline).await?;
-        stream.sender.finish()?;
-        let response = stream
-            .receiver
-            .receive(deadline)
-            .await?
-            .ok_or(Error::Closed)?;
-        if response.frame().request_id != frame.request_id {
-            return Err(Error::ResponseMismatch {
-                reason: "ACK response request_id differs from the request".into(),
-            });
-        }
-        if response.frame().operation_id != frame.operation_id {
-            return Err(Error::ResponseMismatch {
-                reason: "ACK response operation_id differs from the request".into(),
-            });
-        }
-        Ok(response)
     }
 
     pub(crate) fn decode<R: Message + Default>(
@@ -803,30 +784,6 @@ impl Client {
             return Err(Error::Deadline);
         }
         tokio::time::sleep_until(wake).await;
-        Ok(())
-    }
-
-    /// Cancellation addresses one request and does not reset its shared lane.
-    pub async fn cancel(&self, request_id: Id) -> Result<()> {
-        self.operation(|deadline| self.cancel_inner(request_id, deadline))
-            .await
-    }
-
-    async fn cancel_inner(&self, request_id: Id, deadline: Instant) -> Result<()> {
-        let frame = self.frame(
-            FrameKind::Cancel,
-            TrafficClass::Control,
-            Id::new_v7()?,
-            Id::new_v7()?,
-            &tidemq_protocol::common::CancelRequest {
-                request_id: Bytes::copy_from_slice(request_id.as_bytes()),
-            },
-            deadline,
-        )?;
-        self.rpc(TrafficClass::Control, deadline)
-            .await?
-            .notify(frame, deadline)
-            .await?;
         Ok(())
     }
 

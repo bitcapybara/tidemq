@@ -14,10 +14,11 @@ use std::{net::SocketAddr, path::PathBuf, process::ExitCode, time::Duration};
 use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use serde::Serialize;
-use tidemq_sdk::{Bytes, Client, ClientConfig, ClientTls, Id, PeerTarget};
+use tidemq_protocol::Id;
+use tidemq_sdk::{Client, Credentials, TlsTrust};
 use tokio::time::{Instant, timeout_at};
 
-use output::{Output, read_bounded, request_deadline, unix_ms};
+use output::{Output, request_deadline, unix_ms};
 
 #[global_allocator]
 static ALLOCATOR: std::alloc::System = std::alloc::System;
@@ -27,8 +28,6 @@ static ALLOCATOR: std::alloc::System = std::alloc::System;
 struct Args {
     #[arg(long)]
     endpoint: SocketAddr,
-    #[arg(long)]
-    server_name: String,
     #[arg(long)]
     ca: PathBuf,
     #[arg(long)]
@@ -40,7 +39,7 @@ struct Args {
     messages: u64,
     #[arg(long, default_value_t = 1_024)]
     message_bytes: usize,
-    /// Produce first, then settle and claim the original consumer at the resulting H.
+    /// Preserve a durable subscription, produce, then join after the archive settle period.
     #[arg(long, default_value_t = 0)]
     replay_settle_ms: u64,
     #[arg(long)]
@@ -52,12 +51,6 @@ struct Args {
 impl Args {
     fn validate(&self) -> Result<()> {
         ensure!(self.endpoint.port() > 0, "Endpoint port must be nonzero");
-        ensure!(
-            !self.server_name.is_empty()
-                && self.server_name.len() <= 253
-                && !self.server_name.chars().any(char::is_control),
-            "Invalid TLS server name"
-        );
         ensure!(
             (1..=256).contains(&self.messages),
             "Messages must be in 1..=256"
@@ -93,9 +86,8 @@ struct Report {
     ledger: ledger::Ledger,
     topic_id: Option<String>,
     subscription_id: Option<String>,
-    initial_cold_before: Option<u64>,
-    same_consumer_session_verified: bool,
-    authoritative_frontiers: Vec<u64>,
+    replay_started_after_publish: bool,
+    original_consumer_reused: bool,
     batches: Vec<recovery::BatchEvidence>,
     phases: Vec<PhaseTime>,
     last_phase: &'static str,
@@ -117,9 +109,9 @@ impl Report {
             .checked_add(if args.stage_fault { 16 } else { 0 })
             .context("Expected message count overflow")?;
         Ok(Self {
-            schema_version: 1,
+            schema_version: 2,
             status: "failed",
-            configuration: serde_json::json!({"endpoint":args.endpoint,"server_name":args.server_name,
+            configuration: serde_json::json!({"endpoint":args.endpoint,
                 "messages":args.messages,"message_bytes":args.message_bytes,"replay_settle_ms":args.replay_settle_ms,
                 "stage_fault":args.stage_fault,"require_unavailable":args.require_unavailable,
                 "request_timeout_ms":10000,"total_timeout_seconds":total_seconds,"host_wait_timeout_seconds":120,
@@ -128,9 +120,8 @@ impl Report {
             ledger: ledger::Ledger::new(expected, args.message_bytes, run)?,
             topic_id: None,
             subscription_id: None,
-            initial_cold_before: None,
-            same_consumer_session_verified: false,
-            authoritative_frontiers: Vec::new(),
+            replay_started_after_publish: false,
+            original_consumer_reused: false,
             batches: Vec::new(),
             phases: Vec::new(),
             last_phase: "created",
@@ -248,7 +239,9 @@ async fn validate_connected(
                 .context("Close deadline overflow")?,
         );
     match timeout_at(close, client.close()).await {
-        Ok(()) => report.client_close_completed = true,
+        Ok(Ok(close)) => report.client_close_completed = close.local_cleanup_complete(),
+        Ok(Err(error)) if result.is_ok() => result = Err(error.into()),
+        Ok(Err(_)) => {}
         Err(error) if result.is_ok() => {
             result = Err(error).context("Owned SDK close exceeded its budget")
         }
@@ -258,30 +251,17 @@ async fn validate_connected(
 }
 
 async fn connect(args: &Args, deadline: Instant) -> Result<Client> {
-    let roots = read_bounded(&args.ca, 65_536).await?;
-    let token = String::from_utf8(read_bounded(&args.token_file, 8_192).await?)
-        .context("Token file must be UTF-8")?;
-    let mut configuration = ClientConfig::new(args.endpoint.to_string());
-    configuration.request_timeout_ms = 10_000;
     Ok(
         tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
-            .scope(Client::with_target(
-                configuration,
-                ClientTls {
-                    trust_roots: Bytes::from(roots),
-                    identity: None,
-                    expected_nodes: Vec::new(),
-                },
-                PeerTarget {
-                    address: args.endpoint,
-                    server_name: args.server_name.clone(),
-                    local_role: "sdk".into(),
-                    remote_role: "gateway".into(),
-                    cluster_id: None,
-                    node_id: None,
-                },
-                token.trim_end_matches(['\r', '\n']).into(),
-            ))
+            .scope(
+                Client::builder(
+                    args.endpoint.to_string(),
+                    TlsTrust::ca_file(&args.ca),
+                    Credentials::token_file(&args.token_file),
+                )
+                .request_timeout(Duration::from_secs(10))
+                .build(),
+            )
             .await?,
     )
 }
@@ -290,7 +270,7 @@ fn client_metrics(client: &Client) -> serde_json::Value {
     let value = client.metrics().snapshot();
     serde_json::json!({"requests":value.requests,"retries":value.retries,"unknown":value.unknown,
         "deliveries":value.deliveries,"acknowledged":value.acknowledged,"admitted_bytes":value.admitted_bytes,
-        "pending_batches":value.pending_batches,"active_deliveries":value.active_deliveries,
+        "pending_sends":value.pending_sends,"active_deliveries":value.active_deliveries,
         "request_duration_ns":value.request_duration_ns,"admission_wait_ns":value.admission_wait_ns})
 }
 
@@ -303,8 +283,6 @@ mod tests {
             "deploy_validation",
             "--endpoint",
             "127.0.0.1:7410",
-            "--server-name",
-            "localhost",
             "--ca",
             "ca.pem",
             "--token-file",

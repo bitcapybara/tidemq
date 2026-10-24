@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::{Error, Id, Result};
+use crate::{Error, Result};
 
 tokio::task_local! {
     static REQUEST_CONTEXT: Arc<ScopedContext>;
@@ -118,11 +118,18 @@ impl ScopedContext {
     }
 }
 
+#[derive(Clone)]
+pub(crate) enum Recovery {
+    Send(crate::PendingSend),
+    Batch(Vec<crate::PendingSend>),
+    Ack(crate::PendingAck),
+    SubscriptionDeletion(crate::PendingSubscriptionDeletion),
+}
+
 struct Operation {
     deadline: Instant,
     sent: AtomicBool,
-    produce_pending: AtomicBool,
-    registration: OnceLock<(Id, u64)>,
+    recovery: OnceLock<Recovery>,
     scope: std::sync::Weak<ScopedContext>,
 }
 
@@ -154,18 +161,24 @@ impl Operation {
         } else {
             error
         };
-        if self.produce_pending.load(Ordering::Acquire) {
-            Error::ProduceUnknown {
-                source: Box::new(error),
-            }
-        } else if let Some((producer_id, registration_epoch)) = self.registration.get() {
-            Error::RegistrationUnknown {
-                producer_id: *producer_id,
-                registration_epoch: *registration_epoch,
-                source: Box::new(error),
-            }
-        } else {
-            error
+        match self.recovery.get() {
+            Some(Recovery::Send(pending)) => Error::SendUnresolved {
+                pending: pending.clone(),
+                source: Arc::new(error),
+            },
+            Some(Recovery::Batch(pending)) => Error::BatchSendInterrupted {
+                pending: pending.clone(),
+                source: Arc::new(error),
+            },
+            Some(Recovery::Ack(pending)) => Error::Acknowledgement {
+                pending: pending.clone(),
+                source: Arc::new(error),
+            },
+            Some(Recovery::SubscriptionDeletion(pending)) => Error::SubscriptionDeletion {
+                pending: pending.clone(),
+                source: Arc::new(error),
+            },
+            None => error,
         }
     }
 }
@@ -210,8 +223,7 @@ pub(crate) async fn run<T, F: Future<Output = Result<T>>>(
     let state = Arc::new(Operation {
         deadline,
         sent: AtomicBool::new(false),
-        produce_pending: AtomicBool::new(false),
-        registration: OnceLock::new(),
+        recovery: OnceLock::new(),
         scope: Arc::downgrade(&scope),
     });
     if Instant::now() >= deadline {
@@ -251,13 +263,9 @@ pub(crate) fn mark_sent() {
     let _ = OPERATION.try_with(|operation| operation.sent.store(true, Ordering::Release));
 }
 
-pub(crate) fn mark_produce_pending() {
-    let _ =
-        OPERATION.try_with(|operation| operation.produce_pending.store(true, Ordering::Release));
-}
-
-pub(crate) fn mark_registration(producer: Id, epoch: u64) {
-    let _ = OPERATION.try_with(|operation| operation.registration.set((producer, epoch)));
+// The outer context can drop the business future; retain its exact admitted work first.
+pub(crate) fn retain(recovery: Recovery) {
+    let _ = OPERATION.try_with(|operation| operation.recovery.set(recovery));
 }
 
 #[cfg(test)]

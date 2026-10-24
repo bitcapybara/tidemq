@@ -62,7 +62,7 @@ async fn replayed_queue_creation_preserves_the_fixed_subscription_identity() {
     let (fixture, client) = setup().await;
     let topic = client
         .admin()
-        .create_logical_topic("test/app/subscription-replay")
+        .create_topic("test/app/subscription-replay")
         .await
         .unwrap();
     let service = fixture.running.get(&1).unwrap().service.clone();

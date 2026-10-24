@@ -301,7 +301,7 @@ async function trial(generator, serviceBuild, loadBinary, output, topology, poli
       services.push(launch(binary, ['serve', '--config', config], path.join(output, `node-${node}.log`), policy.server_worker_threads));
     }
     await readiness(services, nodes);
-    const common = ['--endpoint', '127.0.0.1:7410', '--server-name', 'node-1.local',
+    const common = ['--endpoint', '127.0.0.1:7410',
       '--ca', path.join(cluster, 'ca.pem'), '--token-file', path.join(cluster, 'access.token'),
       '--management', '127.0.0.1:8410', '--service-pid', String(services[0].child.pid), '--service-binary', binary,
       '--service-config', path.join(cluster, 'node-1.toml'), '--build-identity', path.join(serviceBuild, 'identity.json')];

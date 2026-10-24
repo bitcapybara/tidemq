@@ -134,6 +134,14 @@ impl ClientBuilder {
         self
     }
 
+    pub fn request_lanes(mut self, lanes: usize) -> Self {
+        self.config.request_lanes = lanes;
+        self
+    }
+    pub fn limits(&self) -> crate::ClientLimits {
+        (&self.config).into()
+    }
+
     pub async fn build(self) -> Result<Client> {
         self.config.validate()?;
         validate_namespace(self.config.namespace.as_deref())?;

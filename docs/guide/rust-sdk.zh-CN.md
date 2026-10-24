@@ -40,6 +40,8 @@ println!("Unresolved sends: {}", report.unresolved_sends());
 # async fn process(_: &[u8]) -> std::io::Result<()> { Ok(()) }
 ```
 
+管理端使用 `admin.create_topic(name)` 创建逻辑 Topic，不选择固定分区数。`Producer`、`StreamConsumer` 和 `QueueConsumer` 是三个独立的业务类型。
+
 必填项在 builder 构造时传入，选填项链式设置。构造器和 setter 不做 I/O；build().await 成功才返回可用实例。未配置 Namespace 时使用完整 tenant/namespace/topic 名称。Client 上的 Namespace 只解析名称，不授予权限。
 
 TlsTrust 接受服务端 CA 文件或 PEM，不接收 CA 私钥。Credentials 支持 token_file、token_env 和 token。集群在线签发凭据，Metadata Raft 持久保存校验记录；应用通过私有文件或部署 Secret 取得 token。撤销和过期影响已有连接的新准入。Debug、日志和管理元数据不得输出凭据原值或签名材料。

@@ -12,7 +12,8 @@ use std::{net::SocketAddr, path::PathBuf, process::ExitCode, time::Duration};
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
 use serde::Serialize;
-use tidemq_sdk::{Bytes, Client, ClientConfig, ClientTls, Id, PeerTarget};
+use tidemq_protocol::Id;
+use tidemq_sdk::{Client, ClientBuilder, ClientLimits, Credentials, TlsTrust};
 use tokio::{io::AsyncWriteExt, time::Instant};
 
 // Examples are independent binaries and do not inherit src/main.rs allocator selection.
@@ -31,8 +32,6 @@ enum Mode {
 struct Args {
     #[arg(long, default_value = "127.0.0.1:7443")]
     endpoint: SocketAddr,
-    #[arg(long, default_value = "localhost")]
-    server_name: String,
     #[arg(long)]
     ca: PathBuf,
     /// File containing one token; credentials never appear in arguments or reports.
@@ -61,7 +60,7 @@ struct Args {
     batch_messages: u32,
     #[arg(long, default_value_t = 4)]
     workers: usize,
-    /// Independent one-partition topics measured concurrently after serial setup.
+    /// Independent logical topics measured concurrently after serial setup.
     #[arg(long, default_value_t = 1)]
     concurrent_partitions: usize,
     /// Fixed per-partition offer interval; zero selects the finite burst workload.
@@ -252,29 +251,8 @@ async fn main() -> ExitCode {
 async fn run(args: &Args) -> Result<Report> {
     args.validate()?;
     let identity = sample::Identity::capture(args).await?;
-    let roots = sample::read_bounded(&args.ca, 65_536).await?;
-    let credential = sample::read_bounded(&args.token_file, 8_192).await?;
-    let credential = String::from_utf8(credential).context("Token file must be UTF-8")?;
-    let config = client_config(args);
-    let sdk_configuration = sdk_configuration(&config);
-    let client = Client::with_target(
-        config,
-        ClientTls {
-            trust_roots: Bytes::from(roots),
-            identity: None,
-            expected_nodes: Vec::new(),
-        },
-        PeerTarget {
-            address: args.endpoint,
-            server_name: args.server_name.clone(),
-            local_role: "sdk".into(),
-            remote_role: "gateway".into(),
-            cluster_id: None,
-            node_id: None,
-        },
-        credential.trim_end_matches(['\r', '\n']).into(),
-    )
-    .await?;
+    let client = client_builder(args).build().await?;
+    let sdk_configuration = sdk_configuration(client.limits());
     let nonce = Id::new_v7()?;
     let warmup = if args.warmup_messages > 0 {
         Some(workload::group(&client, args, "warmup", nonce, args.warmup_messages).await?)
@@ -303,7 +281,7 @@ async fn run(args: &Args) -> Result<Report> {
                 .all(|phase| phase.terminal_error.is_none())
         });
     Ok(Report {
-        schema_version: 3,
+        schema_version: 4,
         status: if passed { "passed" } else { "failed" },
         generator_allocator: "std::alloc::System; four Tokio worker threads",
         configuration: args.clone(),
@@ -322,28 +300,31 @@ async fn run(args: &Args) -> Result<Report> {
     })
 }
 
-fn client_config(args: &Args) -> ClientConfig {
-    let mut config = ClientConfig::new(args.endpoint.to_string());
-    config.request_timeout_ms = args.request_timeout_ms;
-    config.request_lanes = args.request_lanes;
-    config
+fn client_builder(args: &Args) -> ClientBuilder {
+    Client::builder(
+        args.endpoint.to_string(),
+        TlsTrust::ca_file(&args.ca),
+        Credentials::token_file(&args.token_file),
+    )
+    .request_timeout(Duration::from_millis(args.request_timeout_ms))
+    .request_lanes(args.request_lanes)
 }
 
-fn sdk_configuration(config: &ClientConfig) -> serde_json::Value {
+fn sdk_configuration(config: ClientLimits) -> serde_json::Value {
     serde_json::json!({
         "request_lanes": config.request_lanes,
         "max_pending_requests": config.max_pending_requests,
         "max_pending_bytes": config.max_pending_bytes,
         "transport_memory_bytes": config.transport_memory_bytes,
         "transport_control_reserved_bytes": config.transport_control_reserved_bytes,
-        "max_connections": config.transport.max_connections,
-        "max_handshakes": config.transport.max_handshakes,
-        "max_streams": config.transport.max_streams,
-        "core_streams": config.transport.core_streams,
-        "max_ack_streams": config.transport.max_ack_streams,
-        "connection_window_bytes": config.transport.connection_window_bytes,
-        "stream_window_bytes": config.transport.stream_window_bytes,
-        "send_buffer_bytes": config.transport.send_buffer_bytes,
+        "max_connections": config.max_connections,
+        "max_handshakes": config.max_handshakes,
+        "max_streams": config.max_streams,
+        "core_streams": config.core_streams,
+        "max_ack_streams": config.max_ack_streams,
+        "connection_window_bytes": config.connection_window_bytes,
+        "stream_window_bytes": config.stream_window_bytes,
+        "send_buffer_bytes": config.send_buffer_bytes,
         "liveness_timeout_ms": config.liveness_timeout.as_millis(),
     })
 }
@@ -421,9 +402,8 @@ mod tests {
         let snapshots = [2, 4].map(|lanes| {
             args.request_lanes = lanes;
             args.validate().unwrap();
-            let config = client_config(&args);
-            config.validate().unwrap();
-            let mut snapshot = sdk_configuration(&config);
+            let config = client_builder(&args).limits();
+            let mut snapshot = sdk_configuration(config);
             assert_eq!(snapshot.get("request_lanes").unwrap(), lanes);
             snapshot.as_object_mut().unwrap().remove("request_lanes");
             snapshot

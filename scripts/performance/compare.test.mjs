@@ -143,16 +143,16 @@ function fixture(scenario = 'throughput') {
   const histogram = {samples: measured, mean_ns: 1024, maximum_ns: 1024, histogram_buckets: [[320, measured]]};
   const phase = {
     terminal_error: null, planned_messages: measured, committed_messages: measured,
-    acknowledged_messages: measured, durable_acknowledged_before: measured,
+    acknowledged_messages: measured, durable_acknowledged_messages: measured,
     produce_batch: structuredClone(histogram), produce_scheduling_lateness: structuredClone(histogram),
     offered_to_durable_ack: structuredClone(histogram), control_errors: 0,
   };
   const warmup = {...phase, planned_messages: warmupCount, committed_messages: warmupCount, acknowledged_messages: warmupCount,
-    durable_acknowledged_before: warmupCount, produce_batch: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]},
+    durable_acknowledged_messages: warmupCount, produce_batch: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]},
     offered_to_durable_ack: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]},
     produce_scheduling_lateness: {...histogram, samples: warmupCount, histogram_buckets: [[320, warmupCount]]}};
   return {
-    schema_version: 3, status: 'passed', configuration: workload,
+    schema_version: 4, status: 'passed', configuration: workload,
     identity: {build: {source_commit: policy.service_source_commit, allocator_feature: policy.allocator_feature}},
     warmup: {elapsed_ns: 1000, partitions: Array.from({length: workload.concurrent_partitions}, () => structuredClone(warmup))},
     measured: {elapsed_ns: 2000000000, partitions: Array.from({length: workload.concurrent_partitions}, () => structuredClone(phase))},
@@ -165,7 +165,7 @@ test('histogram aggregation retains every partition and durability failures cann
   assert.equal(result.durable_messages_per_second, 512);
   assert.equal(result.produce_mean_ns, 1024);
   assert.equal(result.produce_p99_upper_ns, 1024);
-  report.measured.partitions[3].durable_acknowledged_before = 255;
+  report.measured.partitions[3].durable_acknowledged_messages = 255;
   assert.throws(() => summarizeReport(report, policy, policy.service_source_commit));
 });
 

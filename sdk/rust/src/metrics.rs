@@ -13,7 +13,7 @@ pub struct Metrics {
     request_duration_ns: AtomicU64,
     admission_wait_ns: AtomicU64,
     admitted_bytes: AtomicU64,
-    pending_batches: AtomicU64,
+    pending_sends: AtomicU64,
     active_deliveries: AtomicU64,
     #[cfg(feature = "metrics")]
     latency: prometheus_client::metrics::histogram::Histogram,
@@ -32,7 +32,7 @@ impl Default for Metrics {
             request_duration_ns: AtomicU64::new(0),
             admission_wait_ns: AtomicU64::new(0),
             admitted_bytes: AtomicU64::new(0),
-            pending_batches: AtomicU64::new(0),
+            pending_sends: AtomicU64::new(0),
             active_deliveries: AtomicU64::new(0),
             #[cfg(feature = "metrics")]
             latency: prometheus_client::metrics::histogram::Histogram::new([
@@ -54,7 +54,7 @@ pub struct MetricsSnapshot {
     pub request_duration_ns: u64,
     pub admission_wait_ns: u64,
     pub admitted_bytes: u64,
-    pub pending_batches: u64,
+    pub pending_sends: u64,
     pub active_deliveries: u64,
 }
 
@@ -99,7 +99,7 @@ impl Metrics {
             request_duration_ns: self.request_duration_ns.load(Ordering::Relaxed),
             admission_wait_ns: self.admission_wait_ns.load(Ordering::Relaxed),
             admitted_bytes: self.admitted_bytes.load(Ordering::Relaxed),
-            pending_batches: self.pending_batches.load(Ordering::Relaxed),
+            pending_sends: self.pending_sends.load(Ordering::Relaxed),
             active_deliveries: self.active_deliveries.load(Ordering::Relaxed),
         }
     }
@@ -125,7 +125,7 @@ impl Metrics {
             if delivery {
                 &self.active_deliveries
             } else {
-                &self.pending_batches
+                &self.pending_sends
             },
             1,
         );
@@ -170,7 +170,7 @@ impl Drop for Charge {
         let count = if self.delivery {
             &self.metrics.active_deliveries
         } else {
-            &self.metrics.pending_batches
+            &self.metrics.pending_sends
         };
         let _ = count.try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
             Some(old.saturating_sub(1))
@@ -278,7 +278,7 @@ impl prometheus_client::collector::Collector for MetricsCollector {
             (
                 "retained_batches",
                 "Batch objects retained by the SDK or its host",
-                value.pending_batches,
+                value.pending_sends,
             ),
             (
                 "active_deliveries",

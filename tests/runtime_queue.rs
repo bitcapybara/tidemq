@@ -12,7 +12,9 @@ use tidemq::runtime::{GroupConfig, PeerConfig, RunningNode, RuntimeConfig};
 #[path = "runtime_support/udp_proxy.rs"]
 mod udp_proxy;
 
-use tidemq_sdk::{Bytes, Client, Id, public};
+use bytes::Bytes;
+use tidemq_protocol::{Id, public};
+use tidemq_sdk::Client;
 use tokio::time::Instant;
 
 #[path = "runtime_support/broker_failover.rs"]
@@ -163,15 +165,11 @@ async fn create_logical_resources(client: &Client) -> tidemq_sdk::TopicInfo {
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    client
-        .admin()
-        .create_logical_topic(RUNTIME_TOPIC)
-        .await
-        .unwrap()
+    client.admin().create_topic(RUNTIME_TOPIC).await.unwrap()
 }
 
 async fn logical_send(
-    producer: &tidemq_sdk::TopicProducer,
+    producer: &tidemq_sdk::Producer,
     body: &'static [u8],
 ) -> tidemq_sdk::MessageId {
     let result = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(2))

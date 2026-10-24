@@ -49,6 +49,8 @@ println!("Unresolved sends: {}", report.unresolved_sends());
 # async fn process(_: &[u8]) -> std::io::Result<()> { Ok(()) }
 ```
 
+Admin creates a logical Topic with `admin.create_topic(name).await?`, without selecting a fixed partition count. `Producer`, `StreamConsumer`, and `QueueConsumer` are distinct business types.
+
 Required inputs belong in the builder constructor; optional settings use chained setters. Constructors and setters perform no I/O. Successful `build().await` returns a connected client or a usable logical producer/consumer. Without a namespace, supply the full `tenant/namespace/topic` name.
 
 TLS trust contains the server CA certificate; a CA private key is never a client input. Credentials support token files, environment variables, and explicit tokens. The cluster stores credential verification records in Metadata Raft. Applications receive their tokens through private files or deployment Secrets. Debug output omits secrets and message content.
@@ -90,3 +92,19 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 ```
 
 Functional and fault integration cases live under the repository's tests directory. Functional validation does not establish throughput or calibrated capacity.
+
+The consumer types enforce their acknowledgement contracts at compile time:
+
+```compile_fail
+use tidemq_sdk::{QueueConsumer, ReceivedMessage};
+async fn invalid(queue: &QueueConsumer, message: &ReceivedMessage) {
+    queue.ack_cumulative(message).await;
+}
+```
+
+```compile_fail
+use tidemq_sdk::{StreamConsumer, ReceivedMessage};
+async fn invalid(stream: &StreamConsumer, message: &ReceivedMessage) {
+    stream.ack(message).await;
+}
+```

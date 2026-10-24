@@ -216,7 +216,7 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
 }
 
 async fn roundtrip(
-    producer: &tidemq_sdk::TopicProducer,
+    producer: &tidemq_sdk::Producer,
     consumer: &tidemq_sdk::QueueConsumer,
     sequence: u64,
 ) {

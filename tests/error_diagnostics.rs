@@ -1,20 +1,24 @@
 use std::time::Duration;
 
-use tidemq_sdk::ClientConfig;
+use tidemq_sdk::Error;
 
 #[test]
 fn sdk_sources_are_preserved_for_anyhow_chain_rendering() {
-    let mut config = ClientConfig::new("localhost:7443");
-    config.protocol.max_message_bytes = 0;
-    let error = config.validate().unwrap_err();
+    let protocol = tidemq_protocol::ProtocolLimits {
+        max_message_bytes: 0,
+        ..Default::default()
+    };
+    let error = Error::from(protocol.validate().unwrap_err());
     assert_eq!(error.to_string(), "Invalid protocol data");
     let report = format!("{:#}", anyhow::Error::new(error));
     assert!(report.contains("max_message_bytes must be greater than zero"));
     assert_eq!(report.matches("max_message_bytes").count(), 1);
 
-    config.protocol = tidemq_protocol::ProtocolLimits::default();
-    config.transport.handshake_timeout = Duration::ZERO;
-    let error = config.validate().unwrap_err();
+    let transport = tidemq::transport::TransportConfig {
+        handshake_timeout: Duration::ZERO,
+        ..Default::default()
+    };
+    let error = Error::from(transport.validate().unwrap_err());
     assert_eq!(error.to_string(), "QUIC transport failed");
     let report = format!("{:#}", anyhow::Error::new(error));
     assert!(report.contains("handshake_timeout must be greater than zero"));
@@ -23,9 +27,16 @@ fn sdk_sources_are_preserved_for_anyhow_chain_rendering() {
 
 #[test]
 fn transport_memory_errors_retain_the_invalid_reservation() {
-    let mut config = ClientConfig::new("localhost:7443");
-    config.transport_control_reserved_bytes = config.transport_memory_bytes + 1;
-    let error = config.validate().unwrap_err();
+    let error = Error::Memory {
+        source: tidemq::transport::budget::MemoryBudget::new(
+            tidemq::transport::budget::MemoryLimits {
+                total_bytes: 1024,
+                control_reserved_bytes: 1025,
+            },
+        )
+        .err()
+        .unwrap(),
+    };
     assert_eq!(error.to_string(), "Invalid client transport memory budget");
     let report = format!("{:#}", anyhow::Error::new(error));
     assert!(report.contains("control_reserved_bytes must not exceed total_bytes"));

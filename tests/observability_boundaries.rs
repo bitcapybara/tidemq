@@ -183,9 +183,11 @@ async fn log_scenario(mode: &str) {
                 .temporary_filter("debug", Duration::from_millis(600))
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(250)).await;
-            tidemq_sdk::ClientConfig::new("localhost:7443")
-                .validate()
-                .unwrap();
+            let _builder = tidemq_sdk::Client::builder(
+                "localhost:7443",
+                tidemq_sdk::TlsTrust::ca_pem("deferred CA material"),
+                tidemq_sdk::Credentials::token("x".repeat(32)),
+            );
             tracing::debug!(event_code = "newer_filter_survived");
             tokio::time::sleep(Duration::from_millis(500)).await;
             tracing::info!(event_code = "expired_filter_must_not_emit");

@@ -23,9 +23,11 @@ fn expected_backend() -> &'static str {
 
 #[test]
 fn real_binary_reports_allocator_identity_and_bounded_probe_without_claiming_heap_profile() {
-    tidemq_sdk::ClientConfig::new("localhost:7443")
-        .validate()
-        .unwrap();
+    let _builder = tidemq_sdk::Client::builder(
+        "localhost:7443",
+        tidemq_sdk::TlsTrust::ca_pem("deferred CA material"),
+        tidemq_sdk::Credentials::token("x".repeat(32)),
+    );
     let output = service(&["allocator-probe", "--block-bytes", "4096", "--blocks", "4"]);
     assert!(
         output.status.success(),
