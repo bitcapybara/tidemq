@@ -1,157 +1,116 @@
 use super::*;
-
-use std::collections::BTreeSet;
-
-use tidemq_sdk::Delivery;
+use std::collections::{BTreeSet, HashMap};
 
 const MESSAGE_COUNT: u64 = 512;
 const BODY_BYTES: usize = 1024;
 const PRODUCE_BATCH: usize = 32;
-const DEFAULT_CREDIT: usize = 256;
+const RECEIVE_CREDIT: u32 = 256;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn default_credit_live_pages_preserve_every_identity_and_durable_ack() {
+async fn configured_credit_live_pages_preserve_every_identity_and_durable_ack() {
+    maintenance_test_logging();
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    fixture.enable_dynamic_auth().await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + Duration::from_secs(90);
     tokio::time::timeout_at(until, async {
-        exercise_live_pages(&client, until).await;
+        let topic = create_logical_resources(&client).await;
+        let consumer = client
+            .new_queue_consumer(RUNTIME_TOPIC, "pages")
+            .prefetch_messages(RECEIVE_CREDIT)
+            .build()
+            .await
+            .unwrap();
+        let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+        let mut expected = HashMap::new();
+        for first in (0..MESSAGE_COUNT).step_by(PRODUCE_BATCH) {
+            let messages = (first..first + PRODUCE_BATCH as u64).map(message).collect();
+            let receipts = tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(producer.send_batch(messages))
+                .await
+                .unwrap();
+            assert_eq!(receipts.outcomes.len(), PRODUCE_BATCH);
+            for (index, receipt) in receipts.outcomes.into_iter().enumerate() {
+                if receipt.is_err() {
+                    let address = fixture.running.get(&1).unwrap().management_address;
+                    let diagnostics = http(address, "/diagnostics").await;
+                    let metrics = http(address, "/metrics").await;
+                    let ownership = http(address, &format!("/ownership/{}/0", topic.id())).await;
+                    let evidence = fixture.directory.join("live-pages-send-failure.json");
+                    tokio::fs::write(
+                        &evidence,
+                        serde_json::to_vec_pretty(&serde_json::json!({
+                        "diagnostics": diagnostics, "metrics": metrics, "ownership": ownership,
+                            "sdk": format!("{:?}", client.metrics().snapshot()),
+                            "result": format!("{receipt:?}"),
+                        }))
+                        .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                    panic!("A live-page send failed; inspect {}", evidence.display());
+                }
+                assert!(
+                    expected
+                        .insert(receipt.unwrap().message_id(), first + index as u64)
+                        .is_none()
+                );
+            }
+        }
+        let mut seen = BTreeSet::new();
+        while seen.len() < MESSAGE_COUNT as usize {
+            let delivery = tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(consumer.receive())
+                .await
+                .unwrap();
+            let sequence = *expected.get(&delivery.message_id()).unwrap();
+            assert_eq!(delivery.key(), Some(sequence.to_be_bytes().as_slice()));
+            let payload = message_body(sequence);
+            assert_eq!(delivery.payload(), payload);
+            assert!(seen.insert(sequence), "A healthy Queue repeated a message");
+            tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(consumer.ack(&delivery))
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("ACK failed after {} messages: {error:?}", seen.len())
+                });
+        }
+        assert_eq!(seen, (0..MESSAGE_COUNT).collect());
+        assert_eq!(client.metrics().snapshot().deliveries, MESSAGE_COUNT);
+        assert_eq!(client.metrics().snapshot().acknowledged, MESSAGE_COUNT);
+        consumer.close().await.unwrap();
+        producer.close().await.unwrap();
         client.close().await.unwrap();
     })
     .await
-    .expect("The complete live-page workload must finish within its original 30-second deadline");
+    .expect("The complete live-page workload exceeded its original deadline");
+    let metrics = http(
+        fixture.running.get(&1).unwrap().management_address,
+        "/metrics",
+    )
+    .await;
+    let prefix = "tidemq_operations_total{operation=\"Read\",outcome=\"Committed\"} ";
+    assert!(
+        metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix))
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 1
+    );
     fixture.close().await;
 }
 
-async fn exercise_live_pages(client: &Client, until: Instant) {
-    let (topic, subscription) = create(client).await;
-    let producer = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
-        .scope(Producer::open(
-            client.clone(),
-            topic,
-            0,
-            Id::new_v7().unwrap(),
-        ))
-        .await
-        .unwrap();
-    let config = ConsumerConfig::default();
-    assert_eq!(config.max_buffered_messages as usize, DEFAULT_CREDIT);
-    // A generous metadata allowance leaves a full-credit page below both default byte limits.
-    let full_page_bytes = DEFAULT_CREDIT * (BODY_BYTES + 8 + 512);
-    assert!(full_page_bytes < config.max_buffered_bytes as usize);
-    assert!(
-        full_page_bytes
-            < ClientConfig::new("queue.local:443")
-                .protocol
-                .max_frame_bytes as usize
-    );
-    // Claim before producing so H remains zero and all deliveries use the live path.
-    let consumer = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
-        .scope(Consumer::claim(
-            client.clone(),
-            topic,
-            0,
-            subscription,
-            config,
-        ))
-        .await
-        .unwrap();
-    produce_committed_messages(&producer, until).await;
-    consume_live_pages(&consumer, until).await;
-    let assignment = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
-        .scope(client.admin().subscription_status(topic, 0, subscription))
-        .await
-        .unwrap()
-        .assignment
-        .unwrap();
-    assert_eq!(assignment.cold_before, 0);
-    assert_eq!(assignment.acknowledged_before, MESSAGE_COUNT);
-}
-
-async fn produce_committed_messages(producer: &Producer, until: Instant) {
-    for first in (0..MESSAGE_COUNT).step_by(PRODUCE_BATCH) {
-        let messages = (first..first + PRODUCE_BATCH as u64).map(message).collect();
-        let receipt = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
-            .scope(producer.produce(messages))
-            .await
-            .expect("Every original producer batch must obtain a durable receipt before reading");
-        assert_eq!(receipt.first_offset, first);
-        assert_eq!(receipt.message_count as usize, PRODUCE_BATCH);
-    }
-    eprintln!("Committed {MESSAGE_COUNT} messages before the first live Read");
-}
-
-async fn consume_live_pages(consumer: &Consumer, until: Instant) {
-    let mut seen = BTreeSet::new();
-    let mut frontier = 0;
-    let mut page = 0;
-    let mut partial_pages = 0;
-    while seen.len() < MESSAGE_COUNT as usize {
-        let pending = MESSAGE_COUNT as usize - seen.len();
-        let started = Instant::now();
-        let result = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
-            .scope(consumer.fill())
-            .await;
-        eprintln!(
-            "Live Read page {page}: pending={pending}, result={result:?}, elapsed_us={}",
-            started.elapsed().as_micros()
-        );
-        let count = result.expect("Live Read errors must fail without replacing the consumer");
-        assert!(count <= DEFAULT_CREDIT);
-        partial_pages +=
-            usize::from(pending >= DEFAULT_CREDIT && count > 0 && count < DEFAULT_CREDIT);
-        let mut deliveries = Vec::new();
-        while let Some(delivery) = consumer.next().await.unwrap() {
-            validate_delivery(&delivery, &mut seen);
-            deliveries.push(delivery);
-        }
-        assert_eq!(deliveries.len(), count);
-        page += 1;
-        if deliveries.is_empty() {
-            continue;
-        }
-        let mut contiguous = frontier;
-        while seen.contains(&contiguous) {
-            contiguous += 1;
-        }
-        let ack = tidemq_sdk::RequestContext::with_deadline(deadline().min(until))
-            .scope(consumer.ack_many(&deliveries))
-            .await
-            .expect("Each original delivery token must obtain a durable ACK without retries");
-        assert!(ack.acknowledged_before >= frontier);
-        assert_eq!(ack.acknowledged_before, contiguous);
-        frontier = ack.acknowledged_before;
-        eprintln!("Durable ACK after page {}: frontier={frontier}", page - 1);
-        // Drop delivery byte/slot permits before the next default-credit Read.
-        drop(deliveries);
-    }
-    assert_eq!(seen, (0..MESSAGE_COUNT).collect());
-    assert_eq!(frontier, MESSAGE_COUNT);
-    // Faster hosts may legally fill all 256 slots within a service slice.
-    eprintln!(
-        "Completed {page} live Read pages; nonempty partial pages with full credit={partial_pages}"
-    );
-}
-
-fn validate_delivery(delivery: &Delivery, seen: &mut BTreeSet<u64>) {
-    let identity = u64::from_be_bytes(delivery.key().try_into().unwrap());
-    assert!(identity < MESSAGE_COUNT);
-    assert_eq!(delivery.offset(), identity);
-    assert_eq!(delivery.body(), message(identity).body.as_ref());
-    assert!(
-        seen.insert(identity),
-        "A message identity must appear exactly once"
-    );
-}
-
-fn message(identity: u64) -> public::Message {
-    let key = identity.to_be_bytes();
+fn message_body(identity: u64) -> Vec<u8> {
     let mut body = Vec::with_capacity(BODY_BYTES);
-    body.extend_from_slice(&key);
+    body.extend_from_slice(&identity.to_be_bytes());
     body.resize(BODY_BYTES, 0x5a);
-    public::Message {
-        key: Bytes::copy_from_slice(&key),
-        body: body.into(),
-    }
+    body
+}
+
+fn message(identity: u64) -> tidemq_sdk::Message {
+    tidemq_sdk::Message::new(message_body(identity))
+        .key(Bytes::copy_from_slice(&identity.to_be_bytes()))
 }

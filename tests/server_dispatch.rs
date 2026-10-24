@@ -293,6 +293,67 @@ async fn expired_handler_reply_keeps_other_control_requests_live() {
     task.await.unwrap().unwrap();
 }
 
+#[tokio::test]
+async fn simultaneous_control_replies_wait_for_the_bounded_writer_queue() {
+    let Fixture {
+        client,
+        service,
+        target,
+        credentials,
+        shutdown,
+        task,
+        transport: _,
+    } = Fixture::start(DispatchConfig {
+        core_handlers: 32,
+        replies_per_stream: 1,
+        ..Default::default()
+    })
+    .await;
+    let session = client
+        .connect(target, &credentials, TrafficClass::Control, deadline())
+        .await
+        .unwrap();
+    let rpc = RpcClient::from_session(session, RpcConfig::default())
+        .await
+        .unwrap();
+    let mut pending = Vec::new();
+    for _ in 0..32 {
+        pending.push(
+            rpc.submit(
+                request(
+                    FrameKind::Diagnose,
+                    TrafficClass::Control,
+                    &CreateTopic {
+                        name: "deferred".into(),
+                        partitions: 1,
+                    },
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    tokio::time::timeout_at(deadline(), async {
+        while service.submitted.lock().unwrap().len() != 32 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    service.replies.add_permits(32);
+    for reply in pending {
+        assert_eq!(
+            reply.receive().await.unwrap().frame().kind,
+            i32::from(FrameKind::DiagnosticResult)
+        );
+    }
+    rpc.shutdown(deadline()).await;
+    client.close(deadline()).await.unwrap();
+    shutdown.send(true).unwrap();
+    task.await.unwrap().unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn producer_submission_order_and_core_progress_survive_blocked_data_handlers() {
     let Fixture {

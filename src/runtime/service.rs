@@ -22,7 +22,7 @@ use crate::observability::metrics::{Metrics, Operation};
 use crate::ownership::remote::{Query, RemoteMetadataAuthority, Value};
 use crate::replication::rpc::{GroupRole, RaftService};
 use crate::server::{SubmissionOrder, WireService};
-use crate::transport::Authorization;
+use crate::transport::{Authorization, StreamPurpose};
 
 use super::node::{Replica, data_config};
 use super::wire::{self, PeerRpc, Request};
@@ -625,6 +625,27 @@ impl Service {
         }
     }
 
+    fn internal_execution_purpose(&self, frame: &Frame) -> Option<StreamPurpose> {
+        let envelope: InternalCommand =
+            decode_payload(frame.payload.clone(), &self.config.protocol).ok()?;
+        let request: Request =
+            decode_payload(envelope.encoded_command, &self.config.protocol).ok()?;
+        match request.kind {
+            wire::AUTHORITY
+            | wire::OWNERSHIP
+            | wire::LEADER
+            | super::auth::AUTH_QUERY
+            | crate::lifecycle::remote::LIFECYCLE_QUERY
+            | crate::lifecycle::remote::LIFECYCLE_COMMAND => Some(StreamPurpose::Core),
+            wire::FORWARD => {
+                let class = TrafficClass::try_from(frame.traffic_class).ok()?;
+                let inner = decode_frame(request.body, class, &self.config.protocol).ok()?;
+                Some(business_execution_purpose(&inner))
+            }
+            _ => Some(StreamPurpose::Request),
+        }
+    }
+
     async fn internal(
         &self,
         peer: &crate::transport::NodeGrant,
@@ -940,6 +961,22 @@ impl Service {
 }
 
 impl WireService for Service {
+    fn execution_purpose(
+        &self,
+        peer: &Authorization,
+        frame: &Frame,
+        transport_purpose: StreamPurpose,
+    ) -> StreamPurpose {
+        if !matches!(peer, Authorization::Internal(_)) {
+            return business_execution_purpose(frame);
+        }
+        if frame.kind != i32::from(FrameKind::InternalCommand) {
+            return transport_purpose;
+        }
+        self.internal_execution_purpose(frame)
+            .unwrap_or(transport_purpose)
+    }
+
     fn response_requires_flush(&self, peer: &Authorization, request: &Frame) -> bool {
         self.shutdown_response(peer, request)
     }
@@ -1054,6 +1091,22 @@ impl WireService for Service {
             }
         }
         }, span, deadline.into_std()).await
+    }
+}
+
+fn business_execution_purpose(frame: &Frame) -> StreamPurpose {
+    match FrameKind::try_from(frame.kind) {
+        Ok(
+            FrameKind::GroupAck
+            | FrameKind::GroupRetireRead
+            | FrameKind::GroupRetireAck
+            | FrameKind::RetirePublishes
+            | FrameKind::ConsumerControl
+            | FrameKind::PublisherControl
+            | FrameKind::AckBatch
+            | FrameKind::Cancel,
+        ) => StreamPurpose::Ack,
+        _ => StreamPurpose::Request,
     }
 }
 

@@ -671,6 +671,13 @@ impl Client {
                             ))
                         && attempt + 1 < self.inner.config.max_reconnect_attempts =>
                 {
+                    if attempt == 0
+                        && let Error::Remote { code, message, .. } = &error
+                    {
+                        tracing::debug!(target: "tidemq_sdk::retry", event_code = "sdk_request_retry",
+                            error_code = code.as_str_name(), reason = message,
+                            "The original SDK request will retry a server refusal");
+                    }
                     self.inner.metrics.record_retry();
                     if self.backoff(operation, attempt, deadline).await.is_err() {
                         return Err(error.preserve_uncertainty(uncertain));

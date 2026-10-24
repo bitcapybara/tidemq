@@ -25,6 +25,8 @@ struct Request {
     scope: String,
     #[prost(uint32, tag = "5")]
     hops: u32,
+    #[prost(bytes = "bytes", tag = "6")]
+    client_session: Bytes,
 }
 
 struct Observer<'a> {
@@ -226,20 +228,28 @@ async fn data_leader(fixture: &Fixture) -> u64 {
         .unwrap()
 }
 
-async fn assert_old_broker_fenced(fixture: &Fixture, partition: PartitionKey, epoch: u64) {
+async fn assert_old_broker_fenced(
+    fixture: &Fixture,
+    partition: PartitionKey,
+    subscription: tidemq_sdk::SubscriptionId,
+    credential: tidemq_sdk::CredentialId,
+) {
     let mut old = Observer::new(fixture, 31).await;
     let limits = ProtocolLimits::default();
     let inner = new_frame(
-        FrameKind::OpenProducer,
+        FrameKind::GroupRetireRead,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
         Id::new_v7().unwrap(),
-        &public::OpenProducer {
+        &public::GroupRetire {
             topic_id: Bytes::copy_from_slice(partition.topic_id.as_bytes()),
             partition_id: partition.partition,
-            producer_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
-            expected_registration_epoch: 0,
-            owner_epoch: epoch,
+            subscription_id: Bytes::copy_from_slice(
+                subscription.to_string().parse::<Id>().unwrap().as_bytes(),
+            ),
+            member_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
+            member_epoch: 1,
+            sequence: 1,
         },
         1000,
         &limits,
@@ -252,9 +262,10 @@ async fn assert_old_broker_fenced(fixture: &Fixture, partition: PartitionKey, ep
             Request {
                 kind: 3,
                 body: encode_payload(&inner, limits.max_control_frame_bytes).unwrap(),
-                principal: "runtime-test".into(),
+                principal: format!("credential:{credential}"),
                 scope: "*".into(),
                 hops: 2,
+                client_session: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
             },
             deadline(),
         )
@@ -284,6 +295,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         (41, Role::Gateway),
     ];
     let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
+    fixture.enable_dynamic_auth().await;
     for config in fixture.configs.values_mut() {
         config.runtime.capacity.process_memory = tidemq::quota::Limits::default().process_memory;
     }
@@ -295,42 +307,53 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         wait_process(&fixture, *node, process).await;
     }
     let client = fixture.client(41).await;
-    let (topic, subscription) = create(&client).await;
-    let partition = PartitionKey {
-        topic_id: topic,
-        partition: 0,
-    };
-    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
+    let admin = client.admin();
+    let tenant = admin.create_tenant("test").await.unwrap();
+    admin.create_namespace(tenant, "app").await.unwrap();
+    let topic = admin.create_logical_topic(RUNTIME_TOPIC).await.unwrap();
+    let principal = admin
+        .new_principal(tenant, "fence-observer", [tidemq_sdk::Permission::Consume])
+        .build()
         .await
         .unwrap();
-    assert_eq!(durable_produce(&producer, b"before-broker-crash").await, 0);
-    let consumer = Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        ConsumerConfig::default(),
-    )
-    .await
-    .unwrap();
-    durable_consume(&consumer, 0..1, b"before-broker-crash").await;
+    let credential = admin
+        .issue_token(principal, Duration::from_secs(300))
+        .await
+        .unwrap()
+        .id();
+    let partition = PartitionKey {
+        topic_id: topic.id().to_string().parse().unwrap(),
+        partition: 0,
+    };
+    let consumer = client
+        .new_queue_consumer(RUNTIME_TOPIC, "jobs")
+        .build()
+        .await
+        .unwrap();
+    let subscription = admin
+        .queue_subscription(RUNTIME_TOPIC, "jobs")
+        .await
+        .unwrap()
+        .id();
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let first = logical_send(&producer, b"before-broker-crash").await;
+    logical_consume(&consumer, &[first], b"before-broker-crash").await;
     let mut observer = Observer::new(&fixture, 41).await;
     let before = observer.wait_owner(partition, 31).await;
     processes.get_mut(&31).unwrap().kill().await.unwrap();
     let fault = Instant::now();
     assert!(
         tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_millis(50))
-            .scope(producer.produce(vec![public::Message {
-                key: Bytes::new(),
-                body: Bytes::from_static(b"after-broker-crash")
-            }]))
+            .scope(producer.send("after-broker-crash"))
             .await
             .is_err()
     );
-    let pending = producer.pending_batches().await.unwrap();
+    let pending = producer.pending_sends().await.unwrap();
+    assert_eq!(pending.len(), 1);
     let batch = pending.first().unwrap();
-    assert_eq!(durable_retry(&producer, batch, deadline()).await, 1);
-    durable_consume(&consumer, 1..2, b"after-broker-crash").await;
+    let second = logical_retry(batch, deadline()).await;
+    assert_ne!(first, second);
+    logical_consume(&consumer, &[second], b"after-broker-crash").await;
     eprintln!(
         "Broker SIGKILL to original SDK durable producer and consumer ACK: {:?}",
         fault.elapsed()
@@ -340,22 +363,17 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     assert_eq!(after.generation, before.generation + 1);
     processes.insert(31, spawn_process(&fixture, 31).await);
     wait_process(&fixture, 31, processes.get_mut(&31).unwrap()).await;
-    assert_old_broker_fenced(&fixture, partition, before.epoch).await;
-    assert_eq!(
-        durable_produce(&producer, b"after-old-broker-restart").await,
-        2
-    );
-    durable_consume(&consumer, 2..3, b"after-old-broker-restart").await;
+    assert_old_broker_fenced(&fixture, partition, subscription, credential).await;
+    let third = logical_send(&producer, b"after-old-broker-restart").await;
+    assert!(![first, second].contains(&third));
+    logical_consume(&consumer, &[third], b"after-old-broker-restart").await;
     let metadata_lost = Instant::now();
     for node in [12, 13, 32] {
         processes.get_mut(&node).unwrap().kill().await.unwrap();
     }
     assert!(
         tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(1))
-            .scope(producer.produce(vec![public::Message {
-                key: Bytes::new(),
-                body: Bytes::from_static(b"metadata-minority")
-            }]))
+            .scope(producer.send("metadata-minority"))
             .await
             .is_err()
     );
@@ -366,14 +384,14 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
             .is_none(),
         "A metadata minority must not issue fresh ownership authority"
     );
-    let pending = producer.pending_batches().await.unwrap();
+    let pending = producer.pending_sends().await.unwrap();
     assert_eq!(pending.len(), 1);
     let original = pending.first().unwrap();
     // Expire the original control TTL before requiring refusal of all new work.
     tokio::time::sleep_until(metadata_lost + tidemq::ownership::ControlPolicy::default().ttl).await;
     assert!(
         tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(1))
-            .scope(producer.retry(original))
+            .scope(original.retry())
             .await
             .is_err(),
         "A metadata minority cannot refresh an expired producer authority"
@@ -384,18 +402,16 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     for node in [12, 13] {
         wait_process(&fixture, node, processes.get_mut(&node).unwrap()).await;
     }
-    assert_eq!(durable_retry(&producer, original, deadline()).await, 3);
-    durable_consume(&consumer, 3..4, b"metadata-minority").await;
+    let fourth = logical_retry(original, deadline()).await;
+    assert!(![first, second, third].contains(&fourth));
+    logical_consume(&consumer, &[fourth], b"metadata-minority").await;
     let restored = observer.wait_owner(partition, 31).await;
     assert_eq!(restored.epoch, after.epoch + 1);
     assert_eq!(restored.generation, after.generation + 1);
-    let status = client
-        .admin()
-        .subscription_status(topic, 0, subscription)
-        .await
-        .unwrap();
-    assert_eq!(status.assignment.unwrap().acknowledged_before, 4);
+    assert_eq!(client.metrics().snapshot().acknowledged, 4);
     observer.close().await;
+    consumer.close().await.unwrap();
+    producer.close().await.unwrap();
     client.close().await.unwrap();
     for process in processes.values_mut() {
         if process.try_wait().unwrap().is_none() {

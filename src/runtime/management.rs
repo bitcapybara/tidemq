@@ -227,7 +227,14 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             .iter()
             .map(|metrics| metrics.snapshot())
             .collect::<Vec<_>>();
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic});
+        let memory_budget = serde_json::json!({
+            "available_total_bytes": service.budget.available_bytes(),
+            "available_data_bytes": service.budget.available_data_bytes(),
+            "available_normal_bytes": service.budget.available_normal_bytes(),
+            "available_core_bytes": service.budget.available_core_bytes(),
+            "available_handshake_bytes": service.budget.available_handshake_bytes(),
+        });
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic});
     }
 }
 

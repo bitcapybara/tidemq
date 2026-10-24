@@ -28,6 +28,16 @@ pub trait WireService: Send + Sync + 'static {
         order: Option<SubmissionOrder>,
     ) -> impl Future<Output = std::result::Result<Option<Frame>, Self::Error>> + Send;
 
+    /// Nested business envelopes must not occupy the control handlers they depend on.
+    fn execution_purpose(
+        &self,
+        _peer: &Authorization,
+        _request: &Frame,
+        transport_purpose: StreamPurpose,
+    ) -> StreamPurpose {
+        transport_purpose
+    }
+
     /// Opt in only for replies that must reach the peer before closing the endpoint.
     fn response_requires_flush(&self, _peer: &Authorization, _request: &Frame) -> bool {
         false
@@ -140,7 +150,15 @@ impl Dispatcher {
         } else {
             match queue.slots.clone().try_acquire_owned() {
                 Ok(slot) => slot,
-                Err(_) => return Err(Box::new(frame)),
+                Err(_) => {
+                    if self.health.may_log(std::time::Instant::now()) {
+                        tracing::debug!(event_code = "dispatch_admission_wait", reason = "slots",
+                            purpose = ?purpose, frame_kind = frame.frame().kind,
+                            internal = matches!(&peer, Authorization::Internal(_)),
+                            "Dispatch is waiting for handler capacity");
+                    }
+                    return Err(Box::new(frame));
+                }
             }
         };
         let Ok(class) = TrafficClass::try_from(frame.frame().traffic_class) else {
@@ -155,6 +173,13 @@ impl Dispatcher {
             self.budget.try_reserve(class, bytes)
         };
         let Ok(memory) = memory else {
+            if self.health.may_log(std::time::Instant::now()) {
+                tracing::debug!(event_code = "dispatch_admission_wait", reason = "memory",
+                    purpose = ?purpose, frame_kind = frame.frame().kind, requested_bytes = bytes,
+                    available_data_bytes = self.budget.available_data_bytes(),
+                    internal = matches!(&peer, Authorization::Internal(_)),
+                    "Dispatch is waiting for request and reply memory");
+            }
             return Err(Box::new(frame));
         };
         let job = Job {
@@ -346,11 +371,16 @@ async fn execute<S: WireService>(
             bytes: response.payload,
             _permit: memory,
         });
-        let _ = reply.try_send(Reply {
-            frame: response,
+        // Keep the bounded handler slot while the writer catches up; a full queue is not a lost reply.
+        let _ = timeout_at(
             deadline,
-            notification: notification_peer.map(|peer| (peer, frame)),
-        });
+            reply.send(Reply {
+                frame: response,
+                deadline,
+                notification: notification_peer.map(|peer| (peer, frame)),
+            }),
+        )
+        .await;
     }
 }
 
@@ -460,6 +490,7 @@ async fn serve_stream<S: WireService>(
     let (mut sender, mut receiver) = stream.split();
     let (replies, mut outgoing) = mpsc::channel::<Reply>(dispatcher.config.replies_per_stream);
     let sequence = Arc::new(AsyncMutex::new(()));
+    let admission = service.clone();
     let read = async move {
         loop {
             let received = tokio::select! {
@@ -483,11 +514,15 @@ async fn serve_stream<S: WireService>(
                             &dispatcher.config.protocol,
                             ErrorCode::DeadlineExceeded,
                         ) {
-                            let _ = replies.try_send(Reply {
-                                frame: response,
-                                deadline: frame.deadline(),
-                                notification: None,
-                            });
+                            let _ = timeout_at(
+                                frame.deadline(),
+                                replies.send(Reply {
+                                    frame: response,
+                                    deadline: frame.deadline(),
+                                    notification: None,
+                                }),
+                            )
+                            .await;
                         }
                         continue;
                     }
@@ -495,8 +530,9 @@ async fn serve_stream<S: WireService>(
             } else {
                 None
             };
+            let execution = admission.execution_purpose(&peer, frame.frame(), purpose);
             let submitted = tokio::select! {
-                submitted = dispatcher.submit(peer.clone(), purpose, frame, replies.clone(), order) => submitted,
+                submitted = dispatcher.submit(peer.clone(), execution, frame, replies.clone(), order) => submitted,
                 _ = shutdown.changed() => { drop(replies); return true },
             };
             if let Err(frame) = submitted
@@ -507,11 +543,15 @@ async fn serve_stream<S: WireService>(
                 )
             {
                 dispatcher.health.rejected.inc();
-                let _ = replies.try_send(Reply {
-                    frame: response,
-                    deadline: frame.deadline(),
-                    notification: None,
-                });
+                let _ = timeout_at(
+                    frame.deadline(),
+                    replies.send(Reply {
+                        frame: response,
+                        deadline: frame.deadline(),
+                        notification: None,
+                    }),
+                )
+                .await;
             }
         }
     };

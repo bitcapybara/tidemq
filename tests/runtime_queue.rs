@@ -286,109 +286,6 @@ async fn logical_consume(
     assert_eq!(confirmed, expected);
 }
 
-async fn durable_produce(producer: &Producer, body: &'static [u8]) -> u64 {
-    let until = Instant::now() + Duration::from_secs(20);
-    if let Ok(receipt) =
-        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_secs(2))
-            .scope(producer.produce(vec![public::Message {
-                key: Bytes::new(),
-                body: Bytes::from_static(body),
-            }]))
-            .await
-    {
-        return receipt.first_offset;
-    }
-    let pending = producer.pending_batches().await.unwrap();
-    assert_eq!(pending.len(), 1);
-    let batch = pending.first().unwrap();
-    durable_retry(producer, batch, until).await
-}
-
-async fn durable_retry(
-    producer: &Producer,
-    batch: &tidemq_sdk::PendingBatch,
-    until: Instant,
-) -> u64 {
-    let identity = (
-        batch.operation_id(),
-        batch.producer_epoch(),
-        batch.first_sequence(),
-        batch.digest().to_vec(),
-    );
-    loop {
-        let result = tidemq_sdk::RequestContext::with_deadline(
-            until.min(Instant::now() + Duration::from_secs(2)),
-        )
-        .scope(producer.retry(batch))
-        .await;
-        if let Ok(receipt) = result {
-            assert_eq!(
-                identity,
-                (
-                    batch.operation_id(),
-                    batch.producer_epoch(),
-                    batch.first_sequence(),
-                    batch.digest().to_vec()
-                )
-            );
-            return receipt.first_offset;
-        }
-        assert!(
-            Instant::now() < until,
-            "Original producer identity could not recover: {result:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
-async fn durable_consume(consumer: &Consumer, offsets: std::ops::Range<u64>, body: &[u8]) {
-    // A lost durable Read reply can retain deliveries for the full default lease.
-    let budget = Duration::from_millis(tidemq::subscription::Limits::default().ack_timeout_ms)
-        + Duration::from_secs(20);
-    let until = Instant::now() + budget;
-    let mut previous = String::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut acknowledged = offsets.start;
-    while acknowledged < offsets.end {
-        let result = tidemq_sdk::RequestContext::with_deadline(
-            until.min(Instant::now() + Duration::from_secs(2)),
-        )
-        .scope(consumer.recv())
-        .await;
-        if let Ok(Some(delivery)) = result {
-            assert!(offsets.contains(&delivery.offset()));
-            assert_eq!(delivery.body(), body);
-            assert!(
-                seen.insert(delivery.offset()),
-                "Duplicate recovered delivery"
-            );
-            while seen.contains(&acknowledged) {
-                acknowledged += 1;
-            }
-            assert_eq!(
-                tidemq_sdk::RequestContext::with_deadline(until)
-                    .scope(consumer.ack(&delivery))
-                    .await
-                    .unwrap()
-                    .acknowledged_before,
-                acknowledged
-            );
-            continue;
-        }
-        let detail = format!("{result:?}");
-        if previous != detail {
-            eprintln!("Consumer recovery for offsets {offsets:?}: {detail}");
-            previous = detail;
-        }
-        assert!(
-            Instant::now() < until,
-            "Original consumer did not recover every offset: expected={offsets:?}, seen={seen:?}, last={result:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    assert_eq!(seen, offsets.collect());
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quorum() {
     let nodes = [
@@ -1150,7 +1047,7 @@ fn maintenance_test_logging() {
     if std::env::var_os("TIDEMQ_TEST_MAINTENANCE_LOG").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_test_writer()
-            .with_env_filter("tidemq::runtime::maintenance=debug")
+            .with_env_filter("tidemq::runtime::maintenance=debug,tidemq::server::dispatch=debug,tidemq_sdk=debug")
             .try_init();
     }
 }
