@@ -77,7 +77,7 @@ All close methods return a CloseReport or a CloseError containing a report. Insp
 
 ## Memory and observability
 
-Client and logical instance limits bound retained messages and bytes, requests, results, connections and tasks. Consumer prefetch limits cover reserved reads, the local queue and application-held payloads. ACK releases logical delivery credit; retained payload clones keep their memory charge. Transport, control and recovery reserves have separate limits. These logical budgets are not a process RSS limit.
+Client and logical instance limits bound retained messages and bytes, requests, results, connections and tasks. A consumer byte window must hold one maximum-sized message plus 512 bytes of delivery metadata (262656 bytes with the current SDK message limit). Read reservations keep enough room for that message; when retained payloads consume the remaining credit, reads wait for their release. Consumer prefetch limits cover reserved reads, the local queue and application-held payloads. ACK releases logical delivery credit; retained payload clones keep their memory charge. Transport, control and recovery reserves have separate limits. These logical budgets are not a process RSS limit.
 
 Pending sends retain a bounded share of request slots and bytes, leaving receiving and control capacity available. `pending_requests` requires at least three entries. A message or batch that cannot fit its share is rejected before admission. Claiming a completed send releases its request slots; retained recovery handles continue to account for their metadata memory.
 

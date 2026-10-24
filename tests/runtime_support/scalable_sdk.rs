@@ -118,7 +118,7 @@ async fn send_pressure(requests: u32, payload_bytes: usize) {
     let queue = client
         .new_queue_consumer("events", "jobs")
         .prefetch_messages(1)
-        .prefetch_bytes(256 * 1024)
+        .prefetch_bytes(256 * 1024 + 512)
         .build()
         .await
         .unwrap();
@@ -255,19 +255,11 @@ async fn ordinary_builders_connect_to_a_combined_node_and_share_logical_handles(
     fixture.close().await;
 }
 
+#[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_handles() {
     let fixture = dynamic_fixture().await;
-    let backend = fixture.configs.get(&1).unwrap().listen;
-    let proxy = udp_proxy::Proxy::start([backend, backend]).await;
-    let client = Client::builder(
-        proxy.address.to_string(),
-        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
-        tidemq_sdk::Credentials::token(TOKEN),
-    )
-    .build()
-    .await
-    .unwrap();
+    let client = fixture.client(1).await;
     let tenant = client.admin().create_tenant("batch").await.unwrap();
     client
         .admin()
@@ -275,7 +267,7 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
         .await
         .unwrap();
     let topic = "batch/app/events";
-    client.admin().create_topic(topic).await.unwrap();
+    let info = client.admin().create_topic(topic).await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .build()
@@ -288,7 +280,14 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
     drop(warmup);
     queue.close().await.unwrap();
     drop(queue);
-    proxy.set_mtu(1199);
+    let pause = tidemq::runtime::test_hooks::InstalledPause::publish(
+        tidemq::metadata::PartitionKey {
+            topic_id: info.id().to_string().parse().unwrap(),
+            partition: 0,
+        },
+        3,
+    )
+    .unwrap();
     let payload = vec![7; 96 * 1024];
     let retained =
         tidemq_protocol::topic::delivery_bytes(b"large", &payload, &BTreeMap::new()).unwrap() * 2
@@ -304,7 +303,8 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
             ]))
             .await
     });
-    let until = Instant::now() + Duration::from_secs(3);
+    pause.wait(deadline()).await.unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
     loop {
         if client.metrics().snapshot().admitted_bytes == retained {
             break;
@@ -337,7 +337,7 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
         panic!("Cancellation must return the original handles for this batch");
     };
     assert_eq!(original.len(), 2);
-    proxy.set_mtu(1200);
+    pause.resume();
     let mut expected = BTreeSet::new();
     for send in original {
         assert!(expected.insert(send.retry().await.unwrap().message_id().to_string()));
@@ -361,6 +361,5 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
     producer.close().await.unwrap();
     client.close().await.unwrap();
     drop((pending, queue, producer, client));
-    proxy.close().await;
     fixture.close().await;
 }

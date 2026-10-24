@@ -201,6 +201,8 @@ impl Service {
         self.admit_produce()?;
         let request: public::Publish = decode_payload(frame.payload.clone(), &self.config.protocol)
             .map_err(|source| Error::operation("decode logical publish", source))?;
+        #[cfg(feature = "test-hooks")]
+        super::test_hooks::pause_publish(route.partition, request.sequence, deadline).await;
         let shard = wire::id(&request.shard_id)?;
         let producer = wire::id(&request.producer_id)?;
         let identity = SendIdentity {

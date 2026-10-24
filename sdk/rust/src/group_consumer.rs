@@ -189,6 +189,13 @@ impl Builder {
                 reason: "consumer name or prefetch budget is invalid",
             });
         }
+        if u64::from(self.bytes)
+            < minimum_prefetch_bytes(self.client.inner.config.protocol.max_message_bytes)
+        {
+            return Err(Error::Configuration {
+                reason: "consumer prefetch_bytes must hold a maximum-sized message plus 512 bytes of delivery metadata",
+            });
+        }
         let client = self.client.clone();
         client
             .operation(|deadline| self.build_until(deadline))
@@ -672,4 +679,8 @@ impl QueueConsumer {
         }
         ack::start(&self.owner.core, message, Some(delay), false).await
     }
+}
+
+fn minimum_prefetch_bytes(maximum_message: u32) -> u64 {
+    u64::from(maximum_message) + 512
 }

@@ -10,30 +10,40 @@ use tokio::{sync::Notify, time::Instant};
 
 use crate::metadata::PartitionKey;
 
-static HOT_DELIVERY: Mutex<Option<Arc<HotDeliveryPause>>> = Mutex::new(None);
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PausePoint {
+    HotDelivery(u64),
+    Publish(u64),
+}
 
-pub struct HotDeliveryPause {
+static PAUSE: Mutex<Option<Arc<RuntimePause>>> = Mutex::new(None);
+
+struct RuntimePause {
     partition: PartitionKey,
-    offset: u64,
+    point: PausePoint,
     ready: Notify,
     resume: Notify,
 }
 
-pub struct InstalledPause(Arc<HotDeliveryPause>);
+pub struct InstalledPause(Arc<RuntimePause>);
 
 impl InstalledPause {
     pub fn hot_delivery(partition: PartitionKey, offset: u64) -> io::Result<Self> {
-        let mut slot = HOT_DELIVERY
+        Self::install(partition, PausePoint::HotDelivery(offset))
+    }
+    pub fn publish(partition: PartitionKey, sequence: u64) -> io::Result<Self> {
+        Self::install(partition, PausePoint::Publish(sequence))
+    }
+    fn install(partition: PartitionKey, point: PausePoint) -> io::Result<Self> {
+        let mut slot = PAUSE
             .lock()
             .map_err(|_| io::Error::other("Test hook is poisoned"))?;
         if slot.is_some() {
-            return Err(io::Error::other(
-                "A hot delivery pause is already installed",
-            ));
+            return Err(io::Error::other("A runtime pause is already installed"));
         }
-        let hook = Arc::new(HotDeliveryPause {
+        let hook = Arc::new(RuntimePause {
             partition,
-            offset,
+            point,
             ready: Notify::new(),
             resume: Notify::new(),
         });
@@ -47,7 +57,7 @@ impl InstalledPause {
             .map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "Hot delivery did not reach its pause",
+                    "Runtime operation did not reach its pause",
                 )
             })
     }
@@ -59,7 +69,7 @@ impl InstalledPause {
 
 impl Drop for InstalledPause {
     fn drop(&mut self) {
-        if let Ok(mut slot) = HOT_DELIVERY.lock()
+        if let Ok(mut slot) = PAUSE.lock()
             && slot.as_ref().is_some_and(|hook| Arc::ptr_eq(hook, &self.0))
         {
             slot.take();
@@ -69,10 +79,16 @@ impl Drop for InstalledPause {
 }
 
 pub(super) async fn pause_hot_delivery(partition: PartitionKey, offset: u64, deadline: Instant) {
-    let hook = HOT_DELIVERY.lock().ok().and_then(|mut slot| {
+    pause(partition, PausePoint::HotDelivery(offset), deadline).await;
+}
+pub(super) async fn pause_publish(partition: PartitionKey, sequence: u64, deadline: Instant) {
+    pause(partition, PausePoint::Publish(sequence), deadline).await;
+}
+async fn pause(partition: PartitionKey, point: PausePoint, deadline: Instant) {
+    let hook = PAUSE.lock().ok().and_then(|mut slot| {
         if slot
             .as_ref()
-            .is_some_and(|hook| hook.partition == partition && hook.offset == offset)
+            .is_some_and(|hook| hook.partition == partition && hook.point == point)
         {
             slot.take()
         } else {

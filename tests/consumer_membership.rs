@@ -665,3 +665,158 @@ fn bad_token_rejects_the_entire_ack_batch_and_ack_holes_fill_the_bounded_window(
     assert_eq!(cursor.acknowledged_before(), 2);
     cursor.validate().unwrap();
 }
+
+#[test]
+fn a_stream_read_cannot_skip_a_large_predecessor_to_fill_its_byte_budget() {
+    for (model, expected) in [
+        (SubscriptionKind::Stream, vec![0, 3]),
+        (SubscriptionKind::Queue, vec![0, 2, 3]),
+    ] {
+        let mut cursor = cursor(model);
+        let member = id();
+        cursor
+            .install_members(
+                1,
+                &[grant(
+                    member,
+                    if model == SubscriptionKind::Stream {
+                        vec![HashRange {
+                            start: 0,
+                            end: None,
+                        }]
+                    } else {
+                        vec![]
+                    },
+                )],
+                0,
+            )
+            .unwrap();
+        let request = GroupRead {
+            max_bytes: 200,
+            ..read(member, 1, 1)
+        };
+        let candidates = [
+            Candidate {
+                offset: 0,
+                hash: 7,
+                bytes: 100,
+            },
+            Candidate {
+                offset: 1,
+                hash: 7,
+                bytes: 200,
+            },
+            Candidate {
+                offset: 2,
+                hash: 7,
+                bytes: 50,
+            },
+            Candidate {
+                offset: 3,
+                hash: 8,
+                bytes: 50,
+            },
+        ];
+        let result = cursor.read(request, &candidates).unwrap();
+        assert_eq!(
+            result
+                .deliveries
+                .iter()
+                .map(|proof| proof.offset)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(cursor.read(request, &[]).unwrap(), result);
+        assert_eq!(cursor.acknowledged_before(), 0);
+    }
+}
+
+#[test]
+fn a_paused_stream_predecessor_blocks_its_key_until_explicit_retry_after_snapshot() {
+    let mut cursor = GroupCursor::new(
+        GroupIdentity {
+            topic: id(),
+            shard: id(),
+            subscription: id(),
+        },
+        SubscriptionKind::Stream,
+        0,
+        [42; 32],
+        Limits {
+            max_delivery_attempts: 1,
+            ..Limits::default()
+        },
+    )
+    .unwrap();
+    let first = id();
+    let lanes = vec![HashRange {
+        start: 0,
+        end: None,
+    }];
+    cursor
+        .install_members(1, &[grant(first, lanes.clone())], 0)
+        .unwrap();
+    cursor
+        .read(
+            GroupRead {
+                max_messages: 1,
+                ..read(first, 1, 1)
+            },
+            &[
+                Candidate {
+                    offset: 0,
+                    hash: 7,
+                    bytes: 1,
+                },
+                Candidate {
+                    offset: 1,
+                    hash: 7,
+                    bytes: 1,
+                },
+                Candidate {
+                    offset: 2,
+                    hash: 8,
+                    bytes: 1,
+                },
+            ],
+        )
+        .unwrap();
+    cursor.retire_read(first, 1, 1).unwrap();
+    let second = id();
+    cursor
+        .install_members(2, &[grant(second, lanes)], 2)
+        .unwrap();
+    let next = cursor.read(read(second, 1, 3), &[]).unwrap();
+    assert_eq!(
+        next.deliveries
+            .iter()
+            .map(|proof| proof.offset)
+            .collect::<Vec<_>>(),
+        [2]
+    );
+    cursor.retire_read(second, 1, 1).unwrap();
+    let snapshot = postcard::to_allocvec(&cursor).unwrap();
+    let mut restored: GroupCursor = postcard::from_bytes(&snapshot).unwrap();
+    restored.validate().unwrap();
+    assert!(
+        restored
+            .read(read(second, 2, 4), &[])
+            .unwrap()
+            .deliveries
+            .is_empty()
+    );
+    restored.retire_read(second, 1, 2).unwrap();
+    restored.retry_message(0, 5).unwrap();
+    let resumed = restored
+        .read(
+            GroupRead {
+                max_messages: 1,
+                ..read(second, 3, 6)
+            },
+            &[],
+        )
+        .unwrap();
+    assert_eq!(resumed.deliveries.first().unwrap().offset, 0);
+    assert_eq!(resumed.deliveries.first().unwrap().attempt, 2);
+    assert_eq!(restored.acknowledged_before(), 0);
+}

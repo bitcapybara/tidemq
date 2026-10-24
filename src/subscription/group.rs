@@ -694,16 +694,30 @@ impl GroupCursor {
             .min(available_bytes);
         let mut selected = Vec::new();
         let mut paused = Vec::new();
+        let mut blocked = if self.model == SubscriptionKind::Stream {
+            self.slots
+                .values()
+                .filter(|slot| slot.state == SlotState::Paused)
+                .map(|slot| slot.candidate.hash)
+                .collect::<BTreeSet<_>>()
+        } else {
+            BTreeSet::new()
+        };
         for (due, offset) in &self.ready {
             if *due > request.now_ms || selected.len() >= maximum as usize {
                 break;
             }
             let slot = self.slots.get(offset).ok_or(Rejection::InvalidSnapshot)?;
-            if !self.eligible(member, slot.candidate, request.now_ms) {
+            if !self.eligible(member, slot.candidate, request.now_ms)
+                || blocked.contains(&slot.candidate.hash)
+            {
                 continue;
             }
             if slot.attempt >= slot.attempt_limit {
                 paused.push((*due, *offset));
+                if self.model == SubscriptionKind::Stream {
+                    blocked.insert(slot.candidate.hash);
+                }
                 continue;
             }
             let next = bytes
@@ -713,6 +727,10 @@ impl GroupCursor {
                 || next > available
                 || next > member.grant.max_bytes.saturating_sub(member.bytes)
             {
+                // Keep this key behind its unavailable predecessor while other keys progress.
+                if self.model == SubscriptionKind::Stream {
+                    blocked.insert(slot.candidate.hash);
+                }
                 continue;
             }
             let attempt = slot

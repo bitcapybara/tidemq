@@ -96,3 +96,73 @@ async fn full_size_roundtrip(maximum: usize) {
     client.close().await.unwrap();
     fixture.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consumer_prefetch_must_fit_one_full_message_before_creating_a_subscription() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("prefetch").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = "prefetch/app/events";
+    client.admin().create_topic(topic).await.unwrap();
+    let minimum = 256 * 1024 + 512;
+    for budget in [4096, minimum - 1] {
+        let error = client
+            .new_queue_consumer(topic, "invalid")
+            .prefetch_bytes(budget)
+            .build()
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), tidemq_sdk::ErrorKind::InvalidArgument);
+        let error = client
+            .admin()
+            .queue_subscription(topic, "invalid")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind(), tidemq_sdk::ErrorKind::NotFound);
+    }
+    let stream = client
+        .new_stream_consumer(topic, "events")
+        .prefetch_bytes(minimum)
+        .build()
+        .await
+        .unwrap();
+    let queue = client
+        .new_queue_consumer(topic, "jobs")
+        .prefetch_bytes(minimum)
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(topic).build().await.unwrap();
+    let payload = vec![9; 256 * 1024];
+    let sent = producer
+        .send(tidemq_sdk::Message::new(payload.clone()))
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), stream.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.message_id(), sent.message_id());
+    assert_eq!(first.payload(), payload);
+    stream.ack_cumulative(&first).await.unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(10), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.message_id(), sent.message_id());
+    assert_eq!(second.payload(), payload);
+    queue.ack(&second).await.unwrap();
+    drop((first, second));
+    stream.close().await.unwrap();
+    queue.close().await.unwrap();
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}

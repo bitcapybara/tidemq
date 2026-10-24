@@ -871,6 +871,11 @@ impl Service {
         {
             return Err(Error::invalid("Group read exceeds its frame budget"));
         }
+        if request.max_bytes < u64::from(self.config.protocol.max_message_bytes) + 256 {
+            return Err(Error::invalid(
+                "Group read bytes must accommodate a maximum-sized message and delivery metadata",
+            ));
+        }
         let window = (request.max_messages as usize, request.max_bytes);
         let (read, mut page) = self
             .read_consumer_page(

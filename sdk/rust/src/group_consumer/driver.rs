@@ -432,8 +432,17 @@ fn reserve(core: &Core) -> Result<Option<Credit>> {
         .available_permits()
         .min(core.client.inner.bytes.available_permits())
         .min(maximum);
-    let messages = core.slots.available_permits().min(32).min(bytes / 1024);
-    if messages == 0 || bytes < 1024 {
+    let maximum_message = core.client.inner.config.protocol.max_message_bytes;
+    if (bytes as u64) < minimum_prefetch_bytes(maximum_message) {
+        return Ok(None);
+    }
+    let messages = core.slots.available_permits().min(32).min(
+        bytes
+            .saturating_sub(maximum_message as usize)
+            .saturating_sub(256)
+            / 256,
+    );
+    if messages == 0 {
         return Ok(None);
     }
     let request = match core.client.inner.requests.clone().try_acquire_owned() {

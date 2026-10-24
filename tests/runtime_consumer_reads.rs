@@ -91,7 +91,7 @@ impl ReadFixture {
         self.client
             .new_queue_consumer(TOPIC, "durable")
             .prefetch_messages(MESSAGES as u32)
-            .prefetch_bytes(64 * 1024)
+            .prefetch_bytes(512 * 1024)
             .build()
             .await
             .unwrap()
