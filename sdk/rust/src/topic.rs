@@ -102,23 +102,15 @@ impl TopicInfo {
 impl Admin {
     pub async fn create_topic(&self, name: &str) -> Result<TopicInfo> {
         let name = self.client.topic_name(name)?;
-        self.client
-            .operation(|deadline| async move {
-                let wire = self
-                    .client
-                    .request(
-                        FrameKind::CreateLogicalTopic,
-                        FrameKind::TopicLayoutResult,
-                        TrafficClass::Control,
-                        Id::new_v7()?,
-                        &public::LogicalTopic { name: name.clone() },
-                        deadline,
-                    )
-                    .await?;
-                let wire = complete_layout(&self.client, wire, deadline).await?;
-                TopicInfo::from_wire(name, wire)
-            })
-            .await
+        let receipt = self
+            .execute(crate::admin::pending::Request::CreateTopic(name))
+            .await?;
+        match receipt {
+            crate::AdminReceipt::Topic(info) => Ok(info),
+            _ => Err(Error::ResponseMismatch {
+                reason: "administration returned a non-topic result".into(),
+            }),
+        }
     }
 
     pub async fn topic_info(&self, name: &str) -> Result<TopicInfo> {
@@ -148,6 +140,12 @@ impl Admin {
     }
 
     pub async fn split_topic_at(&self, name: &str, boundary: u64) -> Result<TopicInfo> {
+        self.client
+            .operation(|_| self.split_topic_at_inner(name, boundary))
+            .await
+    }
+
+    async fn split_topic_at_inner(&self, name: &str, boundary: u64) -> Result<TopicInfo> {
         let info = self.topic_info(name).await?;
         let source = info
             .wire
@@ -170,6 +168,12 @@ impl Admin {
     }
 
     pub async fn merge_topic_at(&self, name: &str, boundary: u64) -> Result<TopicInfo> {
+        self.client
+            .operation(|_| self.merge_topic_at_inner(name, boundary))
+            .await
+    }
+
+    async fn merge_topic_at_inner(&self, name: &str, boundary: u64) -> Result<TopicInfo> {
         let info = self.topic_info(name).await?;
         let left = info
             .wire
@@ -202,27 +206,19 @@ impl Admin {
         name: String,
         request: public::ChangeTopicLayout,
     ) -> Result<TopicInfo> {
-        self.client
-            .operation(|deadline| async move {
-                let wire = self
-                    .client
-                    .request(
-                        FrameKind::ChangeTopicLayout,
-                        FrameKind::TopicLayoutResult,
-                        TrafficClass::Control,
-                        Id::new_v7()?,
-                        &request,
-                        deadline,
-                    )
-                    .await?;
-                let wire = complete_layout(&self.client, wire, deadline).await?;
-                TopicInfo::from_wire(name, wire)
-            })
-            .await
+        let receipt = self
+            .execute(crate::admin::pending::Request::Layout { name, request })
+            .await?;
+        match receipt {
+            crate::AdminReceipt::Topic(info) => Ok(info),
+            _ => Err(Error::ResponseMismatch {
+                reason: "administration returned a non-topic result".into(),
+            }),
+        }
     }
 }
 
-async fn complete_layout(
+pub(crate) async fn complete_layout(
     client: &crate::Client,
     first: public::TopicLayoutResult,
     deadline: tokio::time::Instant,

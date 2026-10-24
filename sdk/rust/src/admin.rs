@@ -8,6 +8,9 @@ use tokio::time::Instant;
 
 use crate::{Client, Error, Result};
 
+pub(crate) mod pending;
+pub use pending::{AdminReceipt, PendingAdmin};
+
 #[derive(Clone)]
 pub struct Admin {
     pub(crate) client: Client,

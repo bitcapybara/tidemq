@@ -286,6 +286,7 @@ pub(crate) struct Inner {
     pub metrics: Arc<Metrics>,
     pub(crate) consumers: std::sync::Mutex<Vec<Arc<crate::group_consumer::Core>>>,
     pub(crate) deletions: crate::subscriptions::Deletions,
+    pub(crate) administrations: crate::admin::pending::Operations,
     producers: std::sync::Mutex<Vec<Arc<crate::logical_producer::Core>>>,
     closing: AtomicBool,
     close_result: std::sync::Mutex<Option<crate::close::CloseResult>>,
@@ -393,6 +394,7 @@ impl Client {
             metrics: Arc::new(Metrics::default()),
             consumers: std::sync::Mutex::new(Vec::new()),
             deletions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            administrations: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             producers: std::sync::Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             close_result: std::sync::Mutex::new(None),
@@ -933,6 +935,13 @@ impl Client {
             }
         }
         match self.close_subscription_deletions(deadline).await {
+            Ok(child) => report.merge(&child),
+            Err(error) => {
+                report.merge(error.report());
+                failure.get_or_insert(error.source);
+            }
+        }
+        match self.close_administrations(deadline).await {
             Ok(child) => report.merge(&child),
             Err(error) => {
                 report.merge(error.report());

@@ -24,6 +24,11 @@ pub enum ErrorKind {
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Administration outcome is unresolved; retry the original pending operation"))]
+    Administration {
+        pending: crate::PendingAdmin,
+        source: std::sync::Arc<Error>,
+    },
     #[snafu(display("Subscription deletion is incomplete; retry the original pending deletion"))]
     SubscriptionDeletion {
         pending: crate::PendingSubscriptionDeletion,
@@ -119,6 +124,7 @@ impl Error {
     pub fn kind(&self) -> ErrorKind {
         match self {
             Self::Background { source }
+            | Self::Administration { source, .. }
             | Self::SubscriptionDeletion { source, .. }
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }
@@ -154,6 +160,7 @@ impl Error {
     pub(crate) fn original_outcome_known(&self) -> bool {
         match self {
             Self::Background { source }
+            | Self::Administration { source, .. }
             | Self::SubscriptionDeletion { source, .. }
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }
@@ -179,6 +186,7 @@ impl Error {
     pub(crate) fn permission_denied(&self) -> bool {
         match self {
             Self::Background { source }
+            | Self::Administration { source, .. }
             | Self::SubscriptionDeletion { source, .. }
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }
@@ -230,6 +238,7 @@ impl Error {
     pub fn outcome_unknown(&self) -> bool {
         match self {
             Self::Background { source }
+            | Self::Administration { source, .. }
             | Self::SubscriptionDeletion { source, .. }
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }

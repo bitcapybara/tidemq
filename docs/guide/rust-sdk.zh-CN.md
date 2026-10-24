@@ -73,7 +73,7 @@ Client、Producer、StreamConsumer 和 QueueConsumer 的 clone 共享同一逻�
 
 Client 和各逻辑实例分别限制消息数、字节、请求、结果、连接与任务。Consumer 的 prefetch_bytes 至少容纳一条最大消息和 512 字节交付元数据；当前 SDK 最低为 262656 字节，小于该值会在 build 时明确拒绝。Read 预留保持一条最大消息的余量，应用持有正文导致剩余额度不足时暂停预取，释放正文后继续。Consumer prefetch 覆盖 Read 预留、本地队列及应用持有的正文，不能按分片放大额度。ACK 释放逻辑交付额度后，应用仍持有的正文继续计费。传输、控制和恢复额度单独受限；逻辑计费不能当作进程 RSS 上限。
 
-close 使用独立 close_timeout，返回 CloseReport，失败返回携带报告的 CloseError。报告区分本地清理、成员退出、未决发送/ACK/订阅删除和未领取结果。close 不替应用 ACK，不删除持久订阅；调用前应收束应用自身的发送和业务任务。
+close 使用独立 close_timeout，返回 CloseReport，失败返回携带报告的 CloseError。报告区分本地清理、成员退出、未决发送/ACK/订阅删除/管理操作和未领取结果。close 不替应用 ACK，不删除持久订阅；调用前应收束应用自身的发送和业务任务。
 
 ## 总期限、取消和恢复
 
@@ -97,6 +97,9 @@ context.cancellation_token() 可接入宿主取消。嵌套调用使用更早期
 | producer.pending_sends().await | PendingSend::retry().await 查询或继续原发送 |
 | consumer.pending_acks().await | PendingAck::retry().await 查询或继续原 ACK/NACK |
 | admin.pending_subscription_deletions() | PendingSubscriptionDeletion::retry().await 继续固定 UUID 的删除 |
+| admin.pending_operations() | PendingAdmin::retry().await 查询或继续原资源创建、凭据变更、Topic 拆分/合并 |
+
+管理操作成功仍返回对应的强类型结果；未知结果返回携带原 PendingAdmin 的 Error::Administration。retry 返回 AdminReceipt，保持原操作、资源身份和布局条件。管理恢复共享 Client 的资源预留，最多保留 16 项，每项预留 128 KiB；其他逻辑实例占用预留时可能更早拒绝新操作。凭据原值只交付一次，回包丢失后只返回已提交的 Credential ID；收到 CredentialSecretUnavailable 后先撤销该凭据，再签发新值。
 
 快照包含仍在处理、未知或部分完成，以及完成但尚未领取的结果。查询不 drain、不自动重试、不替业务确认。未知结果保留原身份和范围，不能为了腾空间静默丢弃。恢复句柄与正文均计入预算；没有 SDK 持久 outbox，跨进程重启不会自动找回本地账本。网络恢复须在原 Client 关闭前完成。
 

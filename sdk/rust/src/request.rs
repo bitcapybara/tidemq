@@ -124,6 +124,7 @@ pub(crate) enum Recovery {
     Batch(Vec<crate::PendingSend>),
     Ack(crate::PendingAck),
     SubscriptionDeletion(crate::PendingSubscriptionDeletion),
+    Administration(crate::PendingAdmin),
 }
 
 struct Operation {
@@ -175,6 +176,10 @@ impl Operation {
                 source: Arc::new(error),
             },
             Some(Recovery::SubscriptionDeletion(pending)) => Error::SubscriptionDeletion {
+                pending: pending.clone(),
+                source: Arc::new(error),
+            },
+            Some(Recovery::Administration(pending)) => Error::Administration {
                 pending: pending.clone(),
                 source: Arc::new(error),
             },

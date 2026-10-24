@@ -44,6 +44,10 @@ struct PeerState {
     sessions: Vec<Id>,
     traceparents: Vec<String>,
     drop_first_admin: bool,
+    drop_mutation_replies: bool,
+    mutations: std::collections::BTreeSet<Id>,
+    topic_delay: Duration,
+    control_timeouts: Vec<(FrameKind, u64)>,
 }
 
 struct Peer {
@@ -111,6 +115,8 @@ fn server(address: SocketAddr, identity: TlsIdentity) -> Server {
                     FrameKind::GetTopic,
                     FrameKind::GetTopicLayout,
                     FrameKind::CreateLogicalTopic,
+                    FrameKind::ManageIdentity,
+                    FrameKind::ChangeTopicLayout,
                     FrameKind::Cancel,
                 ],
             )
@@ -165,6 +171,12 @@ async fn serve_session(session: Arc<Session>, state: Arc<Mutex<PeerState>>) {
 async fn serve_stream(stream: FramedStream, session: Arc<Session>, state: Arc<Mutex<PeerState>>) {
     let (mut sender, mut receiver) = stream.split();
     while let Ok(Some(received)) = receiver.receive(deadline()).await {
+        if received.frame().kind == i32::from(FrameKind::GetTopic) {
+            let delay = state.lock().unwrap().topic_delay;
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
         let response = handle(received.frame(), &session, &mut state.lock().unwrap());
         if let Some(response) = response
             && sender.send(&response, deadline()).await.is_err()
@@ -208,6 +220,10 @@ fn layout() -> public::TopicLayoutResult {
 
 fn handle(request: &Frame, session: &Session, state: &mut PeerState) -> Option<Frame> {
     state.traceparents.push(request.traceparent.clone());
+    state.control_timeouts.push((
+        FrameKind::try_from(request.kind).unwrap(),
+        request.remaining_timeout_ms,
+    ));
     if state.drop_first_admin {
         state.drop_first_admin = false;
         session.close();
@@ -229,10 +245,245 @@ fn handle(request: &Frame, session: &Session, state: &mut PeerState) -> Option<F
             )
         }
         FrameKind::GetTopicLayout => response(request, FrameKind::TopicLayoutResult, &layout()),
-        FrameKind::CreateLogicalTopic => response(request, FrameKind::TopicLayoutResult, &layout()),
+        FrameKind::CreateLogicalTopic => {
+            let operation = Id::from_slice(&request.operation_id).unwrap();
+            state.mutations.insert(operation);
+            if state.drop_mutation_replies {
+                return None;
+            }
+            let mut created = layout();
+            created.topic_id = bytes(operation);
+            response(request, FrameKind::TopicLayoutResult, &created)
+        }
+        FrameKind::ChangeTopicLayout => {
+            state
+                .mutations
+                .insert(Id::from_slice(&request.operation_id).unwrap());
+            if state.drop_mutation_replies {
+                return None;
+            }
+            response(request, FrameKind::TopicLayoutResult, &layout())
+        }
+        FrameKind::ManageIdentity => {
+            let action: public::ManageIdentity =
+                decode_payload(request.payload.clone(), &limits).unwrap();
+            let operation = Id::from_slice(&request.operation_id).unwrap();
+            let first = state.mutations.insert(operation);
+            if state.drop_mutation_replies {
+                return None;
+            }
+            let issued = action.action == i32::from(public::IdentityAction::IssueCredential);
+            assert!(issued || action.action == i32::from(public::IdentityAction::RevokeCredential));
+            response(
+                request,
+                FrameKind::IdentityResult,
+                &public::IdentityResult {
+                    id: if issued {
+                        bytes(operation)
+                    } else {
+                        action.target_id
+                    },
+                    parent_id: action.parent_id,
+                    access_token: (issued && first).then(|| TOKEN.into()),
+                    expires_at_ms: u64::MAX,
+                    secret_unavailable: issued && !first,
+                },
+            )
+        }
         FrameKind::Cancel => return None,
         kind => panic!("Unexpected SDK peer request: {kind:?}"),
     })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupted_admin_creation_recovers_one_original_operation() {
+    let peer = peer().await;
+    peer.state.lock().unwrap().drop_mutation_replies = true;
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_millis(200)).unwrap();
+    let error = context
+        .scope(peer.client.admin().create_topic(TOPIC))
+        .await
+        .unwrap_err();
+    let tidemq_sdk::Error::Administration { pending, .. } = error else {
+        panic!("An admitted administration call must retain its recovery handle");
+    };
+    assert_eq!(peer.state.lock().unwrap().mutations.len(), 1);
+    assert_eq!(peer.client.admin().pending_operations().unwrap().len(), 1);
+    peer.state.lock().unwrap().drop_mutation_replies = false;
+    let until = Instant::now() + Duration::from_secs(5);
+    let receipt = loop {
+        match pending.retry().await {
+            Ok(receipt) => break receipt,
+            Err(error) if error.outcome_unknown() => assert!(Instant::now() < until),
+            Err(error) => panic!("Original administration recovery failed: {error}"),
+        }
+    };
+    let tidemq_sdk::AdminReceipt::Topic(topic) = receipt else {
+        panic!("Expected the created topic");
+    };
+    assert_eq!(topic.name(), TOPIC);
+    let operation = *peer.state.lock().unwrap().mutations.first().unwrap();
+    assert_eq!(topic.id().to_string(), operation.to_string());
+    assert_eq!(peer.state.lock().unwrap().mutations.len(), 1);
+    assert!(peer.client.admin().pending_operations().unwrap().is_empty());
+    assert_eq!(
+        peer.client
+            .close()
+            .await
+            .unwrap()
+            .unresolved_administrations(),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_admin_waiters_keeps_bounded_work_and_close_reports_the_original_operations() {
+    let peer = peer().await;
+    let client = Client::builder(
+        &peer.endpoint,
+        TlsTrust::ca_pem(peer.ca.clone()),
+        Credentials::token(TOKEN),
+    )
+    .close_timeout(Duration::from_millis(50))
+    .build()
+    .await
+    .unwrap();
+    peer.state.lock().unwrap().drop_mutation_replies = true;
+    let admin = client.admin();
+    let task = tokio::spawn(async move { admin.create_topic(TOPIC).await });
+    let until = Instant::now() + Duration::from_secs(5);
+    while peer.state.lock().unwrap().mutations.is_empty() {
+        assert!(
+            Instant::now() < until,
+            "The original request did not reach the peer"
+        );
+        tokio::task::yield_now().await;
+    }
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(client.admin().pending_operations().unwrap().len(), 1);
+    let closed = client.close().await.unwrap_err();
+    assert_eq!(closed.report().unresolved_administrations(), 1);
+    assert!(!closed.report().local_cleanup_complete());
+    assert!(matches!(
+        std::error::Error::source(&closed)
+            .unwrap()
+            .downcast_ref::<tidemq_sdk::Error>(),
+        Some(tidemq_sdk::Error::Deadline)
+    ));
+    assert_eq!(peer.state.lock().unwrap().mutations.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lost_credential_secret_recovers_its_id_without_issuing_another_credential() {
+    let peer = peer().await;
+    peer.state.lock().unwrap().drop_mutation_replies = true;
+    let principal = id(5).to_string().parse().unwrap();
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_millis(200)).unwrap();
+    let error = context
+        .scope(
+            peer.client
+                .admin()
+                .issue_token(principal, Duration::from_secs(3600)),
+        )
+        .await
+        .unwrap_err();
+    let tidemq_sdk::Error::Administration { pending, .. } = error else {
+        panic!("Expected credential recovery");
+    };
+    peer.state.lock().unwrap().drop_mutation_replies = false;
+    let until = Instant::now() + Duration::from_secs(5);
+    let receipt = loop {
+        match pending.retry().await {
+            Ok(receipt) => break receipt,
+            Err(error) if error.outcome_unknown() => assert!(Instant::now() < until),
+            Err(error) => panic!("Credential reconciliation failed: {error}"),
+        }
+    };
+    let tidemq_sdk::AdminReceipt::CredentialSecretUnavailable { id: credential, .. } = receipt
+    else {
+        panic!("A lost secret must not be reconstructed");
+    };
+    assert_eq!(peer.state.lock().unwrap().mutations.len(), 1);
+    assert_eq!(
+        credential.to_string(),
+        peer.state
+            .lock()
+            .unwrap()
+            .mutations
+            .first()
+            .unwrap()
+            .to_string()
+    );
+    peer.client.admin().revoke_token(credential).await.unwrap();
+    assert_eq!(peer.state.lock().unwrap().mutations.len(), 2);
+    assert!(peer.client.admin().pending_operations().unwrap().is_empty());
+    peer.client.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_admin_operations_stop_admission_at_the_shared_byte_and_count_limit() {
+    let peer = peer().await;
+    peer.state.lock().unwrap().drop_mutation_replies = true;
+    for _ in 0..16 {
+        let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_millis(100)).unwrap();
+        let error = context
+            .scope(peer.client.admin().create_topic(TOPIC))
+            .await
+            .unwrap_err();
+        assert!(error.outcome_unknown());
+    }
+    assert_eq!(peer.client.admin().pending_operations().unwrap().len(), 16);
+    let error = peer.client.admin().create_topic(TOPIC).await.unwrap_err();
+    assert_eq!(error.kind(), tidemq_sdk::ErrorKind::ResourceExhausted);
+    assert_eq!(peer.state.lock().unwrap().mutations.len(), 16);
+    let report = peer.client.close().await.unwrap();
+    assert!(report.local_cleanup_complete());
+    assert_eq!(report.unresolved_administrations(), 16);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn split_lookups_and_mutation_share_one_original_request_deadline() {
+    let peer = peer().await;
+    let client = Client::builder(
+        &peer.endpoint,
+        TlsTrust::ca_pem(peer.ca.clone()),
+        Credentials::token(TOKEN),
+    )
+    .request_timeout(Duration::from_millis(400))
+    .build()
+    .await
+    .unwrap();
+    {
+        let mut state = peer.state.lock().unwrap();
+        state.topic_delay = Duration::from_millis(200);
+        state.drop_mutation_replies = true;
+    }
+    assert!(
+        client
+            .admin()
+            .split_topic_at(TOPIC, 1 << 63)
+            .await
+            .unwrap_err()
+            .outcome_unknown()
+    );
+    {
+        let state = peer.state.lock().unwrap();
+        let (_, remaining) = state
+            .control_timeouts
+            .iter()
+            .find(|(kind, _)| *kind == FrameKind::ChangeTopicLayout)
+            .expect("The split mutation must be reached after its read-only lookup");
+        assert!(
+            *remaining > 0 && *remaining < 250,
+            "The mutation must retain the original remaining deadline"
+        );
+        assert_eq!(state.mutations.len(), 1);
+    }
+    assert_eq!(
+        client.close().await.unwrap().unresolved_administrations(),
+        1
+    );
 }
 
 #[tokio::test]

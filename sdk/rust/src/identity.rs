@@ -1,10 +1,6 @@
-use crate::{Admin, Error, Result, admin::bytes};
+use crate::{Admin, AdminReceipt, Error, Result, admin::bytes};
 use std::time::Duration;
-use tidemq_protocol::{
-    Id,
-    common::{FrameKind, TrafficClass},
-    public,
-};
+use tidemq_protocol::{Id, public};
 
 macro_rules! resource_id {
     ($name:ident) => {
@@ -52,9 +48,10 @@ impl Permission {
     }
 }
 
+#[derive(Clone)]
 pub struct AccessToken {
     id: CredentialId,
-    token: String,
+    token: std::sync::Arc<str>,
     expires_ms: u64,
 }
 
@@ -97,7 +94,10 @@ impl PrincipalBuilder {
             });
         }
         let result = self.admin.manage_identity(&self.request).await?;
-        Ok(PrincipalId(Id::from_slice(&result.id)?))
+        match result {
+            AdminReceipt::PrincipalConfigured(id) => Ok(id),
+            _ => Err(result_mismatch()),
+        }
     }
 }
 
@@ -110,7 +110,10 @@ impl Admin {
                 ..Default::default()
             })
             .await?;
-        Ok(TenantId(Id::from_slice(&result.id)?))
+        match result {
+            AdminReceipt::TenantCreated(id) => Ok(id),
+            _ => Err(result_mismatch()),
+        }
     }
 
     pub async fn create_namespace(&self, tenant: TenantId, name: &str) -> Result<NamespaceId> {
@@ -122,7 +125,10 @@ impl Admin {
                 ..Default::default()
             })
             .await?;
-        Ok(NamespaceId(Id::from_slice(&result.id)?))
+        match result {
+            AdminReceipt::NamespaceCreated(id) => Ok(id),
+            _ => Err(result_mismatch()),
+        }
     }
 
     pub fn new_principal(
@@ -165,15 +171,13 @@ impl Admin {
                 ..Default::default()
             })
             .await?;
-        let id = CredentialId(Id::from_slice(&result.id)?);
-        let token = result
-            .access_token
-            .ok_or_else(|| Error::CredentialSecretUnavailable { id })?;
-        Ok(AccessToken {
-            id,
-            token,
-            expires_ms: result.expires_at_ms,
-        })
+        match result {
+            AdminReceipt::CredentialIssued(token) => Ok(token),
+            AdminReceipt::CredentialSecretUnavailable { id, .. } => {
+                Err(Error::CredentialSecretUnavailable { id })
+            }
+            _ => Err(result_mismatch()),
+        }
     }
 
     pub async fn revoke_token(&self, credential: CredentialId) -> Result<()> {
@@ -197,22 +201,127 @@ impl Admin {
         Ok(())
     }
 
-    async fn manage_identity(
-        &self,
-        request: &public::ManageIdentity,
-    ) -> Result<public::IdentityResult> {
-        let operation = Id::new_v7()?;
-        self.client
-            .operation(|deadline| {
-                self.client.request(
-                    FrameKind::ManageIdentity,
-                    FrameKind::IdentityResult,
-                    TrafficClass::Control,
-                    operation,
-                    request,
-                    deadline,
-                )
-            })
+    async fn manage_identity(&self, request: &public::ManageIdentity) -> Result<AdminReceipt> {
+        self.execute(crate::admin::pending::Request::Identity(request.clone()))
             .await
+    }
+}
+
+fn result_mismatch() -> Error {
+    Error::ResponseMismatch {
+        reason: "identity operation returned a different result kind".into(),
+    }
+}
+
+pub(crate) fn receipt(
+    request: &public::ManageIdentity,
+    result: public::IdentityResult,
+    operation: Id,
+) -> Result<AdminReceipt> {
+    use public::IdentityAction as Action;
+    let action = Action::try_from(request.action).map_err(|_| result_mismatch())?;
+    let id = Id::from_slice(&result.id)?;
+    let expected = match action {
+        Action::RevokeCredential | Action::SetTenantEnabled => Id::from_slice(&request.target_id)?,
+        Action::PutPrincipalIdentity if !request.target_id.is_empty() => {
+            Id::from_slice(&request.target_id)?
+        }
+        _ => operation,
+    };
+    if id != expected {
+        return Err(result_mismatch());
+    }
+    Ok(match action {
+        Action::CreateTenantIdentity => AdminReceipt::TenantCreated(TenantId(id)),
+        Action::CreateNamespaceIdentity => AdminReceipt::NamespaceCreated(NamespaceId(id)),
+        Action::PutPrincipalIdentity => AdminReceipt::PrincipalConfigured(PrincipalId(id)),
+        Action::RevokeCredential => AdminReceipt::CredentialRevoked(CredentialId(id)),
+        Action::SetTenantEnabled => AdminReceipt::TenantStatusChanged(TenantId(id)),
+        Action::IssueCredential => {
+            if result.parent_id != request.parent_id || result.expires_at_ms == 0 {
+                return Err(result_mismatch());
+            }
+            match (result.access_token, result.secret_unavailable) {
+                (Some(token), false)
+                    if (32..=256).contains(&token.len())
+                        && token.bytes().all(|byte| byte.is_ascii_graphic()) =>
+                {
+                    AdminReceipt::CredentialIssued(AccessToken {
+                        id: CredentialId(id),
+                        token: token.into(),
+                        expires_ms: result.expires_at_ms,
+                    })
+                }
+                (None, true) => AdminReceipt::CredentialSecretUnavailable {
+                    id: CredentialId(id),
+                    expires_at_unix_ms: result.expires_at_ms,
+                },
+                _ => return Err(result_mismatch()),
+            }
+        }
+        Action::Unspecified => return Err(result_mismatch()),
+    })
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+
+    #[test]
+    fn identity_results_cannot_replace_the_original_resource_or_reconstruct_a_lost_secret() {
+        let operation = Id::new_v7().unwrap();
+        let parent = Id::new_v7().unwrap();
+        let request = public::ManageIdentity {
+            action: public::IdentityAction::IssueCredential.into(),
+            parent_id: bytes(parent),
+            ..Default::default()
+        };
+        let reply = public::IdentityResult {
+            id: bytes(operation),
+            parent_id: bytes(parent),
+            expires_at_ms: 1,
+            secret_unavailable: true,
+            ..Default::default()
+        };
+        assert!(
+            matches!(receipt(&request, reply.clone(), operation).unwrap(),
+            AdminReceipt::CredentialSecretUnavailable { id, .. } if id == CredentialId(operation))
+        );
+        let mut foreign = reply.clone();
+        foreign.id = bytes(Id::new_v7().unwrap());
+        assert!(receipt(&request, foreign, operation).is_err());
+        let mut contradictory = reply;
+        contradictory.access_token = Some("s".repeat(64));
+        assert!(receipt(&request, contradictory, operation).is_err());
+    }
+
+    #[test]
+    fn issued_secret_is_bounded_and_shared_without_entering_debug_output() {
+        let operation = Id::new_v7().unwrap();
+        let parent = Id::new_v7().unwrap();
+        let request = public::ManageIdentity {
+            action: public::IdentityAction::IssueCredential.into(),
+            parent_id: bytes(parent),
+            ..Default::default()
+        };
+        let token = "private-credential-secret-that-must-not-be-logged";
+        let reply = public::IdentityResult {
+            id: bytes(operation),
+            parent_id: bytes(parent),
+            expires_at_ms: 1,
+            access_token: Some(token.into()),
+            ..Default::default()
+        };
+        let issued = receipt(&request, reply.clone(), operation).unwrap();
+        assert!(!format!("{issued:?}").contains(token));
+        let AdminReceipt::CredentialIssued(issued) = issued else {
+            panic!("Expected a credential");
+        };
+        let cloned = issued.clone();
+        assert!(std::sync::Arc::ptr_eq(&issued.token, &cloned.token));
+        assert_eq!(cloned.expose_secret(), token);
+        let mut invalid = reply;
+        invalid.access_token = Some(format!("{token}\n"));
+        assert!(receipt(&request, invalid, operation).is_err());
     }
 }

@@ -17,7 +17,7 @@ mod request;
 mod subscriptions;
 mod topic;
 
-pub use admin::Admin;
+pub use admin::{Admin, AdminReceipt, PendingAdmin};
 pub use builder::{ClientBuilder, Credentials, TlsTrust};
 use client::ClientConfig;
 pub use client::{Client, ClientLimits};
@@ -54,5 +54,6 @@ mod interface_tests {
         shared::<super::QueueConsumer>();
         shared::<super::PendingSend>();
         shared::<super::PendingAck>();
+        shared::<super::PendingAdmin>();
     }
 }
