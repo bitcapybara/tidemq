@@ -1,6 +1,185 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn producer_close_wakes_unadmitted_senders_and_keeps_a_completed_receipt_retrievable() {
+    let fixture = dynamic_fixture().await;
+    let backend = fixture.configs.get(&1).unwrap().listen;
+    let proxy = udp_proxy::Proxy::start([backend, backend]).await;
+    let client = Client::builder(
+        proxy.address.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(TOKEN),
+    )
+    .build()
+    .await
+    .unwrap();
+    let tenant = client.admin().create_tenant("closing").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = "closing/app/events";
+    client.admin().create_logical_topic(topic).await.unwrap();
+    let queue = client
+        .new_queue_consumer(topic, "jobs")
+        .build()
+        .await
+        .unwrap();
+    let producer = client
+        .new_producer(topic)
+        .max_pending_sends(1)
+        .build()
+        .await
+        .unwrap();
+    proxy.set_mtu(1199);
+    {
+        let mut original = std::pin::pin!(producer.send("owned-before-close"));
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(original.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+    proxy.set_mtu(1200);
+    wait_runtime_counter(&fixture, 1, "tidemq_producer_new_messages_total").await;
+    let pending = producer.pending_sends().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let queued = producer.clone();
+    let (ready, started) = tokio::sync::oneshot::channel();
+    let waiting = tokio::spawn(async move {
+        let mut sending = std::pin::pin!(queued.send("never-admitted"));
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(sending.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        ready.send(()).unwrap();
+        sending.await
+    });
+    started.await.unwrap();
+    assert_eq!(producer.pending_sends().await.unwrap().len(), 1);
+    let report = producer.close().await.unwrap();
+    assert!(report.local_cleanup_complete());
+    assert_eq!(report.unresolved_sends(), 0);
+    assert_eq!(report.unclaimed_results(), 1);
+    let failure = tokio::time::timeout(Duration::from_secs(1), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(failure.kind(), tidemq_sdk::ErrorKind::Closed);
+    let receipt = pending.first().unwrap().retry().await.unwrap();
+    let delivery = queue.receive().await.unwrap();
+    assert_eq!(delivery.message_id(), receipt.message_id());
+    assert_eq!(delivery.payload(), b"owned-before-close");
+    queue.ack(&delivery).await.unwrap();
+    assert!(queue.try_receive().unwrap().is_none());
+    queue.close().await.unwrap();
+    client.close().await.unwrap();
+    drop((queue, producer, client));
+    proxy.close().await;
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_sends_leave_request_and_byte_capacity_for_receiving_and_acknowledging() {
+    send_pressure(4, 8 * 1024).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pending_send_bytes_preserve_receiving_and_acknowledgement_capacity() {
+    send_pressure(8, 96 * 1024).await;
+}
+
+async fn send_pressure(requests: u32, payload_bytes: usize) {
+    let fixture = dynamic_fixture().await;
+    let backend = fixture.configs.get(&1).unwrap().listen;
+    let proxy = udp_proxy::Proxy::start([backend, backend]).await;
+    let client = Client::builder(
+        proxy.address.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(TOKEN),
+    )
+    .namespace("budget/app")
+    .pending_requests(requests)
+    .pending_bytes(2 * 1024 * 1024)
+    .request_timeout(Duration::from_secs(5))
+    .build()
+    .await
+    .unwrap();
+    let tenant = client.admin().create_tenant("budget").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client.admin().create_logical_topic("events").await.unwrap();
+    let queue = client
+        .new_queue_consumer("events", "jobs")
+        .prefetch_messages(1)
+        .prefetch_bytes(256 * 1024)
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer("events").build().await.unwrap();
+    let mut initial = Vec::new();
+    for _ in 0..3 {
+        initial.push(producer.send("small").await.unwrap().message_id());
+    }
+    let held = queue.receive().await.unwrap();
+    assert_eq!(held.message_id(), *initial.first().unwrap());
+    proxy.set_mtu(1199);
+    let payload = vec![7; payload_bytes];
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_millis(500)).unwrap();
+    let (first, second) = tokio::join!(
+        context.scope(producer.send(tidemq_sdk::Message::new(payload.clone()).key("large-a"))),
+        context.scope(producer.send(tidemq_sdk::Message::new(payload.clone()).key("large-b"))),
+    );
+    assert!(first.unwrap_err().outcome_unknown());
+    assert!(second.unwrap_err().outcome_unknown());
+    let pending = producer.pending_sends().await.unwrap();
+    assert_eq!(pending.len(), 2);
+    assert!(client.metrics().snapshot().admitted_bytes >= (2 * payload.len()) as u64);
+    {
+        let mut third = std::pin::pin!(producer.send(tidemq_sdk::Message::new(payload.clone())));
+        std::future::poll_fn(|context| {
+            assert!(std::future::Future::poll(third.as_mut(), context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+    assert_eq!(
+        producer.pending_sends().await.unwrap().len(),
+        2,
+        "Pending publication must preserve shared request and byte capacity for Read"
+    );
+    assert!(proxy.snapshot().over_mtu > 0);
+    queue.ack(&held).await.unwrap();
+    drop(held);
+    logical_consume(&queue, initial.get(1..).unwrap(), b"small").await;
+    proxy.set_mtu(1200);
+    let mut restored = Vec::new();
+    for send in &pending {
+        let identity = logical_retry(send, deadline()).await;
+        assert!(!initial.contains(&identity));
+        assert!(!restored.contains(&identity));
+        restored.push(identity);
+    }
+    logical_consume(&queue, &restored, &payload).await;
+    let subsequent = producer.send("after-recovery").await.unwrap().message_id();
+    logical_consume(&queue, &[subsequent], b"after-recovery").await;
+    drop(pending);
+    assert_eq!(client.metrics().snapshot().acknowledged, 6);
+    queue.close().await.unwrap();
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    drop((queue, producer, client));
+    proxy.close().await;
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordinary_builders_connect_to_a_combined_node_and_share_logical_handles() {
     let fixture = dynamic_fixture().await;
     let client = Client::builder(

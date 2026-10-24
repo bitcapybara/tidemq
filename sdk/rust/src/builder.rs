@@ -124,6 +124,7 @@ impl ClientBuilder {
         self.config.close_timeout = timeout;
         self
     }
+    /// At least three entries preserve admission for publication, receiving, and control work.
     pub fn pending_requests(mut self, maximum: u32) -> Self {
         self.config.max_pending_requests = maximum;
         self

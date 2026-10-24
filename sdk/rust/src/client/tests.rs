@@ -4,6 +4,27 @@ use std::error::Error as _;
 type InvalidConfig = (&'static str, fn(&mut ClientConfig));
 
 #[test]
+fn publication_limits_leave_a_read_frame_and_an_execution_slot() {
+    for total in [2 * 1024 * 1024, 16 * 1024 * 1024] {
+        for requests in [3, 4, 256] {
+            let mut config = ClientConfig::new("localhost:7443");
+            config.max_pending_bytes = total;
+            config.max_pending_requests = requests;
+            config.validate().unwrap();
+            let reserved = total / 8;
+            let normal = total - reserved * 2;
+            assert!(
+                normal - config.producer_bytes().unwrap() as u64
+                    >= u64::from(config.protocol.max_frame_bytes)
+            );
+            let normal_requests = requests - (requests / 4).max(1);
+            assert!(config.producer_request_limit() > 0);
+            assert!(config.producer_request_limit() < normal_requests);
+        }
+    }
+}
+
+#[test]
 fn configuration_errors_identify_the_invalid_field() {
     let cases: &[InvalidConfig] = &[
         ("endpoint", |c| c.endpoint.clear()),
@@ -20,8 +41,11 @@ fn configuration_errors_identify_the_invalid_field() {
         ("request_timeout_ms", |c| c.request_timeout_ms = 0),
         ("request_timeout_ms", |c| c.request_timeout_ms = 300_001),
         ("max_pending_requests", |c| c.max_pending_requests = 0),
+        ("max_pending_requests", |c| c.max_pending_requests = 1),
+        ("max_pending_requests", |c| c.max_pending_requests = 2),
         ("max_pending_requests", |c| c.max_pending_requests = 65_537),
         ("max_pending_bytes", |c| c.max_pending_bytes = 1),
+        ("max_pending_bytes", |c| c.max_pending_bytes = 1024 * 1024),
         ("max_pending_bytes", |c| {
             c.max_pending_bytes = u64::from(u32::MAX) + 1
         }),

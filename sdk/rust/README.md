@@ -77,6 +77,8 @@ All close methods return a CloseReport or a CloseError containing a report. Insp
 
 Client and logical instance limits bound retained messages and bytes, requests, results, connections and tasks. Consumer prefetch limits cover reserved reads, the local queue and application-held payloads. ACK releases logical delivery credit; retained payload clones keep their memory charge. Transport, control and recovery reserves have separate limits. These logical budgets are not a process RSS limit.
 
+Pending sends retain a bounded share of request slots and bytes, leaving receiving and control capacity available. `pending_requests` requires at least three entries. A message or batch that cannot fit its share is rejected before admission. Claiming a completed send releases its request slots; retained recovery handles continue to account for their metadata memory.
+
 The host owns Tokio, logging, metrics, TLS materials and allocator policy. `metrics` registers fixed series through `client.metrics().register(...)`. `opentelemetry` uses the host's provider and tracing bridge. `scope_traceparent` propagates a validated explicit trace context. See the [SDK guide](../../docs/guide/rust-sdk.zh-CN.md) and [trace export contract](../../docs/operations/tracing.zh-CN.md).
 
 The `produce` and `consume` examples use TIDEMQ_ENDPOINT, TIDEMQ_CA_PEM, TIDEMQ_TOKEN and TIDEMQ_TOPIC. Consumption also requires TIDEMQ_SUBSCRIPTION; TIDEMQ_MESSAGE_COUNT defaults to ten.

@@ -46,21 +46,23 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    fn producer_bytes(&self) -> Result<usize> {
+    pub(crate) fn producer_bytes(&self) -> Result<usize> {
         let total = usize::try_from(self.max_pending_bytes).map_err(|_| Error::Configuration {
             reason: "max_pending_bytes must fit the platform's address space",
         })?;
-        let one_delivery = (self.protocol.max_message_bytes as usize)
-            .checked_add(crate::consumer::delivery_overhead())
+        let normal = total.saturating_sub((total / 8).saturating_mul(2));
+        normal
+            .checked_sub((normal / 4).max(self.protocol.max_frame_bytes as usize))
+            .filter(|available| *available >= 4096)
             .ok_or(Error::Configuration {
-                reason: "protocol.max_message_bytes plus delivery overhead exceeds the address space",
-            })?;
-        total
-            .checked_sub((total / 4).max(one_delivery))
-            .filter(|available| *available > 256)
-            .ok_or(Error::Configuration {
-                reason: "pending bytes must reserve room for production and one maximum delivery",
+                reason: "max_pending_bytes must reserve control memory and one full delivery frame",
             })
+    }
+
+    pub(crate) fn producer_request_limit(&self) -> u32 {
+        self.max_pending_requests
+            .saturating_sub((self.max_pending_requests / 4).max(1))
+            .saturating_sub(1)
     }
 
     pub fn new(endpoint: impl Into<String>) -> Self {
@@ -166,8 +168,8 @@ impl ClientConfig {
     fn validate_queues(&self) -> Result<()> {
         for (valid, reason) in [
             (
-                (1..=65_536).contains(&self.max_pending_requests),
-                "max_pending_requests must be between 1 and 65536",
+                (3..=65_536).contains(&self.max_pending_requests),
+                "max_pending_requests must be between 3 and 65536",
             ),
             (
                 self.max_pending_bytes >= u64::from(self.protocol.max_frame_bytes),
@@ -229,6 +231,7 @@ pub(crate) struct Inner {
     pool: Pool,
     pub bytes: Arc<Semaphore>,
     pub producer_bytes: Arc<Semaphore>,
+    pub producer_requests: Arc<Semaphore>,
     pub requests: Arc<Semaphore>,
     pub control_requests: Arc<Semaphore>,
     pub control_memory: Arc<Semaphore>,
@@ -399,6 +402,7 @@ impl Client {
         let control_requests = (config.max_pending_requests / 4).max(1);
         let inner = Arc::new(Inner {
             producer_bytes: Arc::new(Semaphore::new(config.producer_bytes()?)),
+            producer_requests: Arc::new(Semaphore::new(config.producer_request_limit() as usize)),
             bytes,
             requests: Arc::new(Semaphore::new(
                 config
@@ -996,6 +1000,7 @@ impl Client {
         self.inner.cancellation.cancel();
         self.inner.bytes.close();
         self.inner.producer_bytes.close();
+        self.inner.producer_requests.close();
         self.inner.requests.close();
         self.inner.control_requests.close();
         self.inner.control_memory.close();

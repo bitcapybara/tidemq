@@ -6,8 +6,10 @@ use tokio::sync::OwnedSemaphorePermit;
 struct Credit {
     charge: Option<crate::metrics::Charge>,
     slots: OwnedSemaphorePermit,
+    producer_requests: OwnedSemaphorePermit,
     requests: OwnedSemaphorePermit,
     memory: OwnedSemaphorePermit,
+    producer_memory: OwnedSemaphorePermit,
     bytes: OwnedSemaphorePermit,
 }
 
@@ -70,11 +72,11 @@ impl PendingSend {
                 self.complete(),
             )
         };
-        if claim
-            && complete
-            && let Some(core) = self.work.core.upgrade()
-        {
-            core.state()?.pending.remove(&self.work.sequence);
+        if claim && complete {
+            if let Some(core) = self.work.core.upgrade() {
+                core.state()?.pending.remove(&self.work.sequence);
+            }
+            release_requests(&self.work)?;
         }
         self.expose(result, claim)
     }
@@ -262,25 +264,43 @@ async fn acquire(
 }
 async fn reserve(core: &Core, count: u32, size: u32, deadline: Instant) -> Result<Credit> {
     let _timer = core.client.inner.metrics.admission_timer();
-    if size > core.max_bytes || u64::from(size) > core.client.inner.config.max_pending_bytes / 2 {
+    if size > core.max_bytes
+        || count > core.client.inner.config.producer_request_limit()
+        || size as usize > core.client.inner.config.producer_bytes()?
+        || u64::from(size) > core.client.inner.config.max_pending_bytes / 2
+    {
         return Err(Error::Configuration {
-            reason: "message or batch cannot fit the shared producer budget",
+            reason: "message or batch cannot fit the shared producer byte and request budgets",
         });
     }
-    Ok(Credit {
-        charge: None,
-        slots: acquire(&core.slots, count, deadline).await?,
-        requests: acquire(&core.client.inner.requests, count, deadline).await?,
-        memory: acquire(&core.memory, size, deadline).await?,
-        bytes: acquire(&core.client.inner.bytes, size, deadline).await?,
-    })
+    let reservation = async {
+        Ok(Credit {
+            charge: None,
+            slots: acquire(&core.slots, count, deadline).await?,
+            producer_requests: acquire(&core.client.inner.producer_requests, count, deadline)
+                .await?,
+            requests: acquire(&core.client.inner.requests, count, deadline).await?,
+            memory: acquire(&core.memory, size, deadline).await?,
+            producer_memory: acquire(&core.client.inner.producer_bytes, size, deadline).await?,
+            bytes: acquire(&core.client.inner.bytes, size, deadline).await?,
+        })
+    };
+    tokio::select! {
+        result = reservation => result,
+        _ = core.stop.cancelled() => Err(Error::Closed),
+    }
 }
 fn split_credit(credit: &mut Credit, size: u32) -> Result<Credit> {
     Ok(Credit {
         charge: None,
         slots: credit.slots.split(1).ok_or(Error::Closed)?,
+        producer_requests: credit.producer_requests.split(1).ok_or(Error::Closed)?,
         requests: credit.requests.split(1).ok_or(Error::Closed)?,
         memory: credit.memory.split(size as usize).ok_or(Error::Closed)?,
+        producer_memory: credit
+            .producer_memory
+            .split(size as usize)
+            .ok_or(Error::Closed)?,
         bytes: credit.bytes.split(size as usize).ok_or(Error::Closed)?,
     })
 }
@@ -394,12 +414,25 @@ fn release_payload(work: &Work) {
     if let Ok(mut credit) = work.credit.lock() {
         let memory = credit.memory.num_permits().saturating_sub(4096);
         drop(credit.memory.split(memory));
+        let producer_memory = credit.producer_memory.num_permits().saturating_sub(4096);
+        drop(credit.producer_memory.split(producer_memory));
         let bytes = credit.bytes.num_permits().saturating_sub(4096);
         drop(credit.bytes.split(bytes));
         if let Some(charge) = &mut credit.charge {
             charge.retain_bytes(4096);
         }
     }
+}
+
+fn release_requests(work: &Work) -> Result<()> {
+    let mut credit = work.credit.lock().map_err(|_| Error::Closed)?;
+    let slots = credit.slots.num_permits();
+    drop(credit.slots.split(slots));
+    let requests = credit.requests.num_permits();
+    drop(credit.requests.split(requests));
+    let producer_requests = credit.producer_requests.num_permits();
+    drop(credit.producer_requests.split(producer_requests));
+    Ok(())
 }
 
 async fn drive(
