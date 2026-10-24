@@ -426,10 +426,7 @@ impl Service {
                     })
                 }
                 AuthQuery::TopicResource(topic) => {
-                    let topic = state
-                        .topic(topic)
-                        .filter(|topic| topic.status == crate::metadata::RecordStatus::Active)
-                        .ok_or_else(super::service::forbidden)?;
+                    let topic = state.topic(topic).ok_or_else(super::service::forbidden)?;
                     Ok(AuthReply {
                         resource: Some(topic.name.clone()),
                         expires_ms: now.saturating_add(1000),
@@ -500,10 +497,7 @@ impl Service {
                     client,
                     credential,
                 } => {
-                    let topic_record = state
-                        .topic(topic)
-                        .filter(|topic| topic.status == crate::metadata::RecordStatus::Active)
-                        .ok_or_else(super::service::forbidden)?;
+                    let topic_record = state.topic(topic).ok_or_else(super::service::forbidden)?;
                     state
                         .auth()
                         .authorize(
@@ -525,7 +519,8 @@ impl Service {
                     {
                         return Err(super::service::forbidden());
                     }
-                    let permit = record.permit_at(now);
+                    let mut permit = record.permit_at(now);
+                    permit.live &= state.topic_writable(topic);
                     let expires_ms = if permit.live {
                         permit.expires_ms.min(now.saturating_add(1000))
                     } else {
@@ -623,9 +618,9 @@ impl Service {
             FrameKind::GetTopic | FrameKind::GetTopicLayout | FrameKind::Cancel => {
                 Permission::Inspect
             }
-            FrameKind::CreateLogicalTopic | FrameKind::ChangeTopicLayout => {
-                Permission::ManageTopics
-            }
+            FrameKind::CreateLogicalTopic
+            | FrameKind::ChangeTopicLayout
+            | FrameKind::RemoveTopic => Permission::ManageTopics,
             FrameKind::PublisherControl | FrameKind::Publish | FrameKind::RetirePublishes => {
                 Permission::Produce
             }
@@ -662,6 +657,9 @@ impl Service {
             FrameKind::GetTopic => return Ok(Some(decode::<public::GetTopic>(self, frame)?.name)),
             FrameKind::GetTopicLayout => {
                 wire::id(&decode::<public::GetTopicLayout>(self, frame)?.topic_id)?
+            }
+            FrameKind::RemoveTopic => {
+                wire::id(&decode::<public::RemoveTopic>(self, frame)?.topic_id)?
             }
             FrameKind::ChangeTopicLayout => {
                 wire::id(&decode::<public::ChangeTopicLayout>(self, frame)?.topic_id)?

@@ -8,7 +8,7 @@ use tidemq_protocol::{
 use crate::{Admin, Error, Result};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct TopicId(Id);
+pub struct TopicId(pub(crate) Id);
 
 impl std::fmt::Display for TopicId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -100,6 +100,24 @@ impl TopicInfo {
 }
 
 impl Admin {
+    pub async fn delete_topic(&self, name: &str) -> Result<()> {
+        let name = self.client.topic_name(name)?;
+        self.client
+            .operation(|_| async move {
+                let topic = Id::from_slice(&self.topic(&name).await?.topic_id)?;
+                match self
+                    .execute(crate::admin::pending::Request::DeleteTopic(topic))
+                    .await?
+                {
+                    crate::AdminReceipt::TopicDeleted(_) => Ok(()),
+                    _ => Err(Error::ResponseMismatch {
+                        reason: "administration returned a non-deletion result".into(),
+                    }),
+                }
+            })
+            .await
+    }
+
     pub async fn create_topic(&self, name: &str) -> Result<TopicInfo> {
         let name = self.client.topic_name(name)?;
         let receipt = self

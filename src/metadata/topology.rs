@@ -280,6 +280,9 @@ impl MetadataState {
         expected: u64,
         change: &LayoutChange,
     ) -> Result<LayoutPlan, Rejection> {
+        if !self.topic_writable(topic) {
+            return Err(Rejection::IdentityRetired);
+        }
         if self
             .topology
             .pending_transfers()

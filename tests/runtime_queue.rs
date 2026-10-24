@@ -27,6 +27,8 @@ mod read_batches;
 mod scalable;
 #[path = "runtime_support/scaling.rs"]
 mod scaling;
+#[path = "runtime_support/topic_deletion.rs"]
+mod topic_deletion;
 #[path = "runtime_support/tracing.rs"]
 mod tracing_tests;
 

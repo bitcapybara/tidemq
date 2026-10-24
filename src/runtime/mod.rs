@@ -25,6 +25,7 @@ mod telemetry;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub mod test_hooks;
+mod topic_delete;
 mod topology;
 pub(crate) mod wire;
 

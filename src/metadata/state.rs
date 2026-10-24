@@ -76,6 +76,7 @@ pub struct MetadataState {
     pub(crate) partitions: BTreeMap<PartitionKey, PartitionRecord>,
     pub(crate) subscriptions: BTreeMap<Id, SubscriptionRecord>,
     pub(crate) consumer_subscriptions: BTreeMap<Id, super::ConsumerSubscription>,
+    pub(crate) topic_deletions: BTreeMap<Id, super::TopicDeletion>,
     pub(crate) subscription_names: BTreeMap<Id, BTreeMap<String, Id>>,
     // shortcut: Retain CRUD decisions to the hard cap; review retirement fences before raising lifecycle capacity.
     pub(super) decisions: BTreeMap<Id, Decision>,
@@ -149,7 +150,7 @@ impl MetadataState {
     }
 
     pub fn route(&self, partition: PartitionKey) -> Option<&Route> {
-        if self.topic(partition.topic_id)?.status != RecordStatus::Active {
+        if !self.topic_serviceable(partition.topic_id) {
             return None;
         }
         self.partitions
@@ -180,6 +181,7 @@ impl MetadataState {
         let deletion = matches!(
             &command.action,
             Action::Consumer(super::ConsumerCommand::Delete { .. })
+                | Action::TopicDeletion(super::TopicDeletionCommand::Begin { .. })
         );
         if !deletion
             && matches!(
@@ -188,6 +190,7 @@ impl MetadataState {
                     | Action::Consumer(_)
                     | Action::Publisher(_)
                     | Action::Transfer(_)
+                    | Action::TopicDeletion(_)
             )
         {
             return self.apply_new(&command);
@@ -301,6 +304,9 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::TopicDeletion(request) => self
+                .delete_topic(command.operation_id, request)
+                .map(Outcome::TopicDeletion),
             Action::Transfer(request) => self
                 .transfer_command(command.operation_id, request, revision)
                 .map(|plan| Outcome::AuthorityTransfer(Box::new(plan))),
@@ -554,6 +560,12 @@ impl MetadataState {
 
     fn retire_topic(&mut self, topic_id: Id, expected: u64) -> Result<Outcome, Rejection> {
         if self
+            .topic_deletion(topic_id)
+            .is_none_or(|plan| !plan.complete)
+        {
+            return Err(Rejection::RecoveryRequired);
+        }
+        if self
             .topology
             .pending_transfers()
             .any(|plan| plan.partition.topic_id == topic_id)
@@ -585,6 +597,9 @@ impl MetadataState {
         expected: u64,
         config: &SubscriptionConfig,
     ) -> Result<Outcome, Rejection> {
+        if !self.topic_writable(topic_id) {
+            return Err(Rejection::IdentityRetired);
+        }
         let topic = self.topics.get(&topic_id).ok_or(Rejection::NotFound)?;
         if self.auth.initialized() && !self.subscriptions.contains_key(&id) {
             let (tenant, _, _) = self
@@ -689,13 +704,7 @@ impl MetadataState {
         if self.topology.transfer_blocks(partition) {
             return Err(Rejection::RecoveryRequired);
         }
-        if self
-            .topics
-            .get(&partition.topic_id)
-            .ok_or(Rejection::NotFound)?
-            .status
-            != RecordStatus::Active
-        {
+        if !self.topic_serviceable(partition.topic_id) {
             return Err(Rejection::IdentityRetired);
         }
         let owner = self.nodes.get(&owner_node).ok_or(Rejection::NotFound)?;
@@ -804,13 +813,7 @@ impl MetadataState {
     }
 
     fn matching_grant(&mut self, grant: &Grant) -> Result<&mut PartitionRecord, Rejection> {
-        if self
-            .topics
-            .get(&grant.partition.topic_id)
-            .ok_or(Rejection::NotFound)?
-            .status
-            != RecordStatus::Active
-        {
+        if !self.topic_serviceable(grant.partition.topic_id) {
             return Err(Rejection::IdentityRetired);
         }
         let record = self

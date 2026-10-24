@@ -116,6 +116,10 @@ pub enum Error {
     SessionExpired,
     #[snafu(display("Delivery belongs to an obsolete assignment"))]
     StaleDelivery,
+    #[snafu(display(
+        "The original topic was deleted and its name now belongs to a different topic"
+    ))]
+    TopicReplaced,
     #[snafu(display("The SDK client is closed"))]
     Closed,
 }
@@ -139,6 +143,7 @@ impl Error {
             Self::Cancelled => ErrorKind::Cancelled,
             Self::Deadline => ErrorKind::DeadlineExceeded,
             Self::StaleDelivery => ErrorKind::StaleDelivery,
+            Self::TopicReplaced => ErrorKind::NotFound,
             Self::AcknowledgementInProgress | Self::SendInProgress => ErrorKind::Conflict,
             Self::SessionExpired
             | Self::SendRecoveryExpired

@@ -47,6 +47,7 @@ pub(crate) struct Service {
     pub(super) auth_cache: super::auth::AuthCache,
     pub(super) consumer_after: std::sync::Mutex<Option<Id>>,
     pub(super) consumer_delete_after: std::sync::Mutex<Option<Id>>,
+    pub(super) topic_delete_after: std::sync::Mutex<Option<Id>>,
     pub budget: MemoryBudget,
     pub metrics: Metrics,
     pub(super) producer_metrics: ProducerMetrics,
@@ -119,6 +120,7 @@ impl Service {
             auth_cache: super::auth::AuthCache::default(),
             consumer_after: std::sync::Mutex::new(None),
             consumer_delete_after: std::sync::Mutex::new(None),
+            topic_delete_after: std::sync::Mutex::new(None),
             budget,
             producer_metrics: producer,
             metrics,
@@ -385,6 +387,7 @@ impl Service {
                 | FrameKind::ManageIdentity
                 | FrameKind::ConsumerControl
                 | FrameKind::SubscriptionAdmin
+                | FrameKind::RemoveTopic
                 | FrameKind::PublisherControl
                 | FrameKind::GetTopic
         ) {

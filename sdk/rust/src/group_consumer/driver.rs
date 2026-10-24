@@ -391,6 +391,9 @@ async fn reads(core: Arc<Core>) {
 
 async fn refresh_domains(core: &Core) -> Result<()> {
     let layout = core.client.admin().topic_info(&core.topic).await?;
+    if layout.id != core.topic_id {
+        return Err(Error::TopicReplaced);
+    }
     let work = core
         .info
         .lock()

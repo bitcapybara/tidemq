@@ -5,7 +5,7 @@ use std::time::Duration;
 use prometheus_client::{metrics::counter::Counter, registry::Registry};
 use tokio::time::Instant;
 
-use crate::metadata::{NodeRole, OwnershipDiagnostic, PartitionKey, RecordStatus};
+use crate::metadata::{NodeRole, OwnershipDiagnostic, PartitionKey};
 use crate::ownership::OwnershipPhase;
 
 use super::service::Service;
@@ -325,10 +325,7 @@ impl Service {
             .ok_or_else(super::Error::unavailable)?
             .state
             .try_with_application(|metadata| {
-                if !metadata
-                    .topic(record.partition.topic_id)
-                    .is_some_and(|topic| topic.status == RecordStatus::Active)
-                {
+                if !metadata.topic_serviceable(record.partition.topic_id) {
                     return None;
                 }
                 state.peers.iter().find_map(|(node, evidence)| {

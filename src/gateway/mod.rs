@@ -36,6 +36,7 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
             | FrameKind::ManageIdentity
             | FrameKind::ConsumerControl
             | FrameKind::SubscriptionAdmin
+            | FrameKind::RemoveTopic
             | FrameKind::PublisherControl
             | FrameKind::Publish
             | FrameKind::RetirePublishes

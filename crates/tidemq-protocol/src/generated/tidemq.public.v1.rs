@@ -425,6 +425,24 @@ pub struct GroupRetire {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GroupRetired {}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct RemoveTopic {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TopicRemoved {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub deletion_operation: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "3")]
+    pub sealed_domains: u32,
+    #[prost(uint32, tag = "4")]
+    pub total_domains: u32,
+    #[prost(bool, tag = "5")]
+    pub complete: bool,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum IdentityAction {

@@ -24,11 +24,16 @@ pub struct Snapshot {
     pub over_mtu: u64,
 }
 
+struct Mtu {
+    request: AtomicUsize,
+    response: AtomicUsize,
+}
+
 pub struct Proxy {
     pub address: SocketAddr,
     backend: Arc<AtomicUsize>,
     counters: Arc<Counters>,
-    mtu: Arc<AtomicUsize>,
+    mtu: Arc<Mtu>,
     stop: watch::Sender<bool>,
     task: Option<JoinHandle<std::io::Result<()>>>,
 }
@@ -47,7 +52,10 @@ impl Proxy {
         let address = public.local_addr().unwrap();
         let backend = Arc::new(AtomicUsize::new(0));
         let counters = Arc::new(Counters::default());
-        let mtu = Arc::new(AtomicUsize::new(1200));
+        let mtu = Arc::new(Mtu {
+            request: AtomicUsize::new(1200),
+            response: AtomicUsize::new(1200),
+        });
         let (stop, stopped) = watch::channel(false);
         let task = tokio::spawn(run(
             public,
@@ -69,7 +77,12 @@ impl Proxy {
     }
 
     pub fn set_mtu(&self, mtu: usize) {
-        self.mtu.store(mtu, Ordering::Release);
+        self.mtu.request.store(mtu, Ordering::Release);
+        self.mtu.response.store(mtu, Ordering::Release);
+    }
+
+    pub fn set_response_mtu(&self, mtu: usize) {
+        self.mtu.response.store(mtu, Ordering::Release);
     }
 
     pub fn switch(&self) {
@@ -114,7 +127,7 @@ async fn run(
     backends: [SocketAddr; 2],
     backend: Arc<AtomicUsize>,
     counters: Arc<Counters>,
-    mtu: Arc<AtomicUsize>,
+    mtu: Arc<Mtu>,
     mut stop: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let mut request = vec![0_u8; 65_536];
@@ -132,13 +145,13 @@ async fn run(
                 if client.is_some_and(|client| client != address) { continue; }
                 client = Some(address);
                 let target = backends[backend.load(Ordering::Acquire)];
-                relay(&outgoing, &request[..length], target, &mut pending_request, &counters, mtu.load(Ordering::Acquire)).await?;
+                relay(&outgoing, &request[..length], target, &mut pending_request, &counters, mtu.request.load(Ordering::Acquire)).await?;
             }
             received = outgoing.recv_from(&mut response) => {
                 let (length, address) = received?;
                 if !backends.contains(&address) { continue; }
                 if let Some(client) = client {
-                    relay(&public, &response[..length], client, &mut pending_response, &counters, mtu.load(Ordering::Acquire)).await?;
+                    relay(&public, &response[..length], client, &mut pending_response, &counters, mtu.response.load(Ordering::Acquire)).await?;
                 }
             }
             _ = timer.tick() => {

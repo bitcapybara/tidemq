@@ -154,9 +154,7 @@ impl MetadataState {
         {
             return Err(Rejection::InvalidSubscription);
         }
-        if self
-            .topic(partition.topic_id)
-            .is_none_or(|topic| topic.status != RecordStatus::Active)
+        if !self.topic_writable(partition.topic_id)
             || self.route(partition).is_none()
             || source.group_id == target
             || layout.revision != revision

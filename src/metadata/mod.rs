@@ -14,6 +14,7 @@ mod publishers;
 mod replicated;
 mod scaling;
 mod state;
+mod topic_delete;
 mod topology;
 mod transfer_state;
 mod transfers;
@@ -41,6 +42,7 @@ pub use publishers::{
     PUBLISHER_LEASE_MS, PUBLISHER_RECOVERY_MS, PublisherCommand, PublisherRecord, PublishersBook,
 };
 pub use state::MetadataState;
+pub use topic_delete::{TopicDeletion, TopicDeletionCommand};
 pub use topology::{BirthShard, LayoutChange, LayoutPlan, LayoutStage, Topology};
 pub use transfers::{
     AuthorityTransfer, HistoricalBinding, ImportEvidence, MAX_AUTHORITY_TRANSFERS,

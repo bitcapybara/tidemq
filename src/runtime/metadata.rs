@@ -90,6 +90,13 @@ impl Service {
                 }
             }
             drop(_guard);
+            if let Err(error) = self.reconcile_topic_deletions(deadline).await {
+                tracing::debug!(
+                    event_code = "topic_delete_reconcile_wait",
+                    error_code = error.failure().code,
+                    "Durable topic deletion will resume after data authority becomes available"
+                );
+            }
             if let Err(error) = self.reconcile_consumer_deletions(deadline).await {
                 tracing::debug!(
                     event_code = "consumer_delete_reconcile_wait",
@@ -272,6 +279,9 @@ impl Service {
             return self
                 .subscription_admin_public(&access, frame, deadline)
                 .await;
+        }
+        if super::service::frame_kind(frame)? == FrameKind::RemoveTopic {
+            return self.remove_topic_public(&access, frame, deadline).await;
         }
         if super::service::frame_kind(frame)? == FrameKind::ManageIdentity {
             return self.identity_public(&access, frame, deadline).await;

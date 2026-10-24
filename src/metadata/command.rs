@@ -86,9 +86,17 @@ pub(crate) enum Action {
     Identity(super::AuthCommand),
     Consumer(super::ConsumerCommand),
     Publisher(super::PublisherCommand),
+    TopicDeletion(super::TopicDeletionCommand),
 }
 
 impl Command {
+    pub fn topic_deletion(
+        operation: Id,
+        expected_revision: u64,
+        command: super::TopicDeletionCommand,
+    ) -> Self {
+        Self::new(operation, expected_revision, Action::TopicDeletion(command))
+    }
     pub fn transfer(
         operation: Id,
         expected_revision: u64,
@@ -421,6 +429,7 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    TopicDeletion(super::TopicDeletion),
     AuthorityTransfer(Box<super::AuthorityTransfer>),
     Bootstrapped,
     NodeConfigured(NodeRecord),

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use tidemq::metadata::{
     Command, DeploymentMode, MetadataLimits, MetadataState, NodeRole, NodeSpec, Outcome,
-    PartitionKey, RecordStatus, Rejection, Response, SubscriptionConfig,
+    PartitionKey, RecordStatus, Rejection, Response, SubscriptionConfig, TopicDeletionCommand,
 };
 use tidemq_protocol::Id;
 
@@ -174,11 +174,46 @@ fn retiring_and_recreating_a_name_never_reuses_topic_or_subscription_identity() 
     assert!(
         fixture
             .state
-            .apply(Command::retire_topic(
+            .apply(Command::topic_deletion(
                 operation,
                 fixture.state.revision(),
-                id(3),
-                1
+                TopicDeletionCommand::Begin {
+                    topic: id(3),
+                    generation: 1
+                }
+            ))
+            .is_applied()
+    );
+    let domains = fixture.state.topic_deletion(id(3)).unwrap().domains.clone();
+    for domain in domains {
+        let step = fixture.operation();
+        assert!(
+            fixture
+                .state
+                .apply(Command::topic_deletion(
+                    step,
+                    fixture.state.revision(),
+                    TopicDeletionCommand::ObserveSeal {
+                        topic: id(3),
+                        deletion: operation,
+                        domain,
+                        end: 0
+                    }
+                ))
+                .is_applied()
+        );
+    }
+    let step = fixture.operation();
+    assert!(
+        fixture
+            .state
+            .apply(Command::topic_deletion(
+                step,
+                fixture.state.revision(),
+                TopicDeletionCommand::Finish {
+                    topic: id(3),
+                    deletion: operation
+                }
             ))
             .is_applied()
     );
@@ -303,10 +338,13 @@ fn state_budgets_keep_tombstones_and_diagnostics_are_bounded_and_read_only() {
     while fixture.state.summary().remaining_operations > 0 {
         let operation = fixture.operation();
         rejected(
-            fixture
-                .state
-                .apply(Command::retire_topic(operation, 0, id(3), 1)),
-            Rejection::RevisionConflict,
+            fixture.state.apply(Command::retire_topic(
+                operation,
+                fixture.state.revision(),
+                id(3),
+                1,
+            )),
+            Rejection::RecoveryRequired,
         );
     }
     let before = fixture.state.clone();

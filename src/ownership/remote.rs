@@ -332,10 +332,10 @@ impl MetadataAuthority {
                     .metadata_group_id()
                     .ok_or(super::AuthorityError::IdentityMismatch)?;
                 let voters = super::authority::stable_voters(&self.raft)?;
-                let active_topic = |topic| {
+                let serviceable_topic = |topic| {
                     state
                         .topic(topic)
-                        .filter(|topic| topic.status == RecordStatus::Active)
+                        .filter(|_| state.topic_serviceable(topic))
                         .cloned()
                         .ok_or(super::AuthorityError::GrantMismatch)
                 };
@@ -368,7 +368,7 @@ impl MetadataAuthority {
                             .cloned(),
                     ),
                     Query::Partition(partition) => Value::Partition {
-                        topic: active_topic(partition.topic_id)?,
+                        topic: serviceable_topic(partition.topic_id)?,
                         group: state
                             .partition_group(partition)
                             .ok_or(super::AuthorityError::GrantMismatch)?,
@@ -376,7 +376,7 @@ impl MetadataAuthority {
                         route: state.route(partition).cloned(),
                     },
                     Query::Grant(expected) => {
-                        active_topic(expected.partition.topic_id)?;
+                        serviceable_topic(expected.partition.topic_id)?;
                         let grant = state
                             .grant(expected.partition)
                             .filter(|grant| *grant == &expected)
@@ -385,7 +385,7 @@ impl MetadataAuthority {
                         Value::Grant(grant)
                     }
                     Query::Lease(fence) => {
-                        active_topic(fence.grant.partition.topic_id)?;
+                        serviceable_topic(fence.grant.partition.topic_id)?;
                         let grant = state
                             .grant(fence.grant.partition)
                             .filter(|grant| *grant == &fence.grant)

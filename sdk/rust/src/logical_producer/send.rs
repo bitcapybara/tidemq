@@ -639,7 +639,12 @@ async fn reroute(
             .scope(core.client.admin().topic_info(&core.topic))
             .await
         {
-            Ok(layout) => core.state()?.layout = layout,
+            Ok(layout) => {
+                if layout.id != core.topic_id {
+                    return Err(Error::TopicReplaced);
+                }
+                core.state()?.layout = layout;
+            }
             Err(error)
                 if (error.retry_admission()
                     || error.retry_rejected()

@@ -284,6 +284,8 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::ConsumerControlResult
         | FrameKind::SubscriptionAdmin
         | FrameKind::SubscriptionAdminResult
+        | FrameKind::RemoveTopic
+        | FrameKind::TopicRemoved
         | FrameKind::PublisherControl
         | FrameKind::PublisherControlResult
         | FrameKind::RetirePublishes

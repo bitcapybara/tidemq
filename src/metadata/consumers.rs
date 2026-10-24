@@ -272,6 +272,9 @@ impl MetadataState {
         if !super::types::valid_name(name, 128) {
             return Err(Rejection::InvalidName);
         }
+        if !self.topic_writable(topic) {
+            return Err(Rejection::IdentityRetired);
+        }
         let topic_record = self
             .topics
             .get(&topic)

@@ -8,9 +8,7 @@ use snafu::{ResultExt, Snafu};
 use tidemq_protocol::Id;
 use tokio::sync::Semaphore;
 
-use crate::metadata::{
-    Action, Command, ControlStage, MetadataState, NodeRole, RecordStatus, stage_operation_id,
-};
+use crate::metadata::{Action, Command, ControlStage, MetadataState, NodeRole, stage_operation_id};
 use crate::replication::{Application, DiskStateMachine, Raft};
 
 use super::{
@@ -93,10 +91,7 @@ impl MetadataAuthority {
                     .grant(expected.partition)
                     .filter(|grant| *grant == expected)
                     .ok_or(Error::GrantMismatch)?;
-                if state
-                    .topic(expected.partition.topic_id)
-                    .is_none_or(|topic| topic.status != RecordStatus::Active)
-                {
+                if !state.topic_serviceable(expected.partition.topic_id) {
                     return Err(Error::GrantMismatch);
                 }
                 Ok(grant.clone())
@@ -115,10 +110,7 @@ impl MetadataAuthority {
                     .grant(fence.grant.partition)
                     .filter(|grant| *grant == &fence.grant)
                     .ok_or(Error::GrantMismatch)?;
-                if state
-                    .topic(grant.partition.topic_id)
-                    .is_none_or(|topic| topic.status != RecordStatus::Active)
-                {
+                if !state.topic_serviceable(grant.partition.topic_id) {
                     return Err(Error::GrantMismatch);
                 }
                 let route = state

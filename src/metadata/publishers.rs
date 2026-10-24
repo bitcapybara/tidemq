@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tidemq_protocol::Id;
 
-use super::{MetadataState, RecordStatus, Rejection};
+use super::{MetadataState, Rejection};
 use crate::producer::PublisherPermit;
 
 pub const PUBLISHER_LEASE_MS: u64 = 300_000;
@@ -305,9 +305,7 @@ impl MetadataState {
         command: &PublisherCommand,
     ) -> Result<PublisherPermit, Rejection> {
         if let PublisherCommand::Open { topic, .. } = command
-            && self
-                .topic(*topic)
-                .is_none_or(|topic| topic.status != RecordStatus::Active)
+            && !self.topic_writable(*topic)
         {
             return Err(Rejection::NotFound);
         }

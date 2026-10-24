@@ -296,28 +296,9 @@ impl Service {
             .await
             .map_err(|source| Error::operation("read layout source", source))?
             .ok_or_else(super::metadata::not_found)?;
-        let target = self.leader(shard.route.group, deadline).await?;
-        let response = self
-            .rpc
-            .call(
-                target,
-                shard.route.group,
-                Request::control(
-                    SEAL_SHARD,
-                    &SealRequest {
-                        plan: plan.id,
-                        partition: shard.partition,
-                    },
-                )?,
-                deadline,
-            )
+        let end = self
+            .seal_data_domain(plan.id, shard.partition, shard.route.group, deadline)
             .await?;
-        let reply: SealReply = wire::decode_json(&response)?;
-        if reply.plan != plan.id || reply.partition != shard.partition {
-            return Err(Error::invalid(
-                "Source seal reply does not match the topology plan",
-            ));
-        }
         self.meta_write(
             Command::observe_layout_seal(
                 Id::new_v7().map_err(|source| {
@@ -326,12 +307,38 @@ impl Service {
                 self.meta_revision().await?,
                 plan.id,
                 source,
-                reply.end,
+                end,
             ),
             deadline,
         )
         .await?;
         Ok(())
+    }
+
+    pub(super) async fn seal_data_domain(
+        &self,
+        plan: Id,
+        partition: PartitionKey,
+        group: u64,
+        deadline: Instant,
+    ) -> Result<u64> {
+        let target = self.leader(group, deadline).await?;
+        let response = self
+            .rpc
+            .call(
+                target,
+                group,
+                Request::control(SEAL_SHARD, &SealRequest { plan, partition })?,
+                deadline,
+            )
+            .await?;
+        let reply: SealReply = wire::decode_json(&response)?;
+        if reply.plan != plan || reply.partition != partition {
+            return Err(Error::invalid(
+                "Data seal reply does not match the original plan and domain",
+            ));
+        }
+        Ok(reply.end)
     }
 
     pub(super) async fn seal_shard_command(

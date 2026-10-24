@@ -24,6 +24,7 @@ const MAX_PENDING: usize = 16;
 #[derive(Clone, Debug)]
 pub enum AdminReceipt {
     Topic(TopicInfo),
+    TopicDeleted(crate::TopicId),
     TenantCreated(crate::TenantId),
     NamespaceCreated(crate::NamespaceId),
     PrincipalConfigured(crate::PrincipalId),
@@ -39,6 +40,7 @@ pub enum AdminReceipt {
 pub(crate) enum Request {
     Identity(public::ManageIdentity),
     CreateTopic(String),
+    DeleteTopic(Id),
     Layout {
         name: String,
         request: public::ChangeTopicLayout,
@@ -50,6 +52,7 @@ impl Request {
         let bytes = match self {
             Self::Identity(request) => request.encoded_len(),
             Self::CreateTopic(name) => name.len(),
+            Self::DeleteTopic(_) => 16,
             Self::Layout { name, request } => name.len().saturating_add(request.encoded_len()),
         };
         if bytes > 4096 {
@@ -68,6 +71,9 @@ impl Request {
         deadline: Instant,
     ) -> Result<AdminReceipt> {
         let (name, wire): (&String, public::TopicLayoutResult) = match self {
+            Self::DeleteTopic(topic) => {
+                return delete_topic(client, *topic, operation, deadline).await;
+            }
             Self::Identity(request) => {
                 let reply = client
                     .request(
@@ -112,7 +118,7 @@ impl Request {
         let expected_topic = match self {
             Self::CreateTopic(_) => crate::admin::bytes(operation),
             Self::Layout { request, .. } => request.topic_id.clone(),
-            Self::Identity(_) => {
+            Self::Identity(_) | Self::DeleteTopic(_) => {
                 return Err(Error::ResponseMismatch {
                     reason: "identity operation returned a topic layout".into(),
                 }
@@ -131,6 +137,43 @@ impl Request {
         TopicInfo::from_wire(name.clone(), wire)
             .map(AdminReceipt::Topic)
             .map_err(|error| error.preserve_uncertainty(true))
+    }
+}
+
+async fn delete_topic(
+    client: &Client,
+    topic: Id,
+    operation: Id,
+    deadline: Instant,
+) -> Result<AdminReceipt> {
+    loop {
+        let result: public::TopicRemoved = client
+            .request(
+                FrameKind::RemoveTopic,
+                FrameKind::TopicRemoved,
+                TrafficClass::Control,
+                operation,
+                &public::RemoveTopic {
+                    topic_id: crate::admin::bytes(topic),
+                },
+                deadline,
+            )
+            .await?;
+        if result.topic_id != crate::admin::bytes(topic)
+            || Id::from_slice(&result.deletion_operation).is_err()
+            || !(1..=256).contains(&result.total_domains)
+            || result.sealed_domains > result.total_domains
+            || result.complete && result.sealed_domains != result.total_domains
+        {
+            return Err(Error::ResponseMismatch {
+                reason: "topic removal response changed its identity or bounded progress".into(),
+            }
+            .preserve_uncertainty(true));
+        }
+        if result.complete {
+            return Ok(AdminReceipt::TopicDeleted(crate::TopicId(topic)));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 

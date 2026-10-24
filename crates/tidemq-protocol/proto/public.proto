@@ -219,3 +219,12 @@ message GroupRetire {
   uint64 sequence = 6;
 }
 message GroupRetired {}
+
+message RemoveTopic { bytes topic_id = 1; }
+message TopicRemoved {
+  bytes topic_id = 1;
+  bytes deletion_operation = 2;
+  uint32 sealed_domains = 3;
+  uint32 total_domains = 4;
+  bool complete = 5;
+}

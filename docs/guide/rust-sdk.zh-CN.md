@@ -97,13 +97,15 @@ context.cancellation_token() 可接入宿主取消。嵌套调用使用更早期
 | producer.pending_sends().await | PendingSend::retry().await 查询或继续原发送 |
 | consumer.pending_acks().await | PendingAck::retry().await 查询或继续原 ACK/NACK |
 | admin.pending_subscription_deletions() | PendingSubscriptionDeletion::retry().await 继续固定 UUID 的删除 |
-| admin.pending_operations() | PendingAdmin::retry().await 查询或继续原资源创建、凭据变更、Topic 拆分/合并 |
+| admin.pending_operations() | PendingAdmin::retry().await 查询或继续原资源创建、凭据变更、Topic 拆分/合并/删除 |
 
 管理操作成功仍返回对应的强类型结果；未知结果返回携带原 PendingAdmin 的 Error::Administration。retry 返回 AdminReceipt，保持原操作、资源身份和布局条件。管理恢复共享 Client 的资源预留，最多保留 16 项，每项预留 128 KiB；其他逻辑实例占用预留时可能更早拒绝新操作。凭据原值只交付一次，回包丢失后只返回已提交的 Credential ID；收到 CredentialSecretUnavailable 后先撤销该凭据，再签发新值。
 
 快照包含仍在处理、未知或部分完成，以及完成但尚未领取的结果。查询不 drain、不自动重试、不替业务确认。未知结果保留原身份和范围，不能为了腾空间静默丢弃。恢复句柄与正文均计入预算；没有 SDK 持久 outbox，跨进程重启不会自动找回本地账本。网络恢复须在原 Client 关闭前完成。
 
 管理端使用 stream_subscription/queue_subscription 查询，使用 delete_stream_subscription/delete_queue_subscription 删除。删除默认拒绝在线成员，固定 UUID 并冻结新加入，逐数据域解除状态和保护，全部完成才成功。中断后继续 pending 句柄，不按名称发起替代删除；同名重建订阅使用新 UUID。
+
+管理端使用 `delete_topic(name)` 删除逻辑 Topic。必须先显式删除其全部订阅；操作固定原 Topic UUID，阻止新创建和布局变更，逐数据域持久封写后才成功。缺失数据组时保留进度并通过 `pending_operations()` 继续，不能以超时视为完成。同名重建使用新 UUID；原删除重试不作用于新资源。旧身份保留结果查询和清理路由；已提交但丢回包的发送仍返回原 MessageId。旧 Producer 不会刷新为同名新 Topic。逻辑删除不会绕过历史对象的保留、读取和恢复依赖。
 
 ## 观测与验证
 
