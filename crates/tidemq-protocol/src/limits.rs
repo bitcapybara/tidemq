@@ -2,6 +2,50 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
+impl crate::public::ResourceLimits {
+    pub fn standard() -> Self {
+        Self {
+            topics: 1024,
+            subscriptions: 4096,
+            principals: 1024,
+            credentials: 4096,
+            connections: 1024,
+            members: 4096,
+            backlog_bytes: 1024 * 1024 * 1024,
+            inflight_bytes: 64 * 1024 * 1024,
+            inflight_messages: 65_536,
+            publish_bytes_per_second: 16 * 1024 * 1024,
+            consume_bytes_per_second: 16 * 1024 * 1024,
+            cold_reads: 64,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let valid = [
+            (u64::from(self.topics), 1024),
+            (u64::from(self.subscriptions), 4096),
+            (u64::from(self.principals), 1024),
+            (u64::from(self.credentials), 4096),
+            (u64::from(self.connections), 4096),
+            (u64::from(self.members), 65_536),
+            (self.backlog_bytes, 1 << 50),
+            (self.inflight_bytes, 1 << 40),
+            (self.inflight_messages, 1 << 30),
+            (self.publish_bytes_per_second, 1 << 40),
+            (self.consume_bytes_per_second, 1 << 40),
+            (self.cold_reads, 4096),
+        ]
+        .into_iter()
+        .all(|(value, maximum)| value <= maximum);
+        if !valid {
+            return Err(Error::Invalid {
+                reason: "resource limits must remain within their finite maxima",
+            });
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProtocolLimits {

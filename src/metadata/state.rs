@@ -68,6 +68,8 @@ pub struct MetadataState {
     pub(crate) auth: super::AuthState,
     pub(crate) publishers: super::PublishersBook,
     pub(crate) quotas: super::QuotaLedger,
+    pub(crate) resource_leases: super::ResourceLeases,
+    pub(crate) policies: BTreeMap<Id, super::QuotaPolicy>,
     pub(crate) limits: MetadataLimits,
     pub(crate) topics: BTreeMap<Id, TopicRecord>,
     pub(crate) topic_names: BTreeMap<String, Id>,
@@ -193,6 +195,8 @@ impl MetadataState {
                     | Action::Transfer(_)
                     | Action::TopicDeletion(_)
                     | Action::Quota(_)
+                    | Action::ResourceLease(_)
+                    | Action::ObserveQuotaPolicy { .. }
             )
         {
             return self.apply_new(&command);
@@ -306,7 +310,13 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::ObserveQuotaPolicy { policy, now_ms } => self
+                .observe_quota_policy(*policy, *now_ms)
+                .map(Outcome::QuotaPolicy),
             Action::Quota(request) => self.quota_command(request).map(Outcome::Quota),
+            Action::ResourceLease(request) => self
+                .resource_lease_command(request)
+                .map(Outcome::ResourceLease),
             Action::TopicDeletion(request) => self
                 .delete_topic(command.operation_id, request)
                 .map(Outcome::TopicDeletion),
@@ -384,16 +394,9 @@ impl MetadataState {
             Action::ActivateLayout { plan } => {
                 self.activate_layout(*plan).map(Outcome::LayoutActivated)
             }
-            Action::Identity(command) => self
-                .auth
-                .apply(command)
-                .map(|outcome| {
-                    Outcome::Identity(super::AuthResult {
-                        request_digest: command.request_digest,
-                        outcome,
-                    })
-                })
-                .map_err(Rejection::Authorization),
+            Action::Identity(request) => self
+                .identity_command(command.operation_id, request)
+                .map(Outcome::Identity),
             Action::Bootstrap { .. } => Err(Rejection::AlreadyInitialized),
         }
     }

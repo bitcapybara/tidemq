@@ -8,6 +8,8 @@ mod deploy;
 mod handoff;
 #[path = "scalable_message_limits.rs"]
 mod message_limits;
+#[path = "scalable_quotas.rs"]
+mod quotas;
 #[path = "scalable_sdk.rs"]
 mod sdk;
 #[path = "scalable_transfer.rs"]

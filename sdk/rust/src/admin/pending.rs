@@ -35,6 +35,10 @@ pub enum AdminReceipt {
     },
     CredentialRevoked(crate::CredentialId),
     TenantStatusChanged(crate::TenantId),
+    PrincipalStatusChanged(crate::PrincipalId),
+    TenantLimitsChanged(crate::TenantId),
+    NamespaceLimitsChanged(crate::NamespaceId),
+    PolicySuperseded,
 }
 
 pub(crate) enum Request {
@@ -75,16 +79,29 @@ impl Request {
                 return delete_topic(client, *topic, operation, deadline).await;
             }
             Self::Identity(request) => {
-                let reply = client
-                    .request(
-                        FrameKind::ManageIdentity,
-                        FrameKind::IdentityResult,
-                        TrafficClass::Control,
-                        operation,
-                        request,
-                        deadline,
-                    )
-                    .await?;
+                let reply = loop {
+                    let reply: public::IdentityResult = client
+                        .request(
+                            FrameKind::ManageIdentity,
+                            FrameKind::IdentityResult,
+                            TrafficClass::Control,
+                            operation,
+                            request,
+                            deadline,
+                        )
+                        .await?;
+                    if !reply.policy_pending {
+                        break reply;
+                    }
+                    if reply.policy_superseded || reply.id != request.target_id {
+                        return Err(Error::ResponseMismatch {
+                            reason: "quota policy progress changed its target or terminal state"
+                                .into(),
+                        }
+                        .preserve_uncertainty(true));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                };
                 return crate::identity::receipt(request, reply, operation)
                     .map_err(|error| error.preserve_uncertainty(true));
             }

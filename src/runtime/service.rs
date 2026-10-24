@@ -553,6 +553,12 @@ impl Service {
             | crate::lifecycle::remote::LIFECYCLE_QUERY
             | crate::lifecycle::remote::LIFECYCLE_COMMAND => Some(StreamPurpose::Core),
             kind if super::tenant_quota::is_core(kind, &request.body) => Some(StreamPurpose::Core),
+            super::resource_leases::RESOURCE_LEASE
+                if super::resource_leases::is_release(request.kind, &request.body) =>
+            {
+                Some(StreamPurpose::Ack)
+            }
+            super::resource_leases::RESOURCE_LEASE => Some(StreamPurpose::Core),
             wire::FORWARD => {
                 let class = TrafficClass::try_from(frame.traffic_class).ok()?;
                 let inner = decode_frame(request.body, class, &self.config.protocol).ok()?;
@@ -614,7 +620,18 @@ impl Service {
                 {
                     return Err(forbidden());
                 }
-                self.quota_control_command(&request.body, deadline).await?
+                self.quota_control_command(peer.node_id, &request.body, deadline)
+                    .await?
+            }
+            super::resource_leases::RESOURCE_LEASE => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.resource_lease_command(peer.node_id, &request.body, deadline)
+                    .await?
             }
             super::tenant_quota::DATA => {
                 drop(order);

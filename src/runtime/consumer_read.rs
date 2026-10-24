@@ -46,19 +46,9 @@ impl Service {
         let Some((first, count)) = cold_range else {
             return Ok(None);
         };
-        self.objects
-            .get(&route.group_id)
-            .ok_or_else(Error::unavailable)?
-            .read(
-                route.partition,
-                first,
-                count,
-                request.max_bytes,
-                deadline.into_std(),
-            )
+        self.read_tenant_archive(route, first, count, request.max_bytes, deadline)
             .await
             .map(Some)
-            .map_err(|source| Error::operation("read consumer archive candidates", source))
     }
 
     pub(super) async fn read_consumer_page(
@@ -206,18 +196,8 @@ impl Service {
                 .map_err(|source| Error::operation("release consumer archive pin", source))?;
         }
         let guarded = self
-            .objects
-            .get(&route.group_id)
-            .ok_or_else(Error::unavailable)?
-            .read(
-                route.partition,
-                offset,
-                window.0,
-                window.1,
-                deadline.into_std(),
-            )
-            .await
-            .map_err(|source| Error::operation("read original consumer archive body", source))?;
+            .read_tenant_archive(route, offset, window.0, window.1, deadline)
+            .await?;
         let message = super::data::cold_message(&guarded, offset)?
             .ok_or_else(Error::unavailable)?
             .0;

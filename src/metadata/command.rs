@@ -88,9 +88,28 @@ pub(crate) enum Action {
     Publisher(super::PublisherCommand),
     TopicDeletion(super::TopicDeletionCommand),
     Quota(super::QuotaCommand),
+    ResourceLease(super::ResourceLeaseCommand),
+    ObserveQuotaPolicy {
+        policy: Id,
+        now_ms: u64,
+    },
 }
 
 impl Command {
+    pub fn observe_quota_policy(operation: Id, revision: u64, policy: Id, now_ms: u64) -> Self {
+        Self::new(
+            operation,
+            revision,
+            Action::ObserveQuotaPolicy { policy, now_ms },
+        )
+    }
+    pub fn resource_lease(
+        operation: Id,
+        revision: u64,
+        command: super::ResourceLeaseCommand,
+    ) -> Self {
+        Self::new(operation, revision, Action::ResourceLease(command))
+    }
     pub fn quota(operation: Id, expected_revision: u64, command: super::QuotaCommand) -> Self {
         Self::new(operation, expected_revision, Action::Quota(command))
     }
@@ -433,6 +452,8 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    QuotaPolicy(super::QuotaPolicy),
+    ResourceLease(Option<super::ResourceLease>),
     Quota(super::QuotaGrant),
     TopicDeletion(super::TopicDeletion),
     AuthorityTransfer(Box<super::AuthorityTransfer>),

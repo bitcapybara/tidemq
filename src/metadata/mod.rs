@@ -10,9 +10,11 @@ mod consumers;
 mod control;
 mod diagnostics;
 mod members;
+mod policies;
 mod publishers;
 mod quotas;
 mod replicated;
+mod resource_leases;
 mod scaling;
 mod state;
 mod tenant_limits;
@@ -40,11 +42,15 @@ pub use members::{
     MEMBER_LEASE_MS, MEMBER_RECOVERY_MS, MemberHeartbeat, MemberInfo, MemberJoin, MemberStatus,
     MembersBook, MembersPlan,
 };
+pub use policies::QuotaPolicy;
 pub use publishers::{
     PUBLISHER_LEASE_MS, PUBLISHER_RECOVERY_MS, PublisherCommand, PublisherRecord, PublishersBook,
 };
 pub use quotas::{
     AllocationRequest, QuotaAllocation, QuotaCapacity, QuotaCommand, QuotaGrant, QuotaLedger,
+};
+pub use resource_leases::{
+    RESOURCE_LEASE_MS, ResourceLease, ResourceLeaseCommand, ResourceLeaseTarget, ResourceLeases,
 };
 pub use state::MetadataState;
 pub use tenant_limits::TenantLimits;

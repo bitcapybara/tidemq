@@ -67,7 +67,7 @@ impl Service {
                     false,
                 ));
             }
-            let result = self.identity_result(saved.outcome, None).await?;
+            let result = self.identity_result(saved.outcome, None, deadline).await?;
             return wire::response(
                 frame,
                 FrameKind::IdentityResult,
@@ -76,7 +76,8 @@ impl Service {
             );
         }
         let now_ms = super::data::unix_millis()?;
-        let (action, token) = identity_action(&request, operation, now_ms)?;
+        let previous = self.identity_base_limits(&request).await?;
+        let (action, token) = identity_action(&request, operation, now_ms, previous)?;
         let outcome = self
             .meta_write(
                 Command::identity(
@@ -97,7 +98,9 @@ impl Service {
                 "Identity management returned an invalid result",
             ));
         };
-        let result = self.identity_result(result.outcome, token).await?;
+        let result = self
+            .identity_result(result.outcome, token, deadline)
+            .await?;
         wire::response(
             frame,
             FrameKind::IdentityResult,
@@ -106,16 +109,60 @@ impl Service {
         )
     }
 
+    async fn identity_base_limits(
+        &self,
+        request: &public::ManageIdentity,
+    ) -> Result<Option<crate::metadata::TenantLimits>> {
+        let action = public::IdentityAction::try_from(request.action)
+            .map_err(|_| Error::invalid("Identity action is invalid"))?;
+        if !matches!(
+            action,
+            public::IdentityAction::SetTenantLimits | public::IdentityAction::SetNamespaceLimits
+        ) {
+            return Ok(None);
+        }
+        let target = wire::id(&request.target_id)?;
+        self.metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| {
+                if action == public::IdentityAction::SetTenantLimits {
+                    return state
+                        .auth()
+                        .tenant(target)
+                        .map(|tenant| Some(tenant.limits))
+                        .ok_or_else(super::metadata::not_found);
+                }
+                let namespace = state
+                    .auth()
+                    .namespace(target)
+                    .ok_or_else(super::metadata::not_found)?;
+                state
+                    .auth()
+                    .limits(namespace.tenant, namespace.id)
+                    .map(|(_, limits)| Some(limits))
+                    .map_err(|_| forbidden())
+            })
+            .await
+            .map_err(|source| Error::operation("read current resource limits", source))?
+    }
+
     async fn identity_result(
         &self,
         outcome: AuthOutcome,
         token: Option<String>,
+        deadline: Instant,
     ) -> Result<public::IdentityResult> {
+        if let AuthOutcome::Policy(policy) = outcome {
+            return self.quota_policy_result(policy, deadline).await;
+        }
         let (id, credential) = match outcome {
             AuthOutcome::Tenant(id) | AuthOutcome::Namespace(id) | AuthOutcome::Principal(id) => {
                 (id, false)
             }
             AuthOutcome::Credential(id) => (id, true),
+            AuthOutcome::Policy(_) => return Err(Error::invalid("Policy result was not resolved")),
         };
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         let info = replica
@@ -132,6 +179,60 @@ impl Service {
             expires_at_ms: info.as_ref().map_or(0, |credential| credential.expires_ms),
             secret_unavailable: credential && token.is_none(),
             access_token: token,
+            policy_pending: false,
+            policy_superseded: false,
+        })
+    }
+
+    async fn quota_policy_result(
+        &self,
+        policy: Id,
+        deadline: Instant,
+    ) -> Result<public::IdentityResult> {
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        let now_ms = super::data::unix_millis()?;
+        let (mut record, ready) = replica
+            .state
+            .try_with_application(|state| {
+                let record = state
+                    .quota_policy(policy)
+                    .cloned()
+                    .ok_or_else(super::metadata::not_found)?;
+                Ok::<_, Error>((
+                    record,
+                    state
+                        .quota_policy_ready(policy, now_ms)
+                        .map_err(super::metadata::metadata_rejection)?,
+                ))
+            })
+            .await
+            .map_err(|source| Error::operation("read durable quota policy progress", source))??;
+        if !record.complete && !record.superseded && ready {
+            let outcome = self
+                .meta_write(
+                    Command::observe_quota_policy(
+                        Id::new_v7().map_err(|source| {
+                            Error::operation("allocate quota policy observation", source)
+                        })?,
+                        self.meta_revision().await?,
+                        policy,
+                        now_ms,
+                    ),
+                    deadline,
+                )
+                .await?;
+            let crate::metadata::Outcome::QuotaPolicy(observed) = outcome else {
+                return Err(Error::invalid(
+                    "Policy observation returned an invalid result",
+                ));
+            };
+            record = observed;
+        }
+        Ok(public::IdentityResult {
+            id: super::metadata::bytes_id(record.namespace.unwrap_or(record.tenant)),
+            policy_pending: !record.complete && !record.superseded,
+            policy_superseded: record.superseded,
+            ..Default::default()
         })
     }
 }
@@ -140,6 +241,7 @@ fn identity_action(
     request: &public::ManageIdentity,
     operation: Id,
     now: u64,
+    previous: Option<crate::metadata::TenantLimits>,
 ) -> Result<(AuthAction, Option<String>)> {
     use public::IdentityAction as Action;
     let action = Action::try_from(request.action)
@@ -180,6 +282,33 @@ fn identity_action(
         }
         Action::RevokeCredential => AuthAction::DisableCredential { id: target()? },
         Action::SetTenantEnabled => AuthAction::SetTenantEnabled {
+            id: target()?,
+            enabled: request.enabled,
+        },
+        Action::SetTenantLimits | Action::SetNamespaceLimits => {
+            let limits = request
+                .limits
+                .as_ref()
+                .ok_or_else(|| Error::invalid("Resource limits are required"))?;
+            let limits = crate::metadata::TenantLimits::from_wire(
+                limits,
+                previous
+                    .ok_or_else(|| Error::invalid("Current resource limits are unavailable"))?,
+            )
+            .map_err(|_| Error::invalid("Resource limits exceed their finite bounds"))?;
+            if action == Action::SetTenantLimits {
+                AuthAction::SetTenantLimits {
+                    id: target()?,
+                    limits,
+                }
+            } else {
+                AuthAction::SetNamespaceLimits {
+                    id: target()?,
+                    limits,
+                }
+            }
+        }
+        Action::SetPrincipalEnabled => AuthAction::SetPrincipalEnabled {
             id: target()?,
             enabled: request.enabled,
         },

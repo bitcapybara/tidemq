@@ -121,26 +121,68 @@ impl MetadataState {
 
 impl Default for TenantLimits {
     fn default() -> Self {
+        let limits = tidemq_protocol::public::ResourceLimits::standard();
         Self {
-            max_topics: 1024,
-            max_subscriptions: 4096,
-            max_principals: 1024,
-            max_credentials: 4096,
-            max_connections: 1024,
-            max_members: 4096,
+            max_topics: limits.topics as usize,
+            max_subscriptions: limits.subscriptions as usize,
+            max_principals: limits.principals as usize,
+            max_credentials: limits.credentials as usize,
+            max_connections: limits.connections as usize,
+            max_members: limits.members as usize,
             capacity: QuotaCapacity {
-                backlog_bytes: 1024 * 1024 * 1024,
-                inflight_bytes: 64 * 1024 * 1024,
-                inflight_messages: 65_536,
-                publish_bytes_per_second: 16 * 1024 * 1024,
-                consume_bytes_per_second: 16 * 1024 * 1024,
-                cold_reads: 64,
+                backlog_bytes: limits.backlog_bytes,
+                inflight_bytes: limits.inflight_bytes,
+                inflight_messages: limits.inflight_messages,
+                publish_bytes_per_second: limits.publish_bytes_per_second,
+                consume_bytes_per_second: limits.consume_bytes_per_second,
+                cold_reads: limits.cold_reads,
             },
         }
     }
 }
 
 impl TenantLimits {
+    pub fn from_wire(
+        limits: &tidemq_protocol::public::ResourceLimits,
+        previous: Self,
+    ) -> Result<Self, AuthRejection> {
+        limits.validate().map_err(|_| AuthRejection::Invalid)?;
+        let count = |value, previous| {
+            if value == 0 {
+                Ok(previous)
+            } else {
+                usize::try_from(value).map_err(|_| AuthRejection::Invalid)
+            }
+        };
+        let bytes = |value, previous| if value == 0 { previous } else { value };
+        let limits = Self {
+            max_topics: count(limits.topics, previous.max_topics)?,
+            max_subscriptions: count(limits.subscriptions, previous.max_subscriptions)?,
+            max_principals: count(limits.principals, previous.max_principals)?,
+            max_credentials: count(limits.credentials, previous.max_credentials)?,
+            max_connections: count(limits.connections, previous.max_connections)?,
+            max_members: count(limits.members, previous.max_members)?,
+            capacity: QuotaCapacity {
+                backlog_bytes: bytes(limits.backlog_bytes, previous.capacity.backlog_bytes),
+                inflight_bytes: bytes(limits.inflight_bytes, previous.capacity.inflight_bytes),
+                inflight_messages: bytes(
+                    limits.inflight_messages,
+                    previous.capacity.inflight_messages,
+                ),
+                publish_bytes_per_second: bytes(
+                    limits.publish_bytes_per_second,
+                    previous.capacity.publish_bytes_per_second,
+                ),
+                consume_bytes_per_second: bytes(
+                    limits.consume_bytes_per_second,
+                    previous.capacity.consume_bytes_per_second,
+                ),
+                cold_reads: bytes(limits.cold_reads, previous.capacity.cold_reads),
+            },
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
     pub fn validate(self) -> Result<(), AuthRejection> {
         let maxima = Self {
             max_connections: 4096,

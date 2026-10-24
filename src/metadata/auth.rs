@@ -115,6 +115,18 @@ pub enum AuthAction {
         id: Id,
         enabled: bool,
     },
+    SetTenantLimits {
+        id: Id,
+        limits: super::TenantLimits,
+    },
+    SetNamespaceLimits {
+        id: Id,
+        limits: super::TenantLimits,
+    },
+    SetPrincipalEnabled {
+        id: Id,
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -127,6 +139,7 @@ pub struct AuthCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AuthOutcome {
+    Policy(Id),
     Tenant(Id),
     Namespace(Id),
     Principal(Id),
@@ -163,6 +176,19 @@ impl std::fmt::Debug for AuthState {
 }
 
 impl AuthState {
+    pub(crate) fn credential_scope(
+        &self,
+        id: Id,
+        now_ms: u64,
+    ) -> Result<(Option<Id>, Option<Id>, u64), AuthRejection> {
+        let credential = self
+            .credentials
+            .get(&id)
+            .filter(|row| row.enabled && row.expires_ms > now_ms)
+            .ok_or(AuthRejection::Forbidden)?;
+        let principal = self.active_principal(credential.principal)?;
+        Ok((principal.tenant, principal.namespace, credential.expires_ms))
+    }
     pub fn initialized(&self) -> bool {
         self.revision > 0
     }
@@ -171,6 +197,12 @@ impl AuthState {
     }
     pub fn credential(&self, id: Id) -> Option<&Credential> {
         self.credentials.get(&id)
+    }
+    pub fn principal(&self, id: Id) -> Option<&Principal> {
+        self.principals.get(&id)
+    }
+    pub fn namespace(&self, id: Id) -> Option<&Namespace> {
+        self.namespaces.get(&id)
     }
     pub fn tenant(&self, id: Id) -> Option<&Tenant> {
         self.tenants.get(&id)
@@ -370,7 +402,9 @@ impl AuthState {
         let actor = command.actor.ok_or(AuthRejection::Forbidden)?;
         let permission = if matches!(
             command.action,
-            AuthAction::CreateTenant(_) | AuthAction::SetTenantEnabled { .. }
+            AuthAction::CreateTenant(_)
+                | AuthAction::SetTenantEnabled { .. }
+                | AuthAction::SetTenantLimits { .. }
         ) {
             Permission::ManageTenants
         } else {
@@ -537,6 +571,47 @@ impl AuthState {
                     .ok_or(AuthRejection::NotFound)?
                     .enabled = *enabled;
                 Ok(AuthOutcome::Tenant(*id))
+            }
+            AuthAction::SetTenantLimits { id, limits } => {
+                if actor.tenant.is_some() {
+                    return Err(AuthRejection::Forbidden);
+                }
+                limits.validate()?;
+                self.tenants
+                    .get_mut(id)
+                    .ok_or(AuthRejection::NotFound)?
+                    .limits = *limits;
+                Ok(AuthOutcome::Tenant(*id))
+            }
+            AuthAction::SetNamespaceLimits { id, limits } => {
+                let namespace = self.namespaces.get(id).ok_or(AuthRejection::NotFound)?;
+                if actor.namespace.is_some() {
+                    return Err(AuthRejection::Forbidden);
+                }
+                self.manage_tenant(actor, namespace.tenant)?;
+                limits.validate()?;
+                if !limits.fits(
+                    self.tenants
+                        .get(&namespace.tenant)
+                        .ok_or(AuthRejection::NotFound)?
+                        .limits,
+                ) {
+                    return Err(AuthRejection::Invalid);
+                }
+                self.namespaces
+                    .get_mut(id)
+                    .ok_or(AuthRejection::NotFound)?
+                    .limits = Some(*limits);
+                Ok(AuthOutcome::Namespace(*id))
+            }
+            AuthAction::SetPrincipalEnabled { id, enabled } => {
+                let principal = self.principals.get(id).ok_or(AuthRejection::NotFound)?;
+                self.manage_principal(actor, principal)?;
+                self.principals
+                    .get_mut(id)
+                    .ok_or(AuthRejection::NotFound)?
+                    .enabled = *enabled;
+                Ok(AuthOutcome::Principal(*id))
             }
             AuthAction::Bootstrap { .. } => Err(AuthRejection::Conflict),
         }

@@ -95,6 +95,7 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
     let mut tenant = tenant("acme");
     tenant.limits.max_topics = 1;
     tenant.limits.max_members = 1;
+    tenant.limits.capacity.cold_reads = 1;
     assert!(
         apply(
             &mut state,
@@ -136,6 +137,7 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
     assert_eq!(record.tenant, Some(tenant.id));
     assert_eq!(record.namespace, Some(app));
     assert_shared_member_limit(&mut state, topic);
+    assert_shared_cold_read_leases(&mut state, topic);
     assert!(matches!(
         state.apply(Command::create_topic(
             id(),
@@ -223,6 +225,7 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
         )
         .is_applied()
     );
+    assert_quota_policy_fencing(&mut state, root, tenant.id);
     state.validate_snapshot().unwrap();
     let restored: MetadataState =
         postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
@@ -313,6 +316,228 @@ fn assert_shared_member_limit(state: &mut MetadataState, topic: Id) {
             ..
         }
     ));
+}
+
+fn assert_quota_policy_fencing(state: &mut MetadataState, actor: Id, tenant: Id) {
+    use tidemq::metadata::{AllocationRequest, AuthOutcome, Outcome, QuotaCommand};
+    let mut limits = state.auth().tenant(tenant).unwrap().limits;
+    limits.capacity.backlog_bytes = 128 * 1024;
+    let Response::Applied {
+        outcome: Outcome::Identity(result),
+        ..
+    } = apply(
+        state,
+        Some(actor),
+        AuthAction::SetTenantLimits { id: tenant, limits },
+    )
+    else {
+        panic!("Expected the new quota policy to be committed");
+    };
+    let AuthOutcome::Policy(policy) = result.outcome else {
+        panic!("Expected a quota policy identity");
+    };
+    assert!(!state.quota_policy_ready(policy, NOW).unwrap());
+    let grant = state
+        .quotas()
+        .allocations()
+        .next()
+        .unwrap()
+        .1
+        .installed
+        .clone()
+        .unwrap();
+    let Response::Applied {
+        outcome: Outcome::Quota(frozen),
+        ..
+    } = state.apply(Command::quota(
+        id(),
+        state.revision(),
+        QuotaCommand::Prepare {
+            request: AllocationRequest {
+                partition: grant.partition,
+                tenant: grant.tenant,
+                namespace: grant.namespace,
+                expected_version: grant.version,
+                capacity: grant.capacity,
+                frozen: true,
+            },
+            now_ms: NOW,
+        },
+    ))
+    else {
+        panic!("Expected the original data quota to be frozen");
+    };
+    assert!(!state.quota_policy_ready(policy, NOW).unwrap());
+    assert!(
+        state
+            .apply(Command::quota(
+                id(),
+                state.revision(),
+                QuotaCommand::Installed {
+                    grant: frozen,
+                    now_ms: NOW
+                }
+            ))
+            .is_applied()
+    );
+    assert!(state.quota_policy_ready(policy, NOW).unwrap());
+    assert!(
+        state
+            .apply(Command::observe_quota_policy(
+                id(),
+                state.revision(),
+                policy,
+                NOW
+            ))
+            .is_applied()
+    );
+    assert!(state.quota_policy(policy).unwrap().complete);
+    limits.capacity.backlog_bytes = 64 * 1024;
+    let Response::Applied {
+        outcome: Outcome::Identity(older),
+        ..
+    } = apply(
+        state,
+        Some(actor),
+        AuthAction::SetTenantLimits { id: tenant, limits },
+    )
+    else {
+        panic!("Expected a second quota policy");
+    };
+    let AuthOutcome::Policy(older) = older.outcome else {
+        panic!("Expected a quota policy identity");
+    };
+    limits.capacity.backlog_bytes = 256 * 1024;
+    assert!(
+        apply(
+            state,
+            Some(actor),
+            AuthAction::SetTenantLimits { id: tenant, limits }
+        )
+        .is_applied()
+    );
+    assert!(state.quota_policy(older).unwrap().superseded);
+    assert!(state.quota_policy(policy).unwrap().complete);
+    state.validate_snapshot().unwrap();
+}
+
+fn assert_shared_cold_read_leases(state: &mut MetadataState, topic: Id) {
+    use tidemq::metadata::{
+        Outcome, PartitionKey, ResourceLeaseCommand as Lease, ResourceLeaseTarget,
+    };
+    let apply = |state: &mut MetadataState, request| {
+        state.apply(Command::resource_lease(id(), state.revision(), request))
+    };
+    let target = ResourceLeaseTarget::ColdRead(PartitionKey {
+        topic_id: topic,
+        partition: 0,
+    });
+    let first = id();
+    let remaining = state.summary().remaining_operations;
+    let response = apply(
+        state,
+        Lease::Acquire {
+            id: first,
+            target,
+            owner: 1,
+            now_ms: NOW,
+        },
+    );
+    assert!(matches!(
+        response,
+        Response::Applied {
+            outcome: Outcome::ResourceLease(Some(_)),
+            ..
+        }
+    ));
+    assert_eq!(
+        apply(
+            state,
+            Lease::Acquire {
+                id: first,
+                target,
+                owner: 1,
+                now_ms: NOW
+            }
+        ),
+        Response::Applied {
+            revision: state.revision(),
+            outcome: match response {
+                Response::Applied { outcome, .. } => outcome,
+                _ => panic!("Expected the original lease"),
+            }
+        }
+    );
+    assert!(matches!(
+        apply(
+            state,
+            Lease::Acquire {
+                id: id(),
+                target,
+                owner: 1,
+                now_ms: NOW
+            }
+        ),
+        Response::Rejected {
+            reason: Rejection::Authorization(AuthRejection::Capacity),
+            ..
+        }
+    ));
+    let mut recovered: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(state).unwrap()).unwrap();
+    recovered.validate_snapshot().unwrap();
+    let second = id();
+    assert!(
+        apply(
+            &mut recovered,
+            Lease::Acquire {
+                id: second,
+                target,
+                owner: 1,
+                now_ms: NOW + 30_000
+            }
+        )
+        .is_applied()
+    );
+    assert!(matches!(
+        apply(
+            &mut recovered,
+            Lease::Renew {
+                id: first,
+                owner: 1,
+                now_ms: NOW + 30_000
+            }
+        ),
+        Response::Rejected {
+            reason: Rejection::NotFound,
+            ..
+        }
+    ));
+    assert!(
+        apply(
+            &mut recovered,
+            Lease::Release {
+                id: first,
+                owner: 1,
+                now_ms: NOW + 30_000
+            }
+        )
+        .is_applied()
+    );
+    assert_eq!(recovered.resource_leases().live(NOW + 30_000).count(), 1);
+    assert!(
+        apply(
+            state,
+            Lease::Release {
+                id: first,
+                owner: 1,
+                now_ms: NOW
+            }
+        )
+        .is_applied()
+    );
+    assert_eq!(state.resource_leases().live(NOW).count(), 0);
+    assert_eq!(state.summary().remaining_operations, remaining);
 }
 
 #[test]

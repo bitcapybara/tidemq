@@ -55,6 +55,10 @@ Required inputs belong in the builder constructor; optional settings use chained
 
 TLS trust contains the server CA certificate; a CA private key is never a client input. Credentials support token files, environment variables, and explicit tokens. The cluster stores credential verification records in Metadata Raft. Applications receive their tokens through private files or deployment Secrets. Debug output omits secrets and message content.
 
+Administrators configure tenant or namespace budgets with `ResourceLimits::builder()` and `admin.set_tenant_limits(id, limits)` or `set_namespace_limits(id, limits)`. A builder changes only configured fields; namespace fields initially inherit the tenant's current limits. `ResourceLimits::default()` explicitly restores the standard limits. Namespaces share their tenant's total budget. `PolicyUpdate::Applied` means the persistent policy and required data admission fences are installed; `Superseded` means a newer update replaced it before completion. Interrupted updates retain the original `PendingAdmin`. Lowering a budget preserves protected data and allows ACK and recovery to release existing occupancy.
+
+Connection limits count physical connections across gateways and traffic classes. Reusing a Client shares its connection pool; distinct Client instances consume separate capacity. Connection admission and cold-read batches use finite Metadata Raft leases, so adding a node or changing a data leader does not duplicate their allowance. `set_principal_enabled(id, false)` disables a principal's credentials for new admission.
+
 ## Sending and receiving
 
 `send` accepts `Into<Message>`: use `producer.send("hello").await?` for a plain message, or `Message` for keys and properties. Success means durable data Raft commitment. One logical producer concurrently sends to multiple shards; use a bounded task pool or FuturesOrdered/FuturesUnordered to drive concurrent calls. Awaiting each call before creating the next call deliberately serializes the application.

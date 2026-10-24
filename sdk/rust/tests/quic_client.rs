@@ -286,6 +286,7 @@ fn handle(request: &Frame, session: &Session, state: &mut PeerState) -> Option<F
                     access_token: (issued && first).then(|| TOKEN.into()),
                     expires_at_ms: u64::MAX,
                     secret_unavailable: issued && !first,
+                    ..Default::default()
                 },
             )
         }

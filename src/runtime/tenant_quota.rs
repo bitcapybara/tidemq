@@ -37,6 +37,7 @@ struct Status {
     group: u64,
     allocation: Option<QuotaAllocation>,
     available: QuotaCapacity,
+    suspended: bool,
     now_ms: u64,
 }
 
@@ -124,14 +125,17 @@ impl Service {
             let idle = data
                 .last_activity_ms
                 .is_some_and(|last| status.now_ms.saturating_sub(last) >= 5_000);
-            let (capacity, frozen) = if installed.frozen {
-                (data.usage, false)
-            } else if idle && installed.capacity != data.usage {
-                // Stop new use before measuring and returning credit to another authority.
-                (installed.capacity, true)
-            } else {
-                return Ok(());
-            };
+            let (capacity, frozen) =
+                if installed.frozen && (installed.capacity != data.usage || !status.suspended) {
+                    (data.usage, status.suspended)
+                } else if status.suspended && !installed.frozen {
+                    (installed.capacity, true)
+                } else if idle && installed.capacity != data.usage {
+                    // Stop new use before measuring and returning credit to another authority.
+                    (installed.capacity, true)
+                } else {
+                    return Ok(());
+                };
             let ControlReply::Grant(grant) = self
                 .quota_control(
                     &ControlRequest::Prepare(AllocationRequest {
@@ -156,10 +160,37 @@ impl Service {
 
     pub(super) async fn quota_control_command(
         &self,
+        sender: u64,
         body: &[u8],
         deadline: Instant,
     ) -> Result<Bytes> {
         let request: ControlRequest = wire::decode_json(body)?;
+        let partition = match &request {
+            ControlRequest::Status(partition) => *partition,
+            ControlRequest::Prepare(request) => request.partition,
+            ControlRequest::Installed(grant) => grant.partition,
+        };
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        let receiver = replica.raft.metrics();
+        let metadata_voter = receiver
+            .borrow()
+            .membership_config
+            .membership()
+            .voter_ids()
+            .any(|node| node == sender);
+        let data_voter = replica
+            .state
+            .try_with_application(|state| {
+                state
+                    .partition_group(partition)
+                    .and_then(|group| state.group(group))
+                    .is_some_and(|group| group.voters.contains(&sender))
+            })
+            .await
+            .map_err(|source| Error::operation("check quota controller authority", source))?;
+        if !metadata_voter && !data_voter {
+            return Err(super::service::forbidden());
+        }
         wire::json(&self.execute_quota_control(request, deadline).await?)
     }
 
@@ -191,13 +222,27 @@ impl Service {
             }
             ControlRequest::Installed(grant) => {
                 let status = self.read_quota_status(grant.partition).await?;
+                if status
+                    .allocation
+                    .as_ref()
+                    .and_then(|record| record.installed.as_ref())
+                    == Some(&grant)
+                {
+                    return Ok(ControlReply::Grant(grant));
+                }
+                if status
+                    .allocation
+                    .as_ref()
+                    .and_then(|record| record.pending.as_ref())
+                    != Some(&grant)
+                {
+                    return Err(Error::unavailable());
+                }
                 let installed = self
                     .query_data_quota(status.group, grant.partition, deadline)
                     .await?;
                 if installed.grant.as_ref() != Some(&grant) {
-                    return Err(Error::invalid(
-                        "Data authority has not durably installed the claimed quota",
-                    ));
+                    return Err(Error::unavailable());
                 }
                 let grant = self
                     .write_quota(
@@ -255,6 +300,9 @@ impl Service {
                         .ok_or_else(super::metadata::not_found)?,
                     allocation: state.quotas().allocation(partition).cloned(),
                     available,
+                    suspended: state
+                        .quota_suspended(tenant, namespace, now_ms)
+                        .map_err(super::metadata::metadata_rejection)?,
                     now_ms,
                 })
             })
@@ -290,6 +338,9 @@ impl Service {
                     .await?;
                 }
                 metadata::Response::Rejected { reason, .. } => {
+                    if reason == metadata::Rejection::Superseded {
+                        return Err(Error::unavailable());
+                    }
                     return Err(super::metadata::metadata_rejection(reason));
                 }
                 _ => {
@@ -421,6 +472,14 @@ impl Service {
         deadline: Instant,
     ) -> Result<QuotaGrant> {
         let status = self.quota_status(grant.partition, deadline).await?;
+        if status
+            .allocation
+            .as_ref()
+            .and_then(|record| record.installed.as_ref())
+            .is_some_and(|installed| installed.version > grant.version)
+        {
+            return Err(Error::unavailable());
+        }
         if status.group != group
             || status.allocation.as_ref().is_none_or(|record| {
                 record.installed.as_ref() != Some(&grant) && record.pending.as_ref() != Some(&grant)

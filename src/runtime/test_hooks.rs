@@ -14,6 +14,7 @@ use crate::metadata::PartitionKey;
 enum PausePoint {
     HotDelivery(u64),
     Publish(u64),
+    ColdRead,
 }
 
 static PAUSE: Mutex<Option<Arc<RuntimePause>>> = Mutex::new(None);
@@ -28,6 +29,9 @@ struct RuntimePause {
 pub struct InstalledPause(Arc<RuntimePause>);
 
 impl InstalledPause {
+    pub fn cold_read(partition: PartitionKey) -> io::Result<Self> {
+        Self::install(partition, PausePoint::ColdRead)
+    }
     pub fn hot_delivery(partition: PartitionKey, offset: u64) -> io::Result<Self> {
         Self::install(partition, PausePoint::HotDelivery(offset))
     }
@@ -83,6 +87,9 @@ pub(super) async fn pause_hot_delivery(partition: PartitionKey, offset: u64, dea
 }
 pub(super) async fn pause_publish(partition: PartitionKey, sequence: u64, deadline: Instant) {
     pause(partition, PausePoint::Publish(sequence), deadline).await;
+}
+pub(super) async fn pause_cold_read(partition: PartitionKey, deadline: Instant) {
+    pause(partition, PausePoint::ColdRead, deadline).await;
 }
 async fn pause(partition: PartitionKey, point: PausePoint, deadline: Instant) {
     let hook = PAUSE.lock().ok().and_then(|mut slot| {

@@ -390,8 +390,11 @@ async fn pump_streams(
     ordinary: mpsc::Sender<FramedStream>,
 ) {
     let mut pending = JoinSet::new();
+    let expiry = super::auth::credential_expired(&state.authorization);
+    tokio::pin!(expiry);
     loop {
         tokio::select! {
+            _ = &mut expiry => break,
             _ = core.closed() => break,
             _ = ordinary.closed() => break,
             _ = pending.join_next(), if !pending.is_empty() => {},

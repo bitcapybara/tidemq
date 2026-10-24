@@ -92,6 +92,34 @@ pub struct ChangeTopicLayout {
     #[prost(uint64, optional, tag = "5")]
     pub split_at: ::core::option::Option<u64>,
 }
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResourceLimits {
+    /// Zero retains the current value; namespace defaults inherit their tenant's current limit.
+    #[prost(uint32, tag = "1")]
+    pub topics: u32,
+    #[prost(uint32, tag = "2")]
+    pub subscriptions: u32,
+    #[prost(uint32, tag = "3")]
+    pub principals: u32,
+    #[prost(uint32, tag = "4")]
+    pub credentials: u32,
+    #[prost(uint32, tag = "5")]
+    pub connections: u32,
+    #[prost(uint32, tag = "6")]
+    pub members: u32,
+    #[prost(uint64, tag = "7")]
+    pub backlog_bytes: u64,
+    #[prost(uint64, tag = "8")]
+    pub inflight_bytes: u64,
+    #[prost(uint64, tag = "9")]
+    pub inflight_messages: u64,
+    #[prost(uint64, tag = "10")]
+    pub publish_bytes_per_second: u64,
+    #[prost(uint64, tag = "11")]
+    pub consume_bytes_per_second: u64,
+    #[prost(uint64, tag = "12")]
+    pub cold_reads: u64,
+}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ManageIdentity {
     #[prost(enumeration = "IdentityAction", tag = "1")]
@@ -110,6 +138,8 @@ pub struct ManageIdentity {
     pub enabled: bool,
     #[prost(bytes = "bytes", tag = "8")]
     pub namespace_id: ::prost::bytes::Bytes,
+    #[prost(message, optional, tag = "9")]
+    pub limits: ::core::option::Option<ResourceLimits>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct IdentityResult {
@@ -123,6 +153,10 @@ pub struct IdentityResult {
     pub expires_at_ms: u64,
     #[prost(bool, tag = "5")]
     pub secret_unavailable: bool,
+    #[prost(bool, tag = "6")]
+    pub policy_pending: bool,
+    #[prost(bool, tag = "7")]
+    pub policy_superseded: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubscriptionAdmin {
@@ -453,6 +487,9 @@ pub enum IdentityAction {
     IssueCredential = 4,
     RevokeCredential = 5,
     SetTenantEnabled = 6,
+    SetTenantLimits = 7,
+    SetNamespaceLimits = 8,
+    SetPrincipalEnabled = 9,
 }
 impl IdentityAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -468,6 +505,9 @@ impl IdentityAction {
             Self::IssueCredential => "ISSUE_CREDENTIAL",
             Self::RevokeCredential => "REVOKE_CREDENTIAL",
             Self::SetTenantEnabled => "SET_TENANT_ENABLED",
+            Self::SetTenantLimits => "SET_TENANT_LIMITS",
+            Self::SetNamespaceLimits => "SET_NAMESPACE_LIMITS",
+            Self::SetPrincipalEnabled => "SET_PRINCIPAL_ENABLED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -480,6 +520,9 @@ impl IdentityAction {
             "ISSUE_CREDENTIAL" => Some(Self::IssueCredential),
             "REVOKE_CREDENTIAL" => Some(Self::RevokeCredential),
             "SET_TENANT_ENABLED" => Some(Self::SetTenantEnabled),
+            "SET_TENANT_LIMITS" => Some(Self::SetTenantLimits),
+            "SET_NAMESPACE_LIMITS" => Some(Self::SetNamespaceLimits),
+            "SET_PRINCIPAL_ENABLED" => Some(Self::SetPrincipalEnabled),
             _ => None,
         }
     }

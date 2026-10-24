@@ -11,6 +11,10 @@ use tokio::time::Instant;
 
 use super::{Error, Result};
 
+#[cfg(test)]
+#[path = "../../../tests/transport_support/credential_leases.rs"]
+mod lease_tests;
+
 /// A token is never retained in Debug output or exposed by a getter.
 #[derive(Clone)]
 pub struct TokenGrant {
@@ -168,6 +172,7 @@ pub trait TokenAuthenticator: Send + Sync {
 pub struct CredentialGrant {
     pub credential: Id,
     pub allowed_kinds: Vec<FrameKind>,
+    pub lease: Option<tokio::sync::watch::Receiver<Instant>>,
 }
 
 impl ServerAuthorization {
@@ -230,6 +235,7 @@ impl ServerAuthorization {
                         credential: grant.credential,
                         session_id,
                         allowed_kinds: grant.allowed_kinds,
+                        lease: grant.lease,
                     },
                 ))
             }
@@ -312,6 +318,7 @@ pub enum Authorization {
         credential: Id,
         session_id: Id,
         allowed_kinds: Vec<FrameKind>,
+        lease: Option<tokio::sync::watch::Receiver<Instant>>,
     },
     External {
         principal: String,
@@ -328,6 +335,15 @@ impl Authorization {
     }
 
     pub(super) fn validate_frame(&self, frame: &Frame, limits: &ProtocolLimits) -> Result<()> {
+        if let Self::Credential {
+            lease: Some(lease), ..
+        } = self
+            && *lease.borrow() <= Instant::now()
+        {
+            return Err(Error::Authentication {
+                reason: "connection admission lease expired",
+            });
+        }
         let kind = FrameKind::try_from(frame.kind).map_err(|_| Error::Authorization {
             reason: "unknown frame kind",
         })?;
@@ -371,6 +387,23 @@ impl Authorization {
                 Ok(())
             }
             _ => Ok(()),
+        }
+    }
+}
+
+pub(super) async fn credential_expired(authorization: &Authorization) {
+    let Authorization::Credential {
+        lease: Some(lease), ..
+    } = authorization
+    else {
+        return std::future::pending().await;
+    };
+    let mut lease = lease.clone();
+    loop {
+        let expires = *lease.borrow_and_update();
+        tokio::select! {
+            _ = tokio::time::sleep_until(expires) => return,
+            result = lease.changed() => { if result.is_err() { return; } }
         }
     }
 }

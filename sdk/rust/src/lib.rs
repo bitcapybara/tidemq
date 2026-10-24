@@ -14,6 +14,7 @@ mod logical_producer;
 mod message;
 mod metrics;
 mod request;
+mod resource_limits;
 mod subscriptions;
 mod topic;
 
@@ -35,6 +36,7 @@ pub use logical_producer::{PendingSend, Producer, ProducerBuilder, SendBatchResu
 pub use message::{Message, MessageId, ReceivedMessage};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use request::RequestContext;
+pub use resource_limits::{PolicyUpdate, ResourceLimits, ResourceLimitsBuilder};
 pub use subscriptions::{
     PendingSubscriptionDeletion, SubscriptionDeleted, SubscriptionId, SubscriptionInfo,
 };

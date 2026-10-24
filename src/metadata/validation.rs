@@ -56,6 +56,8 @@ impl MetadataState {
         self.validate_consumer_subscriptions()?;
         self.validate_topic_deletions()?;
         self.validate_quotas()?;
+        self.validate_resource_leases()?;
+        self.validate_policies()?;
         for (partition, record) in &self.partitions {
             self.validate_partition(*partition, record)?;
         }
@@ -73,6 +75,8 @@ impl MetadataState {
             || !self.consumer_subscriptions.is_empty()
             || !self.topic_deletions.is_empty()
             || self.quotas.allocations().next().is_some()
+            || !self.resource_leases.is_empty()
+            || !self.policies.is_empty()
             || !self.topic_names.is_empty()
             || !self.subscription_names.is_empty()
             || !self.nodes.is_empty()

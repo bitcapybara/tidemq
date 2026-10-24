@@ -71,6 +71,8 @@ pub(super) struct TenantQuotaState {
     last_activity_ms: u64,
     publish: RateState,
     consume: RateState,
+    publish_activated: bool,
+    consume_activated: bool,
 }
 
 impl TenantQuotaState {
@@ -82,6 +84,8 @@ impl TenantQuotaState {
             last_activity_ms: now_ms,
             publish: RateState::new(grant.capacity.publish_bytes_per_second, now_ms),
             consume: RateState::new(grant.capacity.consume_bytes_per_second, now_ms),
+            publish_activated: grant.capacity.publish_bytes_per_second > 0,
+            consume_activated: grant.capacity.consume_bytes_per_second > 0,
             grant,
         })
     }
@@ -107,19 +111,32 @@ impl TenantQuotaState {
         if !usage.fits(grant.capacity) {
             return Err(QuotaRejection::Occupied);
         }
-        let publish = self
+        let mut publish = self
             .publish
             .refill(self.grant.capacity.publish_bytes_per_second, now_ms)
             .refill(grant.capacity.publish_bytes_per_second, now_ms);
-        let consume = self
+        let mut consume = self
             .consume
             .refill(self.grant.capacity.consume_bytes_per_second, now_ms)
             .refill(grant.capacity.consume_bytes_per_second, now_ms);
+        // Each dimension receives one initial burst, including subscriptions created before traffic.
+        if !self.publish_activated {
+            publish = RateState::new(grant.capacity.publish_bytes_per_second, now_ms);
+        }
+        if !self.consume_activated {
+            consume = RateState::new(grant.capacity.consume_bytes_per_second, now_ms);
+        }
+        let publish_activated =
+            self.publish_activated || grant.capacity.publish_bytes_per_second > 0;
+        let consume_activated =
+            self.consume_activated || grant.capacity.consume_bytes_per_second > 0;
         Ok(Self {
             grant,
             last_activity_ms: self.last_activity_ms,
             publish,
             consume,
+            publish_activated,
+            consume_activated,
         })
     }
 

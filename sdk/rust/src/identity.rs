@@ -102,6 +102,65 @@ impl PrincipalBuilder {
 }
 
 impl Admin {
+    pub async fn set_tenant_limits(
+        &self,
+        tenant: TenantId,
+        limits: crate::ResourceLimits,
+    ) -> Result<crate::PolicyUpdate> {
+        let receipt = self
+            .manage_identity(&public::ManageIdentity {
+                action: public::IdentityAction::SetTenantLimits.into(),
+                target_id: bytes(tenant.0),
+                limits: Some(limits.0),
+                ..Default::default()
+            })
+            .await?;
+        match receipt {
+            AdminReceipt::TenantLimitsChanged(id) if id == tenant => {
+                Ok(crate::PolicyUpdate::Applied)
+            }
+            AdminReceipt::PolicySuperseded => Ok(crate::PolicyUpdate::Superseded),
+            _ => Err(result_mismatch()),
+        }
+    }
+
+    pub async fn set_namespace_limits(
+        &self,
+        namespace: NamespaceId,
+        limits: crate::ResourceLimits,
+    ) -> Result<crate::PolicyUpdate> {
+        let receipt = self
+            .manage_identity(&public::ManageIdentity {
+                action: public::IdentityAction::SetNamespaceLimits.into(),
+                target_id: bytes(namespace.0),
+                limits: Some(limits.0),
+                ..Default::default()
+            })
+            .await?;
+        match receipt {
+            AdminReceipt::NamespaceLimitsChanged(id) if id == namespace => {
+                Ok(crate::PolicyUpdate::Applied)
+            }
+            AdminReceipt::PolicySuperseded => Ok(crate::PolicyUpdate::Superseded),
+            _ => Err(result_mismatch()),
+        }
+    }
+
+    pub async fn set_principal_enabled(&self, principal: PrincipalId, enabled: bool) -> Result<()> {
+        let receipt = self
+            .manage_identity(&public::ManageIdentity {
+                action: public::IdentityAction::SetPrincipalEnabled.into(),
+                target_id: bytes(principal.0),
+                enabled,
+                ..Default::default()
+            })
+            .await?;
+        match receipt {
+            AdminReceipt::PrincipalStatusChanged(id) if id == principal => Ok(()),
+            _ => Err(result_mismatch()),
+        }
+    }
+
     pub async fn create_tenant(&self, name: &str) -> Result<TenantId> {
         let result = self
             .manage_identity(&public::ManageIdentity {
@@ -222,7 +281,11 @@ pub(crate) fn receipt(
     let action = Action::try_from(request.action).map_err(|_| result_mismatch())?;
     let id = Id::from_slice(&result.id)?;
     let expected = match action {
-        Action::RevokeCredential | Action::SetTenantEnabled => Id::from_slice(&request.target_id)?,
+        Action::RevokeCredential
+        | Action::SetTenantEnabled
+        | Action::SetPrincipalEnabled
+        | Action::SetTenantLimits
+        | Action::SetNamespaceLimits => Id::from_slice(&request.target_id)?,
         Action::PutPrincipalIdentity if !request.target_id.is_empty() => {
             Id::from_slice(&request.target_id)?
         }
@@ -231,12 +294,22 @@ pub(crate) fn receipt(
     if id != expected {
         return Err(result_mismatch());
     }
+    let policy = matches!(action, Action::SetTenantLimits | Action::SetNamespaceLimits);
+    if result.policy_pending || result.policy_superseded && !policy {
+        return Err(result_mismatch());
+    }
+    if result.policy_superseded {
+        return Ok(AdminReceipt::PolicySuperseded);
+    }
     Ok(match action {
         Action::CreateTenantIdentity => AdminReceipt::TenantCreated(TenantId(id)),
         Action::CreateNamespaceIdentity => AdminReceipt::NamespaceCreated(NamespaceId(id)),
         Action::PutPrincipalIdentity => AdminReceipt::PrincipalConfigured(PrincipalId(id)),
         Action::RevokeCredential => AdminReceipt::CredentialRevoked(CredentialId(id)),
         Action::SetTenantEnabled => AdminReceipt::TenantStatusChanged(TenantId(id)),
+        Action::SetTenantLimits => AdminReceipt::TenantLimitsChanged(TenantId(id)),
+        Action::SetNamespaceLimits => AdminReceipt::NamespaceLimitsChanged(NamespaceId(id)),
+        Action::SetPrincipalEnabled => AdminReceipt::PrincipalStatusChanged(PrincipalId(id)),
         Action::IssueCredential => {
             if result.parent_id != request.parent_id || result.expires_at_ms == 0 {
                 return Err(result_mismatch());

@@ -155,9 +155,16 @@ impl TokenAuthenticator for Authenticator {
                 .ok_or(crate::transport::Error::Authentication {
                     reason: "credential authority omitted its identity",
                 })?;
+            let lease = service
+                .connection_quota_lease(credential, deadline)
+                .await
+                .map_err(|_| crate::transport::Error::Authentication {
+                    reason: "connection quota is exhausted or its authority is unavailable",
+                })?;
             Ok(CredentialGrant {
                 credential,
                 allowed_kinds: kinds,
+                lease,
             })
         })
     }

@@ -19,6 +19,7 @@ mod node;
 mod objects;
 pub(crate) mod physical;
 mod publishing;
+mod resource_leases;
 pub(crate) mod scaling;
 mod service;
 mod telemetry;

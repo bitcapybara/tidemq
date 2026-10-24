@@ -137,9 +137,11 @@ impl PeerRpc {
             })
             .transpose()
             .map_err(|source| Error::operation("validate forwarded control priority", source))?;
-        let completion = forwarded.as_ref().is_some_and(|inner| {
-            FrameKind::try_from(inner.kind).is_ok_and(tidemq_protocol::framing::is_completion)
-        });
+        let completion = class == TrafficClass::Control
+            && super::resource_leases::is_release(request.kind, &request.body)
+            || forwarded.as_ref().is_some_and(|inner| {
+                FrameKind::try_from(inner.kind).is_ok_and(tidemq_protocol::framing::is_completion)
+            });
         let core = class == TrafficClass::Control
             && (matches!(
                 request.kind,
@@ -147,6 +149,7 @@ impl PeerRpc {
                     | OWNERSHIP
                     | LEADER
                     | super::auth::AUTH_QUERY
+                    | super::resource_leases::RESOURCE_LEASE
                     | crate::lifecycle::remote::LIFECYCLE_QUERY
                     | crate::lifecycle::remote::LIFECYCLE_COMMAND
             ) || super::tenant_quota::is_core(request.kind, &request.body)

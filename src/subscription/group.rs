@@ -392,7 +392,7 @@ impl GroupCursor {
             .filter(|read| !read.retired)
             .flat_map(|read| &read.deliveries)
             .map(|delivery| delivery.offset)
-            .min()
+            .next()
             .map_or(self.frontier, |offset| offset.min(self.frontier))
     }
 

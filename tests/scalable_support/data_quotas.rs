@@ -23,6 +23,26 @@ fn grant(version: u64, rate: u64) -> crate::metadata::QuotaGrant {
 }
 
 #[test]
+fn each_rate_dimension_receives_its_initial_burst_only_once_even_after_idle_credit_reclamation() {
+    let quota = TenantQuotaState::new(grant(1, 0), 0).unwrap();
+    let mut quota = quota.update(grant(2, 100), Default::default(), 0).unwrap();
+    quota.commit_publish(quota.publish(0, false, 80, 0).unwrap());
+    quota.commit_consume(80, 0);
+    assert_eq!(quota.read_budget(Default::default(), 0).unwrap().bytes, 20);
+    let quota = quota.update(grant(3, 0), Default::default(), 0).unwrap();
+    let quota = quota.update(grant(4, 100), Default::default(), 0).unwrap();
+    assert_eq!(
+        quota.publish(0, false, 1, 0),
+        Err(QuotaRejection::Exhausted)
+    );
+    assert_eq!(quota.read_budget(Default::default(), 0).unwrap().bytes, 0);
+    assert_eq!(
+        quota.read_budget(Default::default(), 100).unwrap().bytes,
+        10
+    );
+}
+
+#[test]
 fn delivery_admission_shares_byte_message_and_rate_credit_without_double_charging_replays() {
     let mut quota = TenantQuotaState::new(grant(1, 100), 0).unwrap();
     let usage = QuotaCapacity {

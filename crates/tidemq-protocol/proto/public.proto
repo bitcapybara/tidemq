@@ -52,6 +52,24 @@ enum IdentityAction {
   ISSUE_CREDENTIAL = 4;
   REVOKE_CREDENTIAL = 5;
   SET_TENANT_ENABLED = 6;
+  SET_TENANT_LIMITS = 7;
+  SET_NAMESPACE_LIMITS = 8;
+  SET_PRINCIPAL_ENABLED = 9;
+}
+message ResourceLimits {
+  // Zero retains the current value; namespace defaults inherit their tenant's current limit.
+  uint32 topics = 1;
+  uint32 subscriptions = 2;
+  uint32 principals = 3;
+  uint32 credentials = 4;
+  uint32 connections = 5;
+  uint32 members = 6;
+  uint64 backlog_bytes = 7;
+  uint64 inflight_bytes = 8;
+  uint64 inflight_messages = 9;
+  uint64 publish_bytes_per_second = 10;
+  uint64 consume_bytes_per_second = 11;
+  uint64 cold_reads = 12;
 }
 message ManageIdentity {
   IdentityAction action = 1;
@@ -62,6 +80,7 @@ message ManageIdentity {
   uint64 lifetime_ms = 6;
   bool enabled = 7;
   bytes namespace_id = 8;
+  ResourceLimits limits = 9;
 }
 message IdentityResult {
   bytes id = 1;
@@ -69,6 +88,8 @@ message IdentityResult {
   optional string access_token = 3;
   uint64 expires_at_ms = 4;
   bool secret_unavailable = 5;
+  bool policy_pending = 6;
+  bool policy_superseded = 7;
 }
 
 enum ConsumerAction {

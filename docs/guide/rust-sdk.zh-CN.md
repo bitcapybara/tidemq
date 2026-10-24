@@ -46,6 +46,14 @@ println!("Unresolved sends: {}", report.unresolved_sends());
 
 TlsTrust 接受服务端 CA 文件或 PEM，不接收 CA 私钥。Credentials 支持 token_file、token_env 和 token。集群在线签发凭据，Metadata Raft 持久保存校验记录；应用通过私有文件或部署 Secret 取得 token。撤销和过期影响已有连接的新准入。Debug、日志和管理元数据不得输出凭据原值或签名材料。
 
+## 租户限额
+
+管理员使用 `ResourceLimits::builder()` 配合 `set_tenant_limits(tenant, limits)` 或 `set_namespace_limits(namespace, limits)` 设置资源数量、积压、在途、发布/消费速率和冷读并发。builder 仅修改显式设置的字段，Namespace 未设置的字段初始继承当前租户限制；`ResourceLimits::default()` 显式恢复标准限额。Namespace 共享租户总预算，增加节点或分片不会增加租户额度。
+
+`PolicyUpdate::Applied` 表示策略及所需的数据准入屏障已经持久完成；`Superseded` 表示完成前被后续策略取代。降配到现有占用以下时暂停新增，保留数据，并允许 ACK 和恢复继续释放占用。超时或取消沿原 PendingAdmin 恢复，不能仅凭管理请求已经提交就宣告数据侧完成。
+
+连接限额按各 Gateway、各流量类别的物理连接合计；Client clone 共享连接池，独立 Client 分别占用容量。连接和冷读批次采用 Metadata Raft 中的有限租约，失联或 Leader 变更不会复制额度。管理员可通过 `set_principal_enabled(principal, false)` 禁用主体，新准入同时受到凭据及主体有效性的约束。
+
 ## 生产与并发
 
 send 接受 Into<Message>，简单消息可写 producer.send("hello").await。Message 用于设置 key 和属性。成功回执表示数据 Raft 已持久提交；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。

@@ -1027,7 +1027,7 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 15;
+    const VERSION: u32 = 16;
     type Command = DataCommand;
     type Response = DataResponse;
 
