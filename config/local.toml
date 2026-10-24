@@ -32,8 +32,7 @@ private_key = "certs/server-key.pem"
 trust_roots = "certs/ca.pem"
 
 [authorization]
-access_file = "secrets/access.toml"
-delivery_key_file = "secrets/delivery.key"
+bootstrap_admin_token_file = "secrets/bootstrap.token"
 
 [gateway]
 listen = "127.0.0.1:7443"

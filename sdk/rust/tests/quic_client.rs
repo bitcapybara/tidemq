@@ -62,15 +62,19 @@ impl Drop for Peer {
 }
 
 async fn peer() -> Peer {
+    peer_at("localhost").await
+}
+
+async fn peer_at(hostname: &str) -> Peer {
     let key = KeyPair::generate().unwrap();
-    let certificate = CertificateParams::new(vec!["localhost".into()])
+    let certificate = CertificateParams::new(vec![hostname.into()])
         .unwrap()
         .self_signed(&key)
         .unwrap();
     let ca = Bytes::from(certificate.pem());
     let identity = TlsIdentity::new(ca.clone(), Bytes::from(key.serialize_pem())).unwrap();
     let server = server("127.0.0.1:0".parse().unwrap(), identity.clone());
-    let endpoint = format!("localhost:{}", server.local_addr().port());
+    let endpoint = format!("{hostname}:{}", server.local_addr().port());
     let state = Arc::new(Mutex::new(PeerState::default()));
     let task = accept(server, state.clone());
     let client = Client::builder(
@@ -359,7 +363,18 @@ async fn optional_metrics_register_into_the_hosts_registry() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dns_reconnect_falls_back_to_ipv6_without_replacing_the_logical_session() {
-    let mut peer = peer().await;
+    let hostname =
+        std::env::var("TIDEMQ_TEST_DUAL_STACK_HOST").unwrap_or_else(|_| "localhost".into());
+    let addresses: Vec<_> = tokio::net::lookup_host((hostname.as_str(), 1))
+        .await
+        .unwrap()
+        .collect();
+    assert!(
+        addresses.iter().any(SocketAddr::is_ipv4) && addresses.iter().any(SocketAddr::is_ipv6),
+        "The dual-stack fixture must resolve to IPv4 and IPv6 loopback addresses; configure TIDEMQ_TEST_DUAL_STACK_HOST and the test container hosts file"
+    );
+    assert!(addresses.iter().all(|address| address.ip().is_loopback()));
+    let mut peer = peer_at(&hostname).await;
     let port = peer
         .endpoint
         .rsplit_once(':')

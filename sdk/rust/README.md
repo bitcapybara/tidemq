@@ -93,6 +93,11 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 
 Functional and fault integration cases live under the repository's tests directory. Functional validation does not establish throughput or calibrated capacity.
 
+The SDK IPv4-to-IPv6 reconnection test requires a hostname resolving to both loopback families.
+It uses `localhost` by default. Containers can set `TIDEMQ_TEST_DUAL_STACK_HOST=sdk-dualstack.test`
+and add `--add-host sdk-dualstack.test:127.0.0.1 --add-host sdk-dualstack.test:::1` to their Docker invocation.
+The test checks this prerequisite before starting network operations.
+
 The consumer types enforce their acknowledgement contracts at compile time:
 
 ```compile_fail
