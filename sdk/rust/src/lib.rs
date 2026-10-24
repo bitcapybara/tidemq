@@ -26,7 +26,7 @@ pub use client::{Client, ClientConfig};
 pub use close::{CloseError, CloseReport};
 pub use consumer::{Consumer, ConsumerConfig, Delivery, DeliveryOrdering};
 pub use context::scope_traceparent;
-pub use error::{Error, Result};
+pub use error::{Error, ErrorKind, Result};
 pub use group_consumer::{
     AckProgress, AckReceipt, PendingAck, QueueConsumer, QueueConsumerBuilder, StreamConsumer,
     StreamConsumerBuilder,

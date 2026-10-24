@@ -34,6 +34,7 @@ async fn deletion_rejects_online_members_and_releases_only_the_original_subscrip
         .await
         .unwrap_err();
     assert!(!rejected.outcome_unknown());
+    assert_eq!(rejected.kind(), tidemq_sdk::ErrorKind::Conflict);
     assert!(
         client
             .admin()
@@ -72,6 +73,7 @@ async fn deletion_rejects_online_members_and_releases_only_the_original_subscrip
         !forbidden.outcome_unknown(),
         "A pre-admission refusal became unknown: {forbidden:?}"
     );
+    assert_eq!(forbidden.kind(), tidemq_sdk::ErrorKind::PermissionDenied);
     assert!(
         reader
             .admin()

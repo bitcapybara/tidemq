@@ -3,6 +3,25 @@ use tidemq_protocol::common::{ErrorCode, Outcome};
 
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ErrorKind {
+    InvalidArgument,
+    Unauthenticated,
+    PermissionDenied,
+    ResourceExhausted,
+    Unavailable,
+    DeadlineExceeded,
+    Cancelled,
+    NotFound,
+    Conflict,
+    StaleDelivery,
+    RecoveryExpired,
+    OutcomeUnknown,
+    Closed,
+    Protocol,
+    Internal,
+}
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Subscription deletion is incomplete; retry the original pending deletion"))]
@@ -111,6 +130,45 @@ pub enum Error {
 }
 
 impl Error {
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            Self::Background { source }
+            | Self::SubscriptionDeletion { source, .. }
+            | Self::Acknowledgement { source, .. }
+            | Self::SendUnresolved { source, .. }
+            | Self::BatchSendInterrupted { source, .. }
+            | Self::SendNotSubmitted { source } => source.kind(),
+            Self::RequestUnknown { source }
+            | Self::ProduceUnknown { source }
+            | Self::RegistrationUnknown { source, .. } => source.kind(),
+            Self::Configuration { .. } | Self::Material { .. } | Self::Memory { .. } => {
+                ErrorKind::InvalidArgument
+            }
+            Self::Admission { .. } => ErrorKind::ResourceExhausted,
+            Self::Closed => ErrorKind::Closed,
+            Self::Cancelled => ErrorKind::Cancelled,
+            Self::Deadline => ErrorKind::DeadlineExceeded,
+            Self::StaleDelivery => ErrorKind::StaleDelivery,
+            Self::AcknowledgementInProgress | Self::ProducerBlocked | Self::KeyBlocked => {
+                ErrorKind::Conflict
+            }
+            Self::SessionExpired
+            | Self::SendRecoveryExpired
+            | Self::CredentialSecretUnavailable { .. } => ErrorKind::RecoveryExpired,
+            Self::Remote { code, .. } => remote_kind(*code),
+            Self::Transport { source } => transport_kind(source),
+            Self::Rpc {
+                source: tidemq_transport::rpc::Error::Transport { source },
+            } => transport_kind(source),
+            Self::Rpc {
+                source: tidemq_transport::rpc::Error::Deadline { .. },
+            } => ErrorKind::DeadlineExceeded,
+            Self::Rpc { .. } | Self::Resolve { .. } => ErrorKind::Unavailable,
+            Self::Protocol { .. } | Self::ResponseMismatch { .. } => ErrorKind::Protocol,
+            Self::Task { .. } => ErrorKind::Internal,
+        }
+    }
+
     pub(crate) fn original_outcome_known(&self) -> bool {
         match self {
             Self::Background { source }
@@ -223,6 +281,44 @@ impl Error {
             },
             _ => false,
         }
+    }
+}
+
+fn remote_kind(code: ErrorCode) -> ErrorKind {
+    match code {
+        ErrorCode::InvalidRequest => ErrorKind::InvalidArgument,
+        ErrorCode::Unauthenticated => ErrorKind::Unauthenticated,
+        ErrorCode::Forbidden => ErrorKind::PermissionDenied,
+        ErrorCode::QuotaExceeded => ErrorKind::ResourceExhausted,
+        ErrorCode::Unavailable | ErrorCode::Fenced => ErrorKind::Unavailable,
+        ErrorCode::DeadlineExceeded => ErrorKind::DeadlineExceeded,
+        ErrorCode::NotFound => ErrorKind::NotFound,
+        ErrorCode::AssignmentBusy
+        | ErrorCode::RegistrationConflict
+        | ErrorCode::ContentConflict
+        | ErrorCode::SequenceGap => ErrorKind::Conflict,
+        ErrorCode::StaleDelivery | ErrorCode::StaleGeneration => ErrorKind::StaleDelivery,
+        ErrorCode::DeduplicationExpired | ErrorCode::OffsetExpired | ErrorCode::SessionExpired => {
+            ErrorKind::RecoveryExpired
+        }
+        ErrorCode::ResultUnknown => ErrorKind::OutcomeUnknown,
+        ErrorCode::InternalError | ErrorCode::Unspecified => ErrorKind::Internal,
+    }
+}
+
+fn transport_kind(error: &tidemq_transport::Error) -> ErrorKind {
+    match error {
+        tidemq_transport::Error::Authentication { .. } => ErrorKind::Unauthenticated,
+        tidemq_transport::Error::Authorization { .. } => ErrorKind::PermissionDenied,
+        tidemq_transport::Error::Configuration { .. } => ErrorKind::InvalidArgument,
+        tidemq_transport::Error::Admission { .. } | tidemq_transport::Error::Memory { .. } => {
+            ErrorKind::ResourceExhausted
+        }
+        tidemq_transport::Error::Deadline { .. } => ErrorKind::DeadlineExceeded,
+        tidemq_transport::Error::Protocol { .. } | tidemq_transport::Error::Prelude => {
+            ErrorKind::Protocol
+        }
+        _ => ErrorKind::Unavailable,
     }
 }
 
