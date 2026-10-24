@@ -316,6 +316,14 @@ impl MetadataState {
                 return Err(Rejection::InvalidCommand);
             }
             if let Some(outcome) = outcome {
+                let binding = match outcome {
+                    Outcome::Identity(result) => Some(result.request_digest),
+                    Outcome::Cluster(result) => Some(result.request_digest),
+                    _ => None,
+                };
+                if decision.management_digest != binding {
+                    return Err(Rejection::InvalidCommand);
+                }
                 self.validate_outcome(*operation_id, outcome)?;
             }
         }
@@ -324,6 +332,20 @@ impl MetadataState {
 
     fn validate_outcome(&self, operation_id: Id, outcome: &Outcome) -> Result<(), Rejection> {
         match outcome {
+            Outcome::Cluster(result) => match &result.outcome {
+                super::ClusterOutcome::Node(node) => {
+                    node.identity.validate(&node.record.spec)?;
+                    if node.record.generation == 0 {
+                        return Err(Rejection::InvalidNode);
+                    }
+                }
+                super::ClusterOutcome::Group(group) => {
+                    if group.group_id == 0 || group.generation == 0 {
+                        return Err(Rejection::InvalidGroup);
+                    }
+                    self.validate_placement(&group.voters, false)?;
+                }
+            },
             Outcome::NodeConfigured(node) => {
                 node.spec.validate()?;
                 if node.generation == 0 {

@@ -403,6 +403,7 @@ fn transfer_control_slots(
                 Decision {
                     operation_id,
                     digest: action.logical_digest()?,
+                    management_digest: None,
                     response: Response::Applied {
                         revision: if stage == ControlStage::Grant {
                             grant.metadata_revision

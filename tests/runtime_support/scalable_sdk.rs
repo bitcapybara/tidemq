@@ -1,6 +1,65 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_management_refusal_recovers_its_original_kind_without_recreating_the_operation() {
+    let fixture = dynamic_fixture().await;
+    let direct = fixture.client(1).await;
+    let retired = direct.admin().create_tenant("retired").await.unwrap();
+    direct.admin().delete_tenant(retired).await.unwrap();
+    let backend = fixture.configs.get(&1).unwrap().listen;
+    let proxy = udp_proxy::Proxy::start([backend, backend]).await;
+    let client = Client::builder(
+        proxy.address.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(TOKEN),
+    )
+    .request_timeout(Duration::from_secs(5))
+    .build()
+    .await
+    .unwrap();
+    let remaining = || async {
+        let response = http(
+            fixture.running.get(&1).unwrap().management_address,
+            "/diagnostics",
+        )
+        .await;
+        let body = response.split_once("\r\n\r\n").unwrap().1;
+        serde_json::from_str::<serde_json::Value>(body)
+            .unwrap()
+            .pointer("/metadata/remaining_operations")
+            .unwrap()
+            .as_u64()
+            .unwrap()
+    };
+    let before = remaining().await;
+    proxy.set_response_mtu(0);
+    let result = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(1))
+        .unwrap()
+        .scope(client.admin().create_namespace(retired, "jobs"))
+        .await;
+    assert!(result.as_ref().is_err_and(|error| error.outcome_unknown()));
+    assert!(proxy.snapshot().over_mtu > 0);
+    assert!(
+        remaining().await < before,
+        "The original management refusal was not durably recorded"
+    );
+    let pending = client.admin().pending_operations().unwrap();
+    assert_eq!(pending.len(), 1);
+    proxy.set_response_mtu(1200);
+    let error = pending[0].retry().await.unwrap_err();
+    assert_eq!(error.kind(), tidemq_sdk::ErrorKind::NotFound);
+    assert!(
+        !error.outcome_unknown(),
+        "The original refusal remained uncertain: {error:?}"
+    );
+    assert!(client.admin().pending_operations().unwrap().is_empty());
+    client.close().await.unwrap();
+    direct.close().await.unwrap();
+    proxy.close().await;
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn producer_close_wakes_unadmitted_senders_and_keeps_a_completed_receipt_retrievable() {
     let fixture = dynamic_fixture().await;
     let backend = fixture.configs.get(&1).unwrap().listen;

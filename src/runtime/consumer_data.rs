@@ -837,14 +837,30 @@ impl Service {
                     )?;
                 let member = wire::id(&request.member_id)?;
                 let subscription = wire::id(&request.subscription_id)?;
-                self.authorize_group_member(
-                    access,
-                    &route,
-                    subscription,
-                    member,
-                    request.member_epoch,
-                )
-                .await?;
+                if let Err(error) = self
+                    .authorize_group_member(
+                        access,
+                        &route,
+                        subscription,
+                        member,
+                        request.member_epoch,
+                    )
+                    .await
+                {
+                    if kind == FrameKind::GroupRetireRead
+                        && self
+                            .closed_read_is_absent(access, &route, &request, deadline)
+                            .await?
+                    {
+                        return wire::response(
+                            frame,
+                            FrameKind::GroupRetired,
+                            &public::GroupRetired {},
+                            &self.config.protocol,
+                        );
+                    }
+                    return Err(error);
+                }
                 let command = if kind == FrameKind::GroupRetireRead {
                     GroupCommand::RetireRead {
                         subscription,
@@ -896,6 +912,48 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("authorize consumer data session", source))?
+    }
+
+    async fn closed_read_is_absent(
+        &self,
+        access: &Access,
+        route: &Route,
+        request: &public::GroupRetire,
+        deadline: Instant,
+    ) -> Result<bool> {
+        let member = wire::id(&request.member_id)?;
+        let subscription = wire::id(&request.subscription_id)?;
+        let (client, credential) = super::consumer_control::actor(access)?;
+        self.consumer_retirement_permit(
+            super::auth::MemberLeaseRequest {
+                topic: route.partition.topic_id,
+                subscription,
+                member,
+                epoch: request.member_epoch,
+                version: 0,
+                client,
+                credential,
+            },
+            deadline,
+        )
+        .await?;
+        let replica = self
+            .data
+            .get(&route.group_id)
+            .ok_or_else(Error::unavailable)?;
+        wire::within(deadline, replica.raft.ensure_linearizable())
+            .await?
+            .map_err(|_| Error::unavailable())?;
+        // Metadata has fenced this exact owner; a reaped data record has no recoverable result left.
+        replica
+            .state
+            .try_with_application(|state| {
+                state
+                    .consumer_group_cursor(route.partition, subscription)
+                    .is_none_or(|cursor| !cursor.contains_member(member, request.member_epoch))
+            })
+            .await
+            .map_err(|source| Error::operation("prove fenced consumer read is absent", source))
     }
 
     async fn group_read_public(

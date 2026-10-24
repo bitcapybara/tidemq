@@ -120,7 +120,7 @@ async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
         .and_then(|deadline| *deadline)
         .unwrap_or_else(|| Instant::now() + core.client.inner.config.close_timeout);
     ack::drain(core, deadline).await;
-    let leave = leave_and_retire(core, deadline).await;
+    let leave = leave(core, deadline).await;
     let mut report = CloseReport {
         local_cleanup_complete: true,
         ..CloseReport::default()
@@ -140,6 +140,8 @@ async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
         report.members_left = 1;
         if let Err(error) = retire_pending_reads(core, deadline).await {
             failure.get_or_insert_with(|| Arc::new(error));
+        } else if let Err(error) = retire_member(core, deadline).await {
+            failure.get_or_insert_with(|| Arc::new(error));
         }
     }
     if let Ok(state) = core.state() {
@@ -153,6 +155,12 @@ async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
         Some(source) => Err(CloseError { report, source }),
         None => Ok(report),
     }
+}
+
+async fn retire_member(core: &Core, deadline: Instant) -> Result<()> {
+    let request = core.request(public::ConsumerAction::RetireConsumer);
+    control(&core.client, Id::new_v7()?, &request, deadline).await?;
+    Ok(())
 }
 
 async fn retire_pending_reads(core: &Core, deadline: Instant) -> Result<()> {
@@ -192,8 +200,8 @@ async fn retire_pending_reads(core: &Core, deadline: Instant) -> Result<()> {
     Ok(())
 }
 
-async fn leave_and_retire(core: &Core, deadline: Instant) -> Result<()> {
-    let mut request = core.request(public::ConsumerAction::LeaveConsumer);
+async fn leave(core: &Core, deadline: Instant) -> Result<()> {
+    let request = core.request(public::ConsumerAction::LeaveConsumer);
     let operation = Id::new_v7()?;
     loop {
         let status = match control(&core.client, operation, &request, deadline).await {
@@ -216,11 +224,6 @@ async fn leave_and_retire(core: &Core, deadline: Instant) -> Result<()> {
             }
         };
         if matches!(status.member_status, 4..=7) && status.plan_active {
-            if status.member_status != 7 {
-                request.action = public::ConsumerAction::RetireConsumer.into();
-                // Membership fencing is complete; retirement only reclaims metadata history.
-                let _ = control(&core.client, Id::new_v7()?, &request, deadline).await;
-            }
             return Ok(());
         }
         pause_control(deadline).await?;

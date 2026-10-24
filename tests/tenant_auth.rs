@@ -1038,3 +1038,68 @@ fn recreated_parent_names_never_authorize_a_new_principal_for_old_topic_identiti
     assert!(restored.auth().namespace_deleted(old_namespace));
     assert!(!restored.auth().tenant_deleted(current.id));
 }
+
+#[test]
+fn original_management_refusals_remain_bound_to_their_own_request_after_restart() {
+    let mut state = MetadataState::default();
+    assert!(
+        state
+            .apply(Command::bootstrap(
+                id(),
+                id(),
+                1,
+                DeploymentMode::LocalRf1,
+                MetadataLimits::default()
+            ))
+            .is_applied()
+    );
+    let root = id();
+    assert!(
+        apply(
+            &mut state,
+            None,
+            AuthAction::Bootstrap {
+                principal: id(),
+                credential: root,
+                digest: TokenDigest::of(ROOT_TOKEN).unwrap(),
+                expires_ms: 100_000,
+            }
+        )
+        .is_applied()
+    );
+    let operation = id();
+    let refused = state.apply(Command::identity(
+        operation,
+        state.revision(),
+        AuthCommand {
+            actor: Some(root),
+            now_ms: NOW,
+            request_digest: [9; 32],
+            action: AuthAction::CreateNamespace(Namespace {
+                id: operation,
+                tenant: id(),
+                name: "missing-parent".into(),
+                enabled: true,
+                limits: None,
+            }),
+        },
+    ));
+    assert!(matches!(
+        refused,
+        Response::Rejected {
+            reason: Rejection::Authorization(AuthRejection::NotFound),
+            ..
+        }
+    ));
+    let recovered: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
+    recovered.validate_snapshot().unwrap();
+    assert_eq!(
+        recovered.management_result(operation, [9; 32]).unwrap(),
+        tidemq::metadata::OperationResult::Known(refused)
+    );
+    assert_eq!(
+        recovered.management_result(operation, [8; 32]),
+        Err(Rejection::OperationConflict)
+    );
+}

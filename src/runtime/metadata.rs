@@ -250,13 +250,36 @@ impl Service {
     ) -> Result<metadata::Outcome> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
+        let binding = match &command.action {
+            metadata::Action::Identity(request) => Some(request.request_digest),
+            metadata::Action::Cluster(request) => Some(request.request_digest),
+            _ => None,
+        };
+        let operation = command.operation_id;
         let response = wire::within(deadline, replica.raft.client_write(command))
             .await?
             .map_err(|source| Error::operation("commit metadata command", source))?
             .data;
         match response {
             Response::Applied { outcome, .. } => Ok(outcome),
-            Response::Rejected { reason, .. } => Err(metadata_rejection(reason)),
+            Response::Rejected { reason, .. } => {
+                if let Some(digest) = binding {
+                    let recorded = replica
+                        .state
+                        .try_with_application(|state| state.management_result(operation, digest))
+                        .await
+                        .map_err(|source| {
+                            Error::operation("read original management refusal", source)
+                        })?
+                        .map_err(metadata_rejection)?;
+                    if let metadata::OperationResult::Known(Response::Rejected { reason, .. }) =
+                        recorded
+                    {
+                        return Err(original_metadata_rejection(reason));
+                    }
+                }
+                Err(metadata_rejection(reason))
+            }
         }
     }
 
@@ -717,7 +740,10 @@ pub(super) fn metadata_rejection(reason: metadata::Rejection) -> Error {
     }
     let (code, retryable) = match &reason {
         R::Authorization(metadata::AuthRejection::Capacity) => (ErrorCode::QuotaExceeded, true),
-        R::Authorization(_) => (ErrorCode::Forbidden, false),
+        R::Authorization(metadata::AuthRejection::Forbidden) => (ErrorCode::Forbidden, false),
+        R::Authorization(metadata::AuthRejection::NotFound) => (ErrorCode::NotFound, false),
+        R::Authorization(metadata::AuthRejection::Conflict) => (ErrorCode::ContentConflict, false),
+        R::Authorization(metadata::AuthRejection::Invalid) => (ErrorCode::InvalidRequest, false),
         R::SubscriptionInUse => (ErrorCode::AssignmentBusy, false),
         R::Capacity => (ErrorCode::QuotaExceeded, true),
         R::RevisionConflict | R::GenerationConflict | R::RecoveryRequired | R::Uninitialized => {
@@ -731,6 +757,12 @@ pub(super) fn metadata_rejection(reason: metadata::Rejection) -> Error {
         _ => (ErrorCode::InvalidRequest, false),
     };
     Error::reject_with(code, Outcome::Rejected, retryable, reason.to_string())
+}
+
+pub(super) fn original_metadata_rejection(reason: metadata::Rejection) -> Error {
+    let mut failure = metadata_rejection(reason).failure();
+    failure.original_outcome_known = true;
+    Error::Rejected { failure }
 }
 pub(crate) fn not_found() -> Error {
     Error::reject(ErrorCode::NotFound, Outcome::Rejected, false)

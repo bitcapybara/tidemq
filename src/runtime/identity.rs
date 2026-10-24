@@ -70,12 +70,14 @@ impl Service {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         let saved = replica
             .state
-            .try_with_application(|state| state.lookup_operation(operation))
+            .try_with_application(|state| state.management_result(operation, digest))
             .await
-            .map_err(|source| {
-                Error::operation("read original identity management result", source)
-            })?;
+            .map_err(|source| Error::operation("read original identity management result", source))?
+            .map_err(super::metadata::metadata_rejection)?;
         if let OperationResult::Known(saved) = saved {
+            if let Response::Rejected { reason, .. } = saved {
+                return Err(super::metadata::original_metadata_rejection(reason));
+            }
             let Response::Applied {
                 outcome: crate::metadata::Outcome::Identity(saved),
                 ..

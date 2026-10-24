@@ -49,6 +49,7 @@ impl PartitionRecord {
 pub(super) struct Decision {
     pub(super) operation_id: Id,
     pub(super) digest: [u8; 32],
+    pub(super) management_digest: Option<[u8; 32]>,
     pub(super) response: Response,
     pub(super) proof_position: Option<crate::ownership::CommitPosition>,
 }
@@ -175,6 +176,20 @@ impl MetadataState {
         )
     }
 
+    pub fn management_result(
+        &self,
+        operation: Id,
+        digest: [u8; 32],
+    ) -> Result<super::OperationResult, Rejection> {
+        let Some(decision) = self.decisions.get(&operation) else {
+            return Ok(super::OperationResult::UnknownOrRetired);
+        };
+        if decision.management_digest != Some(digest) {
+            return Err(Rejection::OperationConflict);
+        }
+        Ok(super::OperationResult::Known(decision.response.clone()))
+    }
+
     /// Deterministic business decisions; successful Raft transport alone is not acceptance.
     pub fn apply(&mut self, command: Command) -> Response {
         if matches!(
@@ -239,6 +254,11 @@ impl MetadataState {
             Decision {
                 operation_id: command.operation_id,
                 digest,
+                management_digest: match &command.action {
+                    Action::Identity(request) => Some(request.request_digest),
+                    Action::Cluster(request) => Some(request.request_digest),
+                    _ => None,
+                },
                 response: response.clone(),
                 proof_position: None,
             },

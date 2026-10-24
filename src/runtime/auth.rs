@@ -91,6 +91,7 @@ enum AuthQuery {
         credential: Id,
     },
     Consumer(MemberLeaseRequest),
+    ConsumerRetirement(MemberLeaseRequest),
     ConsumerDeletion {
         subscription: Id,
         deletion: Id,
@@ -176,6 +177,15 @@ impl TokenAuthenticator for Authenticator {
 }
 
 impl Service {
+    pub(super) async fn consumer_retirement_permit(
+        &self,
+        request: MemberLeaseRequest,
+        deadline: Instant,
+    ) -> Result<()> {
+        self.auth_query(AuthQuery::ConsumerRetirement(request), deadline)
+            .await?;
+        Ok(())
+    }
     pub(super) async fn consumer_deletion_permit(
         &self,
         subscription: Id,
@@ -488,6 +498,33 @@ impl Service {
                         .map_or(0, |member| member.expires_ms);
                     Ok(AuthReply {
                         consumer_expires_ms,
+                        expires_ms: now.saturating_add(1000),
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
+                AuthQuery::ConsumerRetirement(request) => {
+                    let row = state
+                        .consumer_subscription(request.subscription)
+                        .filter(|row| row.topic == request.topic)
+                        .ok_or_else(super::service::forbidden)?;
+                    row.members
+                        .member(request.member, request.epoch)
+                        .filter(|member| {
+                            member.client == request.client
+                                && member.credential == request.credential
+                                && matches!(
+                                    member.status,
+                                    crate::metadata::MemberStatus::Left
+                                        | crate::metadata::MemberStatus::Expired
+                                        | crate::metadata::MemberStatus::Revoked
+                                )
+                        })
+                        .ok_or_else(super::service::forbidden)?;
+                    if !row.members.plan().active {
+                        return Err(Error::unavailable());
+                    }
+                    Ok(AuthReply {
                         expires_ms: now.saturating_add(1000),
                         now_ms: now,
                         ..Default::default()

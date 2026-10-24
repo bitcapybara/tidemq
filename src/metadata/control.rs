@@ -235,6 +235,7 @@ impl MetadataState {
             Decision {
                 operation_id: command.operation_id,
                 digest,
+                management_digest: None,
                 proof_position: command.action.proof_position(),
                 response,
             },
@@ -284,6 +285,9 @@ impl MetadataState {
         stage: ControlStage,
         decision: &Decision,
     ) -> Result<(), Rejection> {
+        if decision.management_digest.is_some() {
+            return Err(Rejection::InvalidEvidence);
+        }
         let grant = record.grant.as_ref().ok_or(Rejection::InvalidEvidence)?;
         let (action, expected_outcome) = match stage {
             ControlStage::Grant => (
