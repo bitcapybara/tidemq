@@ -110,7 +110,7 @@ impl Collector for RuntimeMetrics {
         )?)?;
         self.1.encode(encoder.encode_descriptor(
             "read_hot_reclaim_conflicts",
-            "Hot delivery attempts rejected after concurrent local body reclamation",
+            "Hot delivery lookups that resumed archive replay after local body reclamation",
             None,
             self.1.metric_type(),
         )?)?;

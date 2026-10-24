@@ -114,10 +114,11 @@ impl Service {
         subscription: Id,
         proof: DeliveryProof,
         page: &mut Option<GuardedPage>,
+        window: (usize, u64),
         deadline: Instant,
     ) -> Result<public::GroupDelivery> {
         let message = self
-            .consumer_message(route, proof.offset, page, deadline)
+            .consumer_message(route, proof.offset, page, window, deadline)
             .await?;
         let metadata = message
             .metadata(route.partition.topic_id)
@@ -155,8 +156,23 @@ impl Service {
         route: &Route,
         offset: u64,
         page: &mut Option<GuardedPage>,
+        window: (usize, u64),
         deadline: Instant,
     ) -> Result<MessageData> {
+        #[cfg(feature = "test-hooks")]
+        if super::test_hooks::fail_consumer_body(route.partition, offset) {
+            return Err(Error::unknown());
+        }
+        if let Some(cached) = page
+            .as_ref()
+            .map(|page| super::data::cold_message(page, offset))
+            .transpose()?
+            .flatten()
+        {
+            return Ok(cached.0);
+        }
+        #[cfg(feature = "test-hooks")]
+        super::test_hooks::pause_hot_delivery(route.partition, offset, deadline).await;
         let hot = self
             .data
             .get(&route.group_id)
@@ -178,16 +194,10 @@ impl Service {
                     .next()
                     .ok_or_else(Error::unavailable);
             }
-            Err(Rejection::OffsetExpired { .. }) => {}
+            Err(Rejection::OffsetExpired { .. }) => {
+                self.runtime_metrics.hot_delivery_reclaimed();
+            }
             Err(source) => return Err(Error::operation("read original consumer hot body", source)),
-        }
-        if let Some(cached) = page
-            .as_ref()
-            .map(|page| super::data::cold_message(page, offset))
-            .transpose()?
-            .flatten()
-        {
-            return Ok(cached.0);
         }
         if let Some(previous) = page.take() {
             previous
@@ -202,8 +212,8 @@ impl Service {
             .read(
                 route.partition,
                 offset,
-                1,
-                u64::from(self.config.protocol.max_frame_bytes),
+                window.0,
+                window.1,
                 deadline.into_std(),
             )
             .await

@@ -864,6 +864,7 @@ impl Service {
         {
             return Err(Error::invalid("Group read exceeds its frame budget"));
         }
+        let window = (request.max_messages as usize, request.max_bytes);
         let (read, mut page) = self
             .read_consumer_page(
                 &route,
@@ -897,8 +898,15 @@ impl Service {
             let mut deliveries = Vec::new();
             for proof in read.deliveries {
                 deliveries.push(
-                    self.consumer_delivery(&route, subscription, proof, &mut page, deadline)
-                        .await?,
+                    self.consumer_delivery(
+                        &route,
+                        subscription,
+                        proof,
+                        &mut page,
+                        window,
+                        deadline,
+                    )
+                    .await?,
                 );
             }
             Ok::<_, Error>(deliveries)
@@ -910,6 +918,10 @@ impl Service {
                 .map_err(|source| Error::operation("release consumer delivery pin", source))?;
         }
         let deliveries = deliveries?;
+        #[cfg(feature = "test-hooks")]
+        if super::test_hooks::lose_consumer_reply(route.partition) {
+            return Err(Error::unknown());
+        }
         wire::response(
             frame,
             FrameKind::GroupDeliveries,

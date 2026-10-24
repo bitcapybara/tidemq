@@ -51,6 +51,10 @@ test-hooks = []
 name = "runtime_reclamation"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "runtime_consumer_reads"
+required-features = ["test-hooks"]
+
 [dependencies]
 anyhow = "=1.0.104"
 async-trait = "=0.1.89"

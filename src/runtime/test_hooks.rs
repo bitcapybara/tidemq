@@ -2,6 +2,7 @@
 
 use std::{
     io,
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex},
 };
 
@@ -82,4 +83,91 @@ pub(super) async fn pause_hot_delivery(partition: PartitionKey, offset: u64, dea
         hook.ready.notify_one();
         let _ = tokio::time::timeout_at(deadline, hook.resume.notified()).await;
     }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReadPoint {
+    Reply,
+    Body(u64),
+}
+
+struct ReadFault {
+    partition: PartitionKey,
+    point: ReadPoint,
+    triggered: AtomicBool,
+}
+
+static READ_FAULT: Mutex<Option<Arc<ReadFault>>> = Mutex::new(None);
+
+pub struct InstalledReadFault(Arc<ReadFault>);
+
+impl InstalledReadFault {
+    pub fn lose_reply(partition: PartitionKey) -> io::Result<Self> {
+        Self::install(partition, ReadPoint::Reply)
+    }
+
+    pub fn body_failure(partition: PartitionKey, offset: u64) -> io::Result<Self> {
+        Self::install(partition, ReadPoint::Body(offset))
+    }
+
+    fn install(partition: PartitionKey, point: ReadPoint) -> io::Result<Self> {
+        let mut slot = READ_FAULT
+            .lock()
+            .map_err(|_| io::Error::other("Test hook is poisoned"))?;
+        if slot.is_some() {
+            return Err(io::Error::other(
+                "A consumer Read fault is already installed",
+            ));
+        }
+        let fault = Arc::new(ReadFault {
+            partition,
+            point,
+            triggered: AtomicBool::new(false),
+        });
+        *slot = Some(fault.clone());
+        Ok(Self(fault))
+    }
+
+    pub fn was_triggered(&self) -> bool {
+        self.0.triggered.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for InstalledReadFault {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = READ_FAULT.lock()
+            && slot
+                .as_ref()
+                .is_some_and(|fault| Arc::ptr_eq(fault, &self.0))
+        {
+            slot.take();
+        }
+    }
+}
+
+fn trigger_read_fault(partition: PartitionKey, point: ReadPoint) -> bool {
+    let fault = READ_FAULT.lock().ok().and_then(|mut slot| {
+        if slot
+            .as_ref()
+            .is_some_and(|fault| fault.partition == partition && fault.point == point)
+        {
+            slot.take()
+        } else {
+            None
+        }
+    });
+    if let Some(fault) = fault {
+        fault.triggered.store(true, Ordering::Release);
+        true
+    } else {
+        false
+    }
+}
+
+pub(super) fn lose_consumer_reply(partition: PartitionKey) -> bool {
+    trigger_read_fault(partition, ReadPoint::Reply)
+}
+
+pub(super) fn fail_consumer_body(partition: PartitionKey, offset: u64) -> bool {
+    trigger_read_fault(partition, ReadPoint::Body(offset))
 }
