@@ -373,28 +373,15 @@ async fn queue_members_share_messages_and_a_persistent_nack_redelivers_after_lea
         .build()
         .await
         .unwrap();
-    let topic = client.admin().topic("acme/app/jobs").await.unwrap();
-    let producer = Producer::open(
-        client.clone(),
-        Id::from_slice(&topic.topic_id).unwrap(),
-        0,
-        Id::new_v7().unwrap(),
-    )
-    .await
-    .unwrap();
-    producer
-        .produce(vec![
-            public::Message {
-                key: Bytes::from_static(b"a"),
-                body: Bytes::from_static(b"first"),
-            },
-            public::Message {
-                key: Bytes::from_static(b"b"),
-                body: Bytes::from_static(b"second"),
-            },
+    let producer = client.new_producer("acme/app/jobs").build().await.unwrap();
+    let sent = producer
+        .send_batch(vec![
+            tidemq_sdk::Message::new("first").key("a"),
+            tidemq_sdk::Message::new("second").key("b"),
         ])
         .await
         .unwrap();
+    assert!(sent.outcomes.iter().all(Result::is_ok));
     let a = tokio::time::timeout(Duration::from_secs(15), first.receive())
         .await
         .unwrap()
@@ -421,11 +408,8 @@ async fn queue_members_share_messages_and_a_persistent_nack_redelivers_after_lea
     first.ack(&retry).await.unwrap();
     drop(retry);
     assert_eq!(first.close().await.unwrap().members_left(), 1);
-    producer
-        .produce(vec![public::Message {
-            key: Bytes::from_static(b"c"),
-            body: Bytes::from_static(b"offline backlog"),
-        }])
+    let offline = producer
+        .send(tidemq_sdk::Message::new("offline backlog").key("c"))
         .await
         .unwrap();
     let restored = client
@@ -438,9 +422,11 @@ async fn queue_members_share_messages_and_a_persistent_nack_redelivers_after_lea
         .unwrap()
         .unwrap();
     assert_eq!(message.payload(), b"offline backlog");
+    assert_eq!(message.message_id(), offline.message_id());
     restored.ack(&message).await.unwrap();
     drop(message);
     restored.close().await.unwrap();
+    producer.close().await.unwrap();
     client.close().await.unwrap();
     fixture.close().await;
 }
@@ -473,26 +459,20 @@ async fn stream_clones_share_an_application_prefix_and_reject_a_queue_model_reus
             .is_err()
     );
     let clone = stream.clone();
-    let topic = client.admin().topic("acme/app/events").await.unwrap();
-    let producer = Producer::open(
-        client.clone(),
-        Id::from_slice(&topic.topic_id).unwrap(),
-        0,
-        Id::new_v7().unwrap(),
-    )
-    .await
-    .unwrap();
-    producer
-        .produce(
+    let producer = client
+        .new_producer("acme/app/events")
+        .build()
+        .await
+        .unwrap();
+    let sent = producer
+        .send_batch(
             (0..3)
-                .map(|index| public::Message {
-                    key: Bytes::from_static(b"same"),
-                    body: Bytes::from(format!("event-{index}")),
-                })
+                .map(|index| tidemq_sdk::Message::new(format!("event-{index}")).key("same"))
                 .collect(),
         )
         .await
         .unwrap();
+    assert!(sent.outcomes.iter().all(Result::is_ok));
     let first = tokio::time::timeout(Duration::from_secs(15), stream.receive())
         .await
         .unwrap()
@@ -597,26 +577,16 @@ async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() 
         .build()
         .await
         .unwrap();
-    let topic = client.admin().topic("acme/app/jobs").await.unwrap();
-    let producer = Producer::open(
-        client.clone(),
-        Id::from_slice(&topic.topic_id).unwrap(),
-        0,
-        Id::new_v7().unwrap(),
-    )
-    .await
-    .unwrap();
-    producer
-        .produce(vec![public::Message {
-            key: Bytes::from_static(b"job"),
-            body: Bytes::from_static(b"recover me"),
-        }])
+    let producer = client.new_producer("acme/app/jobs").build().await.unwrap();
+    let sent = producer
+        .send(tidemq_sdk::Message::new("recover me").key("job"))
         .await
         .unwrap();
     let old = tokio::time::timeout(Duration::from_secs(15), queue.receive())
         .await
         .unwrap()
         .unwrap();
+    assert_eq!(old.message_id(), sent.message_id());
     fixture.stop(1).await;
     tokio::time::sleep(Duration::from_secs(16)).await;
     fixture.restart(1).await;

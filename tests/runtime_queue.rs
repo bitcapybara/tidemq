@@ -12,10 +12,7 @@ use tidemq::runtime::{GroupConfig, PeerConfig, RunningNode, RuntimeConfig};
 #[path = "runtime_support/udp_proxy.rs"]
 mod udp_proxy;
 
-use tidemq_sdk::{
-    Bytes, Client, ClientConfig, ClientTls, Consumer, ConsumerConfig, Id, PeerTarget, Producer,
-    public,
-};
+use tidemq_sdk::{Bytes, Client, ClientConfig, ClientTls, Id, PeerTarget, public};
 use tokio::time::Instant;
 
 #[path = "runtime_support/broker_failover.rs"]

@@ -141,7 +141,7 @@ impl PendingAck {
             if launch {
                 let mut owned_task = self.work.task.lock().map_err(|_| Error::Closed)?;
                 let work = self.work.clone();
-                let handle = tokio::spawn(async move {
+                let handle = tokio::spawn(crate::context::inherit_trace(async move {
                     let result = drive(&work, deadline).await.map_err(Arc::new);
                     let complete = work
                         .dependencies
@@ -158,7 +158,7 @@ impl PendingAck {
                     }
                     work.inflight.store(false, Ordering::Release);
                     work.changed.notify_waiters();
-                });
+                }));
                 *owned_task = Some(handle);
             }
             loop {

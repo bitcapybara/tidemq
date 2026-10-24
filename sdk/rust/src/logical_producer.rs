@@ -284,9 +284,11 @@ impl Core {
 }
 
 impl TopicProducer {
+    #[tracing::instrument(target = "tidemq_trace", name = "tidemq.sdk.send", skip_all)]
     pub async fn send(&self, message: impl Into<Message>) -> Result<SendReceipt> {
         send::one(&self.owner.core, message.into()).await
     }
+    #[tracing::instrument(target = "tidemq_trace", name = "tidemq.sdk.send_batch", skip_all)]
     pub async fn send_batch(&self, messages: Vec<Message>) -> Result<SendBatchResult> {
         send::batch(&self.owner.core, messages).await
     }

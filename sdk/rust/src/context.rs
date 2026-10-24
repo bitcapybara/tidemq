@@ -1,8 +1,14 @@
 use std::future::Future;
+use tracing::Instrument;
 
 use crate::{Error, Result};
 
 tokio::task_local! { static TRACEPARENT: String; }
+
+pub(crate) fn inherit_trace<T>(operation: impl Future<Output = T>) -> impl Future<Output = T> {
+    let explicit = TRACEPARENT.try_with(Clone::clone).unwrap_or_default();
+    TRACEPARENT.scope(explicit, operation.instrument(tracing::Span::current()))
+}
 
 /// Propagates one validated host trace context through a finite SDK operation.
 /// Spawned host tasks must scope their own context; no connection retains it.

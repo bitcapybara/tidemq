@@ -21,6 +21,8 @@ pub(super) fn allowed_name(name: &str) -> bool {
         "tidemq.server.request"
             | "tidemq.sdk.request"
             | "tidemq.sdk.produce"
+            | "tidemq.sdk.send"
+            | "tidemq.sdk.send_batch"
             | "producer_submission"
     )
 }

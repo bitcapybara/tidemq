@@ -124,6 +124,20 @@ pub(super) fn observe_hot_page(partition: PartitionKey) {
     }
 }
 
+async fn create(client: &Client) -> (Id, Id) {
+    let topic = client.admin().create_topic("events", 1).await.unwrap();
+    let topic = Id::from_slice(&topic.topic_id).unwrap();
+    let subscription = client
+        .admin()
+        .create_subscription(topic, "durable", 0, public::DeliveryMode::Parallel)
+        .await
+        .unwrap();
+    (
+        topic,
+        Id::from_slice(&subscription.subscription_id).unwrap(),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_live_read_reuses_its_bounded_hot_page_and_preserves_durable_ack_identity() {
     let _serial = SERIAL.lock().await;

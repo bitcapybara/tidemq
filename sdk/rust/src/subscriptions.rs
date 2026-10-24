@@ -159,7 +159,7 @@ impl PendingSubscriptionDeletion {
         state.running = true;
         let work = self.work.clone();
         let client = client.background();
-        state.task = Some(tokio::spawn(async move {
+        state.task = Some(tokio::spawn(crate::context::inherit_trace(async move {
             let (result, complete) = drive(&client, &work, deadline).await;
             if let Ok(mut state) = work.state.lock() {
                 state.result = Some(result);
@@ -168,7 +168,7 @@ impl PendingSubscriptionDeletion {
                 state.running = false;
             }
             work.changed.notify_waiters();
-        }));
+        })));
         Ok(())
     }
 

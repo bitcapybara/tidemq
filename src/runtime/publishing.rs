@@ -190,6 +190,7 @@ impl Service {
         }
     }
 
+    #[tracing::instrument(target = "tidemq_trace", name = "producer_submission", skip_all)]
     async fn publish_public(
         &self,
         access: &Access,

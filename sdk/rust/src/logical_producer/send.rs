@@ -144,7 +144,7 @@ impl PendingSend {
         };
         if launch {
             let work = self.work.clone();
-            let task = tokio::spawn(async move {
+            let task = tokio::spawn(crate::context::inherit_trace(async move {
                 let (result, complete) = match drive(&work, deadline).await {
                     Ok(receipt) => (Ok(receipt), true),
                     Err((source, known)) => (Err(Arc::new(source)), known),
@@ -158,7 +158,7 @@ impl PendingSend {
                 }
                 work.inflight.store(false, Ordering::Release);
                 work.changed.notify_waiters();
-            });
+            }));
             *owned_task = Some(task);
         }
         Ok(())

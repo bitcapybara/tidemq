@@ -357,20 +357,6 @@ pub(super) async fn http(address: SocketAddr, path: &str) -> String {
     response
 }
 
-pub(super) async fn create(client: &Client) -> (Id, Id) {
-    let topic = client.admin().create_topic("events", 1).await.unwrap();
-    let topic = Id::from_slice(&topic.topic_id).unwrap();
-    let subscription = client
-        .admin()
-        .create_subscription(topic, "durable", 0, public::DeliveryMode::Parallel)
-        .await
-        .unwrap();
-    (
-        topic,
-        Id::from_slice(&subscription.subscription_id).unwrap(),
-    )
-}
-
 pub(super) async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {
     let credentials_file = fixture.directory.join("object-credentials.toml");
     let (access, secret) = rustfs.credentials();

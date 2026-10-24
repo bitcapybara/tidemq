@@ -5,6 +5,7 @@ use opentelemetry::{
     trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState},
 };
 use tidemq::observability::tracing::{Tracing, TracingConfig};
+use tidemq_protocol::common::FrameKind;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -39,6 +40,7 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
         &[2],
     )
     .await;
+    fixture.enable_dynamic_auth().await;
     for node in fixture.configs.values_mut() {
         node.tracing = config.clone();
     }
@@ -50,19 +52,13 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
         wait_process(&fixture, *node, child).await;
     }
     let client = fixture.client(4).await;
-    let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
+    create_logical_resources(&client).await;
+    let consumer = client
+        .new_queue_consumer(RUNTIME_TOPIC, "traced")
+        .build()
         .await
         .unwrap();
-    let consumer = Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        ConsumerConfig::default(),
-    )
-    .await
-    .unwrap();
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
     let trace = TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4736").unwrap();
     let parent = Context::new().with_remote_span_context(SpanContext::new(
         trace,
@@ -80,10 +76,10 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
         spans.iter().any(|gateway| {
             gateway.trace_id == trace.to_bytes()
                 && role(gateway, "gateway")
-                && kind(gateway, tidemq_protocol::common::FrameKind::ProduceBatch)
+                && kind(gateway, tidemq_protocol::common::FrameKind::Publish)
                 && spans.iter().any(|sdk| {
                     sdk.trace_id == trace.to_bytes()
-                        && sdk.name == "tidemq.sdk.produce"
+                        && sdk.name == "tidemq.sdk.request"
                         && sdk.span_id == gateway.parent_span_id
                 })
                 && spans.iter().any(|broker| {
@@ -104,14 +100,19 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     let gateway = trace_spans
         .iter()
         .find(|span| {
-            role(span, "gateway") && kind(span, tidemq_protocol::common::FrameKind::ProduceBatch)
+            role(span, "gateway") && kind(span, tidemq_protocol::common::FrameKind::Publish)
         })
         .unwrap();
     let sdk = trace_spans
         .iter()
         .find(|span| span.span_id == gateway.parent_span_id)
         .unwrap();
-    assert_eq!(sdk.name, "tidemq.sdk.produce");
+    assert_eq!(sdk.name, "tidemq.sdk.request");
+    assert!(
+        trace_spans
+            .iter()
+            .any(|span| span.name == "tidemq.sdk.send")
+    );
     assert!(
         trace_spans
             .iter()
@@ -122,6 +123,31 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
             && span.links.is_empty()
             && span.attributes.len() <= 8)
     );
+    let explicit_trace = TraceId::from_hex("4bf92f3577b34da6a3ce929d0e0e4737").unwrap();
+    let explicit_parent = SpanId::from_hex("00f067aa0ba902b8").unwrap();
+    tidemq_sdk::scope_traceparent(
+        "00-4bf92f3577b34da6a3ce929d0e0e4737-00f067aa0ba902b8-01",
+        async {
+            roundtrip(&producer, &consumer, 8).await;
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+    collector::wait(|| {
+        let spans = collector.spans();
+        [FrameKind::Publish, FrameKind::GroupAck]
+            .iter()
+            .all(|expected| {
+                spans.iter().any(|span| {
+                    span.trace_id == explicit_trace.to_bytes()
+                        && span.parent_span_id == explicit_parent.to_bytes()
+                        && role(span, "gateway")
+                        && kind(span, *expected)
+                })
+            })
+    })
+    .await;
     for mode in [collector::SLOW, collector::FAIL, collector::LARGE] {
         collector.set(mode);
         let offset = u64::from(mode);
@@ -164,6 +190,9 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
                 .any(|value| value == b"trace-secret")
         );
     }
+    assert_eq!(client.metrics().snapshot().acknowledged, 9);
+    consumer.close().await.unwrap();
+    producer.close().await.unwrap();
     client.close().await.unwrap();
     for (node, child) in processes.iter_mut().rev() {
         let pid = i32::try_from(child.id().unwrap()).unwrap();
@@ -186,22 +215,24 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     assert_eq!(pipeline.health.snapshot().pending_bytes, 0);
 }
 
-async fn roundtrip(producer: &Producer, consumer: &Consumer, offset: u64) {
+async fn roundtrip(
+    producer: &tidemq_sdk::TopicProducer,
+    consumer: &tidemq_sdk::QueueConsumer,
+    sequence: u64,
+) {
     let started = Instant::now();
+    let payload = format!("trace-secret-body-{sequence}");
     let receipt = producer
-        .produce(vec![public::Message {
-            key: Bytes::from_static(b"trace-secret-key"),
-            body: Bytes::from_static(b"trace-secret-body"),
-        }])
+        .send(tidemq_sdk::Message::new(payload.clone()).key("trace-secret-key"))
         .await
         .unwrap();
-    assert_eq!(receipt.first_offset, offset);
-    assert_eq!(consumer.fill().await.unwrap(), 1);
-    let delivery = consumer.next().await.unwrap().unwrap();
-    assert_eq!(delivery.offset(), offset);
+    let delivery = consumer.receive().await.unwrap();
+    assert_eq!(delivery.message_id(), receipt.message_id());
+    assert_eq!(delivery.payload(), payload.as_bytes());
+    assert_eq!(delivery.key(), Some(b"trace-secret-key".as_slice()));
     assert_eq!(
-        consumer.ack(&delivery).await.unwrap().acknowledged_before,
-        offset + 1
+        consumer.ack(&delivery).await.unwrap(),
+        tidemq_sdk::AckReceipt::Acknowledged
     );
     assert!(
         started.elapsed() < Duration::from_secs(3),

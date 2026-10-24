@@ -36,6 +36,20 @@ const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 const MESSAGES: u64 = 8;
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+async fn create(client: &Client) -> (Id, Id) {
+    let topic = client.admin().create_topic("events", 1).await.unwrap();
+    let topic = Id::from_slice(&topic.topic_id).unwrap();
+    let subscription = client
+        .admin()
+        .create_subscription(topic, "durable", 0, public::DeliveryMode::Parallel)
+        .await
+        .unwrap();
+    (
+        topic,
+        Id::from_slice(&subscription.subscription_id).unwrap(),
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the verified RustFS 1.0.3 executable in TIDEMQ_TEST_RUSTFS_BIN"]
 async fn first_hot_delivery_reloads_cold_after_concurrent_local_reclamation() {
