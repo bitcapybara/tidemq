@@ -692,6 +692,8 @@ impl Service {
             } => Some((*subscription, request.clone())),
             _ => None,
         };
+        #[cfg(test)]
+        let gate = matches!(&command, GroupCommand::OpenGate { .. });
         let result = self
             .data_write(
                 route.group_id,
@@ -732,6 +734,11 @@ impl Service {
                 return Err(error);
             }
         };
+        #[cfg(test)]
+        if gate {
+            super::data::consumer_tests::after_group_commit(route.partition, lease.expires_at())
+                .await;
+        }
         let current = replica
             .state
             .try_with_application(|state| {
@@ -747,7 +754,7 @@ impl Service {
             Some(finalization) => finalization.check(&current),
             None => lease.check(&current, Work::ControlMutation),
         }
-        .map_err(|_| Error::unknown())?;
+        .map_err(|source| Error::CommittedConsumerWriter { source })?;
         match result {
             DataResponse::ConsumerGroup(outcome) => Ok(outcome),
             _ => Err(Error::invalid(

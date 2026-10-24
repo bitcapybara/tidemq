@@ -150,15 +150,7 @@ impl Dispatcher {
         } else {
             match queue.slots.clone().try_acquire_owned() {
                 Ok(slot) => slot,
-                Err(_) => {
-                    if self.health.may_log(std::time::Instant::now()) {
-                        tracing::debug!(event_code = "dispatch_admission_wait", reason = "slots",
-                            purpose = ?purpose, frame_kind = frame.frame().kind,
-                            internal = matches!(&peer, Authorization::Internal(_)),
-                            "Dispatch is waiting for handler capacity");
-                    }
-                    return Err(Box::new(frame));
-                }
+                Err(_) => return Err(Box::new(frame)),
             }
         };
         let Ok(class) = TrafficClass::try_from(frame.frame().traffic_class) else {
@@ -173,13 +165,6 @@ impl Dispatcher {
             self.budget.try_reserve(class, bytes)
         };
         let Ok(memory) = memory else {
-            if self.health.may_log(std::time::Instant::now()) {
-                tracing::debug!(event_code = "dispatch_admission_wait", reason = "memory",
-                    purpose = ?purpose, frame_kind = frame.frame().kind, requested_bytes = bytes,
-                    available_data_bytes = self.budget.available_data_bytes(),
-                    internal = matches!(&peer, Authorization::Internal(_)),
-                    "Dispatch is waiting for request and reply memory");
-            }
             return Err(Box::new(frame));
         };
         let job = Job {

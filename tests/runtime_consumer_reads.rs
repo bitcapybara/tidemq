@@ -17,7 +17,7 @@ use tidemq::{
         test_hooks::{InstalledPause, InstalledReadFault},
     },
 };
-use tidemq_sdk::{Bytes, Client, ClientConfig, ClientTls, Id, PeerTarget};
+use tidemq_sdk::{Bytes, Client, Id};
 use tokio::time::Instant;
 
 // Shared fixtures provide the same private credentials and runtime configuration as the fault suites.

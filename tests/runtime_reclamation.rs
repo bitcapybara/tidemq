@@ -14,7 +14,7 @@ use tidemq::{
     metadata::PartitionKey,
     runtime::{GroupConfig, PeerConfig, RunningNode, RuntimeConfig, test_hooks::InstalledPause},
 };
-use tidemq_sdk::{Bytes, Client, ClientConfig, ClientTls, Id, PeerTarget};
+use tidemq_sdk::{Bytes, Client, Id};
 use tokio::time::Instant;
 
 // Shared fixtures also provide helpers exercised by the other runtime suites.

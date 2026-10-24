@@ -13,6 +13,10 @@ pub enum Error {
         operation: &'static str,
         source: std::io::Error,
     },
+    #[snafu(display("Failed to verify committed consumer writer"))]
+    CommittedConsumerWriter {
+        source: crate::ownership::LeaseError,
+    },
     #[snafu(display("Runtime operation was rejected: {}", failure.message))]
     Rejected { failure: Failure },
 }
@@ -82,6 +86,11 @@ impl Error {
                 failure.message = format!(
                     "Failed to {operation}; outcome is unknown; query or retry with the original operation identity"
                 );
+                failure
+            }
+            Self::CommittedConsumerWriter { .. } => {
+                let mut failure = Failure::new(ErrorCode::Unavailable, Outcome::Unknown, true);
+                failure.message = "Committed consumer writer verification is unknown; retry the original operation".into();
                 failure
             }
         }

@@ -185,28 +185,14 @@ impl Fixture {
         request: Duration,
         close: Duration,
     ) -> Client {
-        let config = self.configs.get(&gateway).unwrap();
-        let address = config.listen;
-        let mut sdk = ClientConfig::new(format!("node-{gateway}.local:{}", address.port()));
-        sdk.request_timeout_ms = request.as_millis().try_into().unwrap();
-        sdk.close_timeout = close;
-        Client::with_target(
-            sdk,
-            ClientTls {
-                trust_roots: self.roots.clone(),
-                identity: None,
-                expected_nodes: Vec::new(),
-            },
-            PeerTarget {
-                address,
-                server_name: format!("node-{gateway}.local"),
-                local_role: "sdk".into(),
-                remote_role: config.role.name().into(),
-                cluster_id: None,
-                node_id: None,
-            },
-            TOKEN.into(),
+        Client::builder(
+            self.configs.get(&gateway).unwrap().listen.to_string(),
+            tidemq_sdk::TlsTrust::ca_pem(self.roots.clone()),
+            tidemq_sdk::Credentials::token(TOKEN),
         )
+        .request_timeout(request)
+        .close_timeout(close)
+        .build()
         .await
         .unwrap()
     }

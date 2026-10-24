@@ -70,6 +70,9 @@ fn unknown_diagnostic(
             (error_kind, *operation)
         }
         super::Error::Rejected { .. } => ("runtime_rejected_unknown", "none"),
+        super::Error::CommittedConsumerWriter { .. } => {
+            ("consumer_commit_fence", "verify committed consumer writer")
+        }
         super::Error::Invalid { .. } => return None,
     };
     Some(UnknownDiagnostic {

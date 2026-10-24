@@ -133,23 +133,12 @@ async fn a_stream_handoff_stops_disconnected_members_from_delivering_old_prefetc
     admin.admin().create_logical_topic(topic).await.unwrap();
     let backend = fixture.configs.get(&1).unwrap().listen;
     let proxy = udp_proxy::Proxy::start([backend, backend]).await;
-    let client = Client::with_target(
-        ClientConfig::new("node-1.local:7443"),
-        ClientTls {
-            trust_roots: fixture.roots.clone(),
-            identity: None,
-            expected_nodes: Vec::new(),
-        },
-        PeerTarget {
-            address: proxy.address,
-            server_name: "node-1.local".into(),
-            local_role: "sdk".into(),
-            remote_role: "combined".into(),
-            cluster_id: None,
-            node_id: None,
-        },
-        TOKEN.into(),
+    let client = Client::builder(
+        proxy.address.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(TOKEN),
     )
+    .build()
     .await
     .unwrap();
     let first = client

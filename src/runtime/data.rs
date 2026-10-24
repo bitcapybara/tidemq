@@ -54,8 +54,8 @@ fn read_refresh_hint(ttl: Duration, request_remaining: Duration) -> Duration {
 }
 
 #[cfg(test)]
-#[path = "data_reclaim_tests.rs"]
-mod reclaim_tests;
+#[path = "consumer_tests.rs"]
+pub(super) mod consumer_tests;
 
 fn payload<T: Message + Default>(frame: &Frame, limits: &ProtocolLimits) -> Result<T> {
     decode_payload(frame.payload.clone(), limits)
@@ -479,8 +479,6 @@ impl Service {
         if matches!(response, DataResponse::Rejected(_)) {
             return Ok(response);
         }
-        #[cfg(test)]
-        reclaim_tests::subscription_commit_tests::after_commit(partition, lease.expires_at()).await;
         let current = replica
             .state
             .try_with_application(|state| {
@@ -1108,19 +1106,11 @@ impl Service {
                             request.max_bytes,
                         )
                         .await?;
-                    #[cfg(test)]
-                    reclaim_tests::observe_hot_page(partition);
                     let message = read.page().messages.first().cloned();
                     hot_page = Some(read);
                     Ok::<_, broker::Error>(message)
                 }
                 .await;
-                #[cfg(test)]
-                let read = if read.is_ok() && reclaim_tests::reject_hot_read(partition, offset) {
-                    Err(broker::Error::Draining)
-                } else {
-                    read
-                };
                 let (message, proof, prepared_page) = match read {
                     Ok(Some(message)) => (message, None, None),
                     Ok(None) => break,
@@ -1215,14 +1205,6 @@ impl Service {
                 }
                 let operation = delivery_operation(wire::id(&frame.operation_id)?, offset)?;
                 let hot = proof.is_none();
-                #[cfg(test)]
-                if hot {
-                    reclaim_tests::pause_hot_delivery(partition, offset, deadline).await;
-                }
-                #[cfg(feature = "test-hooks")]
-                if hot {
-                    super::test_hooks::pause_hot_delivery(partition, offset, deadline).await;
-                }
                 let outcome = self
                     .subscription_commit(
                         group,
@@ -1244,18 +1226,6 @@ impl Service {
                         proof,
                     )
                     .await;
-                #[cfg(test)]
-                let outcome = if matches!(
-                    outcome,
-                    Ok(DataResponse::Subscription(subscription::Outcome::Delivery(
-                        _
-                    )))
-                ) && reclaim_tests::lose_delivery_reply(partition, offset)
-                {
-                    Err(Error::unknown())
-                } else {
-                    outcome
-                };
                 match outcome {
                     Ok(DataResponse::Subscription(subscription::Outcome::Delivery(receipt))) => {
                         recorded_delivery = true;

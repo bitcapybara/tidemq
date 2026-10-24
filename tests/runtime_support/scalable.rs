@@ -74,7 +74,15 @@ async fn stream_and_queue_recover_archived_context_and_nack_after_local_reclaim_
     }
     producer.close().await.unwrap();
     let partition = tidemq::metadata::PartitionKey {
-        topic_id: Id::from_slice(&client.admin().topic(topic).await.unwrap().topic_id).unwrap(),
+        topic_id: client
+            .admin()
+            .topic_info(topic)
+            .await
+            .unwrap()
+            .id()
+            .to_string()
+            .parse()
+            .unwrap(),
         partition: 0,
     };
     let node = fixture.running.get(&1).unwrap();
@@ -152,23 +160,12 @@ async fn stream_and_queue_recover_archived_context_and_nack_after_local_reclaim_
 
 async fn token_client(fixture: &Fixture, token: &str) -> Client {
     let config = fixture.configs.get(&1).unwrap();
-    Client::with_target(
-        ClientConfig::new("node-1.local:7443"),
-        ClientTls {
-            trust_roots: fixture.roots.clone(),
-            identity: None,
-            expected_nodes: Vec::new(),
-        },
-        PeerTarget {
-            address: config.listen,
-            server_name: "node-1.local".into(),
-            local_role: "sdk".into(),
-            remote_role: "combined".into(),
-            cluster_id: None,
-            node_id: None,
-        },
-        token.into(),
+    Client::builder(
+        config.listen.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(token),
     )
+    .build()
     .await
     .unwrap()
 }
@@ -809,23 +806,12 @@ async fn cancelling_a_send_waiter_keeps_its_original_owned_send_and_result() {
         .unwrap();
     let backend = fixture.configs.get(&1).unwrap().listen;
     let proxy = udp_proxy::Proxy::start([backend, backend]).await;
-    let client = Client::with_target(
-        ClientConfig::new("node-1.local:7443"),
-        ClientTls {
-            trust_roots: fixture.roots.clone(),
-            identity: None,
-            expected_nodes: Vec::new(),
-        },
-        PeerTarget {
-            address: proxy.address,
-            server_name: "node-1.local".into(),
-            local_role: "sdk".into(),
-            remote_role: "combined".into(),
-            cluster_id: None,
-            node_id: None,
-        },
-        TOKEN.into(),
+    let client = Client::builder(
+        proxy.address.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(TOKEN),
     )
+    .build()
     .await
     .unwrap();
     let producer = client

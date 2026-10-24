@@ -2,8 +2,8 @@ use super::*;
 
 use tidemq::metadata::{PartitionKey, Route};
 use tidemq::transport::{
-    Client as NativeClient, ClientCredentials, ClientTls as NativeTls, NodeGrant, TlsIdentity,
-    TransportConfig,
+    Client as NativeClient, ClientCredentials, ClientTls as NativeTls, NodeGrant, PeerTarget,
+    TlsIdentity, TransportConfig,
     rpc::{RpcClient, RpcConfig},
 };
 use tidemq_protocol::{

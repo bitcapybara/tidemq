@@ -169,7 +169,15 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         expected.push(producer.send(message).await.unwrap().message_id());
     }
     let partition = tidemq::metadata::PartitionKey {
-        topic_id: Id::from_slice(&client.admin().topic(topic).await.unwrap().topic_id).unwrap(),
+        topic_id: client
+            .admin()
+            .topic_info(topic)
+            .await
+            .unwrap()
+            .id()
+            .to_string()
+            .parse()
+            .unwrap(),
         partition: 0,
     };
     let node = fixture.running.get(&1).unwrap();
