@@ -18,7 +18,7 @@ use tidemq_protocol::{
     common::{Frame, FrameKind, TrafficClass},
     framing::{ALPN, encode_frame, new_frame},
     internal::RaftRequest,
-    public::{CreateTopic, Hello, Message, ProduceBatch, ProduceResult},
+    public::{Hello, LogicalTopic, Publish, PublishMessage, PublishResult},
 };
 use tokio::{
     io::AsyncReadExt,
@@ -116,9 +116,9 @@ fn external_server(pki: &Pki, config: TransportConfig) -> Server {
         "test-scope".into(),
         vec![
             FrameKind::GetTopic,
-            FrameKind::ProduceBatch,
-            FrameKind::Read,
-            FrameKind::AckBatch,
+            FrameKind::Publish,
+            FrameKind::GroupRead,
+            FrameKind::GroupAck,
             FrameKind::Cancel,
         ],
     )
@@ -268,21 +268,22 @@ async fn rpc_shutdown_drains_owned_tasks_and_releases_the_listener() {
 fn produce() -> Frame {
     let id = Id::new_v7().unwrap();
     frame(
-        FrameKind::ProduceBatch,
+        FrameKind::Publish,
         TrafficClass::Produce,
         id,
-        &ProduceBatch {
+        &Publish {
             topic_id: Bytes::copy_from_slice(id.as_bytes()),
-            partition_id: 0,
+            shard_id: Bytes::copy_from_slice(id.as_bytes()),
             producer_id: Bytes::copy_from_slice(id.as_bytes()),
-            producer_epoch: 1,
-            first_sequence: 0,
-            messages: vec![Message {
-                key: Bytes::new(),
-                body: Bytes::from(vec![42; 96_000]),
-            }],
-            content_digest: Bytes::from_static(&[1; 32]),
-            owner_epoch: 1,
+            registration: 1,
+            sequence: 0,
+            message: Some(PublishMessage {
+                key: None,
+                payload: Bytes::from(vec![42; 96_000]),
+                ..Default::default()
+            }),
+            digest: Bytes::from_static(&[1; 32]),
+            ..Default::default()
         },
     )
 }
@@ -334,13 +335,12 @@ async fn trusted_tls_pipelines_large_frames_across_small_windows() {
         .unwrap();
     for request in [first, second] {
         let mut response = frame(
-            FrameKind::ProduceResult,
+            FrameKind::PublishResult,
             TrafficClass::Produce,
             Id::from_slice(&request.frame().operation_id).unwrap(),
-            &ProduceResult {
-                first_offset: 7,
-                message_count: 1,
-                duplicate: false,
+            &PublishResult {
+                offset: Some(7),
+                ..Default::default()
             },
         );
         response.request_id = request.frame().request_id.clone();
@@ -474,9 +474,8 @@ async fn scoped_tokens_are_checked_on_each_connection_and_frame() {
         FrameKind::Diagnose,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
-        &CreateTopic {
+        &LogicalTopic {
             name: "forbidden".into(),
-            partitions: 1,
         },
     );
     lane.sender.send(&request, deadline()).await.unwrap();
@@ -1053,9 +1052,8 @@ async fn ack_admission_exhaustion_preserves_preestablished_control_streams() {
         FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
-        &CreateTopic {
+        &LogicalTopic {
             name: "control-progress".into(),
-            partitions: 1,
         },
     );
     core.sender.send(&request, deadline()).await.unwrap();
@@ -1095,18 +1093,17 @@ async fn slow_bulk_connection_does_not_block_control_progress() {
         .unwrap();
     let _slow_peer = server.accept().await.unwrap();
     let mut bulk_lane = bulk.take_initial_streams().await.pop().unwrap();
-    let body = tidemq_protocol::public::DeliveryBatch {
-        deliveries: vec![tidemq_protocol::public::Delivery {
-            offset: 0,
+    let body = tidemq_protocol::public::GroupDeliveries {
+        deliveries: vec![tidemq_protocol::public::GroupDelivery {
             key: Bytes::new(),
             body: Bytes::from(vec![7; 200_000]),
-            delivery_token: Bytes::new(),
+            ..Default::default()
         }],
-        next_offset: 1,
+        sequence: 1,
         ..Default::default()
     };
     let bulk_frame = frame(
-        FrameKind::DeliveryBatch,
+        FrameKind::GroupDeliveries,
         TrafficClass::Bulk,
         Id::new_v7().unwrap(),
         &body,
@@ -1133,9 +1130,8 @@ async fn slow_bulk_connection_does_not_block_control_progress() {
         FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
-        &CreateTopic {
+        &LogicalTopic {
             name: "bulk-isolation".into(),
-            partitions: 1,
         },
     );
     outgoing.sender.send(&request, deadline()).await.unwrap();
@@ -1209,7 +1205,7 @@ async fn payload_clones_retain_memory_admission_until_last_drop() {
         TOKEN,
         "test".into(),
         "produce".into(),
-        vec![FrameKind::ProduceBatch],
+        vec![FrameKind::Publish],
     )
     .unwrap();
     let memory = budget();
@@ -1285,9 +1281,8 @@ async fn reset_core_lane_does_not_block_its_sibling() {
         FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
-        &CreateTopic {
+        &LogicalTopic {
             name: "sibling-progress".into(),
-            partitions: 1,
         },
     );
     live.sender.send(&request, deadline()).await.unwrap();
@@ -1337,11 +1332,7 @@ async fn application_cancel_preserves_the_reusable_lane() {
         }
         outgoing
     });
-    for kind in [
-        FrameKind::ProduceBatch,
-        FrameKind::Cancel,
-        FrameKind::ProduceBatch,
-    ] {
+    for kind in [FrameKind::Publish, FrameKind::Cancel, FrameKind::Publish] {
         let received = incoming
             .receiver
             .receive(deadline())
@@ -1542,9 +1533,8 @@ async fn saturated_normal_control_and_data_preserve_core_frame_memory() {
         FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
-        &CreateTopic {
+        &LogicalTopic {
             name: "reserved-core-memory".into(),
-            partitions: 1,
         },
     );
     lane.sender.send(&request, deadline()).await.unwrap();

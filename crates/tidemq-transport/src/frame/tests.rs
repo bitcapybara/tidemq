@@ -8,7 +8,7 @@ fn frame(payload: Bytes) -> Frame {
         request_id: Bytes::from_static(&[1; 16]),
         operation_id: Bytes::from_static(&[2; 16]),
         traffic_class: TrafficClass::Produce.into(),
-        kind: FrameKind::ProduceBatch.into(),
+        kind: FrameKind::Publish.into(),
         payload,
         remaining_timeout_ms: 1_000,
         ..Default::default()
@@ -101,8 +101,8 @@ fn nested_decoded_payload_retains_receive_admission_until_its_final_clone() {
     let budget = budget(256 * 1024);
     let available = budget.available_bytes();
     let limits = TransportConfig::default().protocol;
-    let message = tidemq_protocol::public::Message {
-        body: Bytes::from(vec![7; 32 * 1024]),
+    let message = tidemq_protocol::public::PublishMessage {
+        payload: Bytes::from(vec![7; 32 * 1024]),
         ..Default::default()
     };
     let mut frame = frame(Bytes::new());
@@ -116,8 +116,9 @@ fn nested_decoded_payload_retains_receive_admission_until_its_final_clone() {
     });
     let frame = decode_frame(body, TrafficClass::Produce, &limits).unwrap();
     let nested =
-        decode_payload::<tidemq_protocol::public::Message>(frame.payload.clone(), &limits).unwrap();
-    let retained = nested.body.slice(..1);
+        decode_payload::<tidemq_protocol::public::PublishMessage>(frame.payload.clone(), &limits)
+            .unwrap();
+    let retained = nested.payload.slice(..1);
     drop(nested);
     drop(frame);
     assert_eq!(budget.available_bytes(), available - charge as usize);

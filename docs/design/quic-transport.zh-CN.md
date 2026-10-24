@@ -52,7 +52,7 @@ SDK 的应用操作使用 `RequestContext` 与 `CancellationToken` 管理取消�
 
 ## TLS 与权限
 
-外部监听要求 native TLS 链验证、正确服务名和 tidemq/1 ALPN；客户端使用独立 trust roots，清空系统默认根，不提供跳过证书验证选项。PEM 输入必须是有界 UTF-8 文本，以 `&str` 交给 s2n provider；该版本 `&[u8]` 重载代表 DER，会触发其不支持 DER 的路径。证书链最大深度为 8。
+外部监听要求 native TLS 链验证、正确服务名和 tidemq/2 ALPN；客户端使用独立 trust roots，清空系统默认根，不提供跳过证书验证选项。PEM 输入必须是有界 UTF-8 文本，以 `&str` 交给 s2n provider；该版本 `&[u8]` 重载代表 DER，会触发其不支持 DER 的路径。证书链最大深度为 8。
 
 外部 HELLO 的 token 先检查 32—256 字节 ASCII 编码，再对 BLAKE3 Hash 做常量时间 Eq。`TokenGrant` 将 token 绑定 principal、scope 和允许 FrameKind；内部/Raft kind 不能授给外部 token。授权 scope 是已验证上下文，Gateway/Broker 还须依据权威资源映射校验 topic、订阅和管理权限，不能把 scope 字符串当作客户端自报授权。每条连接独立认证同一个 session，不将 socket/CID 当作 producer epoch 或 assignment。
 

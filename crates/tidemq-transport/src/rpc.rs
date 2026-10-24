@@ -898,7 +898,7 @@ mod tests {
         ProtocolLimits,
         common::{FrameKind, TrafficClass},
         framing::new_frame,
-        public::ProduceResult,
+        public::PublishResult,
     };
 
     const TOKEN: &str = "rpc-test-token-with-at-least-32-characters";
@@ -913,14 +913,13 @@ mod tests {
 
     fn request() -> Frame {
         new_frame(
-            FrameKind::ProduceResult,
+            FrameKind::PublishResult,
             TrafficClass::Produce,
             Id::new_v7().unwrap(),
             Id::new_v7().unwrap(),
-            &ProduceResult {
-                first_offset: 42,
-                message_count: 1,
-                duplicate: false,
+            &PublishResult {
+                offset: Some(42),
+                ..Default::default()
             },
             2000,
             &ProtocolLimits::default(),
@@ -983,7 +982,7 @@ mod tests {
                     TOKEN,
                     "test".into(),
                     "test".into(),
-                    vec![FrameKind::ProduceResult],
+                    vec![FrameKind::PublishResult],
                 )
                 .unwrap(),
             ]),
@@ -1054,7 +1053,7 @@ mod tests {
         let first = request();
         let mut second = request();
         let mut large_payload = second.payload.to_vec();
-        // Unknown field 100 carries padding while preserving a valid ProduceResult payload.
+        // Unknown field 100 carries padding while preserving a valid PublishResult payload.
         large_payload.extend_from_slice(&[0xa2, 0x06]);
         prost::encode_length_delimiter(64 * 1024, &mut large_payload).unwrap();
         large_payload.extend_from_slice(&vec![7; 64 * 1024]);

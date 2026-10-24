@@ -240,7 +240,6 @@ fn handle(request: &Frame, session: &Session, state: &mut PeerState) -> Option<F
                 &public::TopicResult {
                     topic_id: bytes(id(1)),
                     name: query.name,
-                    partitions: 1,
                 },
             )
         }

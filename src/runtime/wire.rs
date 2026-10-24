@@ -384,11 +384,11 @@ mod diagnostic_tests {
 
     fn request() -> Frame {
         Frame {
-            protocol_version: 1,
+            protocol_version: tidemq_protocol::framing::PROTOCOL_VERSION,
             request_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
             operation_id: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
             traffic_class: TrafficClass::Control.into(),
-            kind: FrameKind::CreateTopic.into(),
+            kind: FrameKind::CreateLogicalTopic.into(),
             remaining_timeout_ms: 1_000,
             ..Frame::default()
         }
@@ -422,12 +422,12 @@ mod diagnostic_tests {
     fn input_constraints_are_public_but_local_io_details_stay_in_the_source_chain() {
         let limits = ProtocolLimits::default();
         let request = request();
-        let invalid = Error::invalid("CreateTopic.partitions must be greater than zero");
+        let invalid = Error::invalid("LogicalTopic.partitions must be greater than zero");
         let reply = error_response(&request, &invalid, &limits).unwrap();
         let reply: ErrorReply = decode_payload(reply.payload, &limits).unwrap();
         assert_eq!(
             reply.message,
-            "CreateTopic.partitions must be greater than zero"
+            "LogicalTopic.partitions must be greater than zero"
         );
         let private_path = "data/private-replica/metadata.wal";
         let error = Error::operation("open metadata WAL", std::io::Error::other(private_path));

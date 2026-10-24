@@ -15,7 +15,7 @@ use tidemq_protocol::{
     Id, ProtocolLimits,
     common::{Frame, FrameKind, TrafficClass},
     framing::{decode_payload, new_frame},
-    public::{AckBatch, AckResult, CreateTopic, ProduceBatch, ProduceResult},
+    public::{GroupAck, GroupAckResult, LogicalTopic, Publish, PublishResult},
 };
 use tokio::sync::{Semaphore, watch};
 use tokio::time::Instant;
@@ -33,12 +33,12 @@ impl WireService for Service {
     type Error = tidemq_protocol::Error;
 
     fn response_requires_flush(&self, _peer: &Authorization, request: &Frame) -> bool {
-        request.kind == i32::from(FrameKind::AckBatch)
+        request.kind == i32::from(FrameKind::GroupAck)
     }
 
     fn response_sent(&self, _peer: &Authorization, request: &Frame, response: &Frame) {
-        assert_eq!(request.kind, i32::from(FrameKind::AckBatch));
-        assert_eq!(response.kind, i32::from(FrameKind::AckResult));
+        assert_eq!(request.kind, i32::from(FrameKind::GroupAck));
+        assert_eq!(response.kind, i32::from(FrameKind::GroupAckResult));
         self.flushed.add_permits(1);
     }
 
@@ -52,53 +52,36 @@ impl WireService for Service {
         let kind = FrameKind::try_from(request.kind).unwrap();
         let class = TrafficClass::try_from(request.traffic_class).unwrap();
         let response = match kind {
-            FrameKind::ProduceBatch => {
-                let batch: ProduceBatch =
+            FrameKind::Publish => {
+                let batch: Publish =
                     decode_payload(request.payload.clone(), &ProtocolLimits::default())?;
-                self.submitted.lock().unwrap().push(batch.first_sequence);
+                self.submitted.lock().unwrap().push(batch.sequence);
                 drop(order);
                 self.replies.acquire().await.unwrap().forget();
                 new_frame(
-                    FrameKind::ProduceResult,
+                    FrameKind::PublishResult,
                     class,
                     Id::from_slice(&request.request_id)?,
                     Id::from_slice(&request.operation_id)?,
-                    &ProduceResult {
-                        first_offset: batch.first_sequence,
-                        message_count: 1,
-                        duplicate: false,
+                    &PublishResult {
+                        offset: Some(batch.sequence),
+                        ..Default::default()
                     },
                     5000,
                     &ProtocolLimits::default(),
                 )?
             }
-            FrameKind::AckBatch => new_frame(
-                FrameKind::AckResult,
-                class,
-                Id::from_slice(&request.request_id)?,
-                Id::from_slice(&request.operation_id)?,
-                &AckResult {
-                    acknowledged_before: 1,
-                    accepted: 1,
-                    already_acknowledged: 0,
-                },
-                5000,
-                &ProtocolLimits::default(),
-            )?,
             FrameKind::GroupAck => new_frame(
                 FrameKind::GroupAckResult,
                 class,
                 Id::from_slice(&request.request_id)?,
                 Id::from_slice(&request.operation_id)?,
-                &tidemq_protocol::public::GroupAckResult {
-                    redelivery_scheduled: false,
-                    due_ms: 0,
-                },
+                &GroupAckResult::default(),
                 5000,
                 &ProtocolLimits::default(),
             )?,
             _ => {
-                let diagnostic: CreateTopic =
+                let diagnostic: LogicalTopic =
                     decode_payload(request.payload.clone(), &ProtocolLimits::default())?;
                 if diagnostic.name.starts_with("deferred") {
                     self.submitted.lock().unwrap().push(0);
@@ -168,8 +151,7 @@ impl Fixture {
                     "dispatch-test".into(),
                     "dispatch-test".into(),
                     vec![
-                        FrameKind::ProduceBatch,
-                        FrameKind::AckBatch,
+                        FrameKind::Publish,
                         FrameKind::GroupAck,
                         FrameKind::CreateLogicalTopic,
                         FrameKind::Diagnose,
@@ -255,9 +237,8 @@ async fn expired_handler_reply_keeps_other_control_requests_live() {
         request(
             FrameKind::Diagnose,
             TrafficClass::Control,
-            &CreateTopic {
+            &LogicalTopic {
                 name: "deferred".into(),
-                partitions: 1,
             },
         )
     };
@@ -289,9 +270,8 @@ async fn expired_handler_reply_keeps_other_control_requests_live() {
         request(
             FrameKind::Diagnose,
             TrafficClass::Control,
-            &CreateTopic {
+            &LogicalTopic {
                 name: "live-control".into(),
-                partitions: 1,
             },
         ),
         deadline(),
@@ -339,9 +319,8 @@ async fn simultaneous_control_replies_wait_for_the_bounded_writer_queue() {
                 request(
                     FrameKind::Diagnose,
                     TrafficClass::Control,
-                    &CreateTopic {
+                    &LogicalTopic {
                         name: "deferred".into(),
-                        partitions: 1,
                     },
                 ),
                 deadline(),
@@ -400,10 +379,10 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
     let first = produce
         .submit(
             request(
-                FrameKind::ProduceBatch,
+                FrameKind::Publish,
                 TrafficClass::Produce,
-                &ProduceBatch {
-                    first_sequence: 0,
+                &Publish {
+                    sequence: 0,
                     ..Default::default()
                 },
             ),
@@ -414,10 +393,10 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
     let second = produce
         .submit(
             request(
-                FrameKind::ProduceBatch,
+                FrameKind::Publish,
                 TrafficClass::Produce,
-                &ProduceBatch {
-                    first_sequence: 1,
+                &Publish {
+                    sequence: 1,
                     ..Default::default()
                 },
             ),
@@ -445,9 +424,8 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
             request(
                 FrameKind::Diagnose,
                 TrafficClass::Control,
-                &CreateTopic {
+                &LogicalTopic {
                     name: "diagnostic".into(),
-                    partitions: 1,
                 },
             ),
             deadline(),
@@ -466,9 +444,9 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
     ack.sender
         .send(
             &request(
-                FrameKind::AckBatch,
+                FrameKind::GroupAck,
                 TrafficClass::Control,
-                &AckBatch::default(),
+                &GroupAck::default(),
             ),
             deadline(),
         )
@@ -476,7 +454,10 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
         .unwrap();
     ack.sender.finish().unwrap();
     let acknowledged = ack.receiver.receive(deadline()).await.unwrap().unwrap();
-    assert_eq!(acknowledged.frame().kind, i32::from(FrameKind::AckResult));
+    assert_eq!(
+        acknowledged.frame().kind,
+        i32::from(FrameKind::GroupAckResult)
+    );
     tokio::time::timeout_at(deadline(), service.flushed.acquire())
         .await
         .unwrap()
@@ -485,17 +466,17 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
     service.replies.add_permits(2);
     let (first, second) = tokio::join!(first.receive(), second.receive());
     for (response, expected) in [(first.unwrap(), 0), (second.unwrap(), 1)] {
-        let result: ProduceResult =
+        let result: PublishResult =
             decode_payload(response.frame().payload.clone(), &ProtocolLimits::default()).unwrap();
-        assert_eq!(result.first_offset, expected);
+        assert_eq!(result.offset, Some(expected));
     }
     let unanswered = produce
         .submit(
             request(
-                FrameKind::ProduceBatch,
+                FrameKind::Publish,
                 TrafficClass::Produce,
-                &ProduceBatch {
-                    first_sequence: 2,
+                &Publish {
+                    sequence: 2,
                     ..Default::default()
                 },
             ),
@@ -562,10 +543,10 @@ async fn idle_request_lanes(client_timeout: Duration, server_timeout: Duration) 
         let response = rpc
             .call_affinity(
                 request(
-                    FrameKind::ProduceBatch,
+                    FrameKind::Publish,
                     TrafficClass::Produce,
-                    &ProduceBatch {
-                        first_sequence: sequence,
+                    &Publish {
+                        sequence,
                         ..Default::default()
                     },
                 ),
@@ -574,9 +555,9 @@ async fn idle_request_lanes(client_timeout: Duration, server_timeout: Duration) 
             )
             .await
             .expect("An idle sibling must not close the active affinity lane");
-        let result: ProduceResult =
+        let result: PublishResult =
             decode_payload(response.frame().payload.clone(), &ProtocolLimits::default()).unwrap();
-        assert_eq!(result.first_offset, sequence);
+        assert_eq!(result.offset, Some(sequence));
         sequence += 1;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -656,18 +637,18 @@ async fn native_idle_produce_connection_records_lane_read_errors_while_control_p
     let response = producer
         .call_affinity(
             request(
-                FrameKind::ProduceBatch,
+                FrameKind::Publish,
                 TrafficClass::Produce,
-                &ProduceBatch::default(),
+                &Publish::default(),
             ),
             deadline(),
             0,
         )
         .await
         .unwrap();
-    let result: ProduceResult =
+    let result: PublishResult =
         decode_payload(response.frame().payload.clone(), &ProtocolLimits::default()).unwrap();
-    assert_eq!(result.first_offset, 0);
+    assert_eq!(result.offset, Some(0));
     drop(response);
     let control = client
         .connect(target, &credentials, TrafficClass::Control, deadline())
@@ -690,9 +671,8 @@ async fn native_idle_produce_connection_records_lane_read_errors_while_control_p
                 request(
                     FrameKind::Diagnose,
                     TrafficClass::Control,
-                    &CreateTopic {
+                    &LogicalTopic {
                         name: "idle-connection-diagnostic".into(),
-                        partitions: 1,
                     },
                 ),
                 Instant::now() + Duration::from_millis(200),
@@ -737,9 +717,8 @@ async fn native_idle_produce_connection_records_lane_read_errors_while_control_p
             request(
                 FrameKind::Diagnose,
                 TrafficClass::Control,
-                &CreateTopic {
+                &LogicalTopic {
                     name: "after-native-idle-close".into(),
-                    partitions: 1,
                 },
             ),
             Instant::now() + Duration::from_millis(200),
@@ -832,9 +811,8 @@ async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturat
                     request(
                         FrameKind::CreateLogicalTopic,
                         TrafficClass::Control,
-                        &CreateTopic {
+                        &LogicalTopic {
                             name: format!("deferred{}", "x".repeat(padding)),
-                            partitions: 1,
                         },
                     ),
                     deadline(),
@@ -848,9 +826,8 @@ async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturat
                 request(
                     FrameKind::CreateLogicalTopic,
                     TrafficClass::Control,
-                    &CreateTopic {
+                    &LogicalTopic {
                         name: format!("deferred{}", "x".repeat(padding)),
-                        partitions: 1
                     }
                 ),
                 deadline()
@@ -878,9 +855,8 @@ async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturat
                 request(
                     FrameKind::Diagnose,
                     TrafficClass::Control,
-                    &CreateTopic {
+                    &LogicalTopic {
                         name: "core-inspection".into(),
-                        partitions: 1,
                     },
                 ),
                 deadline(),

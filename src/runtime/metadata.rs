@@ -307,7 +307,6 @@ impl Service {
                     &public::TopicResult {
                         topic_id: bytes_id(topic.topic_id),
                         name: topic.name,
-                        partitions: topic.partition_count,
                     },
                     &self.config.protocol,
                 )

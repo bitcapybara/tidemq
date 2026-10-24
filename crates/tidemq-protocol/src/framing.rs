@@ -6,8 +6,8 @@ use crate::common::{Frame, FrameKind, TrafficClass};
 use crate::error::{DecodeSnafu, EncodeSnafu, ReserveSnafu};
 use crate::{Error, Id, ProtocolLimits, Result};
 
-pub const PROTOCOL_VERSION: u32 = 1;
-pub const ALPN: &[u8] = b"tidemq/1";
+pub const PROTOCOL_VERSION: u32 = 2;
+pub const ALPN: &[u8] = b"tidemq/2";
 pub const MAX_TIMEOUT_MS: u64 = 300_000;
 
 pub fn is_completion(kind: FrameKind) -> bool {
@@ -20,8 +20,6 @@ pub fn is_completion(kind: FrameKind) -> bool {
             | FrameKind::GroupRetired
             | FrameKind::RetirePublishes
             | FrameKind::PublishesRetired
-            | FrameKind::AckBatch
-            | FrameKind::AckResult
     )
 }
 
@@ -274,24 +272,7 @@ fn validate_frame(frame: &Frame, expected: TrafficClass, limits: &ProtocolLimits
 pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
     match kind {
         FrameKind::Hello | FrameKind::HelloResult | FrameKind::Error | FrameKind::Cancel => true,
-        FrameKind::CreateTopic
-        | FrameKind::TopicResult
-        | FrameKind::CreateSubscription
-        | FrameKind::SubscriptionResult
-        | FrameKind::OpenProducer
-        | FrameKind::ProducerSessionResult
-        | FrameKind::ProducerStatus
-        | FrameKind::ProducerStatusResult
-        | FrameKind::RetireProducer
-        | FrameKind::ProducerRetired
-        | FrameKind::ClaimAssignment
-        | FrameKind::AssignmentResult
-        | FrameKind::SeekSubscription
-        | FrameKind::SeekResult
-        | FrameKind::DeleteSubscription
-        | FrameKind::SubscriptionDeleted
-        | FrameKind::SubscriptionStatus
-        | FrameKind::SubscriptionStatusResult
+        FrameKind::TopicResult
         | FrameKind::GetTopic
         | FrameKind::GetTopicLayout
         | FrameKind::TopicLayoutResult
@@ -312,21 +293,11 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::GroupRetireRead
         | FrameKind::GroupRetireAck
         | FrameKind::GroupRetired
-        | FrameKind::GetSubscription
-        | FrameKind::AckBatch
-        | FrameKind::AckResult
-        | FrameKind::ReceiveBarrier
         | FrameKind::RaftVote
         | FrameKind::Diagnose
         | FrameKind::DiagnosticResult => class == TrafficClass::Control,
-        FrameKind::ProduceBatch
-        | FrameKind::ProduceResult
-        | FrameKind::Publish
-        | FrameKind::PublishResult => class == TrafficClass::Produce,
-        FrameKind::Read
-        | FrameKind::DeliveryBatch
-        | FrameKind::GroupRead
-        | FrameKind::GroupDeliveries => {
+        FrameKind::Publish | FrameKind::PublishResult => class == TrafficClass::Produce,
+        FrameKind::GroupRead | FrameKind::GroupDeliveries => {
             matches!(class, TrafficClass::Delivery | TrafficClass::Bulk)
         }
         FrameKind::RaftAppend => matches!(class, TrafficClass::Control | TrafficClass::Replication),
@@ -434,18 +405,17 @@ fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::public::{CreateTopic, ProduceBatch};
+    use crate::public::{LogicalTopic, Publish};
 
     #[test]
     fn bounded_frame_round_trip_and_class_binding() {
         let limits = ProtocolLimits::default();
         let id = Id::new_v7().unwrap();
-        let body = CreateTopic {
+        let body = LogicalTopic {
             name: "events".into(),
-            partitions: 4,
         };
         let frame = new_frame(
-            FrameKind::CreateTopic,
+            FrameKind::CreateLogicalTopic,
             TrafficClass::Control,
             id,
             id,
@@ -462,7 +432,7 @@ mod tests {
         );
         let decoded = decode_frame(encoded.slice(4..), TrafficClass::Control, &limits).unwrap();
         assert_eq!(
-            decode_payload::<CreateTopic>(decoded.payload, &limits).unwrap(),
+            decode_payload::<LogicalTopic>(decoded.payload, &limits).unwrap(),
             body
         );
         assert!(
@@ -477,14 +447,25 @@ mod tests {
     }
 
     #[test]
+    fn removed_protocol_versions_and_operations_are_rejected() {
+        let limits = ProtocolLimits::default();
+        let mut frame = test_frame(0, 1_000);
+        frame.protocol_version = 1;
+        assert!(validate_frame(&frame, TrafficClass::Produce, &limits).is_err());
+        frame.protocol_version = PROTOCOL_VERSION;
+        for kind in [10, 12, 20, 22, 24, 28, 37] {
+            frame.kind = kind;
+            assert!(validate_frame(&frame, TrafficClass::Produce, &limits).is_err());
+        }
+    }
+
+    #[test]
     fn malformed_or_amplified_messages_are_rejected_before_decode() {
         let limits = ProtocolLimits::default();
-        assert!(
-            decode_payload::<ProduceBatch>(Bytes::from_static(&[0x32, 0xff]), &limits).is_err()
-        );
+        assert!(decode_payload::<Publish>(Bytes::from_static(&[0x32, 0xff]), &limits).is_err());
         let repeated = Bytes::from([0x32, 0].repeat(1_101));
         assert!(matches!(
-            decode_payload::<ProduceBatch>(repeated, &limits),
+            decode_payload::<Publish>(repeated, &limits),
             Err(Error::Limit { .. })
         ));
         assert!(validate_fields(&[0x80; 10], 10).is_err());
@@ -506,12 +487,11 @@ mod tests {
     fn invalid_trace_metadata_is_ignored_inside_a_valid_frame() {
         let limits = ProtocolLimits::default();
         let id = Id::new_v7().unwrap();
-        let message = CreateTopic {
+        let message = LogicalTopic {
             name: "events".into(),
-            partitions: 1,
         };
         let mut frame = new_frame(
-            FrameKind::CreateTopic,
+            FrameKind::CreateLogicalTopic,
             TrafficClass::Control,
             id,
             id,
@@ -556,13 +536,13 @@ mod tests {
     #[test]
     fn nested_protobuf_bytes_share_the_frame_backing() {
         let limits = ProtocolLimits::default();
-        let message = crate::public::Message {
-            body: Bytes::from(vec![7; 64 * 1024]),
+        let message = crate::public::PublishMessage {
+            payload: Bytes::from(vec![7; 64 * 1024]),
             ..Default::default()
         };
         let id = Id::new_v7().unwrap();
         let frame = new_frame(
-            FrameKind::ProduceBatch,
+            FrameKind::Publish,
             TrafficClass::Produce,
             id,
             id,
@@ -573,10 +553,11 @@ mod tests {
         .unwrap();
         let wire = encode_frame(&frame, &limits).unwrap();
         let decoded = decode_frame(wire.slice(4..), TrafficClass::Produce, &limits).unwrap();
-        let inner = decode_payload::<crate::public::Message>(decoded.payload, &limits).unwrap();
+        let inner =
+            decode_payload::<crate::public::PublishMessage>(decoded.payload, &limits).unwrap();
         let start = wire.as_ptr() as usize;
-        assert!((start..start + wire.len()).contains(&(inner.body.as_ptr() as usize)));
-        assert_eq!(inner.body, message.body);
+        assert!((start..start + wire.len()).contains(&(inner.payload.as_ptr() as usize)));
+        assert_eq!(inner.payload, message.payload);
     }
 
     fn test_frame(length: usize, timeout: u64) -> Frame {
@@ -585,7 +566,7 @@ mod tests {
             request_id: Bytes::from_static(&[1; 16]),
             operation_id: Bytes::from_static(&[2; 16]),
             traffic_class: TrafficClass::Produce.into(),
-            kind: FrameKind::ProduceBatch.into(),
+            kind: FrameKind::Publish.into(),
             payload: Bytes::from(vec![7; length]),
             remaining_timeout_ms: timeout,
             ..Default::default()

@@ -10,7 +10,7 @@ use tidemq::observability::logging::initialize;
 use tidemq::observability::metrics::{Metrics, Operation, Outcome, Stage};
 use tidemq_protocol::common::{FrameKind, TrafficClass};
 use tidemq_protocol::framing::{decode_frame, encode_payload, new_frame};
-use tidemq_protocol::public::CreateTopic;
+use tidemq_protocol::public::LogicalTopic;
 use tidemq_protocol::{Id, ProtocolLimits};
 
 #[tokio::test]
@@ -34,13 +34,15 @@ async fn cancelled_cross_task_buffers_return_capacity_and_preserve_control() {
         receiver.await.unwrap();
         assert!(budget.try_reserve(TrafficClass::Bulk, 1).is_err());
         let control = budget.try_reserve(TrafficClass::Control, 5).unwrap();
-        let core = budget.try_reserve_core(10).unwrap();
+        let core = budget.try_reserve_core(8).unwrap();
+        let ack = budget.try_reserve_ack(2).unwrap();
         let handshake = budget.try_reserve_handshake(5).unwrap();
         assert_eq!(budget.available_bytes(), 0);
         task.abort();
         assert!(task.await.unwrap_err().is_cancelled());
         drop(control);
         drop(core);
+        drop(ack);
         drop(handshake);
         assert_eq!(budget.available_bytes(), 100);
     }
@@ -51,13 +53,12 @@ fn untrusted_trace_metadata_does_not_change_request_identity_payload_or_authorit
     let limits = ProtocolLimits::default();
     let id: Id = "00000000-0000-4000-8000-000000000001".parse().unwrap();
     let frame = new_frame(
-        FrameKind::CreateTopic,
+        FrameKind::CreateLogicalTopic,
         TrafficClass::Control,
         id,
         id,
-        &CreateTopic {
+        &LogicalTopic {
             name: "events".into(),
-            partitions: 1,
         },
         1_000,
         &limits,

@@ -330,13 +330,12 @@ mod tests {
         );
         let limits = tidemq_protocol::ProtocolLimits::default();
         let request = new_frame(
-            FrameKind::CreateTopic,
+            FrameKind::CreateLogicalTopic,
             TrafficClass::Control,
             identity,
             identity,
-            &tidemq_protocol::public::CreateTopic {
+            &tidemq_protocol::public::LogicalTopic {
                 name: "diagnostic".into(),
-                partitions: 1,
             },
             1000,
             &limits,
@@ -363,7 +362,7 @@ mod tests {
         assert_eq!(event["level"], "WARN");
         assert_eq!(fields["event_code"], "runtime_request_unknown");
         assert_eq!(fields["stage"], "runtime_error");
-        assert_eq!(fields["command_kind"], "CREATE_TOPIC");
+        assert_eq!(fields["command_kind"], "CREATE_LOGICAL_TOPIC");
         assert_eq!(fields["request_id"], identity.to_string());
         assert_eq!(fields["operation_id"], identity.to_string());
         assert_eq!(fields["error_kind"], "runtime_operation_unknown");

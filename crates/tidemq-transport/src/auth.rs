@@ -25,7 +25,7 @@ impl TokenGrant {
         token: &str,
         principal: String,
         scope: String,
-        mut allowed_kinds: Vec<FrameKind>,
+        allowed_kinds: Vec<FrameKind>,
     ) -> Result<Self> {
         validate_token(token)?;
         for (valid, reason) in [
@@ -63,15 +63,6 @@ impl TokenGrant {
             return Err(Error::Configuration {
                 reason: "token allowed_kinds must contain only public operations; internal and HELLO operations cannot be granted",
             });
-        }
-        for (existing, added) in [
-            (FrameKind::GetTopic, FrameKind::GetTopicLayout),
-            (FrameKind::CreateTopic, FrameKind::CreateLogicalTopic),
-            (FrameKind::CreateTopic, FrameKind::ChangeTopicLayout),
-        ] {
-            if allowed_kinds.contains(&existing) && !allowed_kinds.contains(&added) {
-                allowed_kinds.push(added);
-            }
         }
         Ok(Self {
             digest: blake3::hash(token.as_bytes()),

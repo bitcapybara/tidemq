@@ -1,6 +1,6 @@
 # 协议与有界解码
 
-协议版本为 1，ALPN 为 tidemq/1。Protobuf 原文件在 crates/tidemq-protocol/proto，公共、内部和 common 分开；生成 Rust 文件随包提供，SDK 构建不需要 protoc。维护者运行：
+协议版本为 2，ALPN 为 tidemq/2。Protobuf 原文件在 crates/tidemq-protocol/proto，公共、内部和 common 分开；生成 Rust 文件随包提供，SDK 构建不需要 protoc。维护者运行：
 
 ```sh
 cargo build -p tidemq-protocol --features codegen --locked
