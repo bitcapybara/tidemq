@@ -117,6 +117,7 @@ enum Priority {
 struct Capacity {
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
+    max_bytes: u32,
 }
 
 struct State {
@@ -473,7 +474,7 @@ impl RpcClient {
         let id = Id::from_slice(&frame.request_id).map_err(|source| Error::Protocol { source })?;
         let operation =
             Id::from_slice(&frame.operation_id).map_err(|source| Error::Protocol { source })?;
-        let (slots, bytes) = self.reserve(&frame, priority)?;
+        let (slots, bytes) = self.reserve(&frame, priority, deadline).await?;
         let (result, receiver) = oneshot::channel();
         {
             let mut pending = self.inner.state.pending.lock().map_err(|_| Error::Closed)?;
@@ -520,7 +521,7 @@ impl RpcClient {
     /// Sends a protocol notification without creating a response waiter.
     pub async fn notify(&self, frame: Frame, deadline: Instant) -> Result<()> {
         let priority = self.priority(&frame)?;
-        let (slots, bytes) = self.reserve(&frame, priority)?;
+        let (slots, bytes) = self.reserve(&frame, priority, deadline).await?;
         self.enqueue(
             Outbound {
                 frame,
@@ -535,10 +536,11 @@ impl RpcClient {
         .await
     }
 
-    fn reserve(
+    async fn reserve(
         &self,
         frame: &Frame,
         priority: Priority,
+        deadline: Instant,
     ) -> Result<(Arc<OwnedSemaphorePermit>, Arc<OwnedSemaphorePermit>)> {
         if self.is_closed() || self.inner.state.draining.load(Ordering::Acquire) {
             return Err(Error::Closed);
@@ -556,7 +558,25 @@ impl RpcClient {
                 let capacity = capacity.as_ref().ok_or(Error::Admission {
                     resource: "RPC priority capacity",
                 })?;
-                (&capacity.slots, &capacity.bytes)
+                if length > capacity.max_bytes {
+                    return Err(Error::Admission {
+                        resource: "max_pending_bytes",
+                    });
+                }
+                // Maintenance must wait for its own bounded quota instead of failing a consumer on a transient collision.
+                let slots = timeout_at(deadline, capacity.slots.clone().acquire_owned())
+                    .await
+                    .map_err(|_| Error::Deadline {
+                        may_have_been_sent: false,
+                    })?
+                    .map_err(|_| Error::Closed)?;
+                let bytes = timeout_at(deadline, capacity.bytes.clone().acquire_many_owned(length))
+                    .await
+                    .map_err(|_| Error::Deadline {
+                        may_have_been_sent: false,
+                    })?
+                    .map_err(|_| Error::Closed)?;
+                return Ok((Arc::new(slots), Arc::new(bytes)));
             }
         };
         let slots = slots
@@ -753,6 +773,7 @@ fn control_capacity(
             bytes: Arc::new(Semaphore::new(
                 (config.max_pending_bytes as usize / 4).max(1),
             )),
+            max_bytes: (config.max_pending_bytes / 4).max(1),
         }))
     } else {
         Ok(None)
