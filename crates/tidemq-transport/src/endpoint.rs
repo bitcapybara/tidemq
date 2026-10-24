@@ -31,8 +31,9 @@ use tokio::{
 use crate::budget::{MemoryBudget, MemoryPermit};
 
 use super::{
-    Authorization, ClientCredentials, Error, FramedStream, NodeGrant, PeerTarget, Result,
-    ServerAuthorization, Session, StreamPurpose, TransportConfig, TransportMetrics,
+    Authorization, ClientCredentials, Error, FramedStream, NodeAuthorizations, NodeGrant,
+    PeerTarget, Result, ServerAuthorization, Session, StreamPurpose, TransportConfig,
+    TransportMetrics,
     error::setup,
     frame::{FrameAdmission, read_wire},
     session::{ConnectionState, start_session},
@@ -104,12 +105,13 @@ struct ProbeSignal {
 }
 struct EvidenceSubscriber(Arc<TransportMetrics>);
 
-struct InternalClientNames(Vec<String>);
+struct InternalClientNames(NodeAuthorizations);
 impl s2n_tls::callbacks::VerifyHostNameCallback for InternalClientNames {
     fn verify_host_name(&self, name: &str) -> bool {
         self.0
+            .snapshot()
             .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(name))
+            .any(|allowed| allowed.certificate_name.eq_ignore_ascii_case(name))
     }
 }
 
@@ -317,14 +319,16 @@ impl Server {
                 .map_err(|source| setup("load client trust roots", source))?
                 .with_client_authentication()
                 .map_err(|source| setup("require mutual TLS", source))?;
-            if let ServerAuthorization::Internal(grants) = &authorization {
+            let registry = match &authorization {
+                ServerAuthorization::Internal(grants) => {
+                    Some(NodeAuthorizations::new(grants.clone())?)
+                }
+                ServerAuthorization::LiveInternal(registry) => Some(registry.clone()),
+                _ => None,
+            };
+            if let Some(registry) = registry {
                 tls_builder = tls_builder
-                    .with_verify_host_name_callback(InternalClientNames(
-                        grants
-                            .iter()
-                            .map(|grant| grant.certificate_name.clone())
-                            .collect(),
-                    ))
+                    .with_verify_host_name_callback(InternalClientNames(registry))
                     .map_err(|source| setup("configure client certificate names", source))?;
             }
         }
@@ -436,7 +440,7 @@ pub struct Client {
     io: super::io::Owner,
     config: Arc<TransportConfig>,
     budget: MemoryBudget,
-    expected_nodes: Vec<NodeGrant>,
+    expected_nodes: NodeAuthorizations,
     has_identity: bool,
     slots: Arc<Semaphore>,
     pool: Mutex<HashMap<PoolKey, PoolSlot>>,
@@ -447,6 +451,11 @@ pub struct Client {
 }
 
 impl Client {
+    /// Call only with a verified authoritative registry; replaced identities close their sessions.
+    pub fn replace_expected_nodes(&self, grants: Vec<NodeGrant>) -> Result<()> {
+        self.expected_nodes.replace(grants)
+    }
+
     // Construct the native endpoint once so certificate and transport settings cannot diverge.
     pub fn bind(
         address: SocketAddr,
@@ -513,7 +522,7 @@ impl Client {
             slots: Arc::new(Semaphore::new(config.max_connections)),
             config: Arc::new(config),
             budget,
-            expected_nodes: tls.expected_nodes,
+            expected_nodes: NodeAuthorizations::new(tls.expected_nodes)?,
             has_identity,
             pool: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
@@ -598,7 +607,8 @@ impl Client {
         target.validate()?;
         credentials.digest()?;
         if class == TrafficClass::Unspecified
-            || (credentials.internal() && (!self.has_identity || self.expected_nodes.is_empty()))
+            || (credentials.internal()
+                && (!self.has_identity || self.expected_nodes.snapshot().is_empty()))
             || (credentials.internal() && (target.cluster_id.is_none() || target.node_id.is_none()))
         {
             return Err(Error::Configuration {
@@ -914,7 +924,7 @@ async fn accept_connection(
 fn verify_server(
     connection: &QuicConnection,
     credentials: &ClientCredentials,
-    expected: &[NodeGrant],
+    registry: &NodeAuthorizations,
     class: TrafficClass,
     target: &PeerTarget,
 ) -> Result<Authorization> {
@@ -934,7 +944,8 @@ fn verify_server(
         });
     }
     if credentials.internal() {
-        let expected = expected
+        let snapshot = registry.snapshot();
+        let expected = snapshot
             .iter()
             .find(|expected| {
                 evidence.peer_pin == Some(expected.certificate_pin)
@@ -958,7 +969,7 @@ fn verify_server(
                 reason: "local role or cluster differs from the expected peer",
             });
         }
-        Ok(Authorization::Internal(expected.clone()))
+        Ok(Authorization::Internal(registry.bind(expected.clone())))
     } else {
         Ok(Authorization::Server)
     }

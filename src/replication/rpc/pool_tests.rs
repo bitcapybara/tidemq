@@ -110,7 +110,7 @@ impl Peer {
         // This authenticated transport peer injects envelopes; runtime regressions cover internal mTLS.
         let pool = PeerPool {
             client,
-            peers: BTreeMap::from([(2, target)]),
+            peers: Mutex::new(BTreeMap::from([(2, target)])),
             credentials: ClientCredentials::External {
                 session_id: Id::new_v7().unwrap(),
                 access_token: token.into(),

@@ -165,15 +165,18 @@ async fn raw_raft_rpc_rejects_forged_sender_group_and_nonempty_control_body() {
         .clone()
         .unwrap();
     let id = Id::new_v7().unwrap();
-    let peer = Authorization::Internal(NodeGrant {
-        certificate_pin: [1; 32],
-        certificate_name: "node-1.local".into(),
-        cluster_id: cluster.cluster,
-        node_id: 1,
-        role: "storage".into(),
-        allowed_groups: vec![GROUP],
-        allowed_classes: vec![TrafficClass::Control],
-    });
+    let peer = Authorization::Internal(
+        (NodeGrant {
+            certificate_pin: [1; 32],
+            certificate_name: "node-1.local".into(),
+            cluster_id: cluster.cluster,
+            node_id: 1,
+            role: "storage".into(),
+            allowed_groups: vec![GROUP],
+            allowed_classes: vec![TrafficClass::Control],
+        })
+        .into(),
+    );
     let make = |group, sender, entries| {
         let rpc = openraft::raft::AppendEntriesRequest::<support::Config> {
             vote: openraft::Vote::new_committed(5, sender),

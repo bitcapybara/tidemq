@@ -9,8 +9,9 @@ use tidemq::{
     budget::MemoryBudget,
     config::MemoryConfig,
     transport::{
-        Client, ClientCredentials, ClientTls, Error, NodeGrant, PeerTarget, Server,
-        ServerAuthorization, ServerTls, StreamPurpose, TlsIdentity, TokenGrant, TransportConfig,
+        Client, ClientCredentials, ClientTls, Error, NodeAuthorizations, NodeGrant, PeerTarget,
+        Server, ServerAuthorization, ServerTls, StreamPurpose, TlsIdentity, TokenGrant,
+        TransportConfig,
     },
 };
 use tidemq_protocol::{
@@ -1631,4 +1632,102 @@ async fn server_pin_rotation_preserves_exact_target_node_identity() {
             .await
             .is_ok()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_node_registration_and_revocation_update_native_tls_without_a_listener_restart() {
+    let pki = pki();
+    let cluster = Id::random().unwrap();
+    let original = node_grant(&pki.client, cluster, 2, "storage");
+    let registry = NodeAuthorizations::new(vec![original.clone()]).unwrap();
+    let mut server = Server::bind(
+        address(),
+        ServerTls {
+            identity: identity(&pki.server),
+            client_trust_roots: Some(Bytes::from(pki.ca.pem())),
+        },
+        ServerAuthorization::LiveInternal(registry.clone()),
+        config(),
+        budget(),
+    )
+    .unwrap();
+    let client = internal_client(&pki, node_grant(&pki.server, cluster, 1, "storage"));
+    let first = client
+        .connect(
+            internal_target(&server, cluster),
+            &internal_credentials(cluster, 2),
+            TrafficClass::Control,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let accepted_first = server.accept().await.unwrap();
+    let added = Client::bind(
+        address(),
+        ClientTls {
+            trust_roots: Bytes::from(pki.ca.pem()),
+            identity: Some(identity(&pki.rogue_client)),
+            expected_nodes: vec![node_grant(&pki.server, cluster, 1, "storage")],
+        },
+        config(),
+        budget(),
+    )
+    .unwrap();
+    assert!(
+        added
+            .connect(
+                internal_target(&server, cluster),
+                &internal_credentials(cluster, 3),
+                TrafficClass::Control,
+                deadline()
+            )
+            .await
+            .is_err()
+    );
+    let new_node = node_grant(&pki.rogue_client, cluster, 3, "storage");
+    registry.replace(vec![original, new_node.clone()]).unwrap();
+    let second = added
+        .connect(
+            internal_target(&server, cluster),
+            &internal_credentials(cluster, 3),
+            TrafficClass::Control,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let accepted_second = server.accept().await.unwrap();
+    registry.replace(vec![new_node]).unwrap();
+    timeout(Duration::from_secs(2), async {
+        while !first.connection().is_closed() || !accepted_first.connection().is_closed() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!second.connection().is_closed());
+    assert!(!accepted_second.connection().is_closed());
+    added
+        .replace_expected_nodes(vec![node_grant(&pki.rotated_server, cluster, 1, "storage")])
+        .unwrap();
+    timeout(Duration::from_secs(2), async {
+        while !second.connection().is_closed() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        added
+            .connect(
+                internal_target(&server, cluster),
+                &internal_credentials(cluster, 3),
+                TrafficClass::Control,
+                deadline()
+            )
+            .await
+            .is_err()
+    );
+    client.close(deadline()).await.unwrap();
+    added.close(deadline()).await.unwrap();
+    server.shutdown_by(deadline()).await.unwrap();
 }

@@ -9,7 +9,7 @@ use tidemq_protocol::{
 };
 use tokio::time::Instant;
 
-use super::{Error, Result};
+use super::{AuthorizedNode, Error, NodeAuthorizations, Result};
 
 #[cfg(test)]
 #[path = "../../../tests/transport_support/credential_leases.rs"]
@@ -78,7 +78,7 @@ impl TokenGrant {
 }
 
 /// Pins are leaf DER hashes, checked only after native TLS chain verification succeeds.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NodeGrant {
     pub certificate_pin: [u8; 32],
     pub certificate_name: String,
@@ -158,6 +158,7 @@ pub enum ServerAuthorization {
     External(Vec<TokenGrant>),
     Dynamic(Arc<dyn TokenAuthenticator>),
     Internal(Vec<NodeGrant>),
+    LiveInternal(NodeAuthorizations),
 }
 
 /// Called through `Arc<dyn TokenAuthenticator>`; native async methods are not dyn-compatible.
@@ -180,20 +181,21 @@ impl ServerAuthorization {
         match self {
             Self::Dynamic(_) => Ok(()),
             Self::External(grants) if !grants.is_empty() && grants.len() <= 1_024 => Ok(()),
-            Self::Internal(grants) if !grants.is_empty() && grants.len() <= 4_096 => {
+            Self::Internal(grants) if !grants.is_empty() && grants.len() <= 128 => {
                 validate_node_grants(grants)
             }
+            Self::LiveInternal(registry) if !registry.snapshot().is_empty() => Ok(()),
             Self::External(_) => Err(Error::Configuration {
                 reason: "external authorization must contain between 1 and 1024 token grants",
             }),
-            Self::Internal(_) => Err(Error::Configuration {
-                reason: "internal authorization must contain between 1 and 4096 node grants",
+            Self::Internal(_) | Self::LiveInternal(_) => Err(Error::Configuration {
+                reason: "internal authorization must contain between 1 and 128 node grants",
             }),
         }
     }
 
     pub(super) fn internal(&self) -> bool {
-        matches!(self, Self::Internal(_))
+        matches!(self, Self::Internal(_) | Self::LiveInternal(_))
     }
 
     // Keep the two disjoint binding policies atomic; neither may fall back to the other.
@@ -251,36 +253,55 @@ impl ServerAuthorization {
                 )?;
                 bind_external(frame, class, &hello, grant)
             }
-            Self::Internal(grants) => {
-                let pin = peer_pin.ok_or(Error::Authentication {
-                    reason: "verified peer certificate evidence is missing",
-                })?;
-                let hello: PeerHello = decode_payload(frame.payload.clone(), limits)
-                    .map_err(|source| Error::Protocol { source })?;
-                let grant = grants
-                    .iter()
-                    .find(|grant| {
-                        grant.certificate_pin == pin
-                            && hello.cluster_id.as_ref() == grant.cluster_id.as_bytes()
-                            && hello.node_id == grant.node_id
-                            && hello.role == grant.role
-                    })
-                    .ok_or(Error::Authorization {
-                        reason: "certificate does not authorize the claimed node",
-                    })?;
-                if hello.traffic_class != frame.traffic_class
-                    || !grant.allowed_classes.contains(&class)
-                {
-                    return Err(Error::Authorization {
-                        reason: "node cannot bind this traffic class",
-                    });
-                }
-                let session = Id::from_slice(&frame.operation_id)
-                    .map_err(|source| Error::Protocol { source })?;
-                Ok((session, class, Authorization::Internal(grant.clone())))
-            }
+            Self::Internal(grants) => bind_internal(frame, peer_pin, grants, None, class, limits),
+            Self::LiveInternal(registry) => bind_internal(
+                frame,
+                peer_pin,
+                &registry.snapshot(),
+                Some(registry),
+                class,
+                limits,
+            ),
         }
     }
+}
+
+fn bind_internal(
+    frame: &Frame,
+    pin: Option<[u8; 32]>,
+    grants: &[NodeGrant],
+    registry: Option<&NodeAuthorizations>,
+    class: TrafficClass,
+    limits: &ProtocolLimits,
+) -> Result<(Id, TrafficClass, Authorization)> {
+    let pin = pin.ok_or(Error::Authentication {
+        reason: "verified peer certificate evidence is missing",
+    })?;
+    let hello: PeerHello = decode_payload(frame.payload.clone(), limits)
+        .map_err(|source| Error::Protocol { source })?;
+    let grant = grants
+        .iter()
+        .find(|grant| {
+            grant.certificate_pin == pin
+                && hello.cluster_id.as_ref() == grant.cluster_id.as_bytes()
+                && hello.node_id == grant.node_id
+                && hello.role == grant.role
+        })
+        .ok_or(Error::Authorization {
+            reason: "certificate does not authorize the claimed node",
+        })?;
+    if hello.traffic_class != frame.traffic_class || !grant.allowed_classes.contains(&class) {
+        return Err(Error::Authorization {
+            reason: "node cannot bind this traffic class",
+        });
+    }
+    let session =
+        Id::from_slice(&frame.operation_id).map_err(|source| Error::Protocol { source })?;
+    let node = registry.map_or_else(
+        || grant.clone().into(),
+        |registry| registry.bind(grant.clone()),
+    );
+    Ok((session, class, Authorization::Internal(node)))
 }
 
 fn bind_external(
@@ -325,13 +346,13 @@ pub enum Authorization {
         scope: String,
         allowed_kinds: Vec<FrameKind>,
     },
-    Internal(NodeGrant),
+    Internal(AuthorizedNode),
     Server,
 }
 
 impl Authorization {
     pub fn allows_group(&self, group: u64) -> bool {
-        matches!(self, Self::Internal(grant) if grant.allowed_groups.contains(&group))
+        matches!(self, Self::Internal(grant) if grant.valid() && grant.allowed_groups.contains(&group))
     }
 
     pub(super) fn validate_frame(&self, frame: &Frame, limits: &ProtocolLimits) -> Result<()> {
@@ -360,7 +381,12 @@ impl Authorization {
                     reason: "token does not permit this operation",
                 })
             }
-            Self::Internal(_) => {
+            Self::Internal(node) => {
+                if !node.valid() {
+                    return Err(Error::Authorization {
+                        reason: "node authorization was revoked or replaced",
+                    });
+                }
                 let group = match kind {
                     FrameKind::RaftVote | FrameKind::RaftAppend => Some(
                         decode_payload::<RaftRequest>(frame.payload.clone(), limits)
@@ -392,6 +418,9 @@ impl Authorization {
 }
 
 pub(super) async fn credential_expired(authorization: &Authorization) {
+    if let Authorization::Internal(node) = authorization {
+        return node.revoked().await;
+    }
     let Authorization::Credential {
         lease: Some(lease), ..
     } = authorization

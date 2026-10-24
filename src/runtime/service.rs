@@ -762,7 +762,7 @@ impl Service {
                     replica.state.clone(),
                 )
                 .handle(
-                    &Authorization::Internal(peer.clone()),
+                    &Authorization::Internal(peer.clone().into()),
                     request.kind,
                     class,
                     &request.body,
@@ -784,7 +784,7 @@ impl Service {
                 );
                 crate::lifecycle::remote::SnapshotHandler::new(data)
                     .handle(
-                        &Authorization::Internal(peer.clone()),
+                        &Authorization::Internal(peer.clone().into()),
                         class,
                         &request.body,
                         deadline.into_std(),

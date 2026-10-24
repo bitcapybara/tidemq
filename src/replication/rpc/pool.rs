@@ -14,7 +14,7 @@ use tokio::time::Instant;
 use crate::budget::{MemoryBudget, MemoryPermit};
 use crate::observability::metrics::{OperationMetrics, Stage};
 use crate::transport::rpc::{RpcClient, RpcConfig};
-use crate::transport::{Client, ClientCredentials, PeerTarget};
+use crate::transport::{Client, ClientCredentials, NodeGrant, PeerTarget};
 
 use super::{Error, Result, codec};
 
@@ -39,10 +39,50 @@ impl Default for NetworkConfig {
 
 type Slot = Arc<AsyncMutex<Option<RpcClient>>>;
 
+fn target_table(
+    credentials: &ClientCredentials,
+    peers: Vec<PeerTarget>,
+) -> Result<BTreeMap<u64, PeerTarget>> {
+    let ClientCredentials::Internal {
+        cluster_id,
+        node_id,
+        role,
+        ..
+    } = credentials
+    else {
+        return Err(Error::Configuration {
+            reason: "Raft peers require internal credentials",
+        });
+    };
+    if *node_id == 0 || peers.len() > 128 {
+        return Err(Error::Configuration {
+            reason: "Raft local node or peer count is invalid",
+        });
+    }
+    let mut table = BTreeMap::new();
+    for peer in peers {
+        let id = peer
+            .node_id
+            .filter(|id| *id != 0)
+            .ok_or(Error::Configuration {
+                reason: "Raft peer has no exact node identity",
+            })?;
+        if peer.cluster_id != Some(*cluster_id)
+            || peer.local_role != *role
+            || table.insert(id, peer).is_some()
+        {
+            return Err(Error::Configuration {
+                reason: "Raft peer identity is duplicated or inconsistent",
+            });
+        }
+    }
+    Ok(table)
+}
+
 /// One pool is shared by every local group, with bounded lanes per physical peer and class.
 pub struct PeerPool {
     client: Arc<Client>,
-    peers: BTreeMap<u64, PeerTarget>,
+    peers: Mutex<BTreeMap<u64, PeerTarget>>,
     credentials: ClientCredentials,
     slots: Mutex<BTreeMap<(u64, i32), Slot>>,
     pub(super) config: NetworkConfig,
@@ -85,47 +125,18 @@ impl PeerPool {
             .protocol
             .validate()
             .map_err(|source| Error::Protocol { source })?;
-        let ClientCredentials::Internal {
-            cluster_id,
-            node_id,
-            role,
-            ..
-        } = &credentials
-        else {
-            return Err(Error::Configuration {
-                reason: "Raft peers require internal credentials",
-            });
-        };
-        if *node_id == 0
-            || peers.len() > 128
-            || [config.replication_lanes, config.bulk_lanes]
-                .into_iter()
-                .any(|count| count == 0 || count > 64)
+        let table = target_table(&credentials, peers)?;
+        if [config.replication_lanes, config.bulk_lanes]
+            .into_iter()
+            .any(|count| count == 0 || count > 64)
         {
             return Err(Error::Configuration {
                 reason: "Raft local node or peer count is invalid",
             });
         }
-        let mut table = BTreeMap::new();
-        for peer in peers {
-            let id = peer
-                .node_id
-                .filter(|id| *id != 0)
-                .ok_or(Error::Configuration {
-                    reason: "Raft peer has no exact node identity",
-                })?;
-            if peer.cluster_id != Some(*cluster_id)
-                || peer.local_role != *role
-                || table.insert(id, peer).is_some()
-            {
-                return Err(Error::Configuration {
-                    reason: "Raft peer identity is duplicated or inconsistent",
-                });
-            }
-        }
         Ok(Self {
             client,
-            peers: table,
+            peers: Mutex::new(table),
             credentials,
             slots: Mutex::new(BTreeMap::new()),
             config,
@@ -141,15 +152,74 @@ impl PeerPool {
         self
     }
 
+    /// Installs an authoritative registry without restarting unrelated peer lanes.
+    pub async fn replace_peers(
+        &self,
+        peers: Vec<PeerTarget>,
+        grants: Vec<NodeGrant>,
+        deadline: Instant,
+    ) -> Result<()> {
+        let table = target_table(&self.credentials, peers)?;
+        if table.values().any(|peer| {
+            !grants.iter().any(|grant| {
+                peer.node_id == Some(grant.node_id)
+                    && peer.cluster_id == Some(grant.cluster_id)
+                    && peer.remote_role == grant.role
+                    && peer.server_name == grant.certificate_name
+            })
+        }) {
+            return Err(Error::Authorization {
+                reason: "peer registry has no exact certificate-bound identity",
+            });
+        }
+        let retired = {
+            let mut current = self.peers.lock().map_err(|_| Error::Invalid {
+                reason: "Raft peer registry is poisoned",
+            })?;
+            let mut slots = self.slots.lock().map_err(|_| Error::Invalid {
+                reason: "Raft connection pool is poisoned",
+            })?;
+            self.client
+                .replace_expected_nodes(grants)
+                .map_err(|source| Error::Transport { source })?;
+            let mut retired = Vec::new();
+            for (key, slot) in std::mem::take(&mut *slots) {
+                if current.get(&key.0) == table.get(&key.0) && table.contains_key(&key.0) {
+                    slots.insert(key, slot);
+                } else {
+                    retired.push(slot);
+                }
+            }
+            *current = table;
+            retired
+        };
+        for slot in retired {
+            if let Ok(mut cached) = tokio::time::timeout_at(deadline, slot.lock()).await
+                && let Some(rpc) = cached.take()
+            {
+                rpc.shutdown(deadline).await;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn connection(
         &self,
         target: u64,
         class: TrafficClass,
         deadline: Instant,
     ) -> Result<RpcClient> {
-        let peer = self.peers.get(&target).ok_or(Error::Authorization {
-            reason: "Raft target has no configured certificate-bound identity",
-        })?;
+        let peer = self
+            .peers
+            .lock()
+            .map_err(|_| Error::Invalid {
+                reason: "Raft peer registry is poisoned",
+            })?
+            .get(&target)
+            .cloned()
+            .ok_or(Error::Authorization {
+                reason: "Raft target has no configured certificate-bound identity",
+            })?;
         let slot = {
             let mut slots = self.slots.lock().map_err(|_| Error::Invalid {
                 reason: "Raft connection pool is poisoned",
@@ -169,7 +239,7 @@ impl PeerPool {
         }
         let session = self
             .client
-            .connect(peer.clone(), &self.credentials, class, deadline)
+            .connect(peer, &self.credentials, class, deadline)
             .await
             .map_err(|source| Error::Transport { source })?;
         let lanes = if matches!(
