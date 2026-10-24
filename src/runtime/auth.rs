@@ -142,6 +142,13 @@ impl TokenAuthenticator for Authenticator {
                     reason: "authentication service is not ready",
                 },
             )?;
+            if service.draining.load(std::sync::atomic::Ordering::Acquire)
+                || !service.registry.schedulable(service.config.node_id)
+            {
+                return Err(crate::transport::Error::Authentication {
+                    reason: "gateway is not accepting new connections",
+                });
+            }
             let digest =
                 TokenDigest::of(token).map_err(|_| crate::transport::Error::Authentication {
                     reason: "access token rejected",
@@ -672,7 +679,9 @@ impl Service {
             FrameKind::PublisherControl | FrameKind::Publish | FrameKind::RetirePublishes => {
                 Permission::Produce
             }
-            FrameKind::Diagnose => Permission::ManageTenants,
+            FrameKind::Diagnose | FrameKind::ManageCluster | FrameKind::GetClusterRegistry => {
+                Permission::ManageTenants
+            }
             _ => Permission::Consume,
         };
         let resource = self.auth_resource(frame)?;
@@ -730,6 +739,8 @@ impl Service {
             FrameKind::Cancel
             | FrameKind::Diagnose
             | FrameKind::ManageIdentity
+            | FrameKind::ManageCluster
+            | FrameKind::GetClusterRegistry
             | FrameKind::ListIdentities => return Ok(AuthResource::None),
             _ => super::data::partition(frame, &self.config.protocol)?.topic_id,
         };

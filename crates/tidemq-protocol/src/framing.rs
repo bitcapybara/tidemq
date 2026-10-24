@@ -60,6 +60,8 @@ pub fn is_core_control(frame: &Frame, limits: &ProtocolLimits) -> Result<bool> {
             | FrameKind::TopicResult
             | FrameKind::GetTopicLayout
             | FrameKind::TopicLayoutResult
+            | FrameKind::GetClusterRegistry
+            | FrameKind::ClusterRegistryPage
             | FrameKind::RaftVote
             | FrameKind::RaftAppend
             | FrameKind::RaftResult,
@@ -282,6 +284,10 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::IdentityResult
         | FrameKind::ListIdentities
         | FrameKind::IdentityPage
+        | FrameKind::ManageCluster
+        | FrameKind::ClusterControlResult
+        | FrameKind::GetClusterRegistry
+        | FrameKind::ClusterRegistryPage
         | FrameKind::ConsumerControl
         | FrameKind::ConsumerControlResult
         | FrameKind::SubscriptionAdmin

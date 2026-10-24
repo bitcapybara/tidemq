@@ -16,6 +16,7 @@ pub struct Command {
     pub(crate) operation_id: Id,
     pub(crate) expected_revision: u64,
     pub(crate) action: Action,
+    pub(crate) management_binding: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -97,6 +98,10 @@ pub(crate) enum Action {
 }
 
 impl Command {
+    pub(crate) fn bind_management(mut self, digest: [u8; 32]) -> Self {
+        self.management_binding = Some(digest);
+        self
+    }
     pub fn cluster(operation: Id, expected_revision: u64, command: super::ClusterCommand) -> Self {
         Self::new(operation, expected_revision, Action::Cluster(command))
     }
@@ -349,6 +354,7 @@ impl Command {
             operation_id,
             expected_revision,
             action,
+            management_binding: None,
         }
     }
 }

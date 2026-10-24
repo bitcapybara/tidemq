@@ -20,6 +20,80 @@ pub struct HelloResult {
     pub max_in_flight_bytes: u64,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterNode {
+    #[prost(uint64, tag = "1")]
+    pub node_id: u64,
+    #[prost(string, tag = "2")]
+    pub role: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub zone: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub internal_endpoint: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub certificate_name: ::prost::alloc::string::String,
+    #[prost(bytes = "bytes", tag = "6")]
+    pub certificate_pin: ::prost::bytes::Bytes,
+    #[prost(bool, tag = "7")]
+    pub schedulable: bool,
+    #[prost(bool, tag = "8")]
+    pub retired: bool,
+    #[prost(uint64, tag = "9")]
+    pub generation: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterGroup {
+    #[prost(uint64, tag = "1")]
+    pub group_id: u64,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
+    #[prost(uint64, repeated, tag = "3")]
+    pub voters: ::prost::alloc::vec::Vec<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ManageCluster {
+    #[prost(enumeration = "ClusterAction", tag = "1")]
+    pub action: i32,
+    #[prost(message, optional, tag = "2")]
+    pub registration: ::core::option::Option<ClusterNode>,
+    #[prost(uint64, tag = "3")]
+    pub node_id: u64,
+    #[prost(bool, tag = "4")]
+    pub enabled: bool,
+    #[prost(uint64, tag = "5")]
+    pub group_id: u64,
+    #[prost(uint64, repeated, tag = "6")]
+    pub voters: ::prost::alloc::vec::Vec<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ClusterControlResult {
+    #[prost(message, optional, tag = "1")]
+    pub node: ::core::option::Option<ClusterNode>,
+    #[prost(message, optional, tag = "2")]
+    pub group: ::core::option::Option<ClusterGroup>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetClusterRegistry {
+    #[prost(uint64, optional, tag = "1")]
+    pub after_node: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "2")]
+    pub after_group: ::core::option::Option<u64>,
+    #[prost(uint64, tag = "3")]
+    pub expected_revision: u64,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ClusterRegistryPage {
+    #[prost(uint64, tag = "1")]
+    pub revision: u64,
+    #[prost(message, repeated, tag = "2")]
+    pub nodes: ::prost::alloc::vec::Vec<ClusterNode>,
+    #[prost(message, repeated, tag = "3")]
+    pub groups: ::prost::alloc::vec::Vec<ClusterGroup>,
+    #[prost(uint64, optional, tag = "4")]
+    pub next_node: ::core::option::Option<u64>,
+    #[prost(uint64, optional, tag = "5")]
+    pub next_group: ::core::option::Option<u64>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetTopic {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
@@ -519,6 +593,38 @@ pub struct TopicRemoved {
     pub total_domains: u32,
     #[prost(bool, tag = "5")]
     pub complete: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ClusterAction {
+    Unspecified = 0,
+    RegisterClusterNode = 1,
+    SetNodeSchedulable = 2,
+    CreateDataGroup = 3,
+}
+impl ClusterAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "CLUSTER_ACTION_UNSPECIFIED",
+            Self::RegisterClusterNode => "REGISTER_CLUSTER_NODE",
+            Self::SetNodeSchedulable => "SET_NODE_SCHEDULABLE",
+            Self::CreateDataGroup => "CREATE_DATA_GROUP",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "CLUSTER_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "REGISTER_CLUSTER_NODE" => Some(Self::RegisterClusterNode),
+            "SET_NODE_SCHEDULABLE" => Some(Self::SetNodeSchedulable),
+            "CREATE_DATA_GROUP" => Some(Self::CreateDataGroup),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]

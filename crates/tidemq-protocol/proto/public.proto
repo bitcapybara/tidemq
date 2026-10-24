@@ -15,6 +15,46 @@ message HelloResult {
   uint64 max_in_flight_bytes = 4;
 }
 
+enum ClusterAction {
+  CLUSTER_ACTION_UNSPECIFIED = 0;
+  REGISTER_CLUSTER_NODE = 1;
+  SET_NODE_SCHEDULABLE = 2;
+  CREATE_DATA_GROUP = 3;
+}
+message ClusterNode {
+  uint64 node_id = 1;
+  string role = 2;
+  string zone = 3;
+  string internal_endpoint = 4;
+  string certificate_name = 5;
+  bytes certificate_pin = 6;
+  bool schedulable = 7;
+  bool retired = 8;
+  uint64 generation = 9;
+}
+message ClusterGroup { uint64 group_id = 1; uint64 generation = 2; repeated uint64 voters = 3; }
+message ManageCluster {
+  ClusterAction action = 1;
+  ClusterNode registration = 2;
+  uint64 node_id = 3;
+  bool enabled = 4;
+  uint64 group_id = 5;
+  repeated uint64 voters = 6;
+}
+message ClusterControlResult { ClusterNode node = 1; ClusterGroup group = 2; }
+message GetClusterRegistry {
+  optional uint64 after_node = 1;
+  optional uint64 after_group = 2;
+  uint64 expected_revision = 3;
+}
+message ClusterRegistryPage {
+  uint64 revision = 1;
+  repeated ClusterNode nodes = 2;
+  repeated ClusterGroup groups = 3;
+  optional uint64 next_node = 4;
+  optional uint64 next_group = 5;
+}
+
 message GetTopic { string name = 1; }
 message TopicResult { bytes topic_id = 1; string name = 2; }
 message LogicalTopic { string name = 1; }

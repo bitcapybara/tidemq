@@ -163,6 +163,10 @@ fn guarded_page_expiry(
 }
 
 impl Coordinator {
+    pub(crate) fn replace_metadata_nodes(&self, nodes: Vec<u64>) -> Result<()> {
+        self.0.metadata.replace_nodes(nodes)
+    }
+
     pub fn new(
         metadata: MetadataReplica,
         data: DataReplica,

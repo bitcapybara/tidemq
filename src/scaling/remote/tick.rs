@@ -35,7 +35,7 @@ enum Sample {
 }
 
 impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
-    /// One owned runtime ticker calls this with fixed configured standbys and an original deadline.
+    /// One owned runtime ticker supplies a bounded window of registered candidates and an original deadline.
     pub async fn tick(
         &self,
         placement: &mut Placement,
@@ -213,7 +213,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                             || state.mode != Some(self.config.mode)
                             || membership.membership().get_joint_config().len() != 1
                             || membership.membership().voter_ids().collect::<BTreeSet<_>>()
-                                != self.config.metadata_voters
+                                != self.metadata_voters()?
                         {
                             return Err(Error::Authority);
                         }

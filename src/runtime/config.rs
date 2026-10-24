@@ -197,6 +197,10 @@ impl RuntimeConfig {
                 "runtime.metadata_group must be nonzero",
             ),
             (
+                self.internal_listen.port() != 0,
+                "runtime.internal_listen port must be nonzero",
+            ),
+            (
                 !config.role.serves_gateway() || self.internal_listen != config.listen,
                 "runtime.internal_listen must differ from listen for a gateway role",
             ),
@@ -217,6 +221,10 @@ impl RuntimeConfig {
                 (
                     peer.internal_address.port() != 0,
                     "internal_address port must be nonzero",
+                ),
+                (
+                    !peer.internal_address.ip().is_unspecified(),
+                    "internal_address must advertise an explicit reachable address",
                 ),
                 (
                     !peer.server_name.is_empty() && peer.server_name.len() <= 253,
@@ -241,12 +249,6 @@ impl RuntimeConfig {
                 "runtime.peers node {} role must match process role {}",
                 config.node_id,
                 config.role.name()
-            )));
-        }
-        if local.internal_address != self.internal_listen {
-            return Err(Error::invalid(format!(
-                "runtime.peers node {} internal_address must match runtime.internal_listen {}",
-                config.node_id, self.internal_listen
             )));
         }
         Ok(())

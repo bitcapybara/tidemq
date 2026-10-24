@@ -30,7 +30,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                         || state.mode != Some(self.config.mode)
                         || membership.membership().get_joint_config().len() != 1
                         || membership.membership().voter_ids().collect::<BTreeSet<_>>()
-                            != self.config.metadata_voters
+                            != self.metadata_voters()?
                     {
                         return Err(Error::Authority);
                     }
@@ -69,7 +69,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                         return Err(Error::Authority);
                     }
                     let voters: BTreeSet<_> = membership.membership().voter_ids().take(4).collect();
-                    if voters != self.config.metadata_voters {
+                    if voters != self.metadata_voters()? {
                         return Err(Error::Authority);
                     }
                     let mut metadata_nodes = BTreeMap::new();
@@ -268,9 +268,9 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             || view.source != source
             || view.metadata_group != self.config.metadata_group
             || view.mode != self.config.mode
-            || view.metadata_voters != self.config.metadata_voters
+            || view.metadata_voters != self.metadata_voters()?
             || !view.metadata_voters.contains(&source)
-            || view.metadata_nodes.len() != self.config.metadata_voters.len()
+            || view.metadata_nodes.len() != self.metadata_voters()?.len()
             || view.group.group_id != plan.group_id
             || view.nodes.len() > 4
             || view.applied.leader_id.term == 0

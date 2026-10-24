@@ -44,6 +44,7 @@ pub(crate) struct Service {
     pub objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
     pub rpc: PeerRpc,
     pub authority: Arc<RemoteMetadataAuthority>,
+    pub(super) registry: Arc<super::registry::Registry>,
     pub(super) auth_cache: super::auth::AuthCache,
     pub(super) consumer_after: std::sync::Mutex<Option<Id>>,
     pub(super) consumer_delete_after: std::sync::Mutex<Option<Id>>,
@@ -89,6 +90,7 @@ impl Service {
         objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
         rpc: PeerRpc,
         authority: Arc<RemoteMetadataAuthority>,
+        registry: Arc<super::registry::Registry>,
         budget: MemoryBudget,
         producer: ProducerMetrics,
         mut metrics: Metrics,
@@ -107,9 +109,23 @@ impl Service {
             metadata.as_ref(),
             &data,
             rpc.clone(),
+            registry.clone(),
             repair.clone(),
             metrics.registry_mut(),
         )?;
+        let voters = registry.metadata_voters()?;
+        authority.replace_voters(voters.clone())?;
+        scaling
+            .service
+            .replace_metadata_voters(voters.clone())
+            .map_err(|source| Error::operation("restore scaling metadata discovery", source))?;
+        for coordinator in objects.values() {
+            coordinator
+                .replace_metadata_nodes(voters.iter().copied().collect())
+                .map_err(|source| {
+                    Error::operation("restore lifecycle metadata discovery", source)
+                })?;
+        }
         Ok(Self {
             config,
             cluster,
@@ -118,6 +134,7 @@ impl Service {
             objects,
             rpc,
             authority,
+            registry,
             auth_cache: super::auth::AuthCache::default(),
             consumer_after: std::sync::Mutex::new(None),
             consumer_delete_after: std::sync::Mutex::new(None),
@@ -259,10 +276,9 @@ impl Service {
             || configured.generation == 0
             || configured.voters.len() != usize::from(self.config.replication_factor)
             || configured.voters.iter().any(|node| {
-                self.config
-                    .runtime
-                    .peer(*node)
-                    .map_or(true, |peer| !peer.role.stores_data())
+                !self
+                    .registry
+                    .has_role(*node, crate::metadata::NodeRole::Storage)
             })
             || started.elapsed() >= Duration::from_millis(500)
         {
@@ -304,17 +320,9 @@ impl Service {
             let _ = expires;
             return Ok(*leader);
         }
-        let voters = if group == self.config.runtime.metadata_group {
-            self.config.runtime.metadata_voters.clone()
-        } else {
-            let config = self.config.runtime.group(group)?;
-            config
-                .voters
-                .iter()
-                .chain(&config.standby)
-                .copied()
-                .collect()
-        };
+        let voters = self
+            .registry
+            .candidates(group, self.config.runtime.metadata_group)?;
         for node in &voters {
             let request = Request::control(wire::LEADER, &())?;
             let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
@@ -387,6 +395,8 @@ impl Service {
                 | FrameKind::GetTopicLayout
                 | FrameKind::ChangeTopicLayout
                 | FrameKind::ManageIdentity
+                | FrameKind::ManageCluster
+                | FrameKind::GetClusterRegistry
                 | FrameKind::ListIdentities
                 | FrameKind::ConsumerControl
                 | FrameKind::SubscriptionAdmin
@@ -552,6 +562,8 @@ impl Service {
             wire::AUTHORITY
             | wire::OWNERSHIP
             | wire::LEADER
+            | super::registry::REGISTRY
+            | super::cluster::HOSTED_GROUP
             | super::auth::AUTH_QUERY
             | crate::lifecycle::remote::LIFECYCLE_QUERY
             | crate::lifecycle::remote::LIFECYCLE_COMMAND => Some(StreamPurpose::Core),
@@ -593,6 +605,25 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::cluster::HOSTED_GROUP => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                    || !matches!(peer.role.as_str(), "metadata" | "combined")
+                {
+                    return Err(forbidden());
+                }
+                self.hosted_group(&request.body).await?
+            }
+            super::registry::REGISTRY => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.registry_page(&request.body).await?
+            }
             super::authority_transfer::AUTHORITY_TRANSFER => {
                 drop(order);
                 self.authority_transfer_command(

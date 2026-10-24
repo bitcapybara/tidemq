@@ -35,6 +35,8 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
             | FrameKind::ChangeTopicLayout
             | FrameKind::ManageIdentity
             | FrameKind::ListIdentities
+            | FrameKind::ManageCluster
+            | FrameKind::GetClusterRegistry
             | FrameKind::ConsumerControl
             | FrameKind::SubscriptionAdmin
             | FrameKind::RemoveTopic

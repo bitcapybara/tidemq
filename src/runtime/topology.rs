@@ -63,8 +63,13 @@ impl Service {
             let request: public::ChangeTopicLayout =
                 decode_payload(frame.payload.clone(), &self.config.protocol)
                     .map_err(|source| Error::operation("decode layout change", source))?;
-            self.change_layout(wire::id(&frame.operation_id)?, request, deadline)
-                .await?;
+            self.change_layout(
+                wire::id(&frame.operation_id)?,
+                super::metadata::management_binding(access, frame)?,
+                request,
+                deadline,
+            )
+            .await?;
         }
         let result = if kind == FrameKind::GetTopicLayout {
             let request: public::GetTopicLayout =
@@ -119,22 +124,82 @@ impl Service {
         access.authorize_topic(&request.name)?;
         let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
         let operation = wire::id(&frame.operation_id)?;
-        let group = self
-            .config
-            .runtime
-            .groups
-            .first()
+        let digest = super::metadata::management_binding(access, frame)?;
+        #[cfg(feature = "test-hooks")]
+        let hook_name = request.name.clone();
+        let topic = self
+            .configure_logical_topic(operation, digest, request.name, deadline)
+            .await?;
+        #[cfg(feature = "test-hooks")]
+        super::test_hooks::pause_topic_creation(&hook_name, deadline).await;
+        let active = self
+            .metadata
+            .as_ref()
             .ok_or_else(Error::unavailable)?
-            .group_id;
+            .state
+            .try_with_application(|state| {
+                state
+                    .topic(topic.topic_id)
+                    .is_some_and(|topic| topic.status == metadata::RecordStatus::Active)
+            })
+            .await
+            .map_err(|source| Error::operation("read original topic creation status", source))?;
+        if active {
+            self.ensure_route(
+                PartitionKey {
+                    topic_id: topic.topic_id,
+                    partition: 0,
+                },
+                deadline,
+            )
+            .await
+            .map_err(Error::admitted)?;
+        }
+        wire::response(
+            frame,
+            FrameKind::TopicLayoutResult,
+            &self
+                .layout_result(topic.topic_id)
+                .await
+                .map_err(Error::admitted)?,
+            &self.config.protocol,
+        )
+    }
+
+    async fn configure_logical_topic(
+        &self,
+        operation: Id,
+        digest: [u8; 32],
+        name: String,
+        deadline: Instant,
+    ) -> Result<metadata::TopicRecord> {
+        if let Some(outcome) = self.management_outcome(operation, digest).await? {
+            return match outcome {
+                metadata::Outcome::TopicConfigured(topic) => Ok(topic),
+                _ => Err(Error::invalid(
+                    "Topic creation conflicts with another management operation",
+                )),
+            };
+        }
+        let group = self
+            .metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| state.placement_group(None))
+            .await
+            .map_err(|source| Error::operation("select registered topic capacity", source))?
+            .ok_or_else(Error::unavailable)?;
         let outcome = self
             .meta_write(
                 Command::create_topic(
                     operation,
                     self.metadata_request_revision(operation).await?,
                     operation,
-                    request.name,
+                    name,
                     vec![group],
-                ),
+                )
+                .bind_management(digest),
                 deadline,
             )
             .await?;
@@ -143,20 +208,7 @@ impl Service {
                 "Logical topic creation returned an invalid outcome",
             ));
         };
-        self.ensure_route(
-            PartitionKey {
-                topic_id: topic.topic_id,
-                partition: 0,
-            },
-            deadline,
-        )
-        .await?;
-        wire::response(
-            frame,
-            FrameKind::TopicLayoutResult,
-            &self.layout_result(topic.topic_id).await?,
-            &self.config.protocol,
-        )
+        Ok(topic)
     }
 
     pub(super) async fn layout_result(&self, topic: Id) -> Result<public::TopicLayoutResult> {
@@ -180,10 +232,28 @@ impl Service {
     async fn change_layout(
         &self,
         operation: Id,
+        digest: [u8; 32],
         request: public::ChangeTopicLayout,
         deadline: Instant,
     ) -> Result<()> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        if let Some(outcome) = self.management_outcome(operation, digest).await? {
+            let metadata::Outcome::LayoutPrepared(original) = outcome else {
+                return Err(Error::invalid(
+                    "Layout change conflicts with another management operation",
+                ));
+            };
+            let plan = replica
+                .state
+                .try_with_application(|state| state.topology().plan(original.id).cloned())
+                .await
+                .map_err(|source| Error::operation("read original layout progress", source))?
+                .ok_or_else(Error::unavailable)?;
+            return self
+                .resume_layout(plan, deadline)
+                .await
+                .map_err(Error::admitted);
+        }
         let topic = wire::id(&request.topic_id)?;
         let left = wire::id(&request.left_shard)?;
         let change = if let Some(at) = request.split_at {
@@ -198,16 +268,14 @@ impl Service {
                 .await
                 .map_err(|source| Error::operation("read split source group", source))?
                 .ok_or_else(super::metadata::not_found)?;
-            let target = self
-                .config
-                .runtime
-                .groups
-                .iter()
-                .find(|candidate| candidate.group_id != group)
+            let target = replica
+                .state
+                .try_with_application(|state| state.placement_group(Some(group)))
+                .await
+                .map_err(|source| Error::operation("select registered split capacity", source))?
                 .ok_or_else(|| {
-                    Error::invalid("Split requires an independent configured data group")
-                })?
-                .group_id;
+                    Error::invalid("Split requires an independent available data group")
+                })?;
             LayoutChange::Split {
                 source: left,
                 at,
@@ -236,7 +304,8 @@ impl Service {
                     topic,
                     request.expected_revision,
                     change,
-                ),
+                )
+                .bind_management(digest),
                 deadline,
             )
             .await?;
@@ -245,7 +314,18 @@ impl Service {
                 "Layout preparation returned an invalid outcome",
             ));
         };
-        self.resume_layout(plan, deadline).await
+        #[cfg(feature = "test-hooks")]
+        if let Some(partition) = replica
+            .state
+            .try_with_application(|state| state.topology().shard(left).map(|shard| shard.partition))
+            .await
+            .map_err(|source| Error::operation("read prepared layout test boundary", source))?
+        {
+            super::test_hooks::pause_layout(partition, deadline).await;
+        }
+        self.resume_layout(plan, deadline)
+            .await
+            .map_err(Error::admitted)
     }
 
     pub(super) async fn resume_layout(&self, plan: LayoutPlan, deadline: Instant) -> Result<()> {

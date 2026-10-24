@@ -110,6 +110,7 @@ pub struct Service<
     capacity: Arc<C>,
     budget: RepairBudget,
     metrics: Arc<ScalingMetrics>,
+    metadata_voters: std::sync::RwLock<BTreeSet<u64>>,
     flights: std::sync::Mutex<BTreeMap<u64, Arc<Mutex<Option<Flight>>>>>,
     control_slots: Arc<Semaphore>,
     read_slots: Arc<Semaphore>,
@@ -151,6 +152,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             }
         }
         Ok(Self {
+            metadata_voters: std::sync::RwLock::new(config.metadata_voters.clone()),
             config,
             replicas,
             rpc,
@@ -162,6 +164,21 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             control_slots: Arc::new(Semaphore::new(1)),
             read_slots: Arc::new(Semaphore::new(2)),
         })
+    }
+
+    pub(crate) fn replace_metadata_voters(&self, voters: BTreeSet<u64>) -> Result<()> {
+        if voters.len() != self.config.mode.replication_factor() || voters.contains(&0) {
+            return Err(Error::Authority);
+        }
+        *self.metadata_voters.write().map_err(|_| Error::Authority)? = voters;
+        Ok(())
+    }
+
+    fn metadata_voters(&self) -> Result<BTreeSet<u64>> {
+        self.metadata_voters
+            .read()
+            .map(|voters| voters.clone())
+            .map_err(|_| Error::Authority)
     }
 
     pub async fn handle(&self, peer: &NodeGrant, query: Query, deadline: Instant) -> Result<Reply> {

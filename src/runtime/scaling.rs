@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use bytes::Bytes;
 use prometheus_client::registry::Registry;
@@ -36,17 +32,20 @@ pub(crate) struct RuntimeScaling {
 }
 
 impl RuntimeScaling {
+    // Runtime assembly supplies the same owned facilities to every semantic adapter.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &Config,
         cluster: Id,
         metadata: Option<&Replica<MetadataState>>,
         data: &BTreeMap<u64, Replica<DataApplication>>,
         rpc: PeerRpc,
+        registry_nodes: Arc<super::registry::Registry>,
         repair: RepairBudget,
         registry: &mut Registry,
     ) -> Result<Self> {
         config.runtime.validate(config)?;
-        let rpc = Arc::new(RuntimeRpc::new(config, rpc));
+        let rpc = Arc::new(RuntimeRpc::new(config, rpc, registry_nodes));
         let capacity = Arc::new(CapacityCache::default());
         let metrics = Arc::new(ScalingMetrics::register(registry));
         let replicas = remote::LocalReplicas::new(
@@ -115,49 +114,23 @@ impl CapacitySource for CapacityCache {
 pub(crate) struct RuntimeRpc {
     peer: PeerRpc,
     metadata_group: u64,
-    candidates: BTreeMap<u64, Vec<u64>>,
-    allowed: BTreeMap<u64, BTreeSet<u64>>,
+    registry: Arc<super::registry::Registry>,
 }
 impl RuntimeRpc {
-    fn new(config: &Config, peer: PeerRpc) -> Self {
-        let mut candidates = BTreeMap::from([(
-            config.runtime.metadata_group,
-            config.runtime.metadata_voters.clone(),
-        )]);
-        let storage: BTreeSet<_> = config
-            .runtime
-            .peers
-            .iter()
-            .filter(|peer| peer.role.stores_data())
-            .map(|peer| peer.node_id)
-            .collect();
-        let mut allowed = BTreeMap::from([(
-            config.runtime.metadata_group,
-            config.runtime.metadata_voters.iter().copied().collect(),
-        )]);
-        for group in &config.runtime.groups {
-            let mut nodes = group.voters.clone();
-            for node in &storage {
-                if !nodes.contains(node) {
-                    nodes.push(*node);
-                }
-            }
-            candidates.insert(group.group_id, nodes);
-            allowed.insert(group.group_id, storage.clone());
-        }
+    fn new(config: &Config, peer: PeerRpc, registry: Arc<super::registry::Registry>) -> Self {
         Self {
             peer,
             metadata_group: config.runtime.metadata_group,
-            candidates,
-            allowed,
+            registry,
         }
     }
 
     fn validate_target(&self, group: u64, node: u64) -> scaling::Result<()> {
         if !self
-            .allowed
-            .get(&group)
-            .is_some_and(|nodes| nodes.contains(&node))
+            .registry
+            .candidates(group, self.metadata_group)
+            .map_err(remote_error)?
+            .contains(&node)
         {
             return Err(scaling::Error::Authority);
         }
@@ -168,10 +141,10 @@ impl RuntimeRpc {
 impl remote::Rpc for RuntimeRpc {
     async fn leader(&self, group: u64, deadline: Instant) -> scaling::Result<u64> {
         let nodes = self
-            .candidates
-            .get(&group)
-            .ok_or(scaling::Error::Authority)?;
-        for node in nodes {
+            .registry
+            .candidates(group, self.metadata_group)
+            .map_err(remote_error)?;
+        for node in &nodes {
             if Instant::now() >= deadline {
                 return Err(scaling::Error::Deadline);
             }

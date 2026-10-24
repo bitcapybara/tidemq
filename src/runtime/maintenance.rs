@@ -129,13 +129,8 @@ impl Service {
         self: Arc<Self>,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<()> {
-        let groups = self
-            .config
-            .runtime
-            .groups
-            .iter()
-            .map(|group| (group.group_id, group.standby.iter().copied().collect()))
-            .collect::<BTreeMap<_, _>>();
+        let mut group_after = None;
+        let mut round = 0_usize;
         let mut placement =
             crate::scaling::Placement::new(crate::scaling::PlacementPolicy::default())
                 .map_err(|source| Error::operation("initialize placement ticker", source))?;
@@ -149,6 +144,9 @@ impl Service {
             if self.require_leader(replica).is_err() {
                 continue;
             }
+            let groups = self.registry.placement_groups(group_after, round)?;
+            group_after = groups.keys().next_back().copied();
+            round = round.saturating_add(1);
             let deadline = Instant::now() + Duration::from_secs(30);
             let result = tokio::select! {
                 _ = shutdown.changed() => return Ok(()),

@@ -384,7 +384,7 @@ pub(crate) struct RemoteMetadata {
     rpc: Arc<dyn LifecycleRpc>,
     cluster_id: Id,
     group_id: u64,
-    nodes: Vec<u64>,
+    nodes: std::sync::RwLock<Vec<u64>>,
     mode: DeploymentMode,
 }
 
@@ -410,12 +410,26 @@ impl MetadataReplica {
                 rpc,
                 cluster_id,
                 group_id,
-                nodes,
+                nodes: std::sync::RwLock::new(nodes),
                 mode,
             })),
             cluster_id,
             group_id,
         })
+    }
+
+    pub(crate) fn replace_nodes(&self, nodes: Vec<u64>) -> Result<()> {
+        if let MetadataBackend::Remote(remote) = self.backend.as_ref() {
+            let unique: BTreeSet<_> = nodes.iter().copied().collect();
+            if unique.contains(&0)
+                || unique.len() != nodes.len()
+                || unique.len() != remote.mode.replication_factor()
+            {
+                return Err(Error::Configuration);
+            }
+            *remote.nodes.write().map_err(|_| Error::Configuration)? = nodes;
+        }
+        Ok(())
     }
 }
 
@@ -438,8 +452,9 @@ impl RemoteMetadata {
         } else {
             TrafficClass::Control
         };
-        let mut target = self.nodes.first().copied().ok_or(Error::Configuration)?;
-        for round in 0..self.nodes.len().saturating_add(2).min(18) {
+        let nodes = self.nodes.read().map_err(|_| Error::Configuration)?.clone();
+        let mut target = nodes.first().copied().ok_or(Error::Configuration)?;
+        for round in 0..nodes.len().saturating_add(2).min(18) {
             if Instant::now() >= deadline {
                 return Err(if kind == LIFECYCLE_COMMAND {
                     Error::Unknown
@@ -460,21 +475,19 @@ impl RemoteMetadata {
                 .await
             {
                 Ok(bytes) => match decode::<Reply>(&bytes)? {
-                    Reply::Redirect(Some(next)) if self.nodes.contains(&next) && next != target => {
+                    Reply::Redirect(Some(next)) if nodes.contains(&next) && next != target => {
                         target = next;
                     }
                     Reply::Redirect(_) | Reply::Unavailable => {
-                        target = *self
-                            .nodes
-                            .get((round + 1) % self.nodes.len())
+                        target = *nodes
+                            .get((round + 1) % nodes.len())
                             .ok_or(Error::Configuration)?;
                     }
                     reply => return Ok((target, reply)),
                 },
                 Err(_) => {
-                    target = *self
-                        .nodes
-                        .get((round + 1) % self.nodes.len())
+                    target = *nodes
+                        .get((round + 1) % nodes.len())
                         .ok_or(Error::Configuration)?;
                 }
             }
@@ -488,6 +501,7 @@ impl RemoteMetadata {
 
     fn verify(&self, target: u64, proof: &QuorumView) -> Result<()> {
         let voters: BTreeSet<_> = proof.voters.iter().copied().collect();
+        let nodes = self.nodes.read().map_err(|_| Error::Configuration)?;
         if proof.cluster_id != self.cluster_id
             || proof.group_id != self.group_id
             || proof.node_id != target
@@ -497,7 +511,7 @@ impl RemoteMetadata {
             || voters.len() != self.mode.replication_factor()
             || voters.len() != proof.voters.len()
             || !voters.contains(&target)
-            || voters.iter().any(|node| !self.nodes.contains(node))
+            || voters.iter().any(|node| !nodes.contains(node))
             || proof.nodes.len() != voters.len()
         {
             return Err(Error::Authorization);
@@ -1077,7 +1091,7 @@ mod tests {
             rpc: Arc::new(NoRpc),
             cluster_id: cluster,
             group_id: 77,
-            nodes: vec![2],
+            nodes: vec![2].into(),
             mode: DeploymentMode::LocalRf1,
         };
         remote.verify(2, &proof).unwrap();
@@ -1089,7 +1103,7 @@ mod tests {
             rpc: Arc::new(NoRpc),
             cluster_id: cluster,
             group_id: 77,
-            nodes: vec![1, 2, 3],
+            nodes: vec![1, 2, 3].into(),
             mode: DeploymentMode::ThreeReplica,
         };
         assert!(production.verify(2, &proof).is_err());

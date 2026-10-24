@@ -14,6 +14,8 @@ mod identity_list;
 mod message_limits;
 #[path = "scalable_quotas.rs"]
 mod quotas;
+#[path = "scalable_registry.rs"]
+mod registry;
 #[path = "scalable_sdk.rs"]
 mod sdk;
 #[path = "scalable_transfer.rs"]

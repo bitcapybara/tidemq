@@ -23,8 +23,8 @@ use crate::replication::{
 };
 use crate::server::{DispatchConfig, DispatchMetrics};
 use crate::transport::{
-    Client, ClientCredentials, ClientTls, NodeGrant, PeerTarget, Server, ServerAuthorization,
-    ServerTls, TlsIdentity, TransportConfig,
+    Client, ClientCredentials, ClientTls, NodeGrant, Server, ServerAuthorization, ServerTls,
+    TlsIdentity, TransportConfig,
 };
 
 use super::service::Service;
@@ -66,6 +66,8 @@ impl RunningNode {
         .map_err(|source| Error::operation("load process TLS identity", source))?;
         let roots = super::read_bounded(&config.tls.trust_roots, 65_536).await?;
         let grants = grants(&config, cluster).await?;
+        let registry = Arc::new(super::registry::Registry::load(&config, cluster, grants).await?);
+        let grants = registry.trust.snapshot().to_vec();
         let auth_service = Arc::new(std::sync::OnceLock::new());
         let transport = transport_config(&config);
         let bind_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -75,7 +77,7 @@ impl RunningNode {
                 identity: identity.clone(),
                 client_trust_roots: Some(roots.clone()),
             },
-            ServerAuthorization::Internal(grants.clone()),
+            ServerAuthorization::LiveInternal(registry.trust.clone()),
             transport.clone(),
             budget.clone(),
             bind_deadline,
@@ -139,19 +141,7 @@ impl RunningNode {
         quota_metrics.register(metrics.registry_mut());
         let quota = crate::quota::Quota::new(config.runtime.capacity, quota_metrics)
             .map_err(|source| Error::operation("initialize capacity admission", source))?;
-        let targets = config
-            .runtime
-            .peers
-            .iter()
-            .map(|peer| PeerTarget {
-                address: peer.internal_address,
-                server_name: peer.server_name.clone(),
-                local_role: config.role.name().into(),
-                remote_role: peer.role.name().into(),
-                cluster_id: Some(cluster),
-                node_id: Some(peer.node_id),
-            })
-            .collect();
+        let targets = registry.targets(&config, cluster)?;
         let pool = Arc::new(
             PeerPool::new(
                 client,
@@ -183,7 +173,7 @@ impl RunningNode {
             config.runtime.metadata_voters.iter().copied().collect(),
             ControlPolicy::default(),
         )?);
-        let metadata = if config.runtime.metadata_voters.contains(&config.node_id) {
+        let metadata = if config.role.stores_metadata() {
             Some(
                 open_replica::<MetadataState>(
                     &config,
@@ -250,6 +240,7 @@ impl RunningNode {
             objects,
             rpc,
             authority,
+            registry,
             budget.clone(),
             producer,
             metrics,
@@ -286,6 +277,9 @@ impl RunningNode {
             super::management::start(service.clone(), stopped.clone()).await?;
         tasks.push(task);
         tasks.push(tokio::spawn(service.clone().rebalance(stopped.clone())));
+        tasks.push(tokio::spawn(
+            service.clone().follow_registry(stopped.clone()),
+        ));
         tasks.push(tokio::spawn(
             service.clone().resume_authority_transfers(stopped.clone()),
         ));
@@ -653,22 +647,6 @@ async fn grants(config: &Config, cluster: Id) -> Result<Vec<NodeGrant>> {
     let mut grants = Vec::new();
     for peer in &config.runtime.peers {
         let der = super::read_bounded(&peer.certificate_der, 32_768).await?;
-        let classes = if peer.role.stores_data() || peer.role.stores_metadata() {
-            vec![
-                TrafficClass::Control,
-                TrafficClass::Produce,
-                TrafficClass::Delivery,
-                TrafficClass::Bulk,
-                TrafficClass::Replication,
-            ]
-        } else {
-            vec![
-                TrafficClass::Control,
-                TrafficClass::Produce,
-                TrafficClass::Delivery,
-                TrafficClass::Bulk,
-            ]
-        };
         let mut groups = vec![config.runtime.metadata_group];
         groups.extend(config.runtime.groups.iter().map(|group| group.group_id));
         grants.push(NodeGrant {
@@ -678,10 +656,23 @@ async fn grants(config: &Config, cluster: Id) -> Result<Vec<NodeGrant>> {
             node_id: peer.node_id,
             role: peer.role.name().into(),
             allowed_groups: groups,
-            allowed_classes: classes,
+            allowed_classes: classes(peer.role.name()),
         });
     }
     Ok(grants)
+}
+
+pub(super) fn classes(role: &str) -> Vec<TrafficClass> {
+    let mut classes = vec![
+        TrafficClass::Control,
+        TrafficClass::Produce,
+        TrafficClass::Delivery,
+        TrafficClass::Bulk,
+    ];
+    if matches!(role, "storage" | "metadata" | "combined") {
+        classes.push(TrafficClass::Replication);
+    }
+    classes
 }
 
 fn transport_config(config: &Config) -> TransportConfig {

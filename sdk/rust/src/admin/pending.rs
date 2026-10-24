@@ -42,10 +42,13 @@ pub enum AdminReceipt {
     TenantLimitsChanged(crate::TenantId),
     NamespaceLimitsChanged(crate::NamespaceId),
     PolicySuperseded,
+    NodeConfigured(crate::ClusterNodeInfo),
+    DataGroupCreated(crate::DataGroupInfo),
 }
 
 pub(crate) enum Request {
     Identity(public::ManageIdentity),
+    Cluster(public::ManageCluster),
     CreateTopic(String),
     DeleteTopic(Id),
     Layout {
@@ -58,6 +61,7 @@ impl Request {
     fn validate(&self) -> Result<()> {
         let bytes = match self {
             Self::Identity(request) => request.encoded_len(),
+            Self::Cluster(request) => request.encoded_len(),
             Self::CreateTopic(name) => name.len(),
             Self::DeleteTopic(_) => 16,
             Self::Layout { name, request } => name.len().saturating_add(request.encoded_len()),
@@ -78,6 +82,20 @@ impl Request {
         deadline: Instant,
     ) -> Result<AdminReceipt> {
         let (name, wire): (&String, public::TopicLayoutResult) = match self {
+            Self::Cluster(request) => {
+                let result = client
+                    .request(
+                        FrameKind::ManageCluster,
+                        FrameKind::ClusterControlResult,
+                        TrafficClass::Control,
+                        operation,
+                        request,
+                        deadline,
+                    )
+                    .await?;
+                return crate::cluster::receipt(request, result)
+                    .map_err(|error| error.preserve_uncertainty(true));
+            }
             Self::DeleteTopic(topic) => {
                 return delete_topic(client, *topic, operation, deadline).await;
             }
@@ -138,7 +156,7 @@ impl Request {
         let expected_topic = match self {
             Self::CreateTopic(_) => crate::admin::bytes(operation),
             Self::Layout { request, .. } => request.topic_id.clone(),
-            Self::Identity(_) | Self::DeleteTopic(_) => {
+            Self::Identity(_) | Self::Cluster(_) | Self::DeleteTopic(_) => {
                 return Err(Error::ResponseMismatch {
                     reason: "identity operation returned a topic layout".into(),
                 }

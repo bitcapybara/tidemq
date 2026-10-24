@@ -121,6 +121,10 @@ context.cancellation_token() 可接入宿主取消。嵌套调用使用更早期
 
 ## 观测与验证
 
+平台管理员通过 `admin.register_node(NodeRegistration { ... })` 在线登记节点 ID、角色、故障域、内部地址、证书名与精确证书 pin；`NodeRegistration::certificate_pin(der)` 从叶证书 DER 计算 pin。登记信息由 Metadata Raft 持久保存，已有进程自动更新内部信任和目标目录。节点 ID 和证书绑定不可复用；新增进程仍需提供自己的 TLS 材料及初始 Metadata 地址。
+
+节点登记不等于数据组已就绪。部署端先启动新组的实际副本，再调用 `admin.create_data_group(group_id, voters)`；服务端核对各副本已初始化且具有一致的成员集合，持久登记后等待副本识别目录，再返回成功。新 Topic 和 Split 从持久登记的可分配组选择目标。`cluster_nodes()`、`data_groups()` 返回有界、一致的目录快照；`set_node_schedulable(id, false)` 只停止新放置，节点退出仍须完成排空。节点/组变更与其他管理操作共用 `pending_operations()` 恢复账本，普通 Producer/Consumer 无需管理这些物理对象。
+
 错误保留结构化状态与完整 source 链。outcome_unknown() 表示业务结果仍需恢复，不能仅凭外层 Display 或错误字符串决定重试。宿主需要完整链时，可用 anyhow::Error::new(error)，按 "{error:#}" 输出；SDK 不安装日志设施或增加 anyhow 运行时依赖。
 
 宿主负责 Tokio、subscriber、provider、exporter 和 allocator。metrics feature 通过 client.metrics().register(...) 注册固定系列；opentelemetry feature 复用宿主的 MeterProvider 和 tracing bridge。scope_traceparent 为有限操作传递经过校验的 W3C 上下文；宿主创建的新任务自行设置作用域。不要重复累计 Prometheus 与 OpenTelemetry 的同义指标。

@@ -6,6 +6,7 @@ mod admin;
 mod builder;
 mod client;
 mod close;
+mod cluster;
 mod context;
 mod error;
 mod group_consumer;
@@ -24,6 +25,7 @@ pub use builder::{ClientBuilder, Credentials, TlsTrust};
 use client::ClientConfig;
 pub use client::{Client, ClientLimits};
 pub use close::{CloseError, CloseReport};
+pub use cluster::{ClusterNodeInfo, ClusterRole, DataGroupInfo, NodeRegistration};
 pub use context::scope_traceparent;
 pub use error::{Error, ErrorKind, Result};
 pub use group_consumer::{

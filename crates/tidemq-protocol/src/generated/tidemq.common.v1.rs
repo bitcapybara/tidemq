@@ -125,6 +125,10 @@ pub enum FrameKind {
     TopicRemoved = 86,
     ListIdentities = 87,
     IdentityPage = 88,
+    ManageCluster = 89,
+    ClusterControlResult = 90,
+    GetClusterRegistry = 91,
+    ClusterRegistryPage = 92,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -175,6 +179,10 @@ impl FrameKind {
             Self::TopicRemoved => "TOPIC_REMOVED",
             Self::ListIdentities => "LIST_IDENTITIES",
             Self::IdentityPage => "IDENTITY_PAGE",
+            Self::ManageCluster => "MANAGE_CLUSTER",
+            Self::ClusterControlResult => "CLUSTER_CONTROL_RESULT",
+            Self::GetClusterRegistry => "GET_CLUSTER_REGISTRY",
+            Self::ClusterRegistryPage => "CLUSTER_REGISTRY_PAGE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -222,6 +230,10 @@ impl FrameKind {
             "TOPIC_REMOVED" => Some(Self::TopicRemoved),
             "LIST_IDENTITIES" => Some(Self::ListIdentities),
             "IDENTITY_PAGE" => Some(Self::IdentityPage),
+            "MANAGE_CLUSTER" => Some(Self::ManageCluster),
+            "CLUSTER_CONTROL_RESULT" => Some(Self::ClusterControlResult),
+            "GET_CLUSTER_REGISTRY" => Some(Self::GetClusterRegistry),
+            "CLUSTER_REGISTRY_PAGE" => Some(Self::ClusterRegistryPage),
             _ => None,
         }
     }

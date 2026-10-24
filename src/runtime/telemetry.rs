@@ -58,6 +58,10 @@ fn unknown_diagnostic(
         return None;
     }
     let (error_kind, operation) = match error {
+        super::Error::Admitted { .. } => (
+            "runtime_admitted_unknown",
+            "observe durable operation completion",
+        ),
         super::Error::Operation { operation, source } => {
             let error_kind = match source
                 .get_ref()

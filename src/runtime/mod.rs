@@ -2,6 +2,7 @@
 
 mod auth;
 mod authority_transfer;
+mod cluster;
 mod config;
 mod consumer_control;
 mod consumer_data;
@@ -19,6 +20,7 @@ mod node;
 mod objects;
 pub(crate) mod physical;
 mod publishing;
+mod registry;
 mod resource_leases;
 pub(crate) mod scaling;
 mod service;

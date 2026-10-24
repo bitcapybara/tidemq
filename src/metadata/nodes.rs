@@ -39,7 +39,7 @@ impl NodeIdentity {
         })
     }
 
-    pub(super) fn validate(&self, spec: &NodeSpec) -> Result<(), Rejection> {
+    pub(crate) fn validate(&self, spec: &NodeSpec) -> Result<(), Rejection> {
         spec.validate()?;
         if self.roles()? != spec.roles
             || self.certificate_name.is_empty()
@@ -119,6 +119,32 @@ pub struct ClusterResult {
 }
 
 impl MetadataState {
+    pub(crate) fn placement_group(&self, exclude: Option<u64>) -> Option<u64> {
+        self.groups
+            .values()
+            .filter(|group| {
+                Some(group.group_id) != exclude
+                    && !self
+                        .membership_change(group.group_id)
+                        .is_some_and(|change| !change.is_complete())
+                    && group.voters.iter().all(|node| {
+                        self.nodes.get(node).is_some_and(|node| {
+                            node.spec.schedulable && node.spec.roles.contains(&NodeRole::Storage)
+                        })
+                    })
+            })
+            .min_by_key(|group| {
+                (
+                    self.partitions
+                        .values()
+                        .filter(|partition| partition.group_id == group.group_id)
+                        .count(),
+                    group.group_id,
+                )
+            })
+            .map(|group| group.group_id)
+    }
+
     pub fn node_identity(&self, node: u64) -> Option<&NodeIdentity> {
         self.node_identities.get(&node)
     }

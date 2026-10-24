@@ -42,7 +42,9 @@ TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --
 
 ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记录。`tidemq_control_validity_remaining_seconds` 是有限本地已验证 lease 集合的最小剩余时间；无证据、过期或暂时无法读取时为零。`tidemq_admitted_bytes` 是共用 MemoryBudget 当前已许可占用，不能替代 RSS 或分配器统计。
 
-每个 Metadata 进程有一个 owned 的一秒放置循环，只有当前 leader 执行。它从固定 standby 候选和新鲜真实容量样本生成至多一个迁移计划，恢复未完成计划，限制并行探测、复制预算及再均衡冷却时间。缺少容量样本不会被当作节点死亡；真实不可达必须连续多次并持续达到阈值才触发替换。诊断 `placement` 展示固定阻塞原因、计划和年龄，`placement_capacity_available` 表示当前本地样本是否可用于放置。自动成员修复依赖既有可达多数派，无法绕过 quorum。
+每个 Metadata 进程有一个 owned 的一秒放置循环，只有当前 leader 执行。它从持久登记的节点和组中轮转选取最多 16 组、每组最多 32 个候选，使用新鲜真实容量样本生成至多一个迁移计划并恢复未完成计划，限制并行探测、复制预算及再均衡冷却时间。目标还必须实际托管对应组或备份实例，登记本身不生成副本。缺少容量样本不会被当作节点死亡；真实不可达必须连续多次并持续达到阈值才触发替换。诊断 `placement` 展示固定阻塞原因、计划和年龄，`placement_capacity_available` 表示当前本地样本是否可用于放置。自动成员修复依赖既有可达多数派，无法绕过 quorum。
+
+运行中的进程从 Metadata 的持久目录更新内部地址、精确证书 pin、角色和组；`registry` 诊断注明发现版本及 Native 成员日志位置。发现信息只提供目标候选，业务许可仍依赖新鲜 quorum 证明。已验证目录使用私有文件有界保存，重启恢复；未知格式、身份或摘要错误明确拒绝，不自动清空。`runtime.internal_listen` 是本机绑定地址，可使用 `0.0.0.0`；`runtime.peers.internal_address` 是其他节点实际访问的稳定地址，不能通告通配地址。Kubernetes 可将每个持久节点的通告地址绑定到稳定的单实例 Service，监听地址与 Service 地址可不同。
 
 
 ## 有限 UDP 故障验证

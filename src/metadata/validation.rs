@@ -319,6 +319,9 @@ impl MetadataState {
                 let binding = match outcome {
                     Outcome::Identity(result) => Some(result.request_digest),
                     Outcome::Cluster(result) => Some(result.request_digest),
+                    Outcome::TopicConfigured(_) | Outcome::LayoutPrepared(_) => {
+                        decision.management_digest
+                    }
                     _ => None,
                 };
                 if decision.management_digest != binding {

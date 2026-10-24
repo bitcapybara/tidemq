@@ -12,12 +12,12 @@ use tokio::time::Instant;
 use crate::broker::{DataCommand, DataResponse, WriterFence};
 use crate::gateway::Access;
 use crate::metadata::{
-    self, Command, DeploymentMode, MetadataLimits, NodeSpec, PartitionKey, RecordStatus, Response,
+    self, Command, DeploymentMode, MetadataLimits, PartitionKey, RecordStatus, Response,
 };
 use crate::ownership::remote::DataProof;
 use crate::ownership::{ControlPolicy, DataAuthority, Grant};
 
-use super::node::{data_config, random_id, roles};
+use super::node::{data_config, random_id};
 use super::service::{Service, forbidden};
 use super::wire::{self, Request};
 use super::{Error, Result};
@@ -33,6 +33,30 @@ pub(crate) struct OwnershipRequest {
 }
 
 impl Service {
+    pub(super) async fn management_outcome(
+        &self,
+        operation: Id,
+        digest: [u8; 32],
+    ) -> Result<Option<metadata::Outcome>> {
+        let saved = self
+            .metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| state.management_result(operation, digest))
+            .await
+            .map_err(|source| Error::operation("read original management decision", source))?
+            .map_err(metadata_rejection)?;
+        match saved {
+            metadata::OperationResult::Known(Response::Applied { outcome, .. }) => {
+                Ok(Some(outcome))
+            }
+            metadata::OperationResult::Known(Response::Rejected { reason, .. }) => {
+                Err(original_metadata_rejection(reason))
+            }
+            metadata::OperationResult::UnknownOrRetired => Ok(None),
+        }
+    }
     pub async fn reconcile(&self, mut shutdown: watch::Receiver<bool>) -> Result<()> {
         let mut failover = super::failover::State::new(&self.config);
         let mut ticker = tokio::time::interval(Duration::from_millis(250));
@@ -167,32 +191,40 @@ impl Service {
             )
             .await?;
         }
-        for peer in &self.config.runtime.peers {
+        let bootstrap = replica
+            .state
+            .try_with_application(|state| !state.auth().initialized())
+            .await
+            .map_err(|source| Error::operation("read registry initialization", source))?;
+        for node in self.registry.nodes()?.into_iter().filter(|_| bootstrap) {
             let absent = replica
                 .state
-                .try_with_application(|state| state.node(peer.node_id).is_none())
+                .try_with_application(|state| {
+                    state.node_identity(node.record.spec.node_id).is_none()
+                })
                 .await
                 .map_err(|source| Error::operation("read node topology", source))?;
             if absent {
                 self.meta_write(
-                    Command::put_node(
+                    Command::cluster(
                         random_id()?,
                         self.meta_revision().await?,
-                        NodeSpec {
-                            node_id: peer.node_id,
-                            zone: peer.zone.clone(),
-                            endpoint: peer.internal_address,
-                            roles: roles(peer.role),
-                            schedulable: true,
+                        metadata::ClusterCommand {
+                            actor: None,
+                            now_ms: super::data::unix_millis()?,
+                            request_digest: [0; 32],
+                            action: metadata::ClusterAction::RegisterNode {
+                                spec: node.record.spec,
+                                identity: node.identity,
+                            },
                         },
-                        0,
                     ),
                     deadline,
                 )
                 .await?;
             }
         }
-        for group in &self.config.runtime.groups {
+        for group in self.config.runtime.groups.iter().filter(|_| bootstrap) {
             let absent = replica
                 .state
                 .try_with_application(|state| state.group(group.group_id).is_none())
@@ -250,11 +282,11 @@ impl Service {
     ) -> Result<metadata::Outcome> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        let binding = match &command.action {
+        let binding = command.management_binding.or(match &command.action {
             metadata::Action::Identity(request) => Some(request.request_digest),
             metadata::Action::Cluster(request) => Some(request.request_digest),
             _ => None,
-        };
+        });
         let operation = command.operation_id;
         let response = wire::within(deadline, replica.raft.client_write(command))
             .await?
@@ -312,6 +344,12 @@ impl Service {
         }
         if super::service::frame_kind(frame)? == FrameKind::ManageIdentity {
             return self.identity_public(&access, frame, deadline).await;
+        }
+        if super::service::frame_kind(frame)? == FrameKind::ManageCluster {
+            return self.cluster_public(&access, frame, deadline).await;
+        }
+        if super::service::frame_kind(frame)? == FrameKind::GetClusterRegistry {
+            return self.cluster_list_public(&access, frame).await;
         }
         if super::service::frame_kind(frame)? == FrameKind::ListIdentities {
             return self.identity_list_public(&access, frame).await;
@@ -763,6 +801,21 @@ pub(super) fn original_metadata_rejection(reason: metadata::Rejection) -> Error 
     let mut failure = metadata_rejection(reason).failure();
     failure.original_outcome_known = true;
     Error::Rejected { failure }
+}
+
+pub(super) fn management_binding(access: &Access, frame: &Frame) -> Result<[u8; 32]> {
+    let actor: Id = access
+        .principal
+        .strip_prefix("credential:")
+        .ok_or_else(forbidden)?
+        .parse()
+        .map_err(|_| forbidden())?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tidemq/management-request/v1\0");
+    hash.update(actor.as_bytes());
+    hash.update(&frame.kind.to_le_bytes());
+    hash.update(&frame.payload);
+    Ok(*hash.finalize().as_bytes())
 }
 pub(crate) fn not_found() -> Error {
     Error::reject(ErrorCode::NotFound, Outcome::Rejected, false)

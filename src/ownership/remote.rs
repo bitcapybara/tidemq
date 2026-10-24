@@ -121,7 +121,7 @@ pub(crate) struct RemoteMetadataAuthority {
     rpc: PeerRpc,
     cluster: Id,
     group: u64,
-    voters: BTreeSet<u64>,
+    voters: std::sync::RwLock<BTreeSet<u64>>,
     policy: ControlPolicy,
     finalizations: Arc<Semaphore>,
 }
@@ -144,7 +144,7 @@ impl RemoteMetadataAuthority {
             rpc,
             cluster,
             group,
-            voters,
+            voters: std::sync::RwLock::new(voters),
             policy,
             finalizations: Arc::new(Semaphore::new(policy.max_finalizations)),
         })
@@ -154,13 +154,26 @@ impl RemoteMetadataAuthority {
         self.fresh(query, deadline).await.map(|(value, _)| value)
     }
 
+    pub(crate) fn replace_voters(&self, voters: BTreeSet<u64>) -> Result<()> {
+        if !matches!(voters.len(), 1 | 3) || voters.contains(&0) {
+            return Err(Error::unavailable());
+        }
+        *self.voters.write().map_err(|_| Error::unavailable())? = voters;
+        Ok(())
+    }
+
     async fn fresh(&self, query: Query, deadline: Instant) -> Result<(Value, MonoInstant)> {
         let started = MonoInstant::now();
         let expires = Instant::from_std(started)
             .checked_add(self.policy.ttl)
             .ok_or_else(|| Error::invalid("Authority deadline overflow"))?;
         let deadline = deadline.min(expires);
-        for node in &self.voters {
+        let voters = self
+            .voters
+            .read()
+            .map_err(|_| Error::unavailable())?
+            .clone();
+        for node in &voters {
             let request = Request::control(wire::AUTHORITY, &query)?;
             let attempt_deadline =
                 deadline.min(Instant::now() + std::time::Duration::from_millis(500));
@@ -176,9 +189,9 @@ impl RemoteMetadataAuthority {
             let proof: Proof = wire::decode_json(&bytes)?;
             if proof.cluster != self.cluster
                 || proof.group != self.group
-                || proof.voters != self.voters
+                || proof.voters != voters
                 || !proof.position.validate()
-                || !self.voters.contains(&proof.position.leader_node)
+                || !voters.contains(&proof.position.leader_node)
                 || MonoInstant::now().saturating_duration_since(started) >= self.policy.ttl
             {
                 return Err(Error::invalid(

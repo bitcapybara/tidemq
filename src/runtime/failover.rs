@@ -175,6 +175,19 @@ impl Service {
         state: &mut State,
         deadline: Instant,
     ) -> Result<()> {
+        let nodes: std::collections::BTreeSet<_> = self
+            .registry
+            .nodes()?
+            .into_iter()
+            .filter(|node| {
+                !node.identity.retired && node.record.spec.roles.contains(&NodeRole::Broker)
+            })
+            .map(|node| node.record.spec.node_id)
+            .collect();
+        state.peers.retain(|node, _| nodes.contains(node));
+        for node in nodes {
+            state.peers.entry(node).or_default();
+        }
         let Some(replica) = &self.metadata else {
             return Ok(());
         };

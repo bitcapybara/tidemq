@@ -15,12 +15,20 @@ enum PausePoint {
     HotDelivery(u64),
     Publish(u64),
     ColdRead,
+    Layout,
+    TopicCreation,
+}
+
+#[derive(Eq, PartialEq)]
+enum PauseTarget {
+    Partition(PartitionKey),
+    Topic(String),
 }
 
 static PAUSE: Mutex<Option<Arc<RuntimePause>>> = Mutex::new(None);
 
 struct RuntimePause {
-    partition: PartitionKey,
+    target: PauseTarget,
     point: PausePoint,
     ready: Notify,
     resume: Notify,
@@ -29,6 +37,12 @@ struct RuntimePause {
 pub struct InstalledPause(Arc<RuntimePause>);
 
 impl InstalledPause {
+    pub fn topic_creation(name: &str) -> io::Result<Self> {
+        Self::install_target(PauseTarget::Topic(name.into()), PausePoint::TopicCreation)
+    }
+    pub fn layout(partition: PartitionKey) -> io::Result<Self> {
+        Self::install(partition, PausePoint::Layout)
+    }
     pub fn cold_read(partition: PartitionKey) -> io::Result<Self> {
         Self::install(partition, PausePoint::ColdRead)
     }
@@ -39,6 +53,10 @@ impl InstalledPause {
         Self::install(partition, PausePoint::Publish(sequence))
     }
     fn install(partition: PartitionKey, point: PausePoint) -> io::Result<Self> {
+        Self::install_target(PauseTarget::Partition(partition), point)
+    }
+
+    fn install_target(target: PauseTarget, point: PausePoint) -> io::Result<Self> {
         let mut slot = PAUSE
             .lock()
             .map_err(|_| io::Error::other("Test hook is poisoned"))?;
@@ -46,7 +64,7 @@ impl InstalledPause {
             return Err(io::Error::other("A runtime pause is already installed"));
         }
         let hook = Arc::new(RuntimePause {
-            partition,
+            target,
             point,
             ready: Notify::new(),
             resume: Notify::new(),
@@ -91,11 +109,26 @@ pub(super) async fn pause_publish(partition: PartitionKey, sequence: u64, deadli
 pub(super) async fn pause_cold_read(partition: PartitionKey, deadline: Instant) {
     pause(partition, PausePoint::ColdRead, deadline).await;
 }
+
+pub(super) async fn pause_layout(partition: PartitionKey, deadline: Instant) {
+    pause(partition, PausePoint::Layout, deadline).await;
+}
+pub(super) async fn pause_topic_creation(name: &str, deadline: Instant) {
+    pause_target(
+        PauseTarget::Topic(name.into()),
+        PausePoint::TopicCreation,
+        deadline,
+    )
+    .await;
+}
 async fn pause(partition: PartitionKey, point: PausePoint, deadline: Instant) {
+    pause_target(PauseTarget::Partition(partition), point, deadline).await;
+}
+async fn pause_target(target: PauseTarget, point: PausePoint, deadline: Instant) {
     let hook = PAUSE.lock().ok().and_then(|mut slot| {
         if slot
             .as_ref()
-            .is_some_and(|hook| hook.partition == partition && hook.point == point)
+            .is_some_and(|hook| hook.target == target && hook.point == point)
         {
             slot.take()
         } else {

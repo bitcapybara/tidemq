@@ -6,6 +6,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("An admitted operation is not yet fully observed"))]
+    Admitted { source: Box<Error> },
     #[snafu(display("Invalid runtime input: {reason}"))]
     Invalid { reason: String },
     #[snafu(display("Runtime operation failed: {operation}"))]
@@ -34,6 +36,11 @@ pub struct Failure {
 }
 
 impl Error {
+    pub(crate) fn admitted(self) -> Self {
+        Self::Admitted {
+            source: Box::new(self),
+        }
+    }
     pub fn invalid(reason: impl Into<String>) -> Self {
         Self::Invalid {
             reason: reason.into(),
@@ -74,6 +81,12 @@ impl Error {
     }
     pub fn failure(&self) -> Failure {
         match self {
+            Self::Admitted { source } => {
+                let mut failure = source.failure();
+                failure.outcome = Outcome::Unknown.into();
+                failure.original_outcome_known = false;
+                failure
+            }
             Self::Rejected { failure } => failure.clone(),
             Self::Invalid { reason } => {
                 let mut failure = Failure::new(ErrorCode::InvalidRequest, Outcome::Rejected, false);
@@ -176,5 +189,15 @@ mod diagnostic_tests {
         let unknown = Error::unknown().failure();
         assert_eq!(unknown.outcome, i32::from(Outcome::Unknown));
         assert!(unknown.retryable);
+    }
+
+    #[test]
+    fn admitted_failure_keeps_its_cause_and_cannot_be_reported_as_a_current_refusal() {
+        let error = Error::unavailable().admitted();
+        assert!(std::error::Error::source(&error).is_some());
+        let failure = error.failure();
+        assert_eq!(failure.code, i32::from(ErrorCode::Unavailable));
+        assert_eq!(failure.outcome, i32::from(Outcome::Unknown));
+        assert!(!failure.original_outcome_known);
     }
 }

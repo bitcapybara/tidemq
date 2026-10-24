@@ -254,11 +254,11 @@ impl MetadataState {
             Decision {
                 operation_id: command.operation_id,
                 digest,
-                management_digest: match &command.action {
+                management_digest: command.management_binding.or(match &command.action {
                     Action::Identity(request) => Some(request.request_digest),
                     Action::Cluster(request) => Some(request.request_digest),
                     _ => None,
-                },
+                }),
                 response: response.clone(),
                 proof_position: None,
             },
@@ -310,6 +310,14 @@ impl MetadataState {
     }
 
     fn command_digest(&self, command: &Command) -> Result<[u8; 32], Rejection> {
+        if command.management_binding.is_some()
+            && !matches!(
+                command.action,
+                Action::CreateTopic { .. } | Action::PrepareLayout { .. }
+            )
+        {
+            return Err(Rejection::InvalidCommand);
+        }
         validate_command_shape(&command.action, &self.limits)?;
         if command.action.control_location().is_some() {
             return command.action.logical_digest();

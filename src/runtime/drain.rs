@@ -125,10 +125,8 @@ impl Service {
                     if probe.cluster == self.cluster
                         && probe.node == node
                         && self
-                            .config
-                            .runtime
-                            .peer(node)
-                            .is_ok_and(|peer| probe.role == peer.role)
+                            .registry
+                            .has_role(node, crate::metadata::NodeRole::Broker)
                         && probe.role.serves_broker()
                         && probe.accepting =>
                 {
