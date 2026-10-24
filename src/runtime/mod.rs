@@ -16,6 +16,7 @@ mod identity;
 mod maintenance;
 mod management;
 mod metadata;
+mod metadata_membership;
 mod node;
 mod objects;
 pub(crate) mod physical;

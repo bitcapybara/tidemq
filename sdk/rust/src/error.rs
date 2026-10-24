@@ -194,6 +194,7 @@ impl Error {
 
     pub(crate) fn permission_denied(&self) -> bool {
         match self {
+            Self::RequestUnknown { source } => source.permission_denied(),
             Self::Background { source }
             | Self::Administration { source, .. }
             | Self::SubscriptionDeletion { source, .. }
@@ -230,6 +231,21 @@ impl Error {
                 ..
             }
         )
+    }
+
+    pub(crate) fn retry_original(&self) -> bool {
+        if self.original_outcome_known() || self.permission_denied() {
+            return false;
+        }
+        match self {
+            Self::RequestUnknown { source } => source.retry_original(),
+            Self::Remote {
+                outcome: Outcome::Unknown,
+                retryable: true,
+                ..
+            } => true,
+            _ => self.retry_transport() || self.retry_rejected(),
+        }
     }
 
     pub(crate) fn retry_admission(&self) -> bool {
@@ -378,6 +394,9 @@ mod tests {
         };
         assert!(!denied.retry_transport());
         assert!(!denied.outcome_unknown());
+        let uncertain = denied.preserve_uncertainty(true);
+        assert!(uncertain.permission_denied());
+        assert!(uncertain.outcome_unknown());
         let lost = Error::Rpc {
             source: tidemq_transport::rpc::Error::Closed,
         };
@@ -389,5 +408,28 @@ mod tests {
             },
         };
         assert!(!not_sent.outcome_unknown());
+    }
+
+    #[test]
+    fn retrying_original_work_stops_for_a_recorded_refusal_or_a_protocol_violation() {
+        let failure = |known| Error::Remote {
+            code: ErrorCode::Unavailable,
+            outcome: Outcome::Rejected,
+            message: "Authority is unavailable".into(),
+            retryable: true,
+            expected_sequence: None,
+            expected_registration_epoch: None,
+            retry_after_ms: None,
+            original_outcome_known: known,
+        };
+        assert!(failure(false).preserve_uncertainty(true).retry_original());
+        assert!(!failure(true).retry_original());
+        assert!(
+            !Error::ResponseMismatch {
+                reason: "The response changed its identity".into()
+            }
+            .preserve_uncertainty(true)
+            .retry_original()
+        );
     }
 }

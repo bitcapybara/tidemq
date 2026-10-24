@@ -44,6 +44,7 @@ pub enum AdminReceipt {
     PolicySuperseded,
     NodeConfigured(crate::ClusterNodeInfo),
     DataGroupCreated(crate::DataGroupInfo),
+    MetadataMembershipChanged(crate::MetadataMembershipInfo),
 }
 
 pub(crate) enum Request {
@@ -58,6 +59,31 @@ pub(crate) enum Request {
 }
 
 impl Request {
+    async fn execute(
+        &self,
+        client: &Client,
+        operation: Id,
+        deadline: Instant,
+    ) -> Result<AdminReceipt> {
+        let mut uncertain = false;
+        loop {
+            let result = self.execute_once(client, operation, deadline).await;
+            match result {
+                Ok(receipt) => return Ok(receipt),
+                Err(error) => {
+                    uncertain |= error.outcome_unknown();
+                    if error.retry_original()
+                        && Instant::now() < deadline
+                        && client.backoff(operation, 0, deadline).await.is_ok()
+                    {
+                        continue;
+                    }
+                    return Err(error.preserve_uncertainty(uncertain));
+                }
+            }
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         let bytes = match self {
             Self::Identity(request) => request.encoded_len(),
@@ -75,7 +101,7 @@ impl Request {
     }
 
     // Keep each wire request paired with its typed reply and original resource validation.
-    async fn execute(
+    async fn execute_once(
         &self,
         client: &Client,
         operation: Id,
@@ -83,48 +109,13 @@ impl Request {
     ) -> Result<AdminReceipt> {
         let (name, wire): (&String, public::TopicLayoutResult) = match self {
             Self::Cluster(request) => {
-                let result = client
-                    .request(
-                        FrameKind::ManageCluster,
-                        FrameKind::ClusterControlResult,
-                        TrafficClass::Control,
-                        operation,
-                        request,
-                        deadline,
-                    )
-                    .await?;
-                return crate::cluster::receipt(request, result)
-                    .map_err(|error| error.preserve_uncertainty(true));
+                return cluster_request(client, request, operation, deadline).await;
             }
             Self::DeleteTopic(topic) => {
                 return delete_topic(client, *topic, operation, deadline).await;
             }
             Self::Identity(request) => {
-                let reply = loop {
-                    let reply: public::IdentityResult = client
-                        .request(
-                            FrameKind::ManageIdentity,
-                            FrameKind::IdentityResult,
-                            TrafficClass::Control,
-                            operation,
-                            request,
-                            deadline,
-                        )
-                        .await?;
-                    if !reply.policy_pending {
-                        break reply;
-                    }
-                    if reply.policy_superseded || reply.id != request.target_id {
-                        return Err(Error::ResponseMismatch {
-                            reason: "quota policy progress changed its target or terminal state"
-                                .into(),
-                        }
-                        .preserve_uncertainty(true));
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                };
-                return crate::identity::receipt(request, reply, operation)
-                    .map_err(|error| error.preserve_uncertainty(true));
+                return identity_request(client, request, operation, deadline).await;
             }
             Self::CreateTopic(name) => {
                 let reply = client
@@ -158,7 +149,7 @@ impl Request {
             Self::Layout { request, .. } => request.topic_id.clone(),
             Self::Identity(_) | Self::Cluster(_) | Self::DeleteTopic(_) => {
                 return Err(Error::ResponseMismatch {
-                    reason: "identity operation returned a topic layout".into(),
+                    reason: "management operation returned a topic layout".into(),
                 }
                 .preserve_uncertainty(true));
             }
@@ -489,4 +480,80 @@ impl Client {
             None => Ok(report),
         }
     }
+}
+
+async fn cluster_request(
+    client: &Client,
+    request: &public::ManageCluster,
+    operation: Id,
+    deadline: Instant,
+) -> Result<AdminReceipt> {
+    let mut admitted = false;
+    let result = loop {
+        let result: public::ClusterControlResult = client
+            .request(
+                FrameKind::ManageCluster,
+                FrameKind::ClusterControlResult,
+                TrafficClass::Control,
+                operation,
+                request,
+                deadline,
+            )
+            .await
+            .map_err(|error| error.preserve_uncertainty(admitted))?;
+        let Some(change) = &result.metadata_change else {
+            break result;
+        };
+        if result.node.is_some() || result.group.is_some() {
+            return Err(Error::ResponseMismatch {
+                reason: "metadata progress included unrelated results".into(),
+            }
+            .preserve_uncertainty(true));
+        }
+        if crate::cluster::metadata_progress(request, change, operation)
+            .map_err(|error| error.preserve_uncertainty(true))?
+            .is_some()
+        {
+            break result;
+        }
+        admitted = true;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    crate::cluster::receipt(request, result, operation)
+        .map_err(|error| error.preserve_uncertainty(true))
+}
+
+async fn identity_request(
+    client: &Client,
+    request: &public::ManageIdentity,
+    operation: Id,
+    deadline: Instant,
+) -> Result<AdminReceipt> {
+    let mut admitted = false;
+    let reply = loop {
+        let reply: public::IdentityResult = client
+            .request(
+                FrameKind::ManageIdentity,
+                FrameKind::IdentityResult,
+                TrafficClass::Control,
+                operation,
+                request,
+                deadline,
+            )
+            .await
+            .map_err(|error| error.preserve_uncertainty(admitted))?;
+        if !reply.policy_pending {
+            break reply;
+        }
+        if reply.policy_superseded || reply.id != request.target_id {
+            return Err(Error::ResponseMismatch {
+                reason: "quota policy progress changed its target or terminal state".into(),
+            }
+            .preserve_uncertainty(true));
+        }
+        admitted = true;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    crate::identity::receipt(request, reply, operation)
+        .map_err(|error| error.preserve_uncertainty(true))
 }

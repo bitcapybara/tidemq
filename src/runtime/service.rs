@@ -45,6 +45,7 @@ pub(crate) struct Service {
     pub rpc: PeerRpc,
     pub authority: Arc<RemoteMetadataAuthority>,
     pub(super) registry: Arc<super::registry::Registry>,
+    pub(super) metadata_repair: std::sync::Mutex<Option<(Id, crate::scaling::RepairLease)>>,
     pub(super) auth_cache: super::auth::AuthCache,
     pub(super) consumer_after: std::sync::Mutex<Option<Id>>,
     pub(super) consumer_delete_after: std::sync::Mutex<Option<Id>>,
@@ -135,6 +136,7 @@ impl Service {
             rpc,
             authority,
             registry,
+            metadata_repair: std::sync::Mutex::new(None),
             auth_cache: super::auth::AuthCache::default(),
             consumer_after: std::sync::Mutex::new(None),
             consumer_delete_after: std::sync::Mutex::new(None),
@@ -564,6 +566,8 @@ impl Service {
             | wire::LEADER
             | super::registry::REGISTRY
             | super::cluster::HOSTED_GROUP
+            | super::metadata_membership::STATUS
+            | super::metadata_membership::CHECKPOINT
             | super::auth::AUTH_QUERY
             | crate::lifecycle::remote::LIFECYCLE_QUERY
             | crate::lifecycle::remote::LIFECYCLE_COMMAND => Some(StreamPurpose::Core),
@@ -605,6 +609,21 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::metadata_membership::STATUS | super::metadata_membership::CHECKPOINT => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                    || !matches!(peer.role.as_str(), "metadata" | "combined")
+                {
+                    return Err(forbidden());
+                }
+                if request.kind == super::metadata_membership::STATUS {
+                    self.metadata_membership_status().await?
+                } else {
+                    self.metadata_membership_checkpoint(&request.body, deadline)
+                        .await?
+                }
+            }
             super::cluster::HOSTED_GROUP => {
                 drop(order);
                 if group != self.config.runtime.metadata_group

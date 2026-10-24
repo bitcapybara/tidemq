@@ -281,6 +281,9 @@ impl RunningNode {
             service.clone().follow_registry(stopped.clone()),
         ));
         tasks.push(tokio::spawn(
+            service.clone().follow_metadata_membership(stopped.clone()),
+        ));
+        tasks.push(tokio::spawn(
             service.clone().resume_authority_transfers(stopped.clone()),
         ));
         let maintenance = service.clone();

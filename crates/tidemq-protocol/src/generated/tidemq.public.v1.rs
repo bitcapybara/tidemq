@@ -63,6 +63,23 @@ pub struct ManageCluster {
     pub group_id: u64,
     #[prost(uint64, repeated, tag = "6")]
     pub voters: ::prost::alloc::vec::Vec<u64>,
+    #[prost(uint64, tag = "7")]
+    pub removed_node: u64,
+    #[prost(uint64, tag = "8")]
+    pub added_node: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct MetadataMembershipChange {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub operation_id: ::prost::bytes::Bytes,
+    #[prost(uint64, repeated, tag = "2")]
+    pub previous: ::prost::alloc::vec::Vec<u64>,
+    #[prost(uint64, repeated, tag = "3")]
+    pub target: ::prost::alloc::vec::Vec<u64>,
+    #[prost(uint64, tag = "4")]
+    pub expected_membership_index: u64,
+    #[prost(uint64, optional, tag = "5")]
+    pub completed_membership_index: ::core::option::Option<u64>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClusterControlResult {
@@ -70,6 +87,8 @@ pub struct ClusterControlResult {
     pub node: ::core::option::Option<ClusterNode>,
     #[prost(message, optional, tag = "2")]
     pub group: ::core::option::Option<ClusterGroup>,
+    #[prost(message, optional, tag = "3")]
+    pub metadata_change: ::core::option::Option<MetadataMembershipChange>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetClusterRegistry {
@@ -601,6 +620,7 @@ pub enum ClusterAction {
     RegisterClusterNode = 1,
     SetNodeSchedulable = 2,
     CreateDataGroup = 3,
+    ReplaceMetadataReplica = 4,
 }
 impl ClusterAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -613,6 +633,7 @@ impl ClusterAction {
             Self::RegisterClusterNode => "REGISTER_CLUSTER_NODE",
             Self::SetNodeSchedulable => "SET_NODE_SCHEDULABLE",
             Self::CreateDataGroup => "CREATE_DATA_GROUP",
+            Self::ReplaceMetadataReplica => "REPLACE_METADATA_REPLICA",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -622,6 +643,7 @@ impl ClusterAction {
             "REGISTER_CLUSTER_NODE" => Some(Self::RegisterClusterNode),
             "SET_NODE_SCHEDULABLE" => Some(Self::SetNodeSchedulable),
             "CREATE_DATA_GROUP" => Some(Self::CreateDataGroup),
+            "REPLACE_METADATA_REPLICA" => Some(Self::ReplaceMetadataReplica),
             _ => None,
         }
     }

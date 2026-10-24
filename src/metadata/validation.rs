@@ -51,6 +51,7 @@ impl MetadataState {
         }
         self.validate_nodes_groups()?;
         self.validate_node_registry()?;
+        self.validate_metadata_changes()?;
         self.validate_migrations()?;
         self.validate_topics()?;
         self.validate_subscriptions()?;
@@ -336,6 +337,11 @@ impl MetadataState {
     fn validate_outcome(&self, operation_id: Id, outcome: &Outcome) -> Result<(), Rejection> {
         match outcome {
             Outcome::Cluster(result) => match &result.outcome {
+                super::ClusterOutcome::MetadataChange(id) => {
+                    if *id != operation_id || self.metadata_change(*id).is_none() {
+                        return Err(Rejection::InvalidEvidence);
+                    }
+                }
                 super::ClusterOutcome::Node(node) => {
                     node.identity.validate(&node.record.spec)?;
                     if node.record.generation == 0 {
@@ -349,6 +355,14 @@ impl MetadataState {
                     self.validate_placement(&group.voters, false)?;
                 }
             },
+            Outcome::MetadataChange(change) => {
+                if self
+                    .metadata_change(change.id)
+                    .is_none_or(|stored| stored != change.as_ref())
+                {
+                    return Err(Rejection::InvalidEvidence);
+                }
+            }
             Outcome::NodeConfigured(node) => {
                 node.spec.validate()?;
                 if node.generation == 0 {

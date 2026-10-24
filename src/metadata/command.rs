@@ -21,6 +21,10 @@ pub struct Command {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Action {
+    CompleteMetadataChange {
+        operation: Id,
+        membership_index: u64,
+    },
     Cluster(super::ClusterCommand),
     Transfer(super::TransferCommand),
     Bootstrap {
@@ -98,6 +102,21 @@ pub(crate) enum Action {
 }
 
 impl Command {
+    pub fn complete_metadata_change(
+        operation: Id,
+        revision: u64,
+        change: Id,
+        membership_index: u64,
+    ) -> Self {
+        Self::new(
+            operation,
+            revision,
+            Action::CompleteMetadataChange {
+                operation: change,
+                membership_index,
+            },
+        )
+    }
     pub(crate) fn bind_management(mut self, digest: [u8; 32]) -> Self {
         self.management_binding = Some(digest);
         self
@@ -462,6 +481,7 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    MetadataChange(Box<super::MetadataChange>),
     Cluster(Box<super::ClusterResult>),
     QuotaPolicy(super::QuotaPolicy),
     ResourceLease(Option<super::ResourceLease>),

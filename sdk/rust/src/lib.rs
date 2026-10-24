@@ -25,7 +25,9 @@ pub use builder::{ClientBuilder, Credentials, TlsTrust};
 use client::ClientConfig;
 pub use client::{Client, ClientLimits};
 pub use close::{CloseError, CloseReport};
-pub use cluster::{ClusterNodeInfo, ClusterRole, DataGroupInfo, NodeRegistration};
+pub use cluster::{
+    ClusterNodeInfo, ClusterRole, DataGroupInfo, MetadataMembershipInfo, NodeRegistration,
+};
 pub use context::scope_traceparent;
 pub use error::{Error, ErrorKind, Result};
 pub use group_consumer::{

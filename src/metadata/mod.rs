@@ -10,6 +10,7 @@ mod consumers;
 mod control;
 mod diagnostics;
 mod members;
+mod metadata_membership;
 mod nodes;
 mod policies;
 mod publishers;
@@ -43,6 +44,7 @@ pub use members::{
     MEMBER_LEASE_MS, MEMBER_RECOVERY_MS, MemberHeartbeat, MemberInfo, MemberJoin, MemberStatus,
     MembersBook, MembersPlan,
 };
+pub use metadata_membership::MetadataChange;
 pub use nodes::{
     ClusterAction, ClusterCommand, ClusterOutcome, ClusterResult, NodeIdentity, RegisteredNode,
     RegistryPage,

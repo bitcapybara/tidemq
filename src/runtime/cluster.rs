@@ -125,11 +125,37 @@ impl Service {
             ClusterOutcome::Node(node) => public::ClusterControlResult {
                 node: Some(node_result(node)),
                 group: None,
+                metadata_change: None,
             },
             ClusterOutcome::Group(group) => public::ClusterControlResult {
                 node: None,
                 group: Some(group_result(group)),
+                metadata_change: None,
             },
+            ClusterOutcome::MetadataChange(id) => {
+                let change = self
+                    .metadata
+                    .as_ref()
+                    .ok_or_else(Error::unavailable)?
+                    .state
+                    .try_with_application(|state| state.metadata_change(id).cloned())
+                    .await
+                    .map_err(|source| {
+                        Error::operation("read metadata replacement progress", source)
+                    })?
+                    .ok_or_else(Error::unavailable)?;
+                public::ClusterControlResult {
+                    node: None,
+                    group: None,
+                    metadata_change: Some(public::MetadataMembershipChange {
+                        operation_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
+                        previous: change.previous.into_iter().collect(),
+                        target: change.target.into_iter().collect(),
+                        expected_membership_index: change.expected_membership_index,
+                        completed_membership_index: change.completed_membership_index,
+                    }),
+                }
+            }
         };
         wire::response(
             frame,
@@ -171,7 +197,18 @@ impl Service {
                 ));
             }
             OperationResult::UnknownOrRetired => {
-                let action = cluster_action(request)?;
+                let action =
+                    if request.action == i32::from(public::ClusterAction::ReplaceMetadataReplica) {
+                        self.metadata_membership_action(
+                            operation,
+                            request.removed_node,
+                            request.added_node,
+                            deadline,
+                        )
+                        .await?
+                    } else {
+                        cluster_action(request)?
+                    };
                 if let ClusterAction::CreateGroup { group, voters } = &action {
                     self.verify_prepared_group(*group, voters, false, deadline)
                         .await?;
@@ -352,6 +389,9 @@ fn cluster_action(request: public::ManageCluster) -> Result<ClusterAction> {
             })
         }
         Action::Unspecified => Err(Error::invalid("Cluster action is required")),
+        Action::ReplaceMetadataReplica => Err(Error::invalid(
+            "Metadata replacement requires a verified native membership view",
+        )),
     }
 }
 

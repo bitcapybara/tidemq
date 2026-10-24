@@ -17,12 +17,14 @@ enum PausePoint {
     ColdRead,
     Layout,
     TopicCreation,
+    MetadataMembership,
 }
 
 #[derive(Eq, PartialEq)]
 enum PauseTarget {
     Partition(PartitionKey),
     Topic(String),
+    Metadata(tidemq_protocol::Id, u64),
 }
 
 static PAUSE: Mutex<Option<Arc<RuntimePause>>> = Mutex::new(None);
@@ -37,6 +39,12 @@ struct RuntimePause {
 pub struct InstalledPause(Arc<RuntimePause>);
 
 impl InstalledPause {
+    pub fn metadata_membership(cluster: tidemq_protocol::Id, node: u64) -> io::Result<Self> {
+        Self::install_target(
+            PauseTarget::Metadata(cluster, node),
+            PausePoint::MetadataMembership,
+        )
+    }
     pub fn topic_creation(name: &str) -> io::Result<Self> {
         Self::install_target(PauseTarget::Topic(name.into()), PausePoint::TopicCreation)
     }
@@ -117,6 +125,18 @@ pub(super) async fn pause_topic_creation(name: &str, deadline: Instant) {
     pause_target(
         PauseTarget::Topic(name.into()),
         PausePoint::TopicCreation,
+        deadline,
+    )
+    .await;
+}
+pub(super) async fn pause_metadata_membership(
+    cluster: tidemq_protocol::Id,
+    node: u64,
+    deadline: Instant,
+) {
+    pause_target(
+        PauseTarget::Metadata(cluster, node),
+        PausePoint::MetadataMembership,
         deadline,
     )
     .await;

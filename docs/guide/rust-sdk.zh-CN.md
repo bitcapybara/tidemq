@@ -138,3 +138,5 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 ```
 
 服务功能和故障集成测试位于仓库 tests 目录。功能测试不证明吞吐提升、线性扩展或已校准的容量。
+
+`admin.replace_metadata_replica(removed, added).await?` 受控替换一个 Metadata voter，保持配置的副本数及故障域要求。先登记并启动新 Metadata 进程；成功回执表示 Native Raft 已完成稳定成员变更，且所有目标 voter 已取得覆盖该变更的持久快照。取消等待或控制器重启沿原 `PendingAdmin` 计划恢复，旧节点在计划完成后才能继续排空。增加 Metadata 备用进程不增加控制面写吞吐。

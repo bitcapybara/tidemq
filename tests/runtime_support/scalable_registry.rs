@@ -145,7 +145,7 @@ async fn lost_split_reply_resumes_its_original_targets_after_new_capacity_become
     fixture.close().await;
 }
 
-async fn registration(fixture: &Fixture, node: u64) -> tidemq_sdk::NodeRegistration {
+pub(super) async fn registration(fixture: &Fixture, node: u64) -> tidemq_sdk::NodeRegistration {
     let peer = fixture
         .configs
         .get(&node)

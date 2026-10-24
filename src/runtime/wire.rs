@@ -151,6 +151,8 @@ impl PeerRpc {
                     | super::auth::AUTH_QUERY
                     | super::registry::REGISTRY
                     | super::cluster::HOSTED_GROUP
+                    | super::metadata_membership::STATUS
+                    | super::metadata_membership::CHECKPOINT
                     | super::resource_leases::RESOURCE_LEASE
                     | crate::lifecycle::remote::LIFECYCLE_QUERY
                     | crate::lifecycle::remote::LIFECYCLE_COMMAND

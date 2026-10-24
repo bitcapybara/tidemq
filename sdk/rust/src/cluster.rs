@@ -94,7 +94,39 @@ pub struct DataGroupInfo {
     pub voters: Vec<u64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataMembershipInfo {
+    pub previous_voters: Vec<u64>,
+    pub voters: Vec<u64>,
+    pub membership_index: u64,
+}
+
 impl Admin {
+    pub async fn replace_metadata_replica(
+        &self,
+        removed: u64,
+        added: u64,
+    ) -> Result<MetadataMembershipInfo> {
+        if removed == 0 || added == 0 || removed == added {
+            return Err(Error::Configuration {
+                reason: "metadata replacement requires distinct nonzero node identities",
+            });
+        }
+        match self
+            .execute(Request::Cluster(public::ManageCluster {
+                action: public::ClusterAction::ReplaceMetadataReplica.into(),
+                removed_node: removed,
+                added_node: added,
+                ..Default::default()
+            }))
+            .await?
+        {
+            AdminReceipt::MetadataMembershipChanged(info) => Ok(info),
+            _ => Err(mismatch(
+                "metadata replacement returned another receipt kind",
+            )),
+        }
+    }
     pub async fn register_node(&self, node: NodeRegistration) -> Result<ClusterNodeInfo> {
         self.cluster_node(public::ManageCluster {
             action: public::ClusterAction::RegisterClusterNode.into(),
@@ -247,7 +279,18 @@ impl Admin {
 pub(crate) fn receipt(
     request: &public::ManageCluster,
     result: public::ClusterControlResult,
+    operation: tidemq_protocol::Id,
 ) -> Result<AdminReceipt> {
+    if let Some(change) = &result.metadata_change {
+        if result.node.is_some() || result.group.is_some() {
+            return Err(mismatch(
+                "metadata replacement included another result kind",
+            ));
+        }
+        return metadata_progress(request, change, operation)?
+            .map(AdminReceipt::MetadataMembershipChanged)
+            .ok_or_else(|| mismatch("metadata replacement has not completed"));
+    }
     if request.action == i32::from(public::ClusterAction::CreateDataGroup) {
         if result.node.is_some() {
             return Err(mismatch("group creation included an unrelated node"));
@@ -297,6 +340,48 @@ pub(crate) fn receipt(
         ));
     }
     Ok(AdminReceipt::NodeConfigured(node))
+}
+
+pub(crate) fn metadata_progress(
+    request: &public::ManageCluster,
+    change: &public::MetadataMembershipChange,
+    operation: tidemq_protocol::Id,
+) -> Result<Option<MetadataMembershipInfo>> {
+    let previous: BTreeSet<_> = change.previous.iter().copied().collect();
+    let target: BTreeSet<_> = change.target.iter().copied().collect();
+    if request.action != i32::from(public::ClusterAction::ReplaceMetadataReplica)
+        || change.operation_id.as_ref() != operation.as_bytes()
+        || !matches!(previous.len(), 1 | 3)
+        || previous.len() != change.previous.len()
+        || target.len() != change.target.len()
+        || previous.len() != target.len()
+        || previous.contains(&0)
+        || target.contains(&0)
+        || previous
+            .difference(&target)
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != [request.removed_node].into()
+        || target
+            .difference(&previous)
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != [request.added_node].into()
+        || change
+            .completed_membership_index
+            .is_some_and(|index| index <= change.expected_membership_index)
+    {
+        return Err(mismatch(
+            "metadata replacement changed its original identity, voters or progress",
+        ));
+    }
+    Ok(change
+        .completed_membership_index
+        .map(|membership_index| MetadataMembershipInfo {
+            previous_voters: previous.into_iter().collect(),
+            voters: target.into_iter().collect(),
+            membership_index,
+        }))
 }
 
 fn node_info(node: public::ClusterNode) -> Result<ClusterNodeInfo> {

@@ -282,7 +282,20 @@ impl Service {
             .map_err(|_| Error::unavailable())?;
         replica
             .state
-            .try_with_application(|state| crate::scaling::DrainPlan::inspect(state, node))
+            .try_with_membership(|state, _, membership| {
+                let mut progress = crate::scaling::DrainPlan::inspect(state, node)?;
+                progress.metadata_role = membership
+                    .membership()
+                    .voter_ids()
+                    .any(|voter| voter == node);
+                let pending = state.pending_metadata_change().is_some_and(|change| {
+                    change.previous.contains(&node) || change.target.contains(&node)
+                });
+                progress.pending_membership_changes = progress
+                    .pending_membership_changes
+                    .saturating_add(usize::from(pending));
+                Ok::<_, crate::scaling::Error>(progress)
+            })
             .await
             .map_err(|source| Error::operation("inspect durable drain blockers", source))?
             .map_err(|source| Error::operation("validate node drain state", source))

@@ -80,6 +80,7 @@ pub struct RegistryPage {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClusterAction {
+    ReplaceMetadata(super::MetadataChange),
     RegisterNode {
         spec: NodeSpec,
         identity: NodeIdentity,
@@ -108,6 +109,7 @@ pub struct ClusterCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClusterOutcome {
+    MetadataChange(Id),
     Node(RegisteredNode),
     Group(DataGroup),
 }
@@ -220,6 +222,9 @@ impl MetadataState {
             return Err(Rejection::Authorization(AuthRejection::Forbidden));
         }
         let outcome = match &command.action {
+            ClusterAction::ReplaceMetadata(change) => {
+                ClusterOutcome::MetadataChange(self.prepare_metadata_change(change.clone())?)
+            }
             ClusterAction::RegisterNode { spec, identity } => self.register_node(spec, identity)?,
             ClusterAction::SetSchedulable { node, enabled } => {
                 let current = self.registered_node(*node)?;
@@ -346,6 +351,10 @@ impl MetadataState {
             || self.migrations.values().any(|plan| {
                 !plan.is_complete()
                     && (plan.plan.previous.contains(&node) || plan.plan.target.contains(&node))
+            })
+            || self.metadata_changes.values().any(|change| {
+                !change.complete()
+                    && (change.previous.contains(&node) || change.target.contains(&node))
             })
         {
             return Err(Rejection::NodeInUse);

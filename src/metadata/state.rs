@@ -77,6 +77,7 @@ pub struct MetadataState {
     pub(crate) nodes: BTreeMap<u64, NodeRecord>,
     pub(crate) node_identities: BTreeMap<u64, super::NodeIdentity>,
     pub(crate) registry_revision: u64,
+    pub(crate) metadata_changes: BTreeMap<Id, super::MetadataChange>,
     pub(crate) groups: BTreeMap<u64, DataGroup>,
     pub(crate) migrations: BTreeMap<u64, crate::scaling::MigrationRecord>,
     pub(crate) partitions: BTreeMap<PartitionKey, PartitionRecord>,
@@ -214,6 +215,7 @@ impl MetadataState {
                     | Action::Quota(_)
                     | Action::ResourceLease(_)
                     | Action::ObserveQuotaPolicy { .. }
+                    | Action::CompleteMetadataChange { .. }
             )
         {
             return self.apply_new(&command);
@@ -280,6 +282,7 @@ impl MetadataState {
                 | Action::CreateGroup { .. }
                 | Action::CompleteMembership(_)
                 | Action::Cluster(_)
+                | Action::CompleteMetadataChange { .. }
         );
         let next_registry = if changes_registry {
             let Some(next) = self.registry_revision.checked_add(1) else {
@@ -357,9 +360,21 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
-            Action::Cluster(request) => self
-                .cluster_command(request)
-                .map(|result| Outcome::Cluster(Box::new(result))),
+            Action::CompleteMetadataChange {
+                operation,
+                membership_index,
+            } => self
+                .complete_metadata_change(*operation, *membership_index)
+                .map(|change| Outcome::MetadataChange(Box::new(change))),
+            Action::Cluster(request) => {
+                if let super::ClusterAction::ReplaceMetadata(change) = &request.action
+                    && change.id != command.operation_id
+                {
+                    return Err(Rejection::OperationConflict);
+                }
+                self.cluster_command(request)
+                    .map(|result| Outcome::Cluster(Box::new(result)))
+            }
             Action::ObserveQuotaPolicy { policy, now_ms } => self
                 .observe_quota_policy(*policy, *now_ms)
                 .map(Outcome::QuotaPolicy),

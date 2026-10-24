@@ -12,6 +12,8 @@ mod identity_delete;
 mod identity_list;
 #[path = "scalable_message_limits.rs"]
 mod message_limits;
+#[path = "scalable_metadata_membership.rs"]
+mod metadata_membership;
 #[path = "scalable_quotas.rs"]
 mod quotas;
 #[path = "scalable_registry.rs"]

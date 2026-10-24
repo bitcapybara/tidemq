@@ -7,6 +7,128 @@ use tidemq_protocol::Id;
 
 const NOW: u64 = 1_000;
 
+#[test]
+fn metadata_replacement_keeps_one_original_plan_and_blocks_retirement_until_completion() {
+    let (mut state, root) = fixture();
+    let ClusterAction::RegisterNode {
+        mut spec,
+        mut identity,
+    } = registration(2)
+    else {
+        panic!("Expected registration");
+    };
+    identity.role = "metadata".into();
+    spec.roles = identity.roles().unwrap();
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            ClusterAction::RegisterNode { spec, identity }
+        )
+        .is_applied()
+    );
+    let change = tidemq::metadata::MetadataChange {
+        id: Id::random().unwrap(),
+        previous: [1].into(),
+        target: [2].into(),
+        expected_membership_index: 0,
+        completed_membership_index: None,
+    };
+    let original = Command::cluster(
+        change.id,
+        state.revision(),
+        ClusterCommand {
+            actor: Some(root),
+            now_ms: NOW,
+            request_digest: [9; 32],
+            action: ClusterAction::ReplaceMetadata(change.clone()),
+        },
+    );
+    let accepted = state.apply(original.clone());
+    assert!(accepted.is_applied());
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            ClusterAction::SetSchedulable {
+                node: 2,
+                enabled: false
+            }
+        )
+        .is_applied()
+    );
+    assert!(matches!(
+        apply(
+            &mut state,
+            Some(root),
+            ClusterAction::RetireNode {
+                node: 2,
+                metadata_voters: [1].into()
+            }
+        ),
+        Response::Rejected {
+            reason: Rejection::NodeInUse,
+            ..
+        }
+    ));
+    let mut restored: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
+    restored.validate_snapshot().unwrap();
+    assert_eq!(restored.pending_metadata_change(), Some(&change));
+    assert!(
+        !restored
+            .apply(Command::complete_metadata_change(
+                Id::random().unwrap(),
+                restored.revision(),
+                change.id,
+                0
+            ))
+            .is_applied()
+    );
+    assert!(
+        restored
+            .apply(Command::complete_metadata_change(
+                Id::random().unwrap(),
+                restored.revision(),
+                change.id,
+                9
+            ))
+            .is_applied()
+    );
+    assert!(restored.pending_metadata_change().is_none());
+    assert_eq!(
+        restored
+            .metadata_change(change.id)
+            .unwrap()
+            .completed_membership_index,
+        Some(9)
+    );
+    assert_eq!(restored.apply(original), accepted);
+    assert!(
+        apply(
+            &mut restored,
+            Some(root),
+            ClusterAction::SetSchedulable {
+                node: 1,
+                enabled: false
+            }
+        )
+        .is_applied()
+    );
+    assert!(
+        apply(
+            &mut restored,
+            Some(root),
+            ClusterAction::RetireNode {
+                node: 1,
+                metadata_voters: [2].into()
+            }
+        )
+        .is_applied()
+    );
+    restored.validate_snapshot().unwrap();
+}
+
 fn registration(node: u64) -> ClusterAction {
     let mut identity = NodeIdentity {
         certificate_name: format!("node-{node}.local"),

@@ -88,7 +88,7 @@ fn select_archive_range(
     Ok(OffsetRange { start, end: next })
 }
 
-async fn background_admitted(
+pub(super) async fn background_admitted(
     quota: &Mutex<crate::quota::Quota>,
     observed: &Notify,
     deadline: Instant,
