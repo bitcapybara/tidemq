@@ -18,6 +18,7 @@ mod management;
 mod metadata;
 mod metadata_membership;
 mod node;
+mod node_retirement;
 mod objects;
 pub(crate) mod physical;
 mod publishing;

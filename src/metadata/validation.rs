@@ -86,6 +86,7 @@ impl MetadataState {
             || self.registry_revision != 0
             || !self.groups.is_empty()
             || !self.migrations.is_empty()
+            || !self.metadata_changes.is_empty()
             || self.lifecycle.object_count() != 0
             || self.lifecycle.pin_count() != 0
             || !self.topology.layouts.is_empty()

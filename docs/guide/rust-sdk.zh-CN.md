@@ -140,3 +140,5 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 服务功能和故障集成测试位于仓库 tests 目录。功能测试不证明吞吐提升、线性扩展或已校准的容量。
 
 `admin.replace_metadata_replica(removed, added).await?` 受控替换一个 Metadata voter，保持配置的副本数及故障域要求。先登记并启动新 Metadata 进程；成功回执表示 Native Raft 已完成稳定成员变更，且所有目标 voter 已取得覆盖该变更的持久快照。取消等待或控制器重启沿原 `PendingAdmin` 计划恢复，旧节点在计划完成后才能继续排空。增加 Metadata 备用进程不增加控制面写吞吐。
+
+节点计划退出使用 `begin_node_drain(id)` → `node_drain_status(id)` → `retire_node(id)`。开始排空后持久停止新分配，控制器逐批移交 Broker 所有权；Storage 副本和 Metadata voter 必须先通过对应替换协议移出，未完成计划继续显示为 blocker。退休调用通过存活 Gateway 发起，等待目标关闭外部监听、排空已接受的业务请求并持久落盘本地 fence，之后提交不可逆的身份墓碑。回包丢失沿原 PendingAdmin 恢复；仅有本地 fence 的重启进程只能提供内部控制接口，不能重新接收业务。退休成功后部署端才销毁实例及其卷。

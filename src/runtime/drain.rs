@@ -29,16 +29,28 @@ impl From<&Handoff> for Move {
         }
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 enum Command {
     Prewarm(Move),
     Drain(Move),
     Takeover(Move),
-    Reconnect { node: u64 },
-    Unschedule { node: u64 },
-    Inspect { node: u64 },
-    Stop { node: u64 },
-    Probe { node: u64 },
+    Reconnect {
+        node: u64,
+    },
+    Unschedule {
+        node: u64,
+    },
+    Inspect {
+        node: u64,
+    },
+    Quiesce {
+        node: u64,
+        generation: u64,
+        drain: tidemq_protocol::Id,
+    },
+    Probe {
+        node: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -194,51 +206,53 @@ impl Service {
         if request.kind != KIND {
             return false;
         }
-        matches!(wire::decode_json::<Command>(&request.body), Ok(Command::Stop { node } | Command::Reconnect { node }) if node == self.config.node_id)
+        matches!(wire::decode_json::<Command>(&request.body), Ok(Command::Reconnect { node }) if node == self.config.node_id)
     }
 
-    pub(crate) async fn planned_node_drain(
+    pub(super) async fn retirement_action(
         &self,
         node: u64,
-        handoffs: &[Handoff],
         deadline: Instant,
-    ) -> Result<crate::scaling::DrainProgress> {
-        if !self.config.role.stores_metadata() || handoffs.len() > 64 {
-            return Err(forbidden());
+    ) -> Result<crate::metadata::ClusterAction> {
+        let progress = self.inspect_node_drain(node, deadline).await?;
+        if !progress.durable_state_drained() {
+            return Err(Error::invalid("Node drain still has durable blockers"));
         }
-        let leader = self
-            .leader(self.config.runtime.metadata_group, deadline)
-            .await?;
-        self.drain_rpc(
-            leader,
-            self.config.runtime.metadata_group,
-            Command::Unschedule { node },
-            deadline,
-        )
-        .await?;
-        for handoff in handoffs {
-            let route = self.route(handoff.partition, deadline).await?;
-            check_route(&handoff.into(), &route)?;
-            if handoff.target_owner == node
-                || route.owner_node != node && route.owner_node != handoff.target_owner
-            {
-                return Err(forbidden());
-            }
-            crate::scaling::DrainPlan::handoff(self, handoff, &self.scaling.metrics, deadline)
-                .await
-                .map_err(|source| Error::operation("execute bounded node handoff", source))?;
-        }
-        let progress = self.remote_drain_progress(node, deadline).await?;
-        if progress.durable_state_drained() {
-            self.drain_rpc(
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        let (generation, drain, voters) = replica
+            .state
+            .try_with_membership(|state, _, membership| {
+                let record = state.node(node).ok_or_else(Error::unavailable)?;
+                let drain = state
+                    .node_identity(node)
+                    .and_then(|identity| identity.drain_operation)
+                    .ok_or_else(|| Error::invalid("Begin node drain before retirement"))?;
+                Ok::<_, Error>((
+                    record.generation,
+                    drain,
+                    membership.membership().voter_ids().collect(),
+                ))
+            })
+            .await
+            .map_err(|source| Error::operation("read original node drain", source))??;
+        let bytes = self
+            .drain_rpc(
                 node,
                 self.config.runtime.metadata_group,
-                Command::Stop { node },
+                Command::Quiesce {
+                    node,
+                    generation,
+                    drain,
+                },
                 deadline,
             )
             .await?;
-        }
-        Ok(progress)
+        let proof = wire::decode_json(&bytes)?;
+        self.verify_retirement_proof(&proof, node, generation, drain)?;
+        Ok(crate::metadata::ClusterAction::RetireNode {
+            node,
+            metadata_voters: voters,
+        })
     }
 
     async fn unschedule(&self, node: u64, deadline: Instant) -> Result<()> {
@@ -270,7 +284,7 @@ impl Service {
         Ok(())
     }
 
-    async fn inspect_node_drain(
+    pub(super) async fn inspect_node_drain(
         &self,
         node: u64,
         deadline: Instant,
@@ -306,22 +320,36 @@ impl Service {
         node: u64,
         deadline: Instant,
     ) -> Result<crate::scaling::DrainProgress> {
-        let leader = self
-            .leader(self.config.runtime.metadata_group, deadline)
-            .await?;
         let bytes = self
-            .drain_rpc(
-                leader,
-                self.config.runtime.metadata_group,
-                Command::Inspect { node },
-                deadline,
-            )
+            .metadata_drain_rpc(Command::Inspect { node }, deadline)
             .await?;
         let progress: crate::scaling::DrainProgress = wire::decode_json(&bytes)?;
         if progress.node_id != node {
             return Err(forbidden());
         }
         Ok(progress)
+    }
+
+    async fn metadata_drain_rpc(&self, command: Command, deadline: Instant) -> Result<Bytes> {
+        loop {
+            let group = self.config.runtime.metadata_group;
+            let leader = self.leader(group, deadline).await?;
+            match self
+                .drain_rpc(leader, group, command.clone(), deadline)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(error) if error.failure().retryable && Instant::now() < deadline => {
+                    self.leaders.write().await.remove(&group);
+                    wire::within(
+                        deadline,
+                        tokio::time::sleep(std::time::Duration::from_millis(20)),
+                    )
+                    .await?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     async fn stop_drained_node(&self, deadline: Instant) -> Result<()> {
@@ -361,6 +389,16 @@ impl Service {
             return Err(forbidden());
         }
         match command {
+            Command::Quiesce {
+                node,
+                generation,
+                drain,
+            } => {
+                if node != self.config.node_id || group != self.config.runtime.metadata_group {
+                    return Err(forbidden());
+                }
+                wire::json(&self.retirement_proof(generation, drain, deadline).await?)
+            }
             Command::Probe { node } => {
                 if node != self.config.node_id || group != self.config.runtime.metadata_group {
                     return Err(forbidden());
@@ -384,13 +422,6 @@ impl Service {
                     return Err(forbidden());
                 }
                 wire::json(&self.inspect_node_drain(node, deadline).await?)
-            }
-            Command::Stop { node } => {
-                if node != self.config.node_id || group != self.config.runtime.metadata_group {
-                    return Err(forbidden());
-                }
-                self.stop_drained_node(deadline).await?;
-                wire::json(&())
             }
             Command::Prewarm(handoff) => {
                 if !self.config.role.serves_broker() || handoff.target_owner != self.config.node_id
@@ -569,18 +600,9 @@ impl DrainActions for Service {
         wire::decode_json(&bytes).map_err(scaling_error)
     }
     async fn reconnect_gateway(&self, node: u64, deadline: Instant) -> crate::scaling::Result<()> {
-        let leader = self
-            .leader(self.config.runtime.metadata_group, deadline)
+        self.metadata_drain_rpc(Command::Unschedule { node }, deadline)
             .await
             .map_err(scaling_error)?;
-        self.drain_rpc(
-            leader,
-            self.config.runtime.metadata_group,
-            Command::Unschedule { node },
-            deadline,
-        )
-        .await
-        .map_err(scaling_error)?;
         self.drain_rpc(
             node,
             self.config.runtime.metadata_group,

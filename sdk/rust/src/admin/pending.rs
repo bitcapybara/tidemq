@@ -504,7 +504,7 @@ async fn cluster_request(
         let Some(change) = &result.metadata_change else {
             break result;
         };
-        if result.node.is_some() || result.group.is_some() {
+        if result.node.is_some() || result.group.is_some() || result.drain_progress.is_some() {
             return Err(Error::ResponseMismatch {
                 reason: "metadata progress included unrelated results".into(),
             }

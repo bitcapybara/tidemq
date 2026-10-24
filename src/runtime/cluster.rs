@@ -107,6 +107,11 @@ impl Service {
         frame: &Frame,
         deadline: Instant,
     ) -> Result<Frame> {
+        if frame_kind_action(frame, &self.config.protocol)?
+            == public::ClusterAction::InspectNodeDrain
+        {
+            return self.node_drain_public(access, frame, deadline).await;
+        }
         let actor = credential(access)?;
         let request: public::ManageCluster =
             tidemq_protocol::framing::decode_payload(frame.payload.clone(), &self.config.protocol)
@@ -126,11 +131,13 @@ impl Service {
                 node: Some(node_result(node)),
                 group: None,
                 metadata_change: None,
+                drain_progress: None,
             },
             ClusterOutcome::Group(group) => public::ClusterControlResult {
                 node: None,
                 group: Some(group_result(group)),
                 metadata_change: None,
+                drain_progress: None,
             },
             ClusterOutcome::MetadataChange(id) => {
                 let change = self
@@ -147,6 +154,7 @@ impl Service {
                 public::ClusterControlResult {
                     node: None,
                     group: None,
+                    drain_progress: None,
                     metadata_change: Some(public::MetadataMembershipChange {
                         operation_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
                         previous: change.previous.into_iter().collect(),
@@ -165,6 +173,59 @@ impl Service {
         )
     }
 
+    async fn node_drain_public(
+        &self,
+        access: &Access,
+        frame: &Frame,
+        deadline: Instant,
+    ) -> Result<Frame> {
+        let actor = credential(access)?;
+        let request: public::ManageCluster =
+            tidemq_protocol::framing::decode_payload(frame.payload.clone(), &self.config.protocol)
+                .map_err(|source| Error::operation("decode node drain query", source))?;
+        let now = super::data::unix_millis()?;
+        let retired = self
+            .metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| {
+                let principal = state
+                    .auth()
+                    .authorize(actor, now, Permission::ManageTenants, None)
+                    .map_err(|_| forbidden())?;
+                if principal.tenant.is_some() {
+                    return Err(forbidden());
+                }
+                state
+                    .node_identity(request.node_id)
+                    .map(|identity| identity.retired)
+                    .ok_or_else(Error::unavailable)
+            })
+            .await
+            .map_err(|source| Error::operation("authorize node drain query", source))??;
+        let progress = self.inspect_node_drain(request.node_id, deadline).await?;
+        wire::response(
+            frame,
+            FrameKind::ClusterControlResult,
+            &public::ClusterControlResult {
+                drain_progress: Some(public::NodeDrainProgress {
+                    node_id: progress.node_id,
+                    owned_shards: u32::try_from(progress.owned_partitions)
+                        .map_err(|_| Error::unavailable())?,
+                    storage_groups: u32::try_from(progress.storage_groups)
+                        .map_err(|_| Error::unavailable())?,
+                    pending_membership_changes: u32::try_from(progress.pending_membership_changes)
+                        .map_err(|_| Error::unavailable())?,
+                    metadata_voter: progress.metadata_role,
+                    retired,
+                }),
+                ..Default::default()
+            },
+            &self.config.protocol,
+        )
+    }
+
     async fn cluster_operation(
         &self,
         actor: Id,
@@ -173,7 +234,6 @@ impl Service {
         request: public::ManageCluster,
         deadline: Instant,
     ) -> Result<ClusterOutcome> {
-        let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
         let saved = self
             .metadata
             .as_ref()
@@ -197,22 +257,26 @@ impl Service {
                 ));
             }
             OperationResult::UnknownOrRetired => {
-                let action =
-                    if request.action == i32::from(public::ClusterAction::ReplaceMetadataReplica) {
-                        self.metadata_membership_action(
-                            operation,
-                            request.removed_node,
-                            request.added_node,
-                            deadline,
-                        )
-                        .await?
-                    } else {
-                        cluster_action(request)?
-                    };
+                let action = if request.action
+                    == i32::from(public::ClusterAction::ReplaceMetadataReplica)
+                {
+                    self.metadata_membership_action(
+                        operation,
+                        request.removed_node,
+                        request.added_node,
+                        deadline,
+                    )
+                    .await?
+                } else if request.action == i32::from(public::ClusterAction::RetireClusterNode) {
+                    self.retirement_action(request.node_id, deadline).await?
+                } else {
+                    cluster_action(request, operation)?
+                };
                 if let ClusterAction::CreateGroup { group, voters } = &action {
                     self.verify_prepared_group(*group, voters, false, deadline)
                         .await?;
                 }
+                let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
                 let result = self
                     .meta_write(
                         Command::cluster(
@@ -333,7 +397,7 @@ fn credential(access: &Access) -> Result<Id> {
         .map_err(|_| forbidden())
 }
 
-fn cluster_action(request: public::ManageCluster) -> Result<ClusterAction> {
+fn cluster_action(request: public::ManageCluster, operation: Id) -> Result<ClusterAction> {
     use public::ClusterAction as Action;
     match Action::try_from(request.action)
         .map_err(|_| Error::invalid("Cluster action is invalid"))?
@@ -342,7 +406,7 @@ fn cluster_action(request: public::ManageCluster) -> Result<ClusterAction> {
             let node = request
                 .registration
                 .ok_or_else(|| Error::invalid("Node registration is required"))?;
-            if node.retired || node.generation != 0 {
+            if node.retired || node.draining || node.generation != 0 {
                 return Err(Error::invalid(
                     "New nodes cannot provide retirement or generation state",
                 ));
@@ -356,6 +420,7 @@ fn cluster_action(request: public::ManageCluster) -> Result<ClusterAction> {
                     .map_err(|_| Error::invalid("Certificate pin must contain 32 bytes"))?,
                 role: node.role,
                 retired: false,
+                drain_operation: None,
                 external_endpoint: None,
             };
             let roles = identity
@@ -388,6 +453,13 @@ fn cluster_action(request: public::ManageCluster) -> Result<ClusterAction> {
                 voters,
             })
         }
+        Action::BeginNodeDrain => Ok(ClusterAction::BeginDrain {
+            node: request.node_id,
+            operation,
+        }),
+        Action::InspectNodeDrain | Action::RetireClusterNode => Err(Error::invalid(
+            "Node retirement requires runtime drain evidence",
+        )),
         Action::Unspecified => Err(Error::invalid("Cluster action is required")),
         Action::ReplaceMetadataReplica => Err(Error::invalid(
             "Metadata replacement requires a verified native membership view",
@@ -405,6 +477,7 @@ fn node_result(node: metadata::RegisteredNode) -> public::ClusterNode {
         certificate_pin: bytes::Bytes::copy_from_slice(&node.identity.certificate_pin),
         schedulable: node.record.spec.schedulable,
         retired: node.identity.retired,
+        draining: node.identity.drain_operation.is_some(),
         generation: node.record.generation,
     }
 }
@@ -414,4 +487,15 @@ fn group_result(group: metadata::DataGroup) -> public::ClusterGroup {
         generation: group.generation,
         voters: group.voters.into_iter().collect(),
     }
+}
+
+fn frame_kind_action(
+    frame: &Frame,
+    limits: &tidemq_protocol::ProtocolLimits,
+) -> Result<public::ClusterAction> {
+    let request: public::ManageCluster =
+        tidemq_protocol::framing::decode_payload(frame.payload.clone(), limits)
+            .map_err(|source| Error::operation("decode cluster action", source))?;
+    public::ClusterAction::try_from(request.action)
+        .map_err(|_| Error::invalid("Cluster action is invalid"))
 }

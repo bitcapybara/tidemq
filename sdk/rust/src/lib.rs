@@ -26,7 +26,8 @@ use client::ClientConfig;
 pub use client::{Client, ClientLimits};
 pub use close::{CloseError, CloseReport};
 pub use cluster::{
-    ClusterNodeInfo, ClusterRole, DataGroupInfo, MetadataMembershipInfo, NodeRegistration,
+    ClusterNodeInfo, ClusterRole, DataGroupInfo, MetadataMembershipInfo, NodeDrainProgress,
+    NodeRegistration,
 };
 pub use context::scope_traceparent;
 pub use error::{Error, ErrorKind, Result};

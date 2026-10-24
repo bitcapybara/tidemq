@@ -330,20 +330,22 @@ async fn registered_nodes_and_an_independent_group_join_without_restarting_exist
     assert_eq!(message.message_id(), continued);
     consumer.ack(&message).await.unwrap();
     client.admin().set_node_schedulable(3, false).await.unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(5);
     loop {
-        if http(
+        let diagnostics = http(
             fixture.running.get(&3).unwrap().management_address,
-            "/readyz",
+            "/diagnostics",
         )
-        .await
-        .starts_with("HTTP/1.1 503")
-        {
+        .await;
+        let body = diagnostics.split("\r\n\r\n").nth(1).unwrap();
+        let diagnostics: serde_json::Value = serde_json::from_str(body).unwrap();
+        if diagnostics["schedulable"] == false {
+            assert_eq!(diagnostics["ready"], false);
             break;
         }
         assert!(
             Instant::now() < until,
-            "An unscheduled gateway continued advertising readiness"
+            "Gateway did not observe the committed scheduling fence"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

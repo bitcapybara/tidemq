@@ -163,6 +163,7 @@ impl Registry {
                         role: peer.role.name().into(),
                         external_endpoint: None,
                         retired: false,
+                        drain_operation: None,
                     },
                 },
             );
@@ -580,7 +581,9 @@ impl Directory {
                     || old.identity.role != new.identity.role
                     || old.identity.certificate_name != new.identity.certificate_name
                     || old.record.spec.endpoint != new.record.spec.endpoint
-                    || old.identity.retired && !new.identity.retired)
+                    || old.identity.retired && !new.identity.retired
+                    || old.identity.drain_operation.is_some()
+                        && old.identity.drain_operation != new.identity.drain_operation)
             {
                 return Err(Error::invalid(
                     "Committed node directory changed a pinned identity",

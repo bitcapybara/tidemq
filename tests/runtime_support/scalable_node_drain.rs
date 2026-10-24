@@ -1,0 +1,174 @@
+use super::*;
+use tidemq::metadata::PartitionKey;
+use tidemq_sdk::Message;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gateway_drain_proves_local_cleanup_and_retirement_rejects_the_original_identity() {
+    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Gateway)], &[1], &[1]).await;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let connected = fixture.client(2).await;
+    let begin = client.admin().begin_node_drain(2).await.unwrap();
+    assert!(begin.draining && !begin.schedulable && !begin.retired);
+    let status = client.admin().node_drain_status(2).await.unwrap();
+    assert!(status.durable_state_drained() && !status.retired);
+    assert!(client.admin().set_node_schedulable(2, true).await.is_err());
+    let retired = client.admin().retire_node(2).await.unwrap();
+    assert!(retired.retired && retired.draining && !retired.schedulable);
+    connected.close().await.unwrap();
+    assert!(client.admin().node_drain_status(2).await.unwrap().retired);
+    assert!(
+        fixture
+            .configs
+            .get(&2)
+            .unwrap()
+            .data_dir
+            .join("node-retirement.json")
+            .is_file()
+    );
+    fixture.stop(2).await;
+    match RunningNode::start(fixture.configs.get(&2).unwrap().clone()).await {
+        Ok(restarted) => {
+            assert!(restarted.external_address.is_none());
+            restarted.shutdown().await.unwrap();
+        }
+        Err(error) => {
+            assert!(error.to_string().contains("Retired node identities"));
+        }
+    }
+    assert!(
+        client
+            .admin()
+            .register_node(registry::registration(&fixture, 2).await)
+            .await
+            .is_err()
+    );
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn draining_broker_hands_off_existing_ownership_before_reporting_clear_blockers() {
+    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Broker)], &[1], &[1]).await;
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = client.admin().create_topic("acme/app/drain").await.unwrap();
+    let partition = PartitionKey {
+        topic_id: topic.id().to_string().parse().unwrap(),
+        partition: 0,
+    };
+    let route = fixture
+        .running
+        .get(&1)
+        .unwrap()
+        .route(partition, deadline())
+        .await
+        .unwrap();
+    fixture
+        .running
+        .get(&1)
+        .unwrap()
+        .takeover(partition, 2, route.epoch, route.generation, deadline())
+        .await
+        .unwrap();
+    let consumer = client
+        .new_stream_consumer("acme/app/drain", "events")
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer("acme/app/drain").build().await.unwrap();
+    let first = producer
+        .send(Message::new("before").key("one"))
+        .await
+        .unwrap()
+        .message_id();
+    let held = consumer.receive().await.unwrap();
+    assert_eq!(held.message_id(), first);
+    client.admin().begin_node_drain(2).await.unwrap();
+    let until = deadline();
+    loop {
+        let status = client.admin().node_drain_status(2).await.unwrap();
+        if status.durable_state_drained() {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "Broker ownership did not leave the draining node"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    consumer.ack_cumulative(&held).await.unwrap();
+    client.admin().retire_node(2).await.unwrap();
+    fixture.stop(2).await;
+    let second = producer
+        .send(Message::new("after").key("one"))
+        .await
+        .unwrap()
+        .message_id();
+    let message = consumer.receive().await.unwrap();
+    assert_eq!(message.message_id(), second);
+    consumer.ack_cumulative(&message).await.unwrap();
+    consumer.close().await.unwrap();
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[cfg(feature = "test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lost_local_retirement_proof_survives_a_restart_without_reopening_business_admission() {
+    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Gateway)], &[1], &[1]).await;
+    let internal = fixture.configs.get(&2).unwrap().runtime.internal_listen;
+    let proxy = udp_proxy::Proxy::start([internal, internal]).await;
+    for config in fixture.configs.values_mut() {
+        config
+            .runtime
+            .peers
+            .iter_mut()
+            .find(|peer| peer.node_id == 2)
+            .unwrap()
+            .internal_address = proxy.address;
+    }
+    fixture.start_all().await;
+    let client = fixture.client(1).await;
+    client.admin().begin_node_drain(2).await.unwrap();
+    let cluster = fixture.configs.get(&1).unwrap().cluster_id.parse().unwrap();
+    let hook = tidemq::runtime::test_hooks::InstalledPause::node_retirement(cluster, 2).unwrap();
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(1)).unwrap();
+    let caller = client.clone();
+    let waiting = tokio::spawn(async move { context.scope(caller.admin().retire_node(2)).await });
+    hook.wait(deadline()).await.unwrap();
+    proxy.set_response_mtu(0);
+    hook.resume();
+    assert!(waiting.await.unwrap().unwrap_err().outcome_unknown());
+    let pending = client.admin().pending_operations().unwrap();
+    assert_eq!(pending.len(), 1);
+    fixture.stop(2).await;
+    drop(hook);
+    let resumed = RunningNode::start(fixture.configs.get(&2).unwrap().clone())
+        .await
+        .unwrap();
+    assert!(resumed.external_address.is_none());
+    assert!(
+        http(resumed.management_address, "/readyz")
+            .await
+            .starts_with("HTTP/1.1 503")
+    );
+    fixture.running.insert(2, resumed);
+    proxy.set_response_mtu(1200);
+    let receipt = pending[0].retry().await.unwrap();
+    let tidemq_sdk::AdminReceipt::NodeConfigured(node) = receipt else {
+        panic!("Expected original node retirement receipt");
+    };
+    assert!(node.retired);
+    assert!(client.admin().pending_operations().unwrap().is_empty());
+    client.close().await.unwrap();
+    fixture.close().await;
+    proxy.close().await;
+}

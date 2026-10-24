@@ -65,3 +65,5 @@ ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记�
 后台维护仍由配置周期触发。如果本轮新增归档遇到过期的容量样本，会在原 5 秒截止时间内等待管理采样器发布下一份真实观测，再重新检查配额，避免两个 1 Hz 定时器长期相撞。通知本身不提供准入证据，也不额外触发一轮维护；样本年龄上限仍为 1000 ms，采样失败不会刷新年龄，压力或未测量等其他拒绝保持原样，停机可立即取消等待。
 
 Metadata voter 替换通过持久计划执行：先同步 learner，再提交 Native Raft 联合/稳定成员变更，所有目标 voter 完成覆盖成员变更的持久快照后提交完成状态。控制器重启、Leader 变化和客户端等待取消均沿原计划恢复；未完成计划仍阻止关联节点退休。替换共享修复并发与带宽预算，不改变 RF 或故障域约束。
+
+计划缩容先通过存活 Gateway 调用 `begin_node_drain`。`node_drain_status` 提供当前所有权、Storage 组、Metadata voter 及未完成成员变更 blocker；Broker 所有权由 Metadata Leader 逐批移交。所有 blocker 清除后调用 `retire_node`，它核对目标本地 admission fence、外部监听清理和已接受业务请求排空，再提交身份退休。`/diagnostics` 的 `schedulable` 表示该进程已观察到的分配状态；单独的 readiness 503 可能有其他原因，不能当作退休证明。退休状态为不可逆墓碑；部署工具必须在成功回执后删除实例/卷。

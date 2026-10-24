@@ -18,6 +18,7 @@ enum PausePoint {
     Layout,
     TopicCreation,
     MetadataMembership,
+    NodeRetirement,
 }
 
 #[derive(Eq, PartialEq)]
@@ -39,6 +40,12 @@ struct RuntimePause {
 pub struct InstalledPause(Arc<RuntimePause>);
 
 impl InstalledPause {
+    pub fn node_retirement(cluster: tidemq_protocol::Id, node: u64) -> io::Result<Self> {
+        Self::install_target(
+            PauseTarget::Metadata(cluster, node),
+            PausePoint::NodeRetirement,
+        )
+    }
     pub fn metadata_membership(cluster: tidemq_protocol::Id, node: u64) -> io::Result<Self> {
         Self::install_target(
             PauseTarget::Metadata(cluster, node),
@@ -137,6 +144,18 @@ pub(super) async fn pause_metadata_membership(
     pause_target(
         PauseTarget::Metadata(cluster, node),
         PausePoint::MetadataMembership,
+        deadline,
+    )
+    .await;
+}
+pub(super) async fn pause_node_retirement(
+    cluster: tidemq_protocol::Id,
+    node: u64,
+    deadline: Instant,
+) {
+    pause_target(
+        PauseTarget::Metadata(cluster, node),
+        PausePoint::NodeRetirement,
         deadline,
     )
     .await;

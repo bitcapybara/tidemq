@@ -8,6 +8,59 @@ use tidemq_protocol::Id;
 const NOW: u64 = 1_000;
 
 #[test]
+fn uninitialized_snapshot_rejects_control_membership_history() {
+    let mut snapshot = serde_json::to_value(MetadataState::default()).unwrap();
+    let operation = Id::random().unwrap();
+    snapshot["metadata_changes"] = serde_json::json!({ operation.to_string(): {
+        "id": operation, "previous": [1], "target": [2], "expected_membership_index": 0, "completed_membership_index": null
+    }});
+    let restored: MetadataState = serde_json::from_value(snapshot).unwrap();
+    assert!(restored.validate_snapshot().is_err());
+}
+
+#[test]
+fn beginning_node_drain_survives_snapshot_and_forbids_new_scheduling() {
+    let (mut state, root) = fixture();
+    assert!(apply(&mut state, Some(root), registration(2)).is_applied());
+    let operation = Id::random().unwrap();
+    let command = Command::cluster(
+        operation,
+        state.revision(),
+        ClusterCommand {
+            actor: Some(root),
+            now_ms: NOW,
+            request_digest: [7; 32],
+            action: ClusterAction::BeginDrain { node: 2, operation },
+        },
+    );
+    let receipt = state.apply(command.clone());
+    assert!(receipt.is_applied());
+    let mut restored: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
+    restored.validate_snapshot().unwrap();
+    assert_eq!(
+        restored.node_identity(2).unwrap().drain_operation,
+        Some(operation)
+    );
+    assert!(!restored.node(2).unwrap().spec.schedulable);
+    assert_eq!(restored.apply(command), receipt);
+    assert!(matches!(
+        apply(
+            &mut restored,
+            Some(root),
+            ClusterAction::SetSchedulable {
+                node: 2,
+                enabled: true
+            }
+        ),
+        Response::Rejected {
+            reason: Rejection::NodeInUse,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn metadata_replacement_keeps_one_original_plan_and_blocks_retirement_until_completion() {
     let (mut state, root) = fixture();
     let ClusterAction::RegisterNode {
@@ -136,6 +189,7 @@ fn registration(node: u64) -> ClusterAction {
         role: if node == 1 { "combined" } else { "storage" }.into(),
         external_endpoint: None,
         retired: false,
+        drain_operation: None,
     };
     if node == 1 {
         identity.external_endpoint = Some("127.0.0.1:7443".parse().unwrap());

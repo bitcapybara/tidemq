@@ -147,16 +147,16 @@ async fn rf3_metadata_replacement_keeps_three_voters_and_checkpoints_every_targe
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    client.admin().begin_node_drain(1).await.unwrap();
     assert!(
-        fixture
-            .running
-            .get(&2)
-            .unwrap()
-            .drain_node(1, &[], deadline())
+        client
+            .admin()
+            .node_drain_status(1)
             .await
             .unwrap()
             .durable_state_drained()
     );
+    client.admin().retire_node(1).await.unwrap();
     fixture.stop(1).await;
     queue.ack(&held).await.unwrap();
     let next = producer
@@ -258,14 +258,16 @@ async fn metadata_replacement_checkpoints_the_new_voter_and_old_seed_restart_kee
     assert_eq!(moved.previous_voters, [1]);
     assert_eq!(moved.voters, [2]);
     assert!(moved.membership_index > 0);
-    let progress = fixture
-        .running
-        .get(&2)
-        .unwrap()
-        .drain_node(1, &[], deadline())
-        .await
-        .unwrap();
-    assert!(progress.durable_state_drained());
+    client.admin().begin_node_drain(1).await.unwrap();
+    assert!(
+        client
+            .admin()
+            .node_drain_status(1)
+            .await
+            .unwrap()
+            .durable_state_drained()
+    );
+    client.admin().retire_node(1).await.unwrap();
     fixture.stop(1).await;
     stream.ack_cumulative(&held).await.unwrap();
     fixture.stop(4).await;

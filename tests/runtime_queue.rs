@@ -601,17 +601,15 @@ async fn rf3_separate_metadata_storage_broker_and_gateways_use_quic_semantics() 
     let identity = logical_send(&producer, b"after-handoff").await;
     assert!(!seen.contains(&identity));
     logical_consume(&consumer, &[identity], b"after-handoff").await;
-    let blockers = control.drain_node(12, &[], deadline()).await.unwrap();
-    assert!(blockers.metadata_role);
+    client.admin().begin_node_drain(12).await.unwrap();
+    let blockers = client.admin().node_drain_status(12).await.unwrap();
+    assert!(blockers.metadata_voter);
     assert!(!blockers.durable_state_drained());
-    let drained = control.drain_node(31, &[], deadline()).await.unwrap();
+    client.admin().begin_node_drain(31).await.unwrap();
+    let drained = client.admin().node_drain_status(31).await.unwrap();
     assert!(drained.durable_state_drained());
-    fixture
-        .running
-        .get(&31)
-        .unwrap()
-        .wait_for_shutdown_request()
-        .await;
+    client.admin().retire_node(31).await.unwrap();
+    assert!(client.admin().node_drain_status(31).await.unwrap().retired);
     consumer.close().await.unwrap();
     producer.close().await.unwrap();
     second_client.close().await.unwrap();

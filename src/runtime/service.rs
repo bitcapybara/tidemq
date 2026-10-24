@@ -68,6 +68,10 @@ pub(crate) struct Service {
     pub log_health: std::sync::Mutex<Option<crate::observability::logging::LogHealth>>,
     pub trace_health: std::sync::Mutex<Option<crate::observability::tracing::TraceHealth>>,
     pub draining: AtomicBool,
+    pub(super) public_admission: super::node_retirement::Admission,
+    pub(super) retirement: Mutex<Option<super::node_retirement::Fence>>,
+    pub(super) external_stop: watch::Sender<bool>,
+    pub(super) external_drained: std::sync::atomic::AtomicU8,
     pub partition_drains: std::sync::Mutex<BTreeMap<PartitionKey, u64>>,
     pub shutdown_requested: watch::Sender<bool>,
     pub routes: RwLock<BTreeMap<PartitionKey, CachedRoute>>,
@@ -83,7 +87,7 @@ pub(crate) struct Service {
 impl Service {
     // Keep process-owned facilities explicit at the single runtime assembly boundary.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         config: Config,
         cluster: Id,
         metadata: Option<Replica<MetadataState>>,
@@ -102,6 +106,9 @@ impl Service {
         repair: crate::scaling::RepairBudget,
         transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
         shutdown_requested: watch::Sender<bool>,
+        retirement: Option<super::node_retirement::Fence>,
+        external_stop: watch::Sender<bool>,
+        has_external: bool,
     ) -> Result<Self> {
         let failover_metrics = super::failover::Metrics::register(metrics.registry_mut());
         let scaling = super::scaling::RuntimeScaling::new(
@@ -127,6 +134,11 @@ impl Service {
                     Error::operation("restore lifecycle metadata discovery", source)
                 })?;
         }
+        let public_admission = super::node_retirement::Admission::default();
+        if retirement.is_some() {
+            public_admission.stop()?;
+        }
+        let retiring = retirement.is_some();
         Ok(Self {
             config,
             cluster,
@@ -158,7 +170,11 @@ impl Service {
             disk_capacity: std::sync::Mutex::new(None),
             log_health: std::sync::Mutex::new(None),
             trace_health: std::sync::Mutex::new(None),
-            draining: AtomicBool::new(false),
+            draining: AtomicBool::new(retiring),
+            public_admission,
+            retirement: Mutex::new(retirement),
+            external_stop,
+            external_drained: std::sync::atomic::AtomicU8::new(u8::from(!has_external)),
             partition_drains: std::sync::Mutex::new(BTreeMap::new()),
             shutdown_requested,
             routes: RwLock::new(BTreeMap::new()),
@@ -360,6 +376,7 @@ impl Service {
         order: Option<SubmissionOrder>,
         hops: u32,
     ) -> Result<Frame> {
+        let _active = self.public_admission.enter()?;
         let operation = match frame_kind(frame)? {
             FrameKind::GroupRead => Operation::Read,
             FrameKind::GroupAck => Operation::Ack,

@@ -19,6 +19,7 @@ pub struct NodeIdentity {
     pub role: String,
     pub external_endpoint: Option<SocketAddr>,
     pub retired: bool,
+    pub drain_operation: Option<Id>,
 }
 
 impl NodeIdentity {
@@ -49,7 +50,10 @@ impl NodeIdentity {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
             || self.certificate_pin == [0; 32]
-            || self.retired && spec.schedulable
+            || (self.retired || self.drain_operation.is_some()) && spec.schedulable
+            || self
+                .drain_operation
+                .is_some_and(|operation| !super::control::is_random_operation_id(operation))
             || self.external_endpoint.is_some_and(|address| {
                 !spec.roles.contains(&NodeRole::Gateway)
                     || address.port() == 0
@@ -81,6 +85,10 @@ pub struct RegistryPage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClusterAction {
     ReplaceMetadata(super::MetadataChange),
+    BeginDrain {
+        node: u64,
+        operation: Id,
+    },
     RegisterNode {
         spec: NodeSpec,
         identity: NodeIdentity,
@@ -222,12 +230,34 @@ impl MetadataState {
             return Err(Rejection::Authorization(AuthRejection::Forbidden));
         }
         let outcome = match &command.action {
+            ClusterAction::BeginDrain { node, operation } => {
+                if !super::control::is_random_operation_id(*operation) {
+                    return Err(Rejection::InvalidEvidence);
+                }
+                let current = self.registered_node(*node)?;
+                if current.identity.retired {
+                    return Err(Rejection::IdentityRetired);
+                }
+                if current.identity.drain_operation.is_none() {
+                    let mut spec = current.record.spec;
+                    spec.schedulable = false;
+                    self.put_node(&spec, current.record.generation)?;
+                    self.node_identities
+                        .get_mut(node)
+                        .ok_or(Rejection::NotFound)?
+                        .drain_operation = Some(*operation);
+                }
+                ClusterOutcome::Node(self.registered_node(*node)?)
+            }
             ClusterAction::ReplaceMetadata(change) => {
                 ClusterOutcome::MetadataChange(self.prepare_metadata_change(change.clone())?)
             }
             ClusterAction::RegisterNode { spec, identity } => self.register_node(spec, identity)?,
             ClusterAction::SetSchedulable { node, enabled } => {
                 let current = self.registered_node(*node)?;
+                if *enabled && current.identity.drain_operation.is_some() {
+                    return Err(Rejection::NodeInUse);
+                }
                 let mut spec = current.record.spec.clone();
                 spec.schedulable = *enabled;
                 self.put_node(&spec, current.record.generation)?;
@@ -274,7 +304,7 @@ impl MetadataState {
         identity: &NodeIdentity,
     ) -> Result<ClusterOutcome, Rejection> {
         identity.validate(spec)?;
-        if identity.retired {
+        if identity.retired || identity.drain_operation.is_some() {
             return Err(Rejection::IdentityRetired);
         }
         if let Some(previous) = self.node_identities.get(&spec.node_id) {

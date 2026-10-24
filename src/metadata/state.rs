@@ -372,6 +372,11 @@ impl MetadataState {
                 {
                     return Err(Rejection::OperationConflict);
                 }
+                if let super::ClusterAction::BeginDrain { operation, .. } = &request.action
+                    && *operation != command.operation_id
+                {
+                    return Err(Rejection::OperationConflict);
+                }
                 self.cluster_command(request)
                     .map(|result| Outcome::Cluster(Box::new(result)))
             }

@@ -39,6 +39,8 @@ pub struct ClusterNode {
     pub retired: bool,
     #[prost(uint64, tag = "9")]
     pub generation: u64,
+    #[prost(bool, tag = "10")]
+    pub draining: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ClusterGroup {
@@ -89,6 +91,23 @@ pub struct ClusterControlResult {
     pub group: ::core::option::Option<ClusterGroup>,
     #[prost(message, optional, tag = "3")]
     pub metadata_change: ::core::option::Option<MetadataMembershipChange>,
+    #[prost(message, optional, tag = "4")]
+    pub drain_progress: ::core::option::Option<NodeDrainProgress>,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct NodeDrainProgress {
+    #[prost(uint64, tag = "1")]
+    pub node_id: u64,
+    #[prost(uint32, tag = "2")]
+    pub owned_shards: u32,
+    #[prost(uint32, tag = "3")]
+    pub storage_groups: u32,
+    #[prost(uint32, tag = "4")]
+    pub pending_membership_changes: u32,
+    #[prost(bool, tag = "5")]
+    pub metadata_voter: bool,
+    #[prost(bool, tag = "6")]
+    pub retired: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetClusterRegistry {
@@ -621,6 +640,9 @@ pub enum ClusterAction {
     SetNodeSchedulable = 2,
     CreateDataGroup = 3,
     ReplaceMetadataReplica = 4,
+    BeginNodeDrain = 5,
+    InspectNodeDrain = 6,
+    RetireClusterNode = 7,
 }
 impl ClusterAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -634,6 +656,9 @@ impl ClusterAction {
             Self::SetNodeSchedulable => "SET_NODE_SCHEDULABLE",
             Self::CreateDataGroup => "CREATE_DATA_GROUP",
             Self::ReplaceMetadataReplica => "REPLACE_METADATA_REPLICA",
+            Self::BeginNodeDrain => "BEGIN_NODE_DRAIN",
+            Self::InspectNodeDrain => "INSPECT_NODE_DRAIN",
+            Self::RetireClusterNode => "RETIRE_CLUSTER_NODE",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -644,6 +669,9 @@ impl ClusterAction {
             "SET_NODE_SCHEDULABLE" => Some(Self::SetNodeSchedulable),
             "CREATE_DATA_GROUP" => Some(Self::CreateDataGroup),
             "REPLACE_METADATA_REPLICA" => Some(Self::ReplaceMetadataReplica),
+            "BEGIN_NODE_DRAIN" => Some(Self::BeginNodeDrain),
+            "INSPECT_NODE_DRAIN" => Some(Self::InspectNodeDrain),
+            "RETIRE_CLUSTER_NODE" => Some(Self::RetireClusterNode),
             _ => None,
         }
     }

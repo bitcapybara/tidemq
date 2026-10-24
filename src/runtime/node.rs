@@ -57,6 +57,7 @@ impl RunningNode {
         tokio::fs::create_dir_all(&config.data_dir)
             .await
             .map_err(|source| Error::operation("create process data directory", source))?;
+        let retirement = super::node_retirement::load(&config, cluster).await?;
         let budget = MemoryBudget::new(&config.memory)
             .map_err(|source| Error::operation("create process memory budget", source))?;
         let identity = TlsIdentity::new(
@@ -83,7 +84,7 @@ impl RunningNode {
             bind_deadline,
         )
         .await?;
-        let external = if config.role.serves_gateway() {
+        let external = if config.role.serves_gateway() && retirement.is_none() {
             Some(
                 bind_server(
                     config.listen,
@@ -232,6 +233,8 @@ impl RunningNode {
                 .register_collector(Box::new(external.metrics.clone()));
         }
         let (shutdown, stopped) = watch::channel(false);
+        let (external_stop, _) = watch::channel(false);
+        let has_external = external.is_some();
         let service = Arc::new(Service::new(
             config,
             cluster,
@@ -251,6 +254,9 @@ impl RunningNode {
             repair,
             transport_metrics,
             shutdown.clone(),
+            retirement,
+            external_stop,
+            has_external,
         )?);
         let dispatcher = DispatchConfig {
             // The external listener can authenticate only after its complete service is installed.
@@ -261,22 +267,51 @@ impl RunningNode {
             .set(Arc::downgrade(&service))
             .map_err(|_| Error::invalid("Authentication service was installed twice"))?;
         let mut tasks = Vec::new();
-        for server in [Some(internal), external].into_iter().flatten() {
-            let service = service.clone();
-            let config = dispatcher.clone();
-            let budget = budget.clone();
-            let dispatch = dispatch.clone();
-            let stopped = stopped.clone();
+        let internal_service = service.clone();
+        let internal_config = dispatcher.clone();
+        let internal_budget = budget.clone();
+        let internal_dispatch = dispatch.clone();
+        let internal_stopped = stopped.clone();
+        tasks.push(tokio::spawn(async move {
+            crate::server::run(
+                internal,
+                internal_service,
+                internal_config,
+                internal_budget,
+                internal_dispatch,
+                internal_stopped,
+            )
+            .await
+            .map_err(Error::foundation)
+        }));
+        if let Some(external) = external {
+            let external_service = service.clone();
+            let external_stopped = service.external_stop.subscribe();
             tasks.push(tokio::spawn(async move {
-                crate::server::run(server, service, config, budget, dispatch, stopped)
-                    .await
-                    .map_err(Error::foundation)
+                let result = crate::server::run(
+                    external,
+                    external_service.clone(),
+                    dispatcher,
+                    budget,
+                    dispatch,
+                    external_stopped,
+                )
+                .await
+                .map_err(Error::foundation);
+                external_service.external_drained.store(
+                    if result.is_ok() { 1 } else { 2 },
+                    std::sync::atomic::Ordering::Release,
+                );
+                result
             }));
         }
         let (management_address, task) =
             super::management::start(service.clone(), stopped.clone()).await?;
         tasks.push(task);
         tasks.push(tokio::spawn(service.clone().rebalance(stopped.clone())));
+        tasks.push(tokio::spawn(
+            service.clone().follow_node_drains(stopped.clone()),
+        ));
         tasks.push(tokio::spawn(
             service.clone().follow_registry(stopped.clone()),
         ));
@@ -366,18 +401,6 @@ impl RunningNode {
         if !*stopped.borrow() {
             let _ = stopped.changed().await;
         }
-    }
-
-    /// Persist unschedulable state, execute a bounded plan, and request exit only after durable blockers clear.
-    pub async fn drain_node(
-        &self,
-        node: u64,
-        handoffs: &[crate::scaling::Handoff],
-        deadline: tokio::time::Instant,
-    ) -> Result<crate::scaling::DrainProgress> {
-        self.service
-            .planned_node_drain(node, handoffs, deadline)
-            .await
     }
 
     /// Trusted metadata-node control entry point; resumes the same persisted replacement plan.
@@ -513,6 +536,7 @@ impl RunningNode {
         self.service
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.service.external_stop.send(true);
         let _ = self.shutdown.send(true);
         let mut failure = None;
         for mut task in std::mem::take(&mut self.tasks) {
@@ -539,6 +563,7 @@ impl RunningNode {
 
 impl Drop for RunningNode {
     fn drop(&mut self) {
+        let _ = self.service.external_stop.send(true);
         let _ = self.shutdown.send(true);
     }
 }

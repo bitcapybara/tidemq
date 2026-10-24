@@ -84,6 +84,7 @@ pub struct ClusterNodeInfo {
     pub registration: NodeRegistration,
     pub schedulable: bool,
     pub retired: bool,
+    pub draining: bool,
     pub generation: u64,
 }
 
@@ -101,7 +102,84 @@ pub struct MetadataMembershipInfo {
     pub membership_index: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeDrainProgress {
+    pub node_id: u64,
+    pub owned_shards: u32,
+    pub storage_groups: u32,
+    pub pending_membership_changes: u32,
+    pub metadata_voter: bool,
+    pub retired: bool,
+}
+impl NodeDrainProgress {
+    pub fn durable_state_drained(&self) -> bool {
+        self.owned_shards == 0
+            && self.storage_groups == 0
+            && self.pending_membership_changes == 0
+            && !self.metadata_voter
+    }
+}
+
 impl Admin {
+    pub async fn begin_node_drain(&self, node_id: u64) -> Result<ClusterNodeInfo> {
+        self.cluster_node(public::ManageCluster {
+            action: public::ClusterAction::BeginNodeDrain.into(),
+            node_id,
+            ..Default::default()
+        })
+        .await
+    }
+    /// Complete local admission and request cleanup after every durable blocker has cleared.
+    pub async fn retire_node(&self, node_id: u64) -> Result<ClusterNodeInfo> {
+        self.cluster_node(public::ManageCluster {
+            action: public::ClusterAction::RetireClusterNode.into(),
+            node_id,
+            ..Default::default()
+        })
+        .await
+    }
+    pub async fn node_drain_status(&self, node_id: u64) -> Result<NodeDrainProgress> {
+        require_node_id(node_id)?;
+        self.client
+            .operation(|deadline| async move {
+                let result: public::ClusterControlResult = self
+                    .client
+                    .request(
+                        FrameKind::ManageCluster,
+                        FrameKind::ClusterControlResult,
+                        TrafficClass::Control,
+                        tidemq_protocol::Id::new_v7()?,
+                        &public::ManageCluster {
+                            action: public::ClusterAction::InspectNodeDrain.into(),
+                            node_id,
+                            ..Default::default()
+                        },
+                        deadline,
+                    )
+                    .await?;
+                if result.node.is_some()
+                    || result.group.is_some()
+                    || result.metadata_change.is_some()
+                {
+                    return Err(mismatch("Node drain query included unrelated results"));
+                }
+                let progress = result
+                    .drain_progress
+                    .ok_or_else(|| mismatch("Node drain query omitted its result"))?;
+                if progress.node_id != node_id {
+                    return Err(mismatch("Node drain query changed its target"));
+                }
+                Ok(NodeDrainProgress {
+                    node_id,
+                    owned_shards: progress.owned_shards,
+                    storage_groups: progress.storage_groups,
+                    pending_membership_changes: progress.pending_membership_changes,
+                    metadata_voter: progress.metadata_voter,
+                    retired: progress.retired,
+                })
+            })
+            .await
+    }
     pub async fn replace_metadata_replica(
         &self,
         removed: u64,
@@ -151,6 +229,9 @@ impl Admin {
     }
 
     async fn cluster_node(&self, request: public::ManageCluster) -> Result<ClusterNodeInfo> {
+        if request.registration.is_none() {
+            require_node_id(request.node_id)?;
+        }
         match self.execute(Request::Cluster(request)).await? {
             AdminReceipt::NodeConfigured(node) => Ok(node),
             _ => Err(mismatch(
@@ -281,6 +362,9 @@ pub(crate) fn receipt(
     result: public::ClusterControlResult,
     operation: tidemq_protocol::Id,
 ) -> Result<AdminReceipt> {
+    if result.drain_progress.is_some() {
+        return Err(mismatch("Mutation returned a node drain query"));
+    }
     if let Some(change) = &result.metadata_change {
         if result.node.is_some() || result.group.is_some() {
             return Err(mismatch(
@@ -334,7 +418,14 @@ pub(crate) fn receipt(
         {
             return Err(mismatch("node registration changed its pinned identity"));
         }
-    } else if node.registration.node_id != request.node_id || node.schedulable != request.enabled {
+    } else if node.registration.node_id != request.node_id
+        || request.action == i32::from(public::ClusterAction::SetNodeSchedulable)
+            && node.schedulable != request.enabled
+        || request.action == i32::from(public::ClusterAction::BeginNodeDrain)
+            && (!node.draining || node.schedulable)
+        || request.action == i32::from(public::ClusterAction::RetireClusterNode)
+            && (!node.retired || node.schedulable)
+    {
         return Err(mismatch(
             "node scheduling operation changed its target or status",
         ));
@@ -403,13 +494,14 @@ fn node_info(node: public::ClusterNode) -> Result<ClusterNodeInfo> {
     registration
         .wire()
         .map_err(|_| mismatch("node registration is invalid"))?;
-    if node.generation == 0 || node.retired && node.schedulable {
+    if node.generation == 0 || (node.retired || node.draining) && node.schedulable {
         return Err(mismatch("node status is invalid"));
     }
     Ok(ClusterNodeInfo {
         registration,
         schedulable: node.schedulable,
         retired: node.retired,
+        draining: node.draining,
         generation: node.generation,
     })
 }
@@ -429,6 +521,15 @@ fn group_info(group: public::ClusterGroup) -> Result<DataGroupInfo> {
         generation: group.generation,
         voters: unique.into_iter().collect(),
     })
+}
+
+fn require_node_id(node: u64) -> Result<()> {
+    if node == 0 {
+        return Err(Error::Configuration {
+            reason: "node identity must be nonzero",
+        });
+    }
+    Ok(())
 }
 
 fn mismatch(reason: &'static str) -> Error {

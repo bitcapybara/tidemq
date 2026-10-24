@@ -21,6 +21,9 @@ enum ClusterAction {
   SET_NODE_SCHEDULABLE = 2;
   CREATE_DATA_GROUP = 3;
   REPLACE_METADATA_REPLICA = 4;
+  BEGIN_NODE_DRAIN = 5;
+  INSPECT_NODE_DRAIN = 6;
+  RETIRE_CLUSTER_NODE = 7;
 }
 message ClusterNode {
   uint64 node_id = 1;
@@ -32,6 +35,7 @@ message ClusterNode {
   bool schedulable = 7;
   bool retired = 8;
   uint64 generation = 9;
+  bool draining = 10;
 }
 message ClusterGroup { uint64 group_id = 1; uint64 generation = 2; repeated uint64 voters = 3; }
 message ManageCluster {
@@ -51,7 +55,15 @@ message MetadataMembershipChange {
   uint64 expected_membership_index = 4;
   optional uint64 completed_membership_index = 5;
 }
-message ClusterControlResult { ClusterNode node = 1; ClusterGroup group = 2; MetadataMembershipChange metadata_change = 3; }
+message ClusterControlResult { ClusterNode node = 1; ClusterGroup group = 2; MetadataMembershipChange metadata_change = 3; NodeDrainProgress drain_progress = 4; }
+message NodeDrainProgress {
+  uint64 node_id = 1;
+  uint32 owned_shards = 2;
+  uint32 storage_groups = 3;
+  uint32 pending_membership_changes = 4;
+  bool metadata_voter = 5;
+  bool retired = 6;
+}
 message GetClusterRegistry {
   optional uint64 after_node = 1;
   optional uint64 after_group = 2;

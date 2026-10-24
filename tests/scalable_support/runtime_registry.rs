@@ -10,6 +10,7 @@ fn placement_windows_visit_all_registered_groups_and_candidates_with_fixed_bound
                 role: if node == 1 { "combined" } else { "storage" }.into(),
                 external_endpoint: None,
                 retired: false,
+                drain_operation: None,
             };
             (
                 node,
