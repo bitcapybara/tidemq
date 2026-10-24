@@ -99,6 +99,14 @@ impl Service {
                     );
                 }
             }
+            drop(_guard);
+            if let Err(error) = self.reconcile_consumer_deletions(deadline).await {
+                tracing::debug!(
+                    event_code = "consumer_delete_reconcile_wait",
+                    error_code = error.failure().code,
+                    "Durable subscription deletion will resume after its dependencies retire"
+                );
+            }
         }
         if let Err(error) = self.reconcile_owners(failover, deadline).await {
             tracing::debug!(
@@ -270,6 +278,11 @@ impl Service {
         }
         if super::service::frame_kind(frame)? == FrameKind::ConsumerControl {
             return self.consumer_control_public(&access, frame, deadline).await;
+        }
+        if super::service::frame_kind(frame)? == FrameKind::SubscriptionAdmin {
+            return self
+                .subscription_admin_public(&access, frame, deadline)
+                .await;
         }
         if super::service::frame_kind(frame)? == FrameKind::ManageIdentity {
             return self.identity_public(&access, frame, deadline).await;

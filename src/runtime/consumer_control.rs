@@ -35,7 +35,7 @@ fn new_operation() -> Result<Id> {
     Id::new_v7().map_err(|source| Error::operation("allocate consumer control operation", source))
 }
 
-fn model(value: i32) -> Result<SubscriptionKind> {
+pub(super) fn model(value: i32) -> Result<SubscriptionKind> {
     match public::ConsumerModel::try_from(value).ok() {
         Some(public::ConsumerModel::StreamConsumer) => Ok(SubscriptionKind::Stream),
         Some(public::ConsumerModel::QueueConsumer) => Ok(SubscriptionKind::Queue),

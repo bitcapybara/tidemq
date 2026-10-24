@@ -254,7 +254,7 @@ impl Admin {
 pub(crate) fn bytes(id: Id) -> Bytes {
     Bytes::copy_from_slice(id.as_bytes())
 }
-fn validate_name(name: &str) -> Result<()> {
+pub(crate) fn validate_name(name: &str) -> Result<()> {
     for (valid, reason) in [
         (!name.is_empty(), "resource name must not be empty"),
         (name.len() <= 255, "resource name must not exceed 255 bytes"),

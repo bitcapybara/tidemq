@@ -48,6 +48,7 @@ pub(crate) struct Service {
     pub access: AccessTable,
     pub(super) auth_cache: super::auth::AuthCache,
     pub(super) consumer_after: std::sync::Mutex<Option<Id>>,
+    pub(super) consumer_delete_after: std::sync::Mutex<Option<Id>>,
     pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
     pub metrics: Metrics,
@@ -151,6 +152,7 @@ impl Service {
             access,
             auth_cache: super::auth::AuthCache::default(),
             consumer_after: std::sync::Mutex::new(None),
+            consumer_delete_after: std::sync::Mutex::new(None),
             delivery_key,
             budget,
             metrics,
@@ -433,6 +435,7 @@ impl Service {
                 | FrameKind::ChangeTopicLayout
                 | FrameKind::ManageIdentity
                 | FrameKind::ConsumerControl
+                | FrameKind::SubscriptionAdmin
                 | FrameKind::PublisherControl
                 | FrameKind::GetTopic
                 | FrameKind::CreateSubscription
@@ -964,6 +967,7 @@ impl WireService for Service {
         );
         crate::observability::tracing::observe_until(async {
         let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
+        let result = async {
         let result = match &peer {
             Authorization::External { .. } | Authorization::Credential { .. } => {
                 let kind = frame_kind(frame)?;
@@ -1028,6 +1032,8 @@ impl WireService for Service {
             }
             Authorization::Server => Err(forbidden()),
         };
+        result.map(Some)
+        }.await;
         if let Some(started) = started {
             tracing::trace!(
                 event_code = "runtime_request_completed",
@@ -1037,7 +1043,7 @@ impl WireService for Service {
             );
         }
         match result {
-            Ok(frame) => Ok(Some(frame)),
+            Ok(frame) => Ok(frame),
             Err(error) => {
                 let response = wire::error_response(frame, &error, &self.config.protocol).map(Some);
                 super::telemetry::log_unknown_error(frame, error, &self.dispatch_metrics);

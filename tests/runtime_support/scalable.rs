@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "scalable_deletion.rs"]
+mod deletion;
 #[path = "scalable_handoff.rs"]
 mod handoff;
 #[path = "scalable_message_limits.rs"]

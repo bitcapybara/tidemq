@@ -5,6 +5,7 @@ mod authority_transfer;
 mod config;
 mod consumer_control;
 mod consumer_data;
+mod consumer_delete;
 mod consumer_read;
 mod data;
 mod drain;

@@ -66,6 +66,32 @@ impl fmt::Debug for Message {
     }
 }
 
+impl From<&str> for Message {
+    fn from(value: &str) -> Self {
+        Self::new(Bytes::copy_from_slice(value.as_bytes()))
+    }
+}
+impl From<String> for Message {
+    fn from(value: String) -> Self {
+        Self::new(value.into_bytes())
+    }
+}
+impl From<&[u8]> for Message {
+    fn from(value: &[u8]) -> Self {
+        Self::new(Bytes::copy_from_slice(value))
+    }
+}
+impl From<Vec<u8>> for Message {
+    fn from(value: Vec<u8>) -> Self {
+        Self::new(value)
+    }
+}
+impl From<Bytes> for Message {
+    fn from(value: Bytes) -> Self {
+        Self::new(value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct MessageId {
     pub(crate) topic: Id,

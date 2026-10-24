@@ -28,6 +28,12 @@ pub(super) const GROUP_CONTROL: u32 = 1_003;
 
 #[derive(Serialize, Deserialize)]
 enum Control {
+    Delete {
+        partition: PartitionKey,
+        domain: Id,
+        subscription: Id,
+        deletion: Id,
+    },
     Ensure {
         partition: PartitionKey,
         shard: Id,
@@ -70,7 +76,56 @@ struct Progress {
     gate_open: bool,
 }
 
+#[derive(Eq, PartialEq, Serialize, Deserialize)]
+struct Deleted {
+    subscription: Id,
+    deletion: Id,
+    domain: Id,
+}
+
 impl Service {
+    pub(super) async fn delete_consumer_domain(
+        &self,
+        plan: &metadata::ConsumerDeletion,
+        domain: Id,
+        deadline: Instant,
+    ) -> Result<()> {
+        let permit = self
+            .consumer_deletion_permit(plan.subscription, plan.id, domain, deadline)
+            .await?;
+        let route = self.ensure_route(permit.route.partition, deadline).await?;
+        let target = self.leader(route.group_id, deadline).await?;
+        let expected = Deleted {
+            subscription: plan.subscription,
+            deletion: plan.id,
+            domain,
+        };
+        let response = self
+            .rpc
+            .call(
+                target,
+                route.group_id,
+                Request::typed(
+                    GROUP_CONTROL,
+                    &Control::Delete {
+                        partition: route.partition,
+                        domain,
+                        subscription: plan.subscription,
+                        deletion: plan.id,
+                    },
+                )?,
+                deadline,
+            )
+            .await?;
+        let reply: Deleted = wire::decode_binary(&response)?;
+        if reply != expected {
+            return Err(Error::invalid(
+                "Data deletion result differs from its durable plan",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) async fn install_consumer_domain(
         &self,
         row: &ConsumerSubscription,
@@ -190,6 +245,7 @@ impl Service {
             Control::Install { partition, .. }
             | Control::Renew { partition, .. }
             | Control::Ensure { partition, .. }
+            | Control::Delete { partition, .. }
             | Control::Inspect { partition, .. }
             | Control::OpenGate { partition, .. } => *partition,
         };
@@ -204,6 +260,41 @@ impl Service {
             ownership_operation: grant.operation_id,
         };
         match control {
+            Control::Delete {
+                subscription,
+                deletion,
+                domain,
+                ..
+            } => {
+                let permit = self
+                    .consumer_deletion_permit(subscription, deletion, domain, deadline)
+                    .await?;
+                if permit.route != route {
+                    return Err(forbidden());
+                }
+                let outcome = self
+                    .group_commit(
+                        &route,
+                        GroupCommand::Delete {
+                            subscription,
+                            deletion,
+                            now_ms: permit.now_ms,
+                        },
+                        deadline,
+                    )
+                    .await?;
+                if !matches!(outcome, GroupOutcome::Deleted { deletion: recorded } if recorded == deletion)
+                {
+                    return Err(Error::invalid(
+                        "Data deletion did not return its durable tombstone",
+                    ));
+                }
+                return wire::binary(&Deleted {
+                    subscription,
+                    deletion,
+                    domain,
+                });
+            }
             Control::Inspect { subscription, .. } => {
                 let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
                 wire::within(deadline, replica.raft.ensure_linearizable())

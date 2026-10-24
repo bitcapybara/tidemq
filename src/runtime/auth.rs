@@ -65,6 +65,15 @@ pub(super) struct MemberLeaseRequest {
     pub credential: Id,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct DeletionPermit {
+    pub subscription: Id,
+    pub deletion: Id,
+    pub domain: Id,
+    pub route: crate::metadata::Route,
+    pub now_ms: u64,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthQuery {
     PublisherRecovery {
@@ -75,6 +84,11 @@ enum AuthQuery {
         credential: Id,
     },
     Consumer(MemberLeaseRequest),
+    ConsumerDeletion {
+        subscription: Id,
+        deletion: Id,
+        domain: Id,
+    },
     BirthShard(Id),
     TopicResource(Id),
     Publisher {
@@ -95,6 +109,7 @@ enum AuthQuery {
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct AuthReply {
+    deletion: Option<DeletionPermit>,
     consumer_expires_ms: u64,
     birth: Option<crate::metadata::BirthShard>,
     resource: Option<String>,
@@ -149,6 +164,34 @@ impl TokenAuthenticator for Authenticator {
 }
 
 impl Service {
+    pub(super) async fn consumer_deletion_permit(
+        &self,
+        subscription: Id,
+        deletion: Id,
+        domain: Id,
+        deadline: Instant,
+    ) -> Result<DeletionPermit> {
+        let (reply, expires) = self
+            .auth_query(
+                AuthQuery::ConsumerDeletion {
+                    subscription,
+                    deletion,
+                    domain,
+                },
+                deadline,
+            )
+            .await?;
+        admit_deadline(deadline, expires)?;
+        reply
+            .deletion
+            .filter(|permit| {
+                permit.subscription == subscription
+                    && permit.deletion == deletion
+                    && permit.domain == domain
+            })
+            .ok_or_else(super::service::forbidden)
+    }
+
     pub(super) async fn publisher_recovery_permit(
         &self,
         permit: &crate::producer::PublisherPermit,
@@ -276,14 +319,16 @@ impl Service {
         query: AuthQuery,
         deadline: Instant,
     ) -> Result<(AuthReply, Instant)> {
-        if let Some((reply, expires)) = self
-            .auth_cache
-            .0
-            .lock()
-            .map_err(|_| Error::unavailable())?
-            .get(&query)
-            .filter(|(_, expires)| *expires > Instant::now())
-            .cloned()
+        let cacheable = !matches!(query, AuthQuery::ConsumerDeletion { .. });
+        if cacheable
+            && let Some((reply, expires)) = self
+                .auth_cache
+                .0
+                .lock()
+                .map_err(|_| Error::unavailable())?
+                .get(&query)
+                .filter(|(_, expires)| *expires > Instant::now())
+                .cloned()
         {
             return Ok((reply, expires));
         }
@@ -308,6 +353,9 @@ impl Service {
             .ok_or_else(Error::unavailable)?;
         if expires <= Instant::now() {
             return Err(Error::unavailable());
+        }
+        if !cacheable {
+            return Ok((reply, expires));
         }
         let mut cache = self.auth_cache.0.lock().map_err(|_| Error::unavailable())?;
         if cache.len() >= 2048 {
@@ -335,6 +383,38 @@ impl Service {
         let reply = replica
             .state
             .try_with_application(|state| match query {
+                AuthQuery::ConsumerDeletion {
+                    subscription,
+                    deletion,
+                    domain,
+                } => {
+                    let plan = state
+                        .consumer_subscription(subscription)
+                        .and_then(|row| row.deletion.as_ref())
+                        .filter(|plan| plan.id == deletion && plan.domains.contains(&domain))
+                        .ok_or_else(super::service::forbidden)?;
+                    let birth = state
+                        .topology()
+                        .shard(domain)
+                        .filter(|birth| birth.partition.topic_id == plan.topic)
+                        .ok_or_else(super::service::forbidden)?;
+                    let route = state
+                        .route(birth.partition)
+                        .cloned()
+                        .ok_or_else(Error::unavailable)?;
+                    Ok(AuthReply {
+                        deletion: Some(DeletionPermit {
+                            subscription,
+                            deletion,
+                            domain,
+                            route,
+                            now_ms: now,
+                        }),
+                        expires_ms: now.saturating_add(1000),
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
                 AuthQuery::BirthShard(shard) => {
                     let birth = state
                         .topology()
@@ -520,6 +600,25 @@ impl Service {
     ) -> Result<(Access, Instant)> {
         let kind = super::service::frame_kind(frame)?;
         let permission = match kind {
+            FrameKind::SubscriptionAdmin => match decode::<public::SubscriptionAdmin>(self, frame)?
+                .action
+            {
+                value
+                    if value == i32::from(public::SubscriptionAdminAction::InspectSubscription) =>
+                {
+                    Permission::Inspect
+                }
+                value
+                    if value == i32::from(public::SubscriptionAdminAction::RemoveSubscription) =>
+                {
+                    Permission::ManageTopics
+                }
+                _ => {
+                    return Err(Error::invalid(
+                        "Subscription administration action is required",
+                    ));
+                }
+            },
             FrameKind::ManageIdentity => Permission::ManageCredentials,
             FrameKind::GetTopic
             | FrameKind::GetTopicLayout
@@ -580,6 +679,9 @@ impl Service {
             }
             FrameKind::ConsumerControl => {
                 wire::id(&decode::<public::ConsumerControl>(self, frame)?.topic_id)?
+            }
+            FrameKind::SubscriptionAdmin => {
+                wire::id(&decode::<public::SubscriptionAdmin>(self, frame)?.topic_id)?
             }
             FrameKind::PublisherControl => {
                 wire::id(&decode::<public::PublisherControl>(self, frame)?.topic_id)?

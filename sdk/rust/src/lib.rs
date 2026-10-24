@@ -16,6 +16,7 @@ mod message;
 mod metrics;
 mod producer;
 mod request;
+mod subscriptions;
 mod topic;
 
 pub use admin::Admin;
@@ -40,6 +41,9 @@ pub use message::{Message, MessageId, ReceivedMessage};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use producer::{PendingBatch, ProduceReceipt, Producer};
 pub use request::RequestContext;
+pub use subscriptions::{
+    PendingSubscriptionDeletion, SubscriptionDeleted, SubscriptionId, SubscriptionInfo,
+};
 pub use tidemq_protocol::producer::partition_for_key;
 pub use tidemq_protocol::topic::InitialPosition;
 pub use tidemq_protocol::{Id, ProtocolLimits, common, public};

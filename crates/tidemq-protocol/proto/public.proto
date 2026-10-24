@@ -82,6 +82,25 @@ enum ConsumerAction {
   RETIRE_CONSUMER = 6;
 }
 enum ConsumerModel { CONSUMER_MODEL_UNSPECIFIED = 0; STREAM_CONSUMER = 1; QUEUE_CONSUMER = 2; }
+enum SubscriptionAdminAction { SUBSCRIPTION_ADMIN_ACTION_UNSPECIFIED = 0; INSPECT_SUBSCRIPTION = 1; REMOVE_SUBSCRIPTION = 2; }
+message SubscriptionAdmin {
+  bytes topic_id = 1;
+  bytes subscription_id = 2;
+  string name = 3;
+  ConsumerModel model = 4;
+  SubscriptionAdminAction action = 5;
+}
+message SubscriptionAdminResult {
+  bytes topic_id = 1;
+  bytes subscription_id = 2;
+  string name = 3;
+  ConsumerModel model = 4;
+  bool start_at_latest = 5;
+  bytes deletion_operation = 6;
+  uint32 deleted_domains = 7;
+  uint32 total_domains = 8;
+  bool deletion_complete = 9;
+}
 message ConsumerControl {
   bytes topic_id = 1;
   string name = 2;

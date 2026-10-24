@@ -5,6 +5,11 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[snafu(display("Subscription deletion is incomplete; retry the original pending deletion"))]
+    SubscriptionDeletion {
+        pending: crate::PendingSubscriptionDeletion,
+        source: std::sync::Arc<Error>,
+    },
     #[snafu(display("Send did not complete; inspect the original pending send"))]
     SendUnresolved {
         pending: crate::PendingSend,
@@ -109,6 +114,7 @@ impl Error {
     pub(crate) fn original_outcome_known(&self) -> bool {
         match self {
             Self::Background { source }
+            | Self::SubscriptionDeletion { source, .. }
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }
             | Self::BatchSendInterrupted { source, .. } => source.original_outcome_known(),
@@ -133,6 +139,7 @@ impl Error {
     pub(crate) fn permission_denied(&self) -> bool {
         match self {
             Self::Background { source }
+            | Self::SubscriptionDeletion { source, .. }
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }
             | Self::BatchSendInterrupted { source, .. }
@@ -183,6 +190,7 @@ impl Error {
     pub fn outcome_unknown(&self) -> bool {
         match self {
             Self::Background { source }
+            | Self::SubscriptionDeletion { source, .. }
             | Self::Acknowledgement { source, .. }
             | Self::SendUnresolved { source, .. }
             | Self::BatchSendInterrupted { source, .. } => source.outcome_unknown(),

@@ -453,6 +453,19 @@ impl RunningNode {
             .await
     }
 
+    /// Delete one fixed subscription identity; unfinished domain removals resume after restart.
+    pub async fn delete_consumer_subscription(
+        &self,
+        operation: Id,
+        subscription: Id,
+        model: tidemq_protocol::topic::SubscriptionKind,
+        deadline: tokio::time::Instant,
+    ) -> Result<crate::metadata::ConsumerDeletion> {
+        self.service
+            .start_consumer_delete(operation, subscription, model, deadline)
+            .await
+    }
+
     /// Archive committed ranges through the authenticated lifecycle service and durable manifest.
     pub async fn archive(
         &self,

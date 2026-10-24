@@ -144,6 +144,8 @@ pub enum FrameKind {
     PublishResult = 80,
     RetirePublishes = 81,
     PublishesRetired = 82,
+    SubscriptionAdmin = 83,
+    SubscriptionAdminResult = 84,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -213,6 +215,8 @@ impl FrameKind {
             Self::PublishResult => "PUBLISH_RESULT",
             Self::RetirePublishes => "RETIRE_PUBLISHES",
             Self::PublishesRetired => "PUBLISHES_RETIRED",
+            Self::SubscriptionAdmin => "SUBSCRIPTION_ADMIN",
+            Self::SubscriptionAdminResult => "SUBSCRIPTION_ADMIN_RESULT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -279,6 +283,8 @@ impl FrameKind {
             "PUBLISH_RESULT" => Some(Self::PublishResult),
             "RETIRE_PUBLISHES" => Some(Self::RetirePublishes),
             "PUBLISHES_RETIRED" => Some(Self::PublishesRetired),
+            "SUBSCRIPTION_ADMIN" => Some(Self::SubscriptionAdmin),
+            "SUBSCRIPTION_ADMIN_RESULT" => Some(Self::SubscriptionAdminResult),
             _ => None,
         }
     }

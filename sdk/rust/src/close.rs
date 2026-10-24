@@ -6,6 +6,7 @@ pub struct CloseReport {
     pub(crate) members_left: usize,
     pub(crate) unresolved_sends: usize,
     pub(crate) unresolved_acks: usize,
+    pub(crate) unresolved_deletions: usize,
     pub(crate) unclaimed_results: usize,
 }
 
@@ -15,6 +16,9 @@ impl CloseReport {
         self.members_left = self.members_left.saturating_add(other.members_left);
         self.unresolved_sends = self.unresolved_sends.saturating_add(other.unresolved_sends);
         self.unresolved_acks = self.unresolved_acks.saturating_add(other.unresolved_acks);
+        self.unresolved_deletions = self
+            .unresolved_deletions
+            .saturating_add(other.unresolved_deletions);
         self.unclaimed_results = self
             .unclaimed_results
             .saturating_add(other.unclaimed_results);
@@ -30,6 +34,9 @@ impl CloseReport {
     }
     pub fn unresolved_acks(&self) -> usize {
         self.unresolved_acks
+    }
+    pub fn unresolved_deletions(&self) -> usize {
+        self.unresolved_deletions
     }
     pub fn unclaimed_results(&self) -> usize {
         self.unclaimed_results

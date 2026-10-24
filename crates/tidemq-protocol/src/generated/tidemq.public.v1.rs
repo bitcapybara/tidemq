@@ -134,6 +134,40 @@ pub struct IdentityResult {
     pub secret_unavailable: bool,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscriptionAdmin {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "ConsumerModel", tag = "4")]
+    pub model: i32,
+    #[prost(enumeration = "SubscriptionAdminAction", tag = "5")]
+    pub action: i32,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscriptionAdminResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+    #[prost(enumeration = "ConsumerModel", tag = "4")]
+    pub model: i32,
+    #[prost(bool, tag = "5")]
+    pub start_at_latest: bool,
+    #[prost(bytes = "bytes", tag = "6")]
+    pub deletion_operation: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "7")]
+    pub deleted_domains: u32,
+    #[prost(uint32, tag = "8")]
+    pub total_domains: u32,
+    #[prost(bool, tag = "9")]
+    pub deletion_complete: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ConsumerControl {
     #[prost(bytes = "bytes", tag = "1")]
     pub topic_id: ::prost::bytes::Bytes,
@@ -865,6 +899,35 @@ impl ConsumerModel {
             "CONSUMER_MODEL_UNSPECIFIED" => Some(Self::Unspecified),
             "STREAM_CONSUMER" => Some(Self::StreamConsumer),
             "QUEUE_CONSUMER" => Some(Self::QueueConsumer),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubscriptionAdminAction {
+    Unspecified = 0,
+    InspectSubscription = 1,
+    RemoveSubscription = 2,
+}
+impl SubscriptionAdminAction {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SUBSCRIPTION_ADMIN_ACTION_UNSPECIFIED",
+            Self::InspectSubscription => "INSPECT_SUBSCRIPTION",
+            Self::RemoveSubscription => "REMOVE_SUBSCRIPTION",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SUBSCRIPTION_ADMIN_ACTION_UNSPECIFIED" => Some(Self::Unspecified),
+            "INSPECT_SUBSCRIPTION" => Some(Self::InspectSubscription),
+            "REMOVE_SUBSCRIPTION" => Some(Self::RemoveSubscription),
             _ => None,
         }
     }

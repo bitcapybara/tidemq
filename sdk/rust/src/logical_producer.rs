@@ -284,8 +284,8 @@ impl Core {
 }
 
 impl TopicProducer {
-    pub async fn send(&self, message: Message) -> Result<SendReceipt> {
-        send::one(&self.owner.core, message).await
+    pub async fn send(&self, message: impl Into<Message>) -> Result<SendReceipt> {
+        send::one(&self.owner.core, message.into()).await
     }
     pub async fn send_batch(&self, messages: Vec<Message>) -> Result<SendBatchResult> {
         send::batch(&self.owner.core, messages).await

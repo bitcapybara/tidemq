@@ -170,6 +170,7 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
             | FrameKind::ChangeTopicLayout
             | FrameKind::ManageIdentity
             | FrameKind::ConsumerControl
+            | FrameKind::SubscriptionAdmin
             | FrameKind::PublisherControl
             | FrameKind::Publish
             | FrameKind::RetirePublishes

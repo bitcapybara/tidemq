@@ -237,6 +237,7 @@ pub(crate) struct Inner {
     pub metrics: Arc<Metrics>,
     pub consumer_claims: std::sync::Mutex<HashSet<(Id, u32, Id)>>,
     pub(crate) consumers: std::sync::Mutex<Vec<Arc<crate::group_consumer::Core>>>,
+    pub(crate) deletions: crate::subscriptions::Deletions,
     producers: std::sync::Mutex<Vec<Arc<crate::logical_producer::Core>>>,
     closing: AtomicBool,
     close_result: std::sync::Mutex<Option<crate::close::CloseResult>>,
@@ -425,6 +426,7 @@ impl Client {
             metrics: Arc::new(Metrics::default()),
             consumer_claims: std::sync::Mutex::new(HashSet::new()),
             consumers: std::sync::Mutex::new(Vec::new()),
+            deletions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             producers: std::sync::Mutex::new(Vec::new()),
             closing: AtomicBool::new(false),
             close_result: std::sync::Mutex::new(None),
@@ -824,6 +826,13 @@ impl Client {
         }
     }
 
+    pub(crate) fn background_from(inner: Arc<Inner>) -> Self {
+        Self {
+            inner,
+            _owner: None,
+        }
+    }
+
     pub(crate) fn register_consumer(&self, core: &Arc<crate::group_consumer::Core>) -> Result<()> {
         let mut resources = self.inner.consumers.lock().map_err(|_| Error::Closed)?;
         if self.inner.closing.load(Ordering::Acquire) {
@@ -956,6 +965,13 @@ impl Client {
                     report.local_cleanup_complete = false;
                     failure.get_or_insert_with(|| Arc::new(Error::Closed));
                 }
+            }
+        }
+        match self.close_subscription_deletions(deadline).await {
+            Ok(child) => report.merge(&child),
+            Err(error) => {
+                report.merge(error.report());
+                failure.get_or_insert(error.source);
             }
         }
         if let Err(error) = self.close_transport(deadline).await {

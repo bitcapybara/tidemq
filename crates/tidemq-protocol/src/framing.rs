@@ -241,6 +241,8 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::IdentityResult
         | FrameKind::ConsumerControl
         | FrameKind::ConsumerControlResult
+        | FrameKind::SubscriptionAdmin
+        | FrameKind::SubscriptionAdminResult
         | FrameKind::PublisherControl
         | FrameKind::PublisherControlResult
         | FrameKind::RetirePublishes
