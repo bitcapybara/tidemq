@@ -338,6 +338,9 @@ impl MetadataState {
     fn validate_outcome(&self, operation_id: Id, outcome: &Outcome) -> Result<(), Rejection> {
         match outcome {
             Outcome::Cluster(result) => match &result.outcome {
+                super::ClusterOutcome::DataChange(plan) => {
+                    self.validate_data_replacement_history(plan)?
+                }
                 super::ClusterOutcome::MetadataChange(id) => {
                     if *id != operation_id || self.metadata_change(*id).is_none() {
                         return Err(Rejection::InvalidEvidence);

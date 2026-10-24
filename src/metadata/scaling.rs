@@ -90,26 +90,7 @@ impl MetadataState {
         copy_bytes: u64,
         revision: u64,
     ) -> Result<Outcome, Rejection> {
-        if self.topology.pending_transfers().any(|transfer| {
-            transfer.source.group_id == plan.group_id
-                || transfer.target.group_id == plan.group_id
-                    && transfer.stage < super::TransferStage::Published
-        }) {
-            return Err(Rejection::RecoveryRequired);
-        }
-        let current = self.groups.get(&plan.group_id).ok_or(Rejection::NotFound)?;
-        if current.generation > plan.generation {
-            return Err(Rejection::Superseded);
-        }
-        if current.generation != plan.generation || current.voters != plan.previous {
-            return Err(Rejection::GenerationConflict);
-        }
-        self.validate_placement(&plan.target, false)?;
-        for added in plan.target.difference(&plan.previous) {
-            if self.node(*added).is_none_or(|node| !node.spec.schedulable) {
-                return Err(Rejection::NotSchedulable);
-            }
-        }
+        self.validate_data_replacement(plan)?;
         self.migrations.insert(
             plan.group_id,
             MigrationRecord {

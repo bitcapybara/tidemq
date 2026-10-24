@@ -44,6 +44,7 @@ pub enum AdminReceipt {
     PolicySuperseded,
     NodeConfigured(crate::ClusterNodeInfo),
     DataGroupCreated(crate::DataGroupInfo),
+    DataGroupReconfigured(crate::DataGroupInfo),
     MetadataMembershipChanged(crate::MetadataMembershipInfo),
 }
 
@@ -501,18 +502,8 @@ async fn cluster_request(
             )
             .await
             .map_err(|error| error.preserve_uncertainty(admitted))?;
-        let Some(change) = &result.metadata_change else {
-            break result;
-        };
-        if result.node.is_some() || result.group.is_some() || result.drain_progress.is_some() {
-            return Err(Error::ResponseMismatch {
-                reason: "metadata progress included unrelated results".into(),
-            }
-            .preserve_uncertainty(true));
-        }
-        if crate::cluster::metadata_progress(request, change, operation)
+        if !crate::cluster::membership_pending(request, &result, operation)
             .map_err(|error| error.preserve_uncertainty(true))?
-            .is_some()
         {
             break result;
         }

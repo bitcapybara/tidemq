@@ -24,6 +24,7 @@ enum ClusterAction {
   BEGIN_NODE_DRAIN = 5;
   INSPECT_NODE_DRAIN = 6;
   RETIRE_CLUSTER_NODE = 7;
+  REPLACE_DATA_REPLICA = 8;
 }
 message ClusterNode {
   uint64 node_id = 1;
@@ -55,7 +56,15 @@ message MetadataMembershipChange {
   uint64 expected_membership_index = 4;
   optional uint64 completed_membership_index = 5;
 }
-message ClusterControlResult { ClusterNode node = 1; ClusterGroup group = 2; MetadataMembershipChange metadata_change = 3; NodeDrainProgress drain_progress = 4; }
+message ClusterControlResult { ClusterNode node = 1; ClusterGroup group = 2; MetadataMembershipChange metadata_change = 3; NodeDrainProgress drain_progress = 4; DataMembershipChange data_change = 5; }
+message DataMembershipChange {
+  bytes operation_id = 1;
+  uint64 group_id = 2;
+  uint64 expected_generation = 3;
+  repeated uint64 previous = 4;
+  repeated uint64 target = 5;
+  bool complete = 6;
+}
 message NodeDrainProgress {
   uint64 node_id = 1;
   uint32 owned_shards = 2;

@@ -8,6 +8,78 @@ use tidemq_protocol::Id;
 const NOW: u64 = 1_000;
 
 #[test]
+fn data_replacement_intent_survives_snapshot_and_blocks_conflicting_plans_and_target_drain() {
+    let (mut state, root) = fixture();
+    for node in [2, 3] {
+        assert!(apply(&mut state, Some(root), registration(node)).is_applied());
+    }
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            ClusterAction::CreateGroup {
+                group: 2,
+                voters: [1].into()
+            }
+        )
+        .is_applied()
+    );
+    let plan = tidemq::scaling::MembershipPlan::new(
+        state.cluster_id().unwrap(),
+        state.group(2).unwrap(),
+        [2].into(),
+    )
+    .unwrap();
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            ClusterAction::ReplaceData(plan.clone())
+        )
+        .is_applied()
+    );
+    let mut restored: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
+    restored.validate_snapshot().unwrap();
+    assert_eq!(
+        restored.pending_data_replacements().collect::<Vec<_>>(),
+        [&plan]
+    );
+    let conflicting = tidemq::scaling::MembershipPlan::new(
+        restored.cluster_id().unwrap(),
+        restored.group(2).unwrap(),
+        [3].into(),
+    )
+    .unwrap();
+    let command = Command::prepare_membership(restored.revision(), conflicting).unwrap();
+    assert!(matches!(
+        restored.apply(command),
+        Response::Rejected {
+            reason: Rejection::OperationConflict,
+            ..
+        }
+    ));
+    assert!(matches!(
+        apply(
+            &mut restored,
+            Some(root),
+            ClusterAction::SetSchedulable {
+                node: 2,
+                enabled: false
+            }
+        ),
+        Response::Rejected {
+            reason: Rejection::NodeInUse,
+            ..
+        }
+    ));
+    let prepared = Command::prepare_membership(restored.revision(), plan.clone()).unwrap();
+    assert!(restored.apply(prepared).is_applied());
+    assert_eq!(restored.membership_change(2).unwrap().plan, plan);
+    restored.validate_snapshot().unwrap();
+}
+
+#[test]
 fn uninitialized_snapshot_rejects_control_membership_history() {
     let mut snapshot = serde_json::to_value(MetadataState::default()).unwrap();
     let operation = Id::random().unwrap();

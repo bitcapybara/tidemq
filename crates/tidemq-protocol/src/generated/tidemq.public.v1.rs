@@ -93,6 +93,23 @@ pub struct ClusterControlResult {
     pub metadata_change: ::core::option::Option<MetadataMembershipChange>,
     #[prost(message, optional, tag = "4")]
     pub drain_progress: ::core::option::Option<NodeDrainProgress>,
+    #[prost(message, optional, tag = "5")]
+    pub data_change: ::core::option::Option<DataMembershipChange>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DataMembershipChange {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub operation_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "2")]
+    pub group_id: u64,
+    #[prost(uint64, tag = "3")]
+    pub expected_generation: u64,
+    #[prost(uint64, repeated, tag = "4")]
+    pub previous: ::prost::alloc::vec::Vec<u64>,
+    #[prost(uint64, repeated, tag = "5")]
+    pub target: ::prost::alloc::vec::Vec<u64>,
+    #[prost(bool, tag = "6")]
+    pub complete: bool,
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct NodeDrainProgress {
@@ -643,6 +660,7 @@ pub enum ClusterAction {
     BeginNodeDrain = 5,
     InspectNodeDrain = 6,
     RetireClusterNode = 7,
+    ReplaceDataReplica = 8,
 }
 impl ClusterAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -659,6 +677,7 @@ impl ClusterAction {
             Self::BeginNodeDrain => "BEGIN_NODE_DRAIN",
             Self::InspectNodeDrain => "INSPECT_NODE_DRAIN",
             Self::RetireClusterNode => "RETIRE_CLUSTER_NODE",
+            Self::ReplaceDataReplica => "REPLACE_DATA_REPLICA",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -672,6 +691,7 @@ impl ClusterAction {
             "BEGIN_NODE_DRAIN" => Some(Self::BeginNodeDrain),
             "INSPECT_NODE_DRAIN" => Some(Self::InspectNodeDrain),
             "RETIRE_CLUSTER_NODE" => Some(Self::RetireClusterNode),
+            "REPLACE_DATA_REPLICA" => Some(Self::ReplaceDataReplica),
             _ => None,
         }
     }

@@ -477,6 +477,15 @@ impl MetadataState {
         expected: u64,
     ) -> Result<Outcome, Rejection> {
         spec.validate()?;
+        if !spec.schedulable
+            && self.pending_data_replacements().any(|plan| {
+                plan.target()
+                    .difference(plan.previous())
+                    .any(|added| *added == spec.node_id)
+            })
+        {
+            return Err(Rejection::NodeInUse);
+        }
         if let Some(identity) = self.node_identities.get(&spec.node_id) {
             if identity.retired {
                 return Err(Rejection::IdentityRetired);

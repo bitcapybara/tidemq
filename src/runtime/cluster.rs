@@ -126,19 +126,52 @@ impl Service {
             .cluster_operation(actor, operation, digest, request, deadline)
             .await?;
         self.cluster_ready(&outcome, deadline).await?;
+        let result = self.cluster_result(outcome, operation).await?;
+        wire::response(
+            frame,
+            FrameKind::ClusterControlResult,
+            &result,
+            &self.config.protocol,
+        )
+    }
+
+    async fn cluster_result(
+        &self,
+        outcome: ClusterOutcome,
+        operation: Id,
+    ) -> Result<public::ClusterControlResult> {
         let result = match outcome {
             ClusterOutcome::Node(node) => public::ClusterControlResult {
                 node: Some(node_result(node)),
-                group: None,
-                metadata_change: None,
-                drain_progress: None,
+                ..Default::default()
             },
             ClusterOutcome::Group(group) => public::ClusterControlResult {
-                node: None,
                 group: Some(group_result(group)),
-                metadata_change: None,
-                drain_progress: None,
+                ..Default::default()
             },
+            ClusterOutcome::DataChange(plan) => {
+                let complete = self
+                    .metadata
+                    .as_ref()
+                    .ok_or_else(Error::unavailable)?
+                    .state
+                    .try_with_application(|state| state.data_replacement_complete(&plan))
+                    .await
+                    .map_err(|source| {
+                        Error::operation("read original data replacement progress", source)
+                    })?;
+                public::ClusterControlResult {
+                    data_change: Some(public::DataMembershipChange {
+                        operation_id: bytes::Bytes::copy_from_slice(operation.as_bytes()),
+                        group_id: plan.group_id(),
+                        expected_generation: plan.generation(),
+                        previous: plan.previous().iter().copied().collect(),
+                        target: plan.target().iter().copied().collect(),
+                        complete,
+                    }),
+                    ..Default::default()
+                }
+            }
             ClusterOutcome::MetadataChange(id) => {
                 let change = self
                     .metadata
@@ -152,9 +185,6 @@ impl Service {
                     })?
                     .ok_or_else(Error::unavailable)?;
                 public::ClusterControlResult {
-                    node: None,
-                    group: None,
-                    drain_progress: None,
                     metadata_change: Some(public::MetadataMembershipChange {
                         operation_id: bytes::Bytes::copy_from_slice(id.as_bytes()),
                         previous: change.previous.into_iter().collect(),
@@ -162,15 +192,11 @@ impl Service {
                         expected_membership_index: change.expected_membership_index,
                         completed_membership_index: change.completed_membership_index,
                     }),
+                    ..Default::default()
                 }
             }
         };
-        wire::response(
-            frame,
-            FrameKind::ClusterControlResult,
-            &result,
-            &self.config.protocol,
-        )
+        Ok(result)
     }
 
     async fn node_drain_public(
@@ -267,6 +293,29 @@ impl Service {
                         deadline,
                     )
                     .await?
+                } else if request.action == i32::from(public::ClusterAction::ReplaceDataReplica) {
+                    let coordinator = crate::scaling::remote::Coordinator::new(
+                        self.scaling.rpc.clone(),
+                        self.config.runtime.metadata_group,
+                    )
+                    .map_err(|source| {
+                        Error::operation("create operator replica coordinator", source)
+                    })?;
+                    let plan = coordinator
+                        .plan(
+                            self.cluster,
+                            request.group_id,
+                            request.removed_node,
+                            request.added_node,
+                            deadline,
+                        )
+                        .await
+                        .map_err(|source| {
+                            Error::operation("select original data replica replacement", source)
+                        })?;
+                    self.verify_replacement_target(&plan, request.added_node, deadline)
+                        .await?;
+                    ClusterAction::ReplaceData(plan)
                 } else if request.action == i32::from(public::ClusterAction::RetireClusterNode) {
                     self.retirement_action(request.node_id, deadline).await?
                 } else {
@@ -343,6 +392,44 @@ impl Service {
             }
         }
 
+        Ok(())
+    }
+
+    async fn verify_replacement_target(
+        &self,
+        plan: &crate::scaling::MembershipPlan,
+        added: u64,
+        deadline: Instant,
+    ) -> Result<()> {
+        let complete = self
+            .metadata
+            .as_ref()
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| state.data_replacement_complete(plan))
+            .await
+            .map_err(|source| Error::operation("read data replacement admission state", source))?;
+        if complete {
+            return Ok(());
+        }
+        let started = std::time::Instant::now();
+        let reply = crate::scaling::remote::Rpc::call(
+            self.scaling.rpc.as_ref(),
+            added,
+            crate::scaling::remote::Query::Capacity {
+                group: plan.group_id(),
+                node: added,
+            },
+            deadline.min(Instant::now() + std::time::Duration::from_secs(1)),
+        )
+        .await
+        .map_err(|source| Error::operation("verify prepared replacement replica", source))?;
+        let crate::scaling::remote::Reply::Capacity(capacity) = reply else {
+            return Err(Error::unavailable());
+        };
+        capacity
+            .measured(added, started.elapsed())
+            .map_err(|source| Error::operation("verify fresh replacement capacity", source))?;
         Ok(())
     }
 
@@ -461,6 +548,9 @@ fn cluster_action(request: public::ManageCluster, operation: Id) -> Result<Clust
             "Node retirement requires runtime drain evidence",
         )),
         Action::Unspecified => Err(Error::invalid("Cluster action is required")),
+        Action::ReplaceDataReplica => Err(Error::invalid(
+            "Data replacement requires a verified original group",
+        )),
         Action::ReplaceMetadataReplica => Err(Error::invalid(
             "Metadata replacement requires a verified native membership view",
         )),

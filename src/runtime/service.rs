@@ -362,7 +362,7 @@ impl Service {
         &self,
         replica: &Replica<A>,
     ) -> Result<()> {
-        if replica.raft.metrics().borrow().current_leader != Some(self.config.node_id) {
+        if wire::native_leader(&replica.raft) != Some(self.config.node_id) {
             return Err(Error::unavailable());
         }
         Ok(())
@@ -771,11 +771,11 @@ impl Service {
                 let leader = if group == self.config.runtime.metadata_group {
                     self.metadata
                         .as_ref()
-                        .and_then(|replica| replica.raft.metrics().borrow().current_leader)
+                        .and_then(|replica| wire::native_leader(&replica.raft))
                 } else {
                     self.data
                         .get(&group)
-                        .and_then(|replica| replica.raft.metrics().borrow().current_leader)
+                        .and_then(|replica| wire::native_leader(&replica.raft))
                 };
                 wire::json(&leader)?
             }

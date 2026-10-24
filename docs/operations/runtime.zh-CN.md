@@ -67,3 +67,5 @@ ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记�
 Metadata voter 替换通过持久计划执行：先同步 learner，再提交 Native Raft 联合/稳定成员变更，所有目标 voter 完成覆盖成员变更的持久快照后提交完成状态。控制器重启、Leader 变化和客户端等待取消均沿原计划恢复；未完成计划仍阻止关联节点退休。替换共享修复并发与带宽预算，不改变 RF 或故障域约束。
 
 计划缩容先通过存活 Gateway 调用 `begin_node_drain`。`node_drain_status` 提供当前所有权、Storage 组、Metadata voter 及未完成成员变更 blocker；Broker 所有权由 Metadata Leader 逐批移交。所有 blocker 清除后调用 `retire_node`，它核对目标本地 admission fence、外部监听清理和已接受业务请求排空，再提交身份退休。`/diagnostics` 的 `schedulable` 表示该进程已观察到的分配状态；单独的 readiness 503 可能有其他原因，不能当作退休证明。退休状态为不可逆墓碑；部署工具必须在成功回执后删除实例/卷。
+
+Storage 副本替换的运维入口为 `replace_data_replica`：先启动配置了该组 standby 的目标，预检通过后才接受固定计划。正在执行的管理意图和已 Prepare 的迁移都由同一个有界放置循环优先恢复。Leader 发现只通告仍属于本机原生成员配置的 Leader，避免成员移除后继续访问旧 Leader。`placement.last_error` 保留有界错误链，便于区分原生迁移步骤和容量/授权阻塞。

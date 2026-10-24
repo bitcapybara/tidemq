@@ -19,6 +19,22 @@ pub(crate) const OWNERSHIP: u32 = 2;
 pub(crate) const FORWARD: u32 = 3;
 pub(crate) const LEADER: u32 = 4;
 
+pub(super) fn native_leader<A: crate::replication::Application>(
+    raft: &crate::replication::Raft<A>,
+) -> Option<u64> {
+    // A removed leader can retain its own stale hint after replication to it ends.
+    let metrics = raft.metrics();
+    let metrics = metrics.borrow();
+    let leader = metrics.current_leader?;
+    (metrics.running_state.is_ok()
+        && metrics
+            .membership_config
+            .membership()
+            .voter_ids()
+            .any(|node| node == leader))
+    .then_some(leader)
+}
+
 #[derive(Clone, PartialEq, Message)]
 pub(crate) struct Request {
     #[prost(uint32, tag = "1")]

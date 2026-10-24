@@ -79,12 +79,15 @@ impl DrainPlan {
             pending_membership_changes: state
                 .migrations
                 .values()
-                .filter(|m| {
-                    !m.is_complete()
-                        && (m.plan.previous().contains(&node_id)
-                            || m.plan.target().contains(&node_id))
+                .filter(|migration| !migration.is_complete())
+                .map(|migration| &migration.plan)
+                .chain(state.pending_data_replacements())
+                .filter(|plan| {
+                    plan.previous().contains(&node_id) || plan.target().contains(&node_id)
                 })
-                .count(),
+                .map(|plan| plan.group_id())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
             metadata_role: node.spec.roles.contains(&NodeRole::Metadata),
         })
     }

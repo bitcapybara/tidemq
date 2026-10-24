@@ -1,5 +1,7 @@
 use super::*;
 
+#[path = "scalable_data_membership.rs"]
+mod data_membership;
 #[path = "scalable_deletion.rs"]
 mod deletion;
 #[path = "scalable_deploy.rs"]

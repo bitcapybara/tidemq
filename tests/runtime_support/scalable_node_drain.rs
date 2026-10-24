@@ -13,6 +13,30 @@ async fn gateway_drain_proves_local_cleanup_and_retirement_rejects_the_original_
     let status = client.admin().node_drain_status(2).await.unwrap();
     assert!(status.durable_state_drained() && !status.retired);
     assert!(client.admin().set_node_schedulable(2, true).await.is_err());
+    let tenant = client.admin().create_tenant("restricted").await.unwrap();
+    let principal = client
+        .admin()
+        .new_principal(tenant, "reader", [tidemq_sdk::Permission::Inspect])
+        .build()
+        .await
+        .unwrap();
+    let token = client
+        .admin()
+        .issue_token(principal, Duration::from_secs(300))
+        .await
+        .unwrap();
+    let restricted = token_client(&fixture, token.expose_secret()).await;
+    assert!(restricted.admin().retire_node(2).await.is_err());
+    assert!(
+        !fixture
+            .configs
+            .get(&2)
+            .unwrap()
+            .data_dir
+            .join("node-retirement.json")
+            .is_file()
+    );
+    restricted.close().await.unwrap();
     let retired = client.admin().retire_node(2).await.unwrap();
     assert!(retired.retired && retired.draining && !retired.schedulable);
     connected.close().await.unwrap();

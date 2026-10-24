@@ -157,6 +157,9 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
                     .is_ok_and(|result| result.is_ok());
             }
         }
+        let schedulable = service.registry.schedulable(service.config.node_id);
+        let draining = service.draining.load(Ordering::Acquire);
+        ready &= schedulable && !draining;
         health.ready.store(ready, Ordering::Release);
         let logging = service
             .log_health
@@ -234,7 +237,7 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             "available_ack_bytes": service.budget.available_ack_bytes(),
             "available_handshake_bytes": service.budget.available_handshake_bytes(),
         });
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":service.draining.load(Ordering::Acquire),"schedulable":service.registry.schedulable(service.config.node_id),"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic,"registry":service.registry.diagnostic().ok()});
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":draining,"schedulable":schedulable,"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic,"registry":service.registry.diagnostic().ok()});
     }
 }
 
@@ -382,7 +385,9 @@ async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>
     let (status, content_type, body) = match path {
         Ok("/healthz") => (200, "application/json", "{\"alive\":true}".into()),
         Ok("/readyz") => {
-            let ready = health.ready.load(Ordering::Acquire);
+            let ready = health.ready.load(Ordering::Acquire)
+                && !service.draining.load(Ordering::Acquire)
+                && service.registry.schedulable(service.config.node_id);
             (
                 if ready { 200 } else { 503 },
                 "application/json",

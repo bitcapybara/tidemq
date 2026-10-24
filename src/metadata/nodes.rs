@@ -85,6 +85,7 @@ pub struct RegistryPage {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClusterAction {
     ReplaceMetadata(super::MetadataChange),
+    ReplaceData(crate::scaling::MembershipPlan),
     BeginDrain {
         node: u64,
         operation: Id,
@@ -118,6 +119,7 @@ pub struct ClusterCommand {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClusterOutcome {
     MetadataChange(Id),
+    DataChange(crate::scaling::MembershipPlan),
     Node(RegisteredNode),
     Group(DataGroup),
 }
@@ -134,6 +136,9 @@ impl MetadataState {
             .values()
             .filter(|group| {
                 Some(group.group_id) != exclude
+                    && !self
+                        .pending_data_replacements()
+                        .any(|plan| plan.group_id() == group.group_id)
                     && !self
                         .membership_change(group.group_id)
                         .is_some_and(|change| !change.is_complete())
@@ -248,6 +253,19 @@ impl MetadataState {
                         .drain_operation = Some(*operation);
                 }
                 ClusterOutcome::Node(self.registered_node(*node)?)
+            }
+            ClusterAction::ReplaceData(plan) => {
+                if self.data_replacement_complete(plan) {
+                    if !self
+                        .membership_change(plan.group_id())
+                        .is_some_and(|change| change.plan == *plan && change.is_complete())
+                    {
+                        return Err(Rejection::Superseded);
+                    }
+                } else {
+                    self.validate_data_replacement(plan)?;
+                }
+                ClusterOutcome::DataChange(plan.clone())
             }
             ClusterAction::ReplaceMetadata(change) => {
                 ClusterOutcome::MetadataChange(self.prepare_metadata_change(change.clone())?)
@@ -365,7 +383,10 @@ impl MetadataState {
         {
             return Err(Rejection::InvalidEvidence);
         }
-        if record.record.spec.schedulable
+        if self
+            .pending_data_replacements()
+            .any(|plan| plan.previous().contains(&node) || plan.target().contains(&node))
+            || record.record.spec.schedulable
             || metadata_voters.is_empty()
             || metadata_voters.contains(&node)
             || self

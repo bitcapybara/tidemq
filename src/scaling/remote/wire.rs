@@ -114,7 +114,7 @@ pub struct CapacityReport {
     pub(super) ack_bytes: u64,
 }
 impl CapacityReport {
-    pub(super) fn measured(self, node: u64, elapsed: Duration) -> Result<Capacity> {
+    pub(crate) fn measured(self, node: u64, elapsed: Duration) -> Result<Capacity> {
         let age = Duration::from_millis(self.age_ms).saturating_add(elapsed);
         if self.node != node || age > Duration::from_secs(5) {
             return Err(Error::Placement);

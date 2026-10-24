@@ -160,6 +160,7 @@ impl Admin {
                 if result.node.is_some()
                     || result.group.is_some()
                     || result.metadata_change.is_some()
+                    || result.data_change.is_some()
                 {
                     return Err(mismatch("Node drain query included unrelated results"));
                 }
@@ -179,6 +180,33 @@ impl Admin {
                 })
             })
             .await
+    }
+    pub async fn replace_data_replica(
+        &self,
+        group_id: u64,
+        removed: u64,
+        added: u64,
+    ) -> Result<DataGroupInfo> {
+        require_node_id(removed)?;
+        require_node_id(added)?;
+        if group_id == 0 || removed == added {
+            return Err(Error::Configuration {
+                reason: "data replacement requires a group and distinct replica identities",
+            });
+        }
+        match self
+            .execute(Request::Cluster(public::ManageCluster {
+                action: public::ClusterAction::ReplaceDataReplica.into(),
+                group_id,
+                removed_node: removed,
+                added_node: added,
+                ..Default::default()
+            }))
+            .await?
+        {
+            AdminReceipt::DataGroupReconfigured(group) => Ok(group),
+            _ => Err(mismatch("Data replacement returned another receipt kind")),
+        }
     }
     pub async fn replace_metadata_replica(
         &self,
@@ -365,8 +393,16 @@ pub(crate) fn receipt(
     if result.drain_progress.is_some() {
         return Err(mismatch("Mutation returned a node drain query"));
     }
+    if let Some(change) = &result.data_change {
+        if result.node.is_some() || result.group.is_some() || result.metadata_change.is_some() {
+            return Err(mismatch("Data replacement included unrelated results"));
+        }
+        return data_progress(request, change, operation)?
+            .map(AdminReceipt::DataGroupReconfigured)
+            .ok_or_else(|| mismatch("Data replacement has not completed"));
+    }
     if let Some(change) = &result.metadata_change {
-        if result.node.is_some() || result.group.is_some() {
+        if result.node.is_some() || result.group.is_some() || result.data_change.is_some() {
             return Err(mismatch(
                 "metadata replacement included another result kind",
             ));
@@ -431,6 +467,75 @@ pub(crate) fn receipt(
         ));
     }
     Ok(AdminReceipt::NodeConfigured(node))
+}
+
+pub(crate) fn membership_pending(
+    request: &public::ManageCluster,
+    result: &public::ClusterControlResult,
+    operation: tidemq_protocol::Id,
+) -> Result<bool> {
+    if result.metadata_change.is_none() && result.data_change.is_none() {
+        return Ok(false);
+    }
+    if result.node.is_some()
+        || result.group.is_some()
+        || result.drain_progress.is_some()
+        || result.metadata_change.is_some() && result.data_change.is_some()
+    {
+        return Err(mismatch("Membership progress included unrelated results"));
+    }
+    if let Some(change) = &result.metadata_change {
+        return metadata_progress(request, change, operation).map(|progress| progress.is_none());
+    }
+    let change = result
+        .data_change
+        .as_ref()
+        .ok_or_else(|| mismatch("Membership progress omitted its plan"))?;
+    data_progress(request, change, operation).map(|progress| progress.is_none())
+}
+
+fn data_progress(
+    request: &public::ManageCluster,
+    change: &public::DataMembershipChange,
+    operation: tidemq_protocol::Id,
+) -> Result<Option<DataGroupInfo>> {
+    let previous: BTreeSet<_> = change.previous.iter().copied().collect();
+    let target: BTreeSet<_> = change.target.iter().copied().collect();
+    let next = change
+        .expected_generation
+        .checked_add(1)
+        .ok_or_else(|| mismatch("Data replacement generation overflow"))?;
+    if request.action != i32::from(public::ClusterAction::ReplaceDataReplica)
+        || change.operation_id.as_ref() != operation.as_bytes()
+        || change.group_id != request.group_id
+        || change.group_id == 0
+        || change.expected_generation == 0
+        || !matches!(previous.len(), 1 | 3)
+        || previous.len() != change.previous.len()
+        || target.len() != change.target.len()
+        || previous.len() != target.len()
+        || previous.contains(&0)
+        || target.contains(&0)
+        || previous
+            .difference(&target)
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != [request.removed_node].into()
+        || target
+            .difference(&previous)
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != [request.added_node].into()
+    {
+        return Err(mismatch(
+            "Data replacement changed its original identity or voters",
+        ));
+    }
+    Ok(change.complete.then(|| DataGroupInfo {
+        group_id: change.group_id,
+        generation: next,
+        voters: target.into_iter().collect(),
+    }))
 }
 
 pub(crate) fn metadata_progress(

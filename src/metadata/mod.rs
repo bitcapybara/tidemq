@@ -8,6 +8,7 @@ mod command;
 mod consumer_delete;
 mod consumers;
 mod control;
+mod data_membership;
 mod diagnostics;
 mod members;
 mod metadata_membership;

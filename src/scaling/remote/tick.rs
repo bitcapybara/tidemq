@@ -9,10 +9,7 @@ use tokio::{task::JoinSet, time::Instant};
 use super::{CapacitySource, Coordinator, MembershipApplication, Query, Reply, Rpc, Service};
 use crate::{
     metadata::{DataGroup, NodeSpec},
-    scaling::{
-        BlockReason, Capacity, Error, MembershipPlan, MigrationRecord, Placement, Replacement,
-        Result,
-    },
+    scaling::{BlockReason, Capacity, Error, MembershipPlan, Placement, Replacement, Result},
 };
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -24,7 +21,7 @@ pub struct TickReport {
 struct Topology {
     group: DataGroup,
     nodes: BTreeMap<u64, NodeSpec>,
-    pending: Option<MigrationRecord>,
+    pending: Option<MembershipPlan>,
     standby: BTreeSet<u64>,
 }
 enum Sample {
@@ -83,10 +80,8 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         deadline: Instant,
     ) -> Result<TickReport> {
         let group = topology.group.group_id;
-        if let Some(record) = &topology.pending {
-            return self
-                .execute_tick(placement, record.plan.clone(), deadline)
-                .await;
+        if let Some(plan) = &topology.pending {
+            return self.execute_tick(placement, plan.clone(), deadline).await;
         }
         let candidates: BTreeSet<_> = topology
             .standby
@@ -176,6 +171,13 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         plan: MembershipPlan,
         deadline: Instant,
     ) -> Result<TickReport> {
+        #[cfg(feature = "test-hooks")]
+        crate::runtime::test_hooks::pause_data_membership(
+            self.config.cluster_id,
+            plan.group_id,
+            deadline,
+        )
+        .await;
         placement.note(plan.group_id, None, Some(plan.operation_id));
         Coordinator::new(self.rpc.clone(), self.config.metadata_group)?
             .execute(&plan, deadline)
@@ -228,7 +230,10 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                                 let data = state.group(group)?;
                                 let pending = state
                                     .membership_change(group)
-                                    .is_some_and(|record| !record.is_complete());
+                                    .is_some_and(|record| !record.is_complete())
+                                    || state
+                                        .pending_data_replacements()
+                                        .any(|plan| plan.group_id() == group);
                                 let repair = data.voters.iter().any(|node| {
                                     state.node(*node).is_some_and(|node| !node.spec.schedulable)
                                         || placement.failed(*node, std::time::Instant::now())
@@ -260,7 +265,13 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                         let pending = state
                             .membership_change(selected)
                             .filter(|record| !record.is_complete())
-                            .cloned();
+                            .map(|record| record.plan.clone())
+                            .or_else(|| {
+                                state
+                                    .pending_data_replacements()
+                                    .find(|plan| plan.group_id() == selected)
+                                    .cloned()
+                            });
                         Ok(Topology {
                             group,
                             standby,

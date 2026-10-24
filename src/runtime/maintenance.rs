@@ -152,7 +152,18 @@ impl Service {
                 _ = shutdown.changed() => return Ok(()),
                 result = self.scaling.service.tick(&mut placement, &groups, deadline) => result,
             };
-            let diagnostic = serde_json::json!({"placement":placement.diagnose(),"last_tick":result.as_ref().ok(),"successful":result.is_ok()});
+            let successful = result.is_ok();
+            let (last_tick, last_error) = match result {
+                Ok(report) => (Some(report), None),
+                Err(source) => {
+                    let error = anyhow::Error::new(source);
+                    (
+                        None,
+                        Some(format!("{error:#}").chars().take(4096).collect::<String>()),
+                    )
+                }
+            };
+            let diagnostic = serde_json::json!({"placement":placement.diagnose(),"last_tick":last_tick,"last_error":last_error,"successful":successful});
             if let Ok(mut cached) = self.scaling_diagnostic.lock() {
                 *cached = diagnostic;
             }
