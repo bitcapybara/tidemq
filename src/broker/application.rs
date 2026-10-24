@@ -1212,7 +1212,7 @@ impl DataApplication {
             LifecycleCommand::Reclaim { partition, end, .. } => Some((*partition, *end)),
             _ => None,
         };
-        let outcome = self
+        let mut outcome = self
             .lifecycle
             .apply(operation.command)
             .map_err(DataRejection::Lifecycle)?;
@@ -1227,9 +1227,11 @@ impl DataApplication {
                 .producer
                 .reclaim_hot(end)
                 .map_err(DataRejection::Producer)?;
+            let reclaimed = before_bytes.saturating_sub(state.producer.hot_bytes());
+            outcome = crate::lifecycle::DataOutcome::Reclaimed { bytes: reclaimed };
             self.hot_bytes = self
                 .hot_bytes
-                .checked_sub(before_bytes.saturating_sub(state.producer.hot_bytes()))
+                .checked_sub(reclaimed)
                 .ok_or(DataRejection::Lifecycle(Rejection::InvalidSnapshot))?;
             self.hot_messages = self
                 .hot_messages

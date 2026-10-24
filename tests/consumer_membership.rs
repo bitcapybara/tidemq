@@ -357,8 +357,8 @@ fn a_full_result_window_reserves_one_slot_for_the_missing_head_ack() {
 fn stream_acknowledges_only_the_receiving_members_sparse_prefix() {
     let mut cursor = cursor(SubscriptionKind::Stream);
     let (left, right) = HashRange::FULL.split(100).unwrap();
-    let first = id();
-    let second = id();
+    let first = Id::from_slice(&[2; 16]).unwrap();
+    let second = Id::from_slice(&[1; 16]).unwrap();
     cursor
         .install_members(
             1,

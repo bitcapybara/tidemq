@@ -436,6 +436,6 @@ pub(crate) enum DataOutcome {
     Aborted { generation: u64 },
     Published,
     Checkpoint { generation: u64 },
-    Reclaimed,
+    Reclaimed { bytes: u64 },
     FloorCheckpoint,
 }

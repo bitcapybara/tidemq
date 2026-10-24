@@ -43,9 +43,10 @@ fn shared_read_budget_limits_deliveries_and_replay_keeps_the_original_byte_charg
         .map(|offset| Candidate {
             offset,
             hash: 0,
-            bytes: 32,
+            bytes: if offset == 0 { 64 } else { 32 },
         })
         .collect();
+    assert_eq!(cursor.first_delivery_bytes(&request, &candidates), Some(64));
     let result = cursor
         .read_admitted(
             request,
@@ -58,7 +59,7 @@ fn shared_read_budget_limits_deliveries_and_replay_keeps_the_original_byte_charg
         )
         .unwrap();
     assert_eq!(result.deliveries.len(), 2);
-    assert_eq!(result.delivery_bytes, 64);
+    assert_eq!(result.delivery_bytes, 96);
     assert_eq!(
         cursor
             .read_admitted(

@@ -30,7 +30,7 @@ pub use types::{CapacityUsage, ObjectPage, PinPage};
 pub use types::{DataOperation, DataResult, MetadataOperation, MetadataResult};
 
 pub use types::Rejection;
-pub(crate) use types::{CatalogCommand, DataCommand};
+pub(crate) use types::{CatalogCommand, DataCommand, DataOutcome};
 #[cfg(test)]
 pub(crate) use types::{PinRecord, Plan};
 

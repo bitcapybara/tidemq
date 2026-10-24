@@ -782,26 +782,21 @@ impl Coordinator {
             View::Reclaim { generation, .. } => generation,
             _ => return Err(Error::Configuration),
         };
-        let before = self
-            .data_read(deadline, |state, _| Ok(state.hot_bytes()))
+        let (outcome, _) = self
+            .data_write(
+                DataCommand::Reclaim {
+                    partition,
+                    end,
+                    checkpoint_generation: generation,
+                },
+                Work::GarbageCollect,
+                deadline,
+            )
             .await?;
-        self.data_write(
-            DataCommand::Reclaim {
-                partition,
-                end,
-                checkpoint_generation: generation,
-            },
-            Work::GarbageCollect,
-            deadline,
-        )
-        .await?;
-        let after = self
-            .data_read(deadline, |state, _| Ok(state.hot_bytes()))
-            .await?;
-        self.0
-            .metrics
-            .reclaimed
-            .inc_by(before.saturating_sub(after));
+        let DataOutcome::Reclaimed { bytes } = outcome else {
+            return Err(Error::Configuration);
+        };
+        self.0.metrics.reclaimed.inc_by(bytes);
         Ok(())
     }
 

@@ -366,7 +366,7 @@ impl DataState {
         }
         if end <= self.checkpointed_floor(partition) {
             self.reclaim_ends.insert(partition, end);
-            return Ok(DataOutcome::Reclaimed);
+            return Ok(DataOutcome::Reclaimed { bytes: 0 });
         }
         if generation == 0 {
             return Err(Rejection::CheckpointRequired);
@@ -392,7 +392,7 @@ impl DataState {
             }
         }
         self.reclaim_ends.insert(partition, end);
-        Ok(DataOutcome::Reclaimed)
+        Ok(DataOutcome::Reclaimed { bytes: 0 })
     }
 
     pub(crate) fn validate(&self) -> Result<(), Rejection> {

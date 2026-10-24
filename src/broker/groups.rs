@@ -627,7 +627,7 @@ impl DataApplication {
         let candidates =
             read_candidates(cursor, &state.producer, limits, &self.group_usage()?, cold)
                 .map_err(DataRejection::Subscription)?;
-        let Some(bytes) = cursor.minimum_delivery_bytes(request, &candidates) else {
+        let Some(bytes) = cursor.first_delivery_bytes(request, &candidates) else {
             return Ok(None);
         };
         let usage = state.quota_usage()?;

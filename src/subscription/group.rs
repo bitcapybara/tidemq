@@ -392,7 +392,7 @@ impl GroupCursor {
             .filter(|read| !read.retired)
             .flat_map(|read| &read.deliveries)
             .map(|delivery| delivery.offset)
-            .next()
+            .min()
             .map_or(self.frontier, |offset| offset.min(self.frontier))
     }
 
@@ -599,7 +599,7 @@ impl GroupCursor {
         (request.sequence < member.read_sequence).then_some(Err(Rejection::OutcomeExpired))
     }
 
-    pub(crate) fn minimum_delivery_bytes(
+    pub(crate) fn first_delivery_bytes(
         &self,
         request: &GroupRead,
         candidates: &[Candidate],
@@ -612,8 +612,7 @@ impl GroupCursor {
             .chain(candidates.iter().copied())
             .filter(|candidate| self.eligible(member, *candidate, request.now_ms))
             .map(|candidate| candidate.bytes)
-            .filter(|bytes| *bytes <= request.max_bytes)
-            .min()
+            .find(|bytes| *bytes <= request.max_bytes)
     }
 
     pub(crate) fn read_admitted(
