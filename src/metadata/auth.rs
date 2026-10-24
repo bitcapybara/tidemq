@@ -52,24 +52,13 @@ pub struct Tenant {
     pub id: Id,
     pub name: String,
     pub enabled: bool,
-    pub max_topics: usize,
-    pub max_subscriptions: usize,
-    pub max_principals: usize,
-    pub max_credentials: usize,
-    pub max_backlog_bytes: u64,
+    pub limits: super::TenantLimits,
 }
 
 impl Tenant {
     fn validate(&self) -> Result<(), AuthRejection> {
         valid_component(&self.name)?;
-        if !(1..=1024).contains(&self.max_topics)
-            || !(1..=4096).contains(&self.max_subscriptions)
-            || !(1..=1024).contains(&self.max_principals)
-            || !(1..=4096).contains(&self.max_credentials)
-            || self.max_backlog_bytes == 0
-        {
-            return Err(AuthRejection::Invalid);
-        }
+        self.limits.validate()?;
         Ok(())
     }
 }
@@ -80,6 +69,7 @@ pub struct Namespace {
     pub tenant: Id,
     pub name: String,
     pub enabled: bool,
+    pub limits: Option<super::TenantLimits>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -185,6 +175,25 @@ impl AuthState {
     pub fn tenant(&self, id: Id) -> Option<&Tenant> {
         self.tenants.get(&id)
     }
+    pub fn limits(
+        &self,
+        tenant: Id,
+        namespace: Id,
+    ) -> Result<(super::TenantLimits, super::TenantLimits), AuthRejection> {
+        let parent = self.tenants.get(&tenant).ok_or(AuthRejection::NotFound)?;
+        let child = self
+            .namespaces
+            .get(&namespace)
+            .filter(|row| row.tenant == tenant)
+            .ok_or(AuthRejection::NotFound)?;
+        Ok((
+            parent.limits,
+            child
+                .limits
+                .map_or(parent.limits, |limits| limits.minimum(parent.limits)),
+        ))
+    }
+
     pub(crate) fn validate_topic_parent(
         &self,
         topic: &super::TopicRecord,
@@ -410,6 +419,16 @@ impl AuthState {
                 }
                 valid_component(&namespace.name)?;
                 self.manage_tenant(actor, namespace.tenant)?;
+                if let Some(limits) = namespace.limits {
+                    limits.validate()?;
+                    let parent = self
+                        .tenants
+                        .get(&namespace.tenant)
+                        .ok_or(AuthRejection::NotFound)?;
+                    if !limits.fits(parent.limits) {
+                        return Err(AuthRejection::Invalid);
+                    }
+                }
                 if self.namespaces.len() >= 4096 {
                     return Err(AuthRejection::Capacity);
                 }
@@ -450,6 +469,7 @@ impl AuthState {
                         .tenants
                         .get(&tenant)
                         .ok_or(AuthRejection::NotFound)?
+                        .limits
                         .max_credentials;
                     if self
                         .credentials
@@ -463,6 +483,22 @@ impl AuthState {
                         >= limit
                     {
                         return Err(AuthRejection::Capacity);
+                    }
+                    if let Some(namespace) = target.namespace {
+                        let (_, child) = self.limits(tenant, namespace)?;
+                        if self
+                            .credentials
+                            .values()
+                            .filter(|credential| {
+                                self.principals
+                                    .get(&credential.principal)
+                                    .is_some_and(|principal| principal.namespace == Some(namespace))
+                            })
+                            .count()
+                            >= child.max_credentials
+                        {
+                            return Err(AuthRejection::Capacity);
+                        }
                     }
                 }
                 self.credentials.insert(
@@ -549,6 +585,7 @@ impl AuthState {
                     .tenants
                     .get(&tenant)
                     .ok_or(AuthRejection::NotFound)?
+                    .limits
                     .max_principals;
                 if self
                     .principals
@@ -558,6 +595,18 @@ impl AuthState {
                     >= limit
                 {
                     return Err(AuthRejection::Capacity);
+                }
+                if let Some(namespace) = principal.namespace {
+                    let (_, child) = self.limits(tenant, namespace)?;
+                    if self
+                        .principals
+                        .values()
+                        .filter(|principal| principal.namespace == Some(namespace))
+                        .count()
+                        >= child.max_principals
+                    {
+                        return Err(AuthRejection::Capacity);
+                    }
                 }
             }
         }
@@ -608,6 +657,9 @@ impl AuthState {
         }
         for (id, namespace) in &self.namespaces {
             valid_component(&namespace.name)?;
+            if let Some(limits) = namespace.limits {
+                limits.validate()?;
+            }
             if *id != namespace.id || !self.tenants.contains_key(&namespace.tenant) {
                 return Err(AuthRejection::Invalid);
             }

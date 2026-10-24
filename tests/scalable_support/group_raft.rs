@@ -19,6 +19,25 @@ async fn group_consumers_replay_nack_and_attempts_after_a_three_replica_restart(
     let grant = cluster.grant(partition, 1);
     cluster.fence_and_recover(&grant).await;
     let writer = writer(&grant);
+    let quota = crate::metadata::QuotaGrant {
+        partition,
+        tenant: partition.topic_id,
+        namespace: partition.topic_id,
+        version: 1,
+        capacity: crate::metadata::TenantLimits::default().capacity,
+        frozen: false,
+    };
+    assert_eq!(
+        cluster
+            .write(DataCommand::InstallQuota {
+                partition,
+                writer,
+                grant: quota.clone(),
+                now_ms: 0,
+            })
+            .await,
+        DataResponse::QuotaInstalled(quota)
+    );
     let DataResponse::Registered(session) = cluster
         .write(DataCommand::Producer {
             partition,

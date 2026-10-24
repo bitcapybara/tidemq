@@ -647,6 +647,59 @@ impl Service {
         command: GroupCommand,
         deadline: Instant,
     ) -> Result<GroupOutcome> {
+        if let GroupCommand::Read {
+            subscription,
+            request,
+            cold,
+        } = &command
+        {
+            let demand = self
+                .data
+                .get(&route.group_id)
+                .ok_or_else(Error::unavailable)?
+                .state
+                .try_with_application(|state| {
+                    state.read_quota_demand(route.partition, *subscription, request, cold)
+                })
+                .await
+                .map_err(|source| Error::operation("reserve tenant delivery credit", source))?
+                .map_err(super::data::data_rejection)?;
+            if let Some(demand) = demand {
+                self.ensure_tenant_quota(route.group_id, route.partition, demand, deadline)
+                    .await?;
+            }
+        }
+        if let GroupCommand::Create {
+            start, identity, ..
+        } = &command
+        {
+            let replica = self
+                .data
+                .get(&route.group_id)
+                .ok_or_else(Error::unavailable)?;
+            let demand = replica
+                .state
+                .try_with_application(|state| {
+                    if state
+                        .consumer_group_cursor(route.partition, identity.subscription)
+                        .is_some()
+                    {
+                        return Ok(None);
+                    }
+                    state
+                        .protection_quota_demand(route.partition, *start)
+                        .map(Some)
+                })
+                .await
+                .map_err(|source| {
+                    Error::operation("reserve tenant subscription protection", source)
+                })?
+                .map_err(super::data::data_rejection)?;
+            if let Some(demand) = demand {
+                self.ensure_tenant_quota(route.group_id, route.partition, demand, deadline)
+                    .await?;
+            }
+        }
         let lease = self
             .data_lease(route.group_id, route.partition, deadline)
             .await?;

@@ -110,6 +110,22 @@ impl DataApplication {
         if state.producer.publisher_closed(request.identity) {
             return Ok(DataResponse::PublishClosed);
         }
+        let protected = state.protected_before();
+        let backlog = state
+            .retention
+            .logical_backlog_upper_bytes(protected)
+            .map_err(DataRejection::Retention)?;
+        let quota = state
+            .quota
+            .as_mut()
+            .ok_or(DataRejection::Quota(QuotaRejection::Missing))?;
+        let bytes = request
+            .message
+            .logical_bytes()
+            .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?;
+        let rate = quota
+            .publish(backlog, protected.is_some(), bytes, now_ms)
+            .map_err(DataRejection::Quota)?;
         let before = state.producer.hot_bytes();
         let result = state
             .producer
@@ -140,6 +156,7 @@ impl DataApplication {
             .map_err(DataRejection::Producer)?;
         state.birth = Some(birth);
         if !result.duplicate {
+            quota.commit_publish(rate);
             self.hot_bytes = self
                 .hot_bytes
                 .saturating_add(state.producer.hot_bytes().saturating_sub(before));

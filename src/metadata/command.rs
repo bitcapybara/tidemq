@@ -87,9 +87,13 @@ pub(crate) enum Action {
     Consumer(super::ConsumerCommand),
     Publisher(super::PublisherCommand),
     TopicDeletion(super::TopicDeletionCommand),
+    Quota(super::QuotaCommand),
 }
 
 impl Command {
+    pub fn quota(operation: Id, expected_revision: u64, command: super::QuotaCommand) -> Self {
+        Self::new(operation, expected_revision, Action::Quota(command))
+    }
     pub fn topic_deletion(
         operation: Id,
         expected_revision: u64,
@@ -429,6 +433,7 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    Quota(super::QuotaGrant),
     TopicDeletion(super::TopicDeletion),
     AuthorityTransfer(Box<super::AuthorityTransfer>),
     Bootstrapped,

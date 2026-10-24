@@ -142,6 +142,13 @@ impl MetadataState {
     fn transfer_source(&self, shard: Id, revision: u64, target: u64) -> Result<Grant, Rejection> {
         let birth = self.topology.shard(shard).ok_or(Rejection::NotFound)?;
         let partition = birth.partition;
+        if self
+            .quotas
+            .allocation(partition)
+            .is_some_and(|record| record.pending.is_some())
+        {
+            return Err(Rejection::RecoveryRequired);
+        }
         let layout = self
             .topology
             .layout(partition.topic_id)

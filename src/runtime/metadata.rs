@@ -700,7 +700,7 @@ impl Service {
     }
 }
 
-fn metadata_rejection(reason: metadata::Rejection) -> Error {
+pub(super) fn metadata_rejection(reason: metadata::Rejection) -> Error {
     use metadata::Rejection as R;
     if let R::MemberEpochConflict { expected } = reason {
         let mut failure =

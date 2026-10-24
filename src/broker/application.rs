@@ -21,10 +21,13 @@ mod authority_data;
 mod groups;
 #[path = "publish.rs"]
 mod publish;
+#[path = "tenant_quota.rs"]
+mod tenant_quota;
 pub(crate) use authority_data::AuthorityExport;
 pub use authority_data::{
     AuthorityDataCommand, TransferCapacity, TransferDataRejection, TransferOutcome, TransferPage,
 };
+pub use tenant_quota::QuotaRejection;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DataGroupConfig {
@@ -104,6 +107,12 @@ pub enum ProducerCommand {
 /// Private service handlers admit these commands; never deserialize this enum from a wire RPC.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataCommand {
+    InstallQuota {
+        partition: PartitionKey,
+        writer: WriterFence,
+        grant: crate::metadata::QuotaGrant,
+        now_ms: u64,
+    },
     AuthorityTransfer(AuthorityDataCommand),
     Publish {
         partition: PartitionKey,
@@ -168,6 +177,7 @@ pub enum DataCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataRejection {
+    Quota(QuotaRejection),
     Transfer(TransferDataRejection),
     Uninitialized,
     InvalidConfiguration,
@@ -185,6 +195,7 @@ pub enum DataRejection {
 impl fmt::Display for DataRejection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Quota(reason) => write!(formatter, "{reason}"),
             Self::Transfer(reason) => write!(formatter, "{reason}"),
             Self::Uninitialized => formatter.write_str("Data group has not been initialized"),
             Self::InvalidConfiguration => formatter.write_str(
@@ -213,6 +224,7 @@ impl fmt::Display for DataRejection {
 
 #[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataResponse {
+    QuotaInstalled(crate::metadata::QuotaGrant),
     AuthorityTransfer(TransferOutcome),
     #[default]
     Noop,
@@ -239,6 +251,10 @@ pub enum DataResponse {
 impl fmt::Debug for DataResponse {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::QuotaInstalled(grant) => formatter
+                .debug_tuple("QuotaInstalled")
+                .field(grant)
+                .finish(),
             Self::AuthorityTransfer(outcome) => formatter
                 .debug_tuple("AuthorityTransfer")
                 .field(outcome)
@@ -285,6 +301,7 @@ impl fmt::Debug for DataResponse {
 
 #[derive(Clone, Serialize, Deserialize)]
 struct PartitionState {
+    quota: Option<tenant_quota::TenantQuotaState>,
     producer: ProducerState,
     subscriptions: SubscriptionState,
     retention: crate::retention::RetentionState,
@@ -606,6 +623,7 @@ impl DataApplication {
             self.partitions.insert(
                 partition,
                 PartitionState {
+                    quota: None,
                     producer,
                     subscriptions,
                     retention: crate::retention::RetentionState::new(config.retention)
@@ -958,6 +976,14 @@ impl DataApplication {
                 .subscriptions
                 .validate()
                 .map_err(DataRejection::Subscription)?;
+            if let Some(quota) = &state.quota {
+                quota.validate().map_err(DataRejection::Quota)?;
+                if quota.grant.partition != *partition
+                    || !state.quota_usage()?.fits(quota.grant.capacity)
+                {
+                    return Err(DataRejection::Quota(QuotaRejection::InvalidGrant));
+                }
+            }
             if state.producer.topic_id() != partition.topic_id
                 || state.producer.partition_id() != partition.partition
                 || state.subscriptions.topic_id() != partition.topic_id
@@ -1001,13 +1027,19 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 14;
+    const VERSION: u32 = 15;
     type Command = DataCommand;
     type Response = DataResponse;
 
     fn apply(&mut self, command: DataCommand) -> DataResponse {
         let result = match command {
             DataCommand::AuthorityTransfer(command) => self.authority_transfer(command),
+            DataCommand::InstallQuota {
+                partition,
+                writer,
+                grant,
+                now_ms,
+            } => self.install_tenant_quota(partition, writer, grant, now_ms),
             DataCommand::Publish {
                 partition,
                 writer,

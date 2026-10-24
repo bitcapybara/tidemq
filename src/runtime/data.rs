@@ -167,6 +167,16 @@ pub(crate) fn unix_millis() -> Result<u64> {
 
 pub(crate) fn data_rejection(reason: DataRejection) -> Error {
     match reason {
+        DataRejection::Quota(reason) => {
+            use crate::broker::QuotaRejection as R;
+            let (code, retryable) = match reason {
+                R::Exhausted | R::Occupied => (ErrorCode::QuotaExceeded, true),
+                R::Missing | R::StaleGrant => (ErrorCode::Unavailable, true),
+                R::InvalidGrant => (ErrorCode::InvalidRequest, false),
+                R::Arithmetic => (ErrorCode::InternalError, false),
+            };
+            Error::reject_with(code, Outcome::Rejected, retryable, reason.to_string())
+        }
         DataRejection::Transfer(reason) => {
             use crate::broker::TransferDataRejection as R;
             let (code, retryable) = match reason {

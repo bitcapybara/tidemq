@@ -1,5 +1,7 @@
 use super::*;
-use crate::subscription::{Candidate, GroupCommand, GroupCursor, GroupOutcome, GroupRead};
+use crate::subscription::{
+    Candidate, GroupCommand, GroupCursor, GroupOutcome, GroupRead, ReadBudget,
+};
 
 #[derive(Default)]
 pub(super) struct Usage {
@@ -283,6 +285,20 @@ impl DataApplication {
                     subscription::Rejection::InvalidContext,
                 ));
             }
+            let quota = state
+                .quota
+                .as_ref()
+                .ok_or(DataRejection::Quota(QuotaRejection::Missing))?;
+            let before = state
+                .protected_before()
+                .map_or(start, |previous| previous.min(start));
+            let backlog = state
+                .retention
+                .logical_backlog_upper_bytes(Some(before))
+                .map_err(DataRejection::Retention)?;
+            if quota.grant.frozen || backlog > quota.grant.capacity.backlog_bytes {
+                return Err(DataRejection::Quota(QuotaRejection::Exhausted));
+            }
             let mut cursor = GroupCursor::new(identity, model, start, signing_key.into(), limits)
                 .map_err(DataRejection::Subscription)?;
             if blocked {
@@ -291,14 +307,36 @@ impl DataApplication {
             state.groups.insert(subscription, cursor);
             return Ok(DataResponse::ConsumerGroup(GroupOutcome::Created));
         }
+        let read_now = match &command {
+            GroupCommand::Read { request, .. } => Some(request.now_ms),
+            _ => None,
+        };
+        let budget = match read_now {
+            Some(now_ms) => state
+                .quota
+                .as_ref()
+                .ok_or(DataRejection::Quota(QuotaRejection::Missing))?
+                .read_budget(state.quota_usage()?, now_ms)
+                .map_err(DataRejection::Quota)?,
+            None => ReadBudget {
+                bytes: 0,
+                messages: 0,
+                results: 0,
+            },
+        };
         let cursor = state
             .groups
             .get_mut(&subscription)
             .ok_or(DataRejection::Subscription(
                 subscription::Rejection::NotFound,
             ))?;
-        let outcome = execute_group(cursor, &state.producer, limits, usage, command)
+        let outcome = execute_group(cursor, &state.producer, limits, usage, budget, command)
             .map_err(DataRejection::Subscription)?;
+        if let (Some(now_ms), GroupOutcome::Read(read)) = (read_now, &outcome)
+            && let Some(quota) = &mut state.quota
+        {
+            quota.commit_consume(read.delivery_bytes, now_ms);
+        }
         Ok(DataResponse::ConsumerGroup(outcome))
     }
 
@@ -383,6 +421,7 @@ fn execute_group(
     producer: &ProducerState,
     limits: subscription::Limits,
     usage: Usage,
+    budget: ReadBudget,
     command: GroupCommand,
 ) -> subscription::Result<GroupOutcome> {
     use subscription::Rejection;
@@ -408,7 +447,8 @@ fn execute_group(
             Ok(GroupOutcome::MembersInstalled)
         }
         GroupCommand::Read { request, cold, .. } => {
-            read_group(cursor, producer, limits, usage, request, &cold).map(GroupOutcome::Read)
+            read_group(cursor, producer, limits, usage, budget, request, &cold)
+                .map(GroupOutcome::Read)
         }
         GroupCommand::RetireRead {
             member,
@@ -478,12 +518,31 @@ fn read_group(
     producer: &ProducerState,
     limits: subscription::Limits,
     usage: Usage,
+    mut budget: ReadBudget,
     request: GroupRead,
     cold: &[crate::lifecycle::VerifiedColdDelivery],
 ) -> subscription::Result<subscription::ReadResult> {
     if let Some(original) = cursor.original_read(&request) {
         return original;
     }
+    let candidates = read_candidates(cursor, producer, limits, &usage, cold)?;
+    budget.bytes = budget
+        .bytes
+        .min(limits.max_total_in_flight_bytes.saturating_sub(usage.bytes));
+    budget.results = budget.results.min(
+        u32::try_from((limits.max_total_window_slots as usize).saturating_sub(usage.reads))
+            .map_err(|_| subscription::Rejection::WindowFull)?,
+    );
+    cursor.read_admitted(request, &candidates, budget)
+}
+
+fn read_candidates(
+    cursor: &GroupCursor,
+    producer: &ProducerState,
+    limits: subscription::Limits,
+    usage: &Usage,
+    cold: &[crate::lifecycle::VerifiedColdDelivery],
+) -> subscription::Result<Vec<Candidate>> {
     let available_windows = (limits.max_total_window_slots as usize).saturating_sub(usage.windows);
     let count = (limits.max_window_slots as usize)
         .saturating_sub(cursor.window_slots())
@@ -536,11 +595,53 @@ fn read_group(
             });
         }
     }
-    cursor.read_admitted(
-        request,
-        &candidates,
-        limits.max_total_in_flight_bytes.saturating_sub(usage.bytes),
-        u32::try_from((limits.max_total_window_slots as usize).saturating_sub(usage.reads))
-            .map_err(|_| subscription::Rejection::WindowFull)?,
-    )
+    Ok(candidates)
+}
+
+impl DataApplication {
+    pub fn read_quota_demand(
+        &self,
+        partition: PartitionKey,
+        subscription: Id,
+        request: &GroupRead,
+        cold: &[crate::lifecycle::VerifiedColdDelivery],
+    ) -> Result<Option<crate::metadata::QuotaCapacity>, DataRejection> {
+        let state = self
+            .partitions
+            .get(&partition)
+            .ok_or(DataRejection::PartitionMissing)?;
+        let cursor = state
+            .groups
+            .get(&subscription)
+            .ok_or(DataRejection::Subscription(
+                subscription::Rejection::NotFound,
+            ))?;
+        if cursor.original_read(request).is_some() {
+            return Ok(None);
+        }
+        let limits = self
+            .config
+            .as_ref()
+            .ok_or(DataRejection::Uninitialized)?
+            .subscription;
+        let candidates =
+            read_candidates(cursor, &state.producer, limits, &self.group_usage()?, cold)
+                .map_err(DataRejection::Subscription)?;
+        let Some(bytes) = cursor.minimum_delivery_bytes(request, &candidates) else {
+            return Ok(None);
+        };
+        let usage = state.quota_usage()?;
+        Ok(Some(crate::metadata::QuotaCapacity {
+            inflight_bytes: usage
+                .inflight_bytes
+                .checked_add(bytes)
+                .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?,
+            inflight_messages: usage
+                .inflight_messages
+                .checked_add(1)
+                .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?,
+            consume_bytes_per_second: bytes,
+            ..Default::default()
+        }))
+    }
 }

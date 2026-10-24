@@ -67,6 +67,7 @@ pub struct MetadataState {
     pub(crate) topology: super::Topology,
     pub(crate) auth: super::AuthState,
     pub(crate) publishers: super::PublishersBook,
+    pub(crate) quotas: super::QuotaLedger,
     pub(crate) limits: MetadataLimits,
     pub(crate) topics: BTreeMap<Id, TopicRecord>,
     pub(crate) topic_names: BTreeMap<String, Id>,
@@ -191,6 +192,7 @@ impl MetadataState {
                     | Action::Publisher(_)
                     | Action::Transfer(_)
                     | Action::TopicDeletion(_)
+                    | Action::Quota(_)
             )
         {
             return self.apply_new(&command);
@@ -304,6 +306,7 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::Quota(request) => self.quota_command(request).map(Outcome::Quota),
             Action::TopicDeletion(request) => self
                 .delete_topic(command.operation_id, request)
                 .map(Outcome::TopicDeletion),
@@ -496,17 +499,7 @@ impl MetadataState {
                 .auth
                 .resolve_topic(name)
                 .map_err(Rejection::Authorization)?;
-            if self
-                .topics
-                .values()
-                .filter(|topic| {
-                    topic.status == RecordStatus::Active && topic.tenant == Some(tenant.id)
-                })
-                .count()
-                >= tenant.max_topics
-            {
-                return Err(Rejection::Capacity);
-            }
+            self.check_topic_capacity(tenant.id, namespace.id)?;
             (Some(tenant.id), Some(namespace.id))
         } else {
             (None, None)
@@ -601,27 +594,8 @@ impl MetadataState {
             return Err(Rejection::IdentityRetired);
         }
         let topic = self.topics.get(&topic_id).ok_or(Rejection::NotFound)?;
-        if self.auth.initialized() && !self.subscriptions.contains_key(&id) {
-            let (tenant, _, _) = self
-                .auth
-                .resolve_topic(&topic.name)
-                .map_err(Rejection::Authorization)?;
-            let prefix = format!("{}/", tenant.name);
-            if self
-                .subscriptions
-                .values()
-                .filter(|subscription| {
-                    subscription.status == RecordStatus::Active
-                        && self
-                            .topics
-                            .get(&subscription.topic_id)
-                            .is_some_and(|topic| topic.name.starts_with(&prefix))
-                })
-                .count()
-                >= tenant.max_subscriptions
-            {
-                return Err(Rejection::Capacity);
-            }
+        if !self.subscriptions.contains_key(&id) {
+            self.check_subscription_capacity(topic_id)?;
         }
         if topic.status != RecordStatus::Active {
             return Err(Rejection::IdentityRetired);

@@ -29,11 +29,17 @@ fn tenant(name: &str) -> Tenant {
         id: id(),
         name: name.into(),
         enabled: true,
-        max_topics: 4,
-        max_subscriptions: 8,
-        max_principals: 4,
-        max_credentials: 8,
-        max_backlog_bytes: 1024 * 1024,
+        limits: tidemq::metadata::TenantLimits {
+            max_topics: 4,
+            max_subscriptions: 8,
+            max_principals: 4,
+            max_credentials: 8,
+            capacity: tidemq::metadata::QuotaCapacity {
+                backlog_bytes: 1024 * 1024,
+                ..tidemq::metadata::TenantLimits::default().capacity
+            },
+            ..Default::default()
+        },
     }
 }
 
@@ -87,7 +93,8 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
         .is_applied()
     );
     let mut tenant = tenant("acme");
-    tenant.max_topics = 1;
+    tenant.limits.max_topics = 1;
+    tenant.limits.max_members = 1;
     assert!(
         apply(
             &mut state,
@@ -107,6 +114,7 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
                     tenant: tenant.id,
                     name: name.into(),
                     enabled: true,
+                    limits: None,
                 })
             )
             .is_applied()
@@ -127,6 +135,7 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
     let record = state.topic(topic).unwrap();
     assert_eq!(record.tenant, Some(tenant.id));
     assert_eq!(record.namespace, Some(app));
+    assert_shared_member_limit(&mut state, topic);
     assert!(matches!(
         state.apply(Command::create_topic(
             id(),
@@ -140,6 +149,69 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
             ..
         }
     ));
+    let allocation = tidemq::metadata::AllocationRequest {
+        partition: tidemq::metadata::PartitionKey {
+            topic_id: topic,
+            partition: 0,
+        },
+        tenant: tenant.id,
+        namespace: app,
+        expected_version: 0,
+        capacity: tidemq::metadata::QuotaCapacity {
+            backlog_bytes: 512 * 1024,
+            ..Default::default()
+        },
+        frozen: false,
+    };
+    let mut forged = allocation.clone();
+    forged.namespace = id();
+    assert!(matches!(
+        state.apply(Command::quota(
+            id(),
+            state.revision(),
+            tidemq::metadata::QuotaCommand::Prepare {
+                request: forged,
+                now_ms: NOW
+            }
+        )),
+        Response::Rejected {
+            reason: Rejection::InvalidEvidence,
+            ..
+        }
+    ));
+    let remaining = state.summary().remaining_operations;
+    let Response::Applied {
+        outcome: tidemq::metadata::Outcome::Quota(grant),
+        ..
+    } = state.apply(Command::quota(
+        id(),
+        state.revision(),
+        tidemq::metadata::QuotaCommand::Prepare {
+            request: allocation,
+            now_ms: NOW,
+        },
+    ))
+    else {
+        panic!("Validated tenant quota was not reserved");
+    };
+    assert_eq!(state.summary().remaining_operations, remaining);
+    assert!(
+        state
+            .quotas()
+            .allocation(grant.partition)
+            .unwrap()
+            .pending
+            .is_some()
+    );
+    assert!(
+        state
+            .apply(Command::quota(
+                id(),
+                state.revision(),
+                tidemq::metadata::QuotaCommand::Installed { grant, now_ms: NOW }
+            ))
+            .is_applied()
+    );
     assert!(
         apply(
             &mut state,
@@ -157,6 +229,90 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
     restored.validate_snapshot().unwrap();
     assert_eq!(restored.topic(topic).unwrap().tenant, Some(tenant.id));
     assert_eq!(restored.topic(topic).unwrap().namespace, Some(app));
+}
+
+fn assert_shared_member_limit(state: &mut MetadataState, topic: Id) {
+    use tidemq::metadata::{ConsumerCommand, MemberJoin};
+    use tidemq_protocol::topic::{InitialPosition, SubscriptionKind};
+    let mutate = |state: &mut MetadataState, operation, command| {
+        state.apply(Command::consumer(operation, state.revision(), command))
+    };
+    let subscriptions = [id(), id()];
+    for (index, subscription) in subscriptions.iter().enumerate() {
+        assert!(
+            mutate(
+                state,
+                *subscription,
+                ConsumerCommand::Create {
+                    topic,
+                    name: format!("jobs-{index}"),
+                    model: SubscriptionKind::Queue,
+                    initial: InitialPosition::EarliestAvailable,
+                }
+            )
+            .is_applied()
+        );
+        let plan = state
+            .consumer_subscription(*subscription)
+            .unwrap()
+            .members
+            .plan()
+            .clone();
+        for fenced in [false, true] {
+            for domain in &plan.domains {
+                assert!(
+                    mutate(
+                        state,
+                        id(),
+                        ConsumerCommand::Observe {
+                            subscription: *subscription,
+                            version: plan.version,
+                            fenced,
+                            domain: *domain,
+                            now_ms: NOW,
+                        }
+                    )
+                    .is_applied()
+                );
+            }
+        }
+    }
+    let join = MemberJoin {
+        member: id(),
+        expected_epoch: 1,
+        client: id(),
+        credential: id(),
+        now_ms: NOW,
+        credential_expires_ms: 100_000,
+        max_messages: 8,
+        max_bytes: 4096,
+        digest: [5; 32],
+    };
+    let operation = id();
+    let first = ConsumerCommand::Join {
+        subscription: subscriptions[0],
+        request: join.clone(),
+    };
+    assert!(mutate(state, operation, first.clone()).is_applied());
+    assert!(mutate(state, operation, first).is_applied());
+    assert!(matches!(
+        mutate(
+            state,
+            id(),
+            ConsumerCommand::Join {
+                subscription: subscriptions[1],
+                request: MemberJoin {
+                    member: id(),
+                    client: id(),
+                    ..join
+                },
+            }
+        ),
+        Response::Rejected {
+            reason: Rejection::Capacity,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -205,12 +361,14 @@ fn durable_credentials_enforce_tenant_namespace_and_live_revocation() {
         tenant: acme.id,
         name: "app".into(),
         enabled: true,
+        limits: None,
     };
     let other_namespace = Namespace {
         id: id(),
         tenant: other.id,
         name: "app".into(),
         enabled: true,
+        limits: None,
     };
     for namespace in [&namespace, &other_namespace] {
         assert!(

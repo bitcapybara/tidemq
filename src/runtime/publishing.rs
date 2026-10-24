@@ -264,6 +264,19 @@ impl Service {
                     .into(),
             },
         };
+        let demand = self
+            .data
+            .get(&route.group_id)
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| state.publish_quota_demand(route.partition, &publish))
+            .await
+            .map_err(|source| Error::operation("read tenant publish quota demand", source))?
+            .map_err(super::data::data_rejection)?;
+        if let Some(demand) = demand {
+            self.ensure_tenant_quota(route.group_id, route.partition, demand, deadline)
+                .await?;
+        }
         let now_ms = super::data::unix_millis()?;
         let result = self
             .publish_commit(&route, deadline, |writer| DataCommand::Publish {

@@ -10,6 +10,8 @@ mod state;
 mod token;
 mod types;
 
+pub(crate) use group::ReadBudget;
+
 pub use group::{
     AckDisposition, Candidate, DeliveryProof, GroupAck, GroupCommand, GroupCursor, GroupIdentity,
     GroupOutcome, GroupRead, MemberGrant, ReadResult,

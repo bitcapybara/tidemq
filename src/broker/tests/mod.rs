@@ -10,3 +10,5 @@ mod group_deletion;
 mod group_raft;
 mod hot_read;
 mod support;
+#[path = "../../../tests/scalable_support/data_quota_raft.rs"]
+mod tenant_quotas;

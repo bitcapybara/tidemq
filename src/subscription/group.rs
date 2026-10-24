@@ -178,7 +178,15 @@ pub struct ReadResult {
     pub sequence: u64,
     pub assignment_version: u64,
     pub deliveries: Vec<DeliveryProof>,
+    pub delivery_bytes: u64,
     pub retired: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReadBudget {
+    pub bytes: u64,
+    pub messages: u64,
+    pub results: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -331,7 +339,14 @@ impl GroupCursor {
             .is_some_and(|member| member.ack_floor.checked_add(1) == Some(request.sequence))
     }
     pub fn in_flight_bytes(&self) -> u64 {
-        self.members.values().map(|member| member.bytes).sum()
+        self.members
+            .values()
+            .fold(0_u64, |sum, member| sum.saturating_add(member.bytes))
+    }
+    pub fn in_flight_messages(&self) -> u64 {
+        self.members.values().fold(0_u64, |sum, member| {
+            sum.saturating_add(u64::from(member.in_flight))
+        })
     }
     pub fn new(
         identity: GroupIdentity,
@@ -557,8 +572,11 @@ impl GroupCursor {
         self.read_admitted(
             request,
             candidates,
-            self.limits.max_total_in_flight_bytes,
-            self.limits.max_total_window_slots,
+            ReadBudget {
+                bytes: self.limits.max_total_in_flight_bytes,
+                messages: u64::from(self.limits.max_total_window_slots),
+                results: self.limits.max_total_window_slots,
+            },
         )
     }
 
@@ -581,12 +599,28 @@ impl GroupCursor {
         (request.sequence < member.read_sequence).then_some(Err(Rejection::OutcomeExpired))
     }
 
+    pub(crate) fn minimum_delivery_bytes(
+        &self,
+        request: &GroupRead,
+        candidates: &[Candidate],
+    ) -> Option<u64> {
+        let member = self.members.get(&(request.member, request.epoch))?;
+        self.ready
+            .iter()
+            .filter(|(due, _)| *due <= request.now_ms)
+            .filter_map(|(_, offset)| self.slots.get(offset).map(|slot| slot.candidate))
+            .chain(candidates.iter().copied())
+            .filter(|candidate| self.eligible(member, *candidate, request.now_ms))
+            .map(|candidate| candidate.bytes)
+            .filter(|bytes| *bytes <= request.max_bytes)
+            .min()
+    }
+
     pub(crate) fn read_admitted(
         &mut self,
         request: GroupRead,
         candidates: &[Candidate],
-        available_bytes: u64,
-        available_results: u32,
+        budget: ReadBudget,
     ) -> Result<ReadResult> {
         if let Some(original) = self.original_read(&request) {
             return original;
@@ -639,7 +673,7 @@ impl GroupCursor {
             );
             self.ready.insert((0, candidate.offset));
         }
-        self.deliver(request, digest, available_bytes, available_results)
+        self.deliver(request, digest, budget)
     }
 
     fn validate_candidates(&self, candidates: &[Candidate]) -> Result<()> {
@@ -663,8 +697,7 @@ impl GroupCursor {
         &mut self,
         request: GroupRead,
         digest: [u8; 32],
-        available_bytes: u64,
-        available_results: u32,
+        budget: ReadBudget,
     ) -> Result<ReadResult> {
         let member = self
             .members
@@ -685,13 +718,14 @@ impl GroupCursor {
             .max_messages
             .min(member.grant.max_messages.saturating_sub(member.in_flight))
             .min(result_capacity)
-            .min(available_results);
+            .min(budget.results)
+            .min(u32::try_from(budget.messages).unwrap_or(u32::MAX));
         let mut bytes = 0_u64;
         let available = self
             .limits
             .max_total_in_flight_bytes
             .saturating_sub(self.in_flight_bytes())
-            .min(available_bytes);
+            .min(budget.bytes);
         let mut selected = Vec::new();
         let mut paused = Vec::new();
         let mut blocked = if self.model == SubscriptionKind::Stream {
@@ -766,6 +800,7 @@ impl GroupCursor {
             sequence: request.sequence,
             assignment_version: self.version,
             deliveries,
+            delivery_bytes: bytes,
             retired: false,
         };
         let member = self

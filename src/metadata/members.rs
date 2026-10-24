@@ -182,6 +182,13 @@ impl MembersBook {
             .count()
     }
 
+    pub fn live_count(&self, now: u64) -> usize {
+        self.members
+            .values()
+            .filter(|record| record.info.status.live() && record.info.expires_ms > now)
+            .count()
+    }
+
     pub(crate) fn can_delete(&self) -> bool {
         self.plan.active
             && self.committed.is_empty()

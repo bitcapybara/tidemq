@@ -552,6 +552,7 @@ impl Service {
             | super::auth::AUTH_QUERY
             | crate::lifecycle::remote::LIFECYCLE_QUERY
             | crate::lifecycle::remote::LIFECYCLE_COMMAND => Some(StreamPurpose::Core),
+            kind if super::tenant_quota::is_core(kind, &request.body) => Some(StreamPurpose::Core),
             wire::FORWARD => {
                 let class = TrafficClass::try_from(frame.traffic_class).ok()?;
                 let inner = decode_frame(request.body, class, &self.config.protocol).ok()?;
@@ -603,6 +604,26 @@ impl Service {
                     return Err(forbidden());
                 }
                 self.group_control_command(group, &request.body, deadline)
+                    .await?
+            }
+            super::tenant_quota::CONTROL => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                    || !matches!(peer.role.as_str(), "metadata" | "storage" | "combined")
+                {
+                    return Err(forbidden());
+                }
+                self.quota_control_command(&request.body, deadline).await?
+            }
+            super::tenant_quota::DATA => {
+                drop(order);
+                if frame.traffic_class != i32::from(TrafficClass::Control)
+                    || !matches!(peer.role.as_str(), "metadata" | "storage" | "combined")
+                {
+                    return Err(forbidden());
+                }
+                self.quota_data_command(group, &request.body, deadline)
                     .await?
             }
             super::auth::AUTH_QUERY => {

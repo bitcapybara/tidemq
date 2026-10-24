@@ -149,9 +149,10 @@ impl PeerRpc {
                     | super::auth::AUTH_QUERY
                     | crate::lifecycle::remote::LIFECYCLE_QUERY
                     | crate::lifecycle::remote::LIFECYCLE_COMMAND
-            ) || forwarded.as_ref().is_some_and(|inner| {
-                tidemq_protocol::framing::is_core_control(inner, &self.limits).unwrap_or(false)
-            }));
+            ) || super::tenant_quota::is_core(request.kind, &request.body)
+                || forwarded.as_ref().is_some_and(|inner| {
+                    tidemq_protocol::framing::is_core_control(inner, &self.limits).unwrap_or(false)
+                }));
         let request_id = Id::new_v7()
             .map_err(|source| Error::operation("allocate internal request identity", source))?;
         let payload = InternalCommand {

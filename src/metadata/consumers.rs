@@ -5,8 +5,7 @@ use tidemq_protocol::{
 };
 
 use super::{
-    MemberHeartbeat, MemberInfo, MemberJoin, MembersBook, MembersPlan, MetadataState, RecordStatus,
-    Rejection,
+    MemberHeartbeat, MemberInfo, MemberJoin, MembersBook, MembersPlan, MetadataState, Rejection,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -178,6 +177,7 @@ impl MetadataState {
                 subscription,
                 request,
             } => {
+                self.check_member_capacity(*subscription, request)?;
                 let row = self
                     .consumer_subscriptions
                     .get(subscription)
@@ -275,11 +275,6 @@ impl MetadataState {
         if !self.topic_writable(topic) {
             return Err(Rejection::IdentityRetired);
         }
-        let topic_record = self
-            .topics
-            .get(&topic)
-            .filter(|topic| topic.status == RecordStatus::Active)
-            .ok_or(Rejection::NotFound)?;
         if let Some(previous) = self.consumer_subscription_by_name(topic, name) {
             if previous.deletion.is_some() {
                 return Err(Rejection::IdentityRetired);
@@ -308,26 +303,7 @@ impl MetadataState {
         {
             return Err(Rejection::Capacity);
         }
-        if self.auth.initialized() {
-            let (tenant, _, _) = self
-                .auth
-                .resolve_topic(&topic_record.name)
-                .map_err(Rejection::Authorization)?;
-            let count = self
-                .consumer_subscriptions
-                .values()
-                .filter(|subscription| {
-                    !subscription.is_deleted()
-                        && self
-                            .topics
-                            .get(&subscription.topic)
-                            .is_some_and(|topic| topic.tenant == Some(tenant.id))
-                })
-                .count();
-            if count >= tenant.max_subscriptions {
-                return Err(Rejection::Capacity);
-            }
-        }
+        self.check_subscription_capacity(topic)?;
         let layout = self.topology.layout(topic).ok_or(Rejection::NotFound)?;
         let domains = self
             .topology

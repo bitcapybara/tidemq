@@ -22,6 +22,7 @@ mod publishing;
 pub(crate) mod scaling;
 mod service;
 mod telemetry;
+mod tenant_quota;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub mod test_hooks;

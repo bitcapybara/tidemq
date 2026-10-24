@@ -104,6 +104,27 @@ fn install(app: &mut DataApplication, grant: Grant) {
         app.apply(DataCommand::Recover { partition, writer }),
         DataResponse::Recovered(_)
     ));
+    assert!(matches!(
+        app.apply(quota_command(partition, writer)),
+        DataResponse::QuotaInstalled(_)
+    ));
+}
+
+pub(super) fn quota_command(partition: PartitionKey, writer: WriterFence) -> DataCommand {
+    let quota = crate::metadata::QuotaGrant {
+        partition,
+        tenant: partition.topic_id,
+        namespace: partition.topic_id,
+        version: 1,
+        capacity: crate::metadata::TenantLimits::default().capacity,
+        frozen: false,
+    };
+    DataCommand::InstallQuota {
+        partition,
+        writer,
+        grant: quota,
+        now_ms: 0,
+    }
 }
 
 pub(super) fn publish(
@@ -954,6 +975,15 @@ async fn a_three_replica_restart_preserves_the_frozen_source_and_original_cut() 
     cluster.fence_and_recover(&plan.source).await;
     assert!(matches!(
         cluster
+            .write(quota_command(
+                plan.partition,
+                super::support::writer(&plan.source)
+            ))
+            .await,
+        DataResponse::QuotaInstalled(_)
+    ));
+    assert!(matches!(
+        cluster
             .write(publish_command(plan.partition, plan.shard, 1))
             .await,
         DataResponse::Published(_)
@@ -1166,6 +1196,15 @@ async fn two_three_replica_groups_preserve_original_reads_and_nack_results_after
     plan.target_voters = [1, 2, 3].into();
     plan.checkpoint_voters = plan.target_voters.clone();
     source.fence_and_recover(&plan.source).await;
+    assert!(matches!(
+        source
+            .write(quota_command(
+                plan.partition,
+                super::support::writer(&plan.source)
+            ))
+            .await,
+        DataResponse::QuotaInstalled(_)
+    ));
     for sequence in 1..=2 {
         assert!(matches!(
             source

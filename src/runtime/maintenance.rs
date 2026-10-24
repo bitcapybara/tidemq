@@ -119,6 +119,7 @@ struct Progress {
     compactions: Option<Id>,
     partitions: Option<PartitionKey>,
     publishers: Option<(PartitionKey, Id, u64)>,
+    quotas: Option<PartitionKey>,
     inspected: bool,
     blocked: bool,
 }
@@ -285,6 +286,7 @@ impl Service {
                 }
                 let position = progress.entry(*group).or_default();
                 let deadline = Instant::now() + Duration::from_secs(5);
+                let _ = self.maintain_tenant_quotas(*group, &mut position.quotas, deadline).await;
                 let _ = self.maintain_publishers(*group, position, deadline).await;
                 if let Some(coordinator) = self.objects.get(group)
                     && self

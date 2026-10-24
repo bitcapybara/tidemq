@@ -11,9 +11,11 @@ mod control;
 mod diagnostics;
 mod members;
 mod publishers;
+mod quotas;
 mod replicated;
 mod scaling;
 mod state;
+mod tenant_limits;
 mod topic_delete;
 mod topology;
 mod transfer_state;
@@ -41,7 +43,11 @@ pub use members::{
 pub use publishers::{
     PUBLISHER_LEASE_MS, PUBLISHER_RECOVERY_MS, PublisherCommand, PublisherRecord, PublishersBook,
 };
+pub use quotas::{
+    AllocationRequest, QuotaAllocation, QuotaCapacity, QuotaCommand, QuotaGrant, QuotaLedger,
+};
 pub use state::MetadataState;
+pub use tenant_limits::TenantLimits;
 pub use topic_delete::{TopicDeletion, TopicDeletionCommand};
 pub use topology::{BirthShard, LayoutChange, LayoutPlan, LayoutStage, Topology};
 pub use transfers::{
