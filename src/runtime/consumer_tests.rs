@@ -43,6 +43,9 @@ use fixture::*;
 #[path = "metadata_replay_tests.rs"]
 mod metadata_replay_tests;
 
+#[path = "../../tests/runtime_support/ack_priority.rs"]
+mod ack_priority;
+
 const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 const TOPIC: &str = "test/app/consumer-authority";
 static COMMIT: Mutex<Option<Arc<CommitPause>>> = Mutex::new(None);

@@ -552,7 +552,7 @@ impl Service {
             wire::FORWARD => {
                 let class = TrafficClass::try_from(frame.traffic_class).ok()?;
                 let inner = decode_frame(request.body, class, &self.config.protocol).ok()?;
-                Some(business_execution_purpose(&inner))
+                Some(business_execution_purpose(&inner, &self.config.protocol))
             }
             _ => Some(StreamPurpose::Request),
         }
@@ -861,7 +861,7 @@ impl WireService for Service {
         transport_purpose: StreamPurpose,
     ) -> StreamPurpose {
         if !matches!(peer, Authorization::Internal(_)) {
-            return business_execution_purpose(frame);
+            return business_execution_purpose(frame, &self.config.protocol);
         }
         if frame.kind != i32::from(FrameKind::InternalCommand) {
             return transport_purpose;
@@ -985,19 +985,16 @@ impl WireService for Service {
     }
 }
 
-fn business_execution_purpose(frame: &Frame) -> StreamPurpose {
-    match FrameKind::try_from(frame.kind) {
-        Ok(
-            FrameKind::GroupAck
-            | FrameKind::GroupRetireRead
-            | FrameKind::GroupRetireAck
-            | FrameKind::RetirePublishes
-            | FrameKind::ConsumerControl
-            | FrameKind::PublisherControl
-            | FrameKind::AckBatch
-            | FrameKind::Cancel,
-        ) => StreamPurpose::Ack,
-        _ => StreamPurpose::Request,
+fn business_execution_purpose(
+    frame: &Frame,
+    limits: &tidemq_protocol::ProtocolLimits,
+) -> StreamPurpose {
+    if FrameKind::try_from(frame.kind).is_ok_and(tidemq_protocol::framing::is_completion) {
+        StreamPurpose::Ack
+    } else if tidemq_protocol::framing::is_core_control(frame, limits).unwrap_or(false) {
+        StreamPurpose::Core
+    } else {
+        StreamPurpose::Request
     }
 }
 

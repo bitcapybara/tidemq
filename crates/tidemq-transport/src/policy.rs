@@ -118,8 +118,8 @@ impl TransportConfig {
                 "max_ack_streams must be greater than zero",
             ),
             (
-                self.max_ack_streams <= self.max_streams.saturating_sub(self.core_streams),
-                "max_ack_streams must not exceed max_streams - core_streams",
+                self.max_ack_streams < self.max_streams.saturating_sub(self.core_streams),
+                "max_ack_streams must leave at least one ordinary stream beyond core_streams",
             ),
         ] {
             if !valid {
@@ -244,6 +244,9 @@ mod diagnostic_tests {
             ("max_streams", |c| c.max_streams = 4_097),
             ("max_ack_streams", |c| c.max_ack_streams = 0),
             ("max_ack_streams", |c| c.max_ack_streams = c.max_streams),
+            ("max_ack_streams", |c| {
+                c.max_ack_streams = c.max_streams - c.core_streams
+            }),
             ("stream_window_bytes", |c| c.stream_window_bytes = 1_023),
             ("connection_window_bytes", |c| {
                 c.connection_window_bytes = c.stream_window_bytes - 1

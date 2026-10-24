@@ -159,10 +159,10 @@ impl Dispatcher {
         let Some(bytes) = frame_limit(class, &self.config.protocol).checked_mul(2) else {
             return Err(Box::new(frame));
         };
-        let memory = if purpose == StreamPurpose::Core {
-            self.budget.try_reserve_core(bytes)
-        } else {
-            self.budget.try_reserve(class, bytes)
+        let memory = match purpose {
+            StreamPurpose::Core => self.budget.try_reserve_core(bytes),
+            StreamPurpose::Ack => self.budget.try_reserve_ack(bytes),
+            StreamPurpose::Request => self.budget.try_reserve(class, bytes),
         };
         let Ok(memory) = memory else {
             return Err(Box::new(frame));

@@ -115,7 +115,7 @@ fn external_server(pki: &Pki, config: TransportConfig) -> Server {
         "test-principal".into(),
         "test-scope".into(),
         vec![
-            FrameKind::CreateTopic,
+            FrameKind::GetTopic,
             FrameKind::ProduceBatch,
             FrameKind::Read,
             FrameKind::AckBatch,
@@ -1050,7 +1050,7 @@ async fn ack_admission_exhaustion_preserves_preestablished_control_streams() {
     let mut core = session.take_initial_streams().await.remove(0);
     let mut incoming = accepted.take_initial_streams().await.pop().unwrap();
     let request = frame(
-        FrameKind::CreateTopic,
+        FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
         &CreateTopic {
@@ -1130,7 +1130,7 @@ async fn slow_bulk_connection_does_not_block_control_progress() {
     let mut outgoing = control.take_initial_streams().await.remove(0);
     let mut incoming = control_peer.take_initial_streams().await.pop().unwrap();
     let request = frame(
-        FrameKind::CreateTopic,
+        FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
         &CreateTopic {
@@ -1282,7 +1282,7 @@ async fn reset_core_lane_does_not_block_its_sibling() {
     assert!(!session.connection().core_streams_ready());
     assert!(reset_peer.receiver.receive(deadline()).await.is_err());
     let request = frame(
-        FrameKind::CreateTopic,
+        FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
         &CreateTopic {
@@ -1366,7 +1366,7 @@ async fn data_saturation_allows_control_reauthentication_and_ack_progress() {
         TOKEN,
         "consumer".into(),
         "consume".into(),
-        vec![FrameKind::Read, FrameKind::AckBatch],
+        vec![FrameKind::GroupRead, FrameKind::GroupAck],
     )
     .unwrap();
     let mut server = Server::bind(
@@ -1441,18 +1441,30 @@ async fn data_saturation_allows_control_reauthentication_and_ack_progress() {
     };
     let id = Id::new_v7().unwrap();
     let ack = frame(
-        FrameKind::AckBatch,
+        FrameKind::GroupAck,
         TrafficClass::Control,
         id,
-        &tidemq_protocol::public::AckBatch {
+        &tidemq_protocol::public::GroupAck {
             subscription_id: Bytes::copy_from_slice(id.as_bytes()),
             partition_id: 0,
-            cursor_generation: 1,
-            assignment_generation: 1,
-            delivery_tokens: vec![Bytes::from_static(b"bounded-delivery-token")],
+            member_id: Bytes::copy_from_slice(id.as_bytes()),
+            member_epoch: 1,
+            sequence: 1,
+            proofs: vec![tidemq_protocol::public::GroupProof {
+                offset: 0,
+                attempt: 1,
+                mac: Bytes::from_static(&[1; 32]),
+            }],
             ..Default::default()
         },
     );
+    let held_control_bytes = memory
+        .try_reserve(
+            TrafficClass::Control,
+            u32::try_from(memory.available_normal_bytes()).unwrap(),
+        )
+        .unwrap();
+    assert_eq!(memory.available_normal_bytes(), 0);
     outgoing.sender.send(&ack, deadline()).await.unwrap();
     assert_eq!(
         incoming
@@ -1468,6 +1480,7 @@ async fn data_saturation_allows_control_reauthentication_and_ack_progress() {
     // Application-owned backlog is released only after its ACK reaches the dispatcher.
     drop(held_delivery_bytes);
     assert!(memory.try_reserve(TrafficClass::Delivery, 1).is_ok());
+    drop(held_control_bytes);
     assert!(!delivery.connection().is_closed());
 }
 
@@ -1479,7 +1492,7 @@ async fn saturated_normal_control_and_data_preserve_core_frame_memory() {
         TOKEN,
         "core".into(),
         "control".into(),
-        vec![FrameKind::CreateTopic],
+        vec![FrameKind::GetTopic],
     )
     .unwrap();
     let mut server = Server::bind(
@@ -1526,7 +1539,7 @@ async fn saturated_normal_control_and_data_preserve_core_frame_memory() {
     assert!(memory.try_reserve(TrafficClass::Produce, 1).is_err());
     assert!(memory.try_reserve(TrafficClass::Control, 1).is_err());
     let request = frame(
-        FrameKind::CreateTopic,
+        FrameKind::GetTopic,
         TrafficClass::Control,
         Id::new_v7().unwrap(),
         &CreateTopic {

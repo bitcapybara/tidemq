@@ -7,7 +7,10 @@ use std::time::Duration;
 
 use prost::Message;
 use snafu::Snafu;
-use tidemq_protocol::{Id, common::Frame};
+use tidemq_protocol::{
+    Id,
+    common::{Frame, FrameKind, TrafficClass},
+};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
@@ -104,6 +107,18 @@ struct Outbound {
     _bytes: Arc<OwnedSemaphorePermit>,
 }
 
+#[derive(Clone, Copy)]
+enum Priority {
+    Request,
+    Core,
+    Completion,
+}
+
+struct Capacity {
+    slots: Arc<Semaphore>,
+    bytes: Arc<Semaphore>,
+}
+
 struct State {
     pending: Mutex<HashMap<Id, Pending>>,
     closed: AtomicBool,
@@ -111,13 +126,35 @@ struct State {
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
     connection: Option<Connection>,
+    completion: Option<Capacity>,
+    core: Option<Capacity>,
 }
 
 impl State {
+    fn available_requests(&self) -> usize {
+        self.slots.available_permits()
+            + [&self.core, &self.completion]
+                .into_iter()
+                .flatten()
+                .map(|limit| limit.slots.available_permits())
+                .sum::<usize>()
+    }
+    fn available_bytes(&self) -> usize {
+        self.bytes.available_permits()
+            + [&self.core, &self.completion]
+                .into_iter()
+                .flatten()
+                .map(|limit| limit.bytes.available_permits())
+                .sum::<usize>()
+    }
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.slots.close();
         self.bytes.close();
+        for capacity in [&self.completion, &self.core].into_iter().flatten() {
+            capacity.slots.close();
+            capacity.bytes.close();
+        }
         if let Some(connection) = &self.connection {
             connection.close();
         }
@@ -130,11 +167,18 @@ impl State {
 struct Inner {
     state: Arc<State>,
     writers: Vec<mpsc::Sender<Outbound>>,
+    core_writers: Vec<mpsc::Sender<Outbound>>,
+    request_writer: Mutex<Option<mpsc::Sender<Outbound>>>,
+    request_open: tokio::sync::Mutex<()>,
+    protocol: tidemq_protocol::ProtocolLimits,
     next_lane: AtomicUsize,
+    ack_writer: Mutex<Option<mpsc::Sender<Outbound>>>,
+    ack_open: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     _session: Option<Arc<Session>>,
     max_pending_requests: usize,
     max_pending_bytes: u32,
+    read_idle_timeout: Duration,
 }
 
 impl Drop for Inner {
@@ -216,16 +260,45 @@ impl RpcClient {
                 reason: "streams must contain between 1 and 64 RPC lanes",
             });
         }
+        let completion = control_capacity(&streams, session.as_deref(), &config)?;
+        let core = control_capacity(&streams, session.as_deref(), &config)?;
+        let reserved_requests = completion
+            .as_ref()
+            .map_or(0, |limit| limit.slots.available_permits())
+            .saturating_add(
+                core.as_ref()
+                    .map_or(0, |limit| limit.slots.available_permits()),
+            );
+        let reserved_bytes = completion
+            .as_ref()
+            .map_or(0, |limit| limit.bytes.available_permits())
+            .saturating_add(
+                core.as_ref()
+                    .map_or(0, |limit| limit.bytes.available_permits()),
+            );
+        let requests = config
+            .max_pending_requests
+            .saturating_sub(reserved_requests);
+        let bytes = (config.max_pending_bytes as usize).saturating_sub(reserved_bytes);
+        let protocol = streams
+            .first()
+            .ok_or(Error::Closed)?
+            .protocol_limits()
+            .clone();
         let state = Arc::new(State {
             pending: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
             draining: AtomicBool::new(false),
-            slots: Arc::new(Semaphore::new(config.max_pending_requests)),
-            bytes: Arc::new(Semaphore::new(config.max_pending_bytes as usize)),
+            slots: Arc::new(Semaphore::new(requests)),
+            bytes: Arc::new(Semaphore::new(bytes)),
             connection: session.as_ref().map(|session| session.connection()),
+            completion,
+            core,
         });
         let mut writers = Vec::new();
+        let mut core_writers = Vec::new();
         let mut tasks = Vec::new();
+        let mut ack_writer = None;
         if session.is_some() {
             tasks.push(tokio::spawn(watch_liveness(
                 Arc::downgrade(&state),
@@ -233,9 +306,14 @@ impl RpcClient {
             )));
         }
         for stream in streams {
+            let purpose = stream.purpose();
             let (sender, receiver) = stream.split();
             let (tx, rx) = mpsc::channel(config.max_pending_requests);
-            writers.push(tx);
+            match purpose {
+                crate::StreamPurpose::Ack => ack_writer = Some(tx),
+                crate::StreamPurpose::Core => core_writers.push(tx),
+                _ => writers.push(tx),
+            }
             tasks.push(tokio::spawn(write_loop(sender, rx, Arc::downgrade(&state))));
             tasks.push(tokio::spawn(read_loop(
                 receiver,
@@ -247,11 +325,18 @@ impl RpcClient {
             inner: Arc::new(Inner {
                 state,
                 writers,
+                core_writers,
+                protocol,
+                request_writer: Mutex::new(None),
+                request_open: tokio::sync::Mutex::new(()),
                 next_lane: AtomicUsize::new(0),
+                ack_writer: Mutex::new(ack_writer),
+                ack_open: tokio::sync::Mutex::new(()),
                 tasks: Mutex::new(tasks),
                 _session: session,
                 max_pending_requests: config.max_pending_requests,
                 max_pending_bytes: config.max_pending_bytes,
+                read_idle_timeout: config.read_idle_timeout,
             }),
         })
     }
@@ -266,6 +351,19 @@ impl RpcClient {
 
     pub fn lane_count(&self) -> usize {
         self.inner.writers.len()
+            + self.inner.core_writers.len()
+            + usize::from(
+                self.inner
+                    .ack_writer
+                    .lock()
+                    .is_ok_and(|writer| writer.is_some()),
+            )
+            + usize::from(
+                self.inner
+                    .request_writer
+                    .lock()
+                    .is_ok_and(|writer| writer.is_some()),
+            )
     }
 
     pub fn snapshot(&self) -> RpcSnapshot {
@@ -274,9 +372,9 @@ impl RpcClient {
             admitted_requests: self
                 .inner
                 .max_pending_requests
-                .saturating_sub(self.inner.state.slots.available_permits()),
+                .saturating_sub(self.inner.state.available_requests()),
             admitted_bytes: (self.inner.max_pending_bytes as usize)
-                .saturating_sub(self.inner.state.bytes.available_permits()),
+                .saturating_sub(self.inner.state.available_bytes()),
             pending_responses: self
                 .inner
                 .state
@@ -307,7 +405,8 @@ impl RpcClient {
 
     /// Ordered enqueue is separate from waiting for the durable application response.
     pub async fn submit(&self, frame: Frame, deadline: Instant) -> Result<RpcResponse> {
-        self.submit_inner(frame, deadline, None).await
+        let priority = self.priority(&frame)?;
+        self.submit_inner(frame, deadline, None, priority).await
     }
 
     pub async fn submit_affinity(
@@ -316,7 +415,52 @@ impl RpcClient {
         deadline: Instant,
         affinity: u64,
     ) -> Result<RpcResponse> {
-        self.submit_inner(frame, deadline, Some(affinity)).await
+        let priority = self.priority(&frame)?;
+        self.submit_inner(frame, deadline, Some(affinity), priority)
+            .await
+    }
+
+    /// Trusted semantic forwarders use this only for validated completion envelopes.
+    pub async fn submit_completion(&self, frame: Frame, deadline: Instant) -> Result<RpcResponse> {
+        let kind = FrameKind::try_from(frame.kind).map_err(|_| Error::Configuration {
+            reason: "unknown completion frame kind",
+        })?;
+        if !tidemq_protocol::framing::is_completion(kind) && kind != FrameKind::InternalCommand {
+            return Err(Error::Configuration {
+                reason: "completion lane requires a completion or internal envelope",
+            });
+        }
+        self.submit_inner(frame, deadline, None, Priority::Completion)
+            .await
+    }
+
+    /// Trusted forwarders select this for validated authority or membership maintenance envelopes.
+    pub async fn submit_core(&self, frame: Frame, deadline: Instant) -> Result<RpcResponse> {
+        if frame.kind != i32::from(FrameKind::InternalCommand)
+            && !tidemq_protocol::framing::is_core_control(&frame, &self.inner.protocol)
+                .map_err(|source| Error::Protocol { source })?
+        {
+            return Err(Error::Configuration {
+                reason: "core lane requires a control query or internal envelope",
+            });
+        }
+        self.submit_inner(frame, deadline, None, Priority::Core)
+            .await
+    }
+
+    fn priority(&self, frame: &Frame) -> Result<Priority> {
+        if frame.traffic_class != i32::from(TrafficClass::Control) {
+            return Ok(Priority::Request);
+        }
+        if completion_frame(frame) {
+            return Ok(Priority::Completion);
+        }
+        if tidemq_protocol::framing::is_core_control(frame, &self.inner.protocol)
+            .map_err(|source| Error::Protocol { source })?
+        {
+            return Ok(Priority::Core);
+        }
+        Ok(Priority::Request)
     }
 
     async fn submit_inner(
@@ -324,11 +468,12 @@ impl RpcClient {
         frame: Frame,
         deadline: Instant,
         affinity: Option<u64>,
+        priority: Priority,
     ) -> Result<RpcResponse> {
         let id = Id::from_slice(&frame.request_id).map_err(|source| Error::Protocol { source })?;
         let operation =
             Id::from_slice(&frame.operation_id).map_err(|source| Error::Protocol { source })?;
-        let (slots, bytes) = self.reserve(&frame)?;
+        let (slots, bytes) = self.reserve(&frame, priority)?;
         let (result, receiver) = oneshot::channel();
         {
             let mut pending = self.inner.state.pending.lock().map_err(|_| Error::Closed)?;
@@ -362,6 +507,7 @@ impl RpcClient {
             },
             deadline,
             affinity,
+            priority,
         )
         .await?;
         Ok(RpcResponse {
@@ -373,7 +519,8 @@ impl RpcClient {
 
     /// Sends a protocol notification without creating a response waiter.
     pub async fn notify(&self, frame: Frame, deadline: Instant) -> Result<()> {
-        let (slots, bytes) = self.reserve(&frame)?;
+        let priority = self.priority(&frame)?;
+        let (slots, bytes) = self.reserve(&frame, priority)?;
         self.enqueue(
             Outbound {
                 frame,
@@ -383,6 +530,7 @@ impl RpcClient {
             },
             deadline,
             None,
+            priority,
         )
         .await
     }
@@ -390,6 +538,7 @@ impl RpcClient {
     fn reserve(
         &self,
         frame: &Frame,
+        priority: Priority,
     ) -> Result<(Arc<OwnedSemaphorePermit>, Arc<OwnedSemaphorePermit>)> {
         if self.is_closed() || self.inner.state.draining.load(Ordering::Acquire) {
             return Err(Error::Closed);
@@ -397,19 +546,26 @@ impl RpcClient {
         let length = u32::try_from(frame.encoded_len()).map_err(|_| Error::Admission {
             resource: "encoded RPC frame length exceeds u32",
         })?;
-        let slots = self
-            .inner
-            .state
-            .slots
+        let (slots, bytes) = match priority {
+            Priority::Request => (&self.inner.state.slots, &self.inner.state.bytes),
+            Priority::Core | Priority::Completion => {
+                let capacity = match priority {
+                    Priority::Core => &self.inner.state.core,
+                    _ => &self.inner.state.completion,
+                };
+                let capacity = capacity.as_ref().ok_or(Error::Admission {
+                    resource: "RPC priority capacity",
+                })?;
+                (&capacity.slots, &capacity.bytes)
+            }
+        };
+        let slots = slots
             .clone()
             .try_acquire_owned()
             .map_err(|_| Error::Admission {
                 resource: "max_pending_requests",
             })?;
-        let bytes = self
-            .inner
-            .state
-            .bytes
+        let bytes = bytes
             .clone()
             .try_acquire_many_owned(length)
             .map_err(|_| Error::Admission {
@@ -423,24 +579,97 @@ impl RpcClient {
         outbound: Outbound,
         deadline: Instant,
         affinity: Option<u64>,
+        priority: Priority,
     ) -> Result<()> {
-        let lane = match affinity {
-            Some(affinity) => {
-                usize::try_from(affinity % self.inner.writers.len() as u64).map_err(|_| {
-                    Error::Configuration {
-                        reason: "RPC affinity lane index exceeds the platform's address space",
-                    }
-                })?
+        let writer = match priority {
+            Priority::Completion => {
+                self.special_writer(crate::StreamPurpose::Ack, deadline)
+                    .await?
             }
-            None => self.inner.next_lane.fetch_add(1, Ordering::Relaxed) % self.inner.writers.len(),
+            Priority::Request if self.inner.writers.is_empty() => {
+                self.special_writer(crate::StreamPurpose::Request, deadline)
+                    .await?
+            }
+            priority => {
+                let writers = if matches!(priority, Priority::Core) {
+                    &self.inner.core_writers
+                } else {
+                    &self.inner.writers
+                };
+                let count = writers.len();
+                if count == 0 {
+                    return Err(Error::Configuration {
+                        reason: "RPC has no matching stream lane",
+                    });
+                }
+                let lane = match affinity {
+                    Some(affinity) => usize::try_from(affinity % count as u64).map_err(|_| {
+                        Error::Configuration {
+                            reason: "RPC affinity exceeds the platform address space",
+                        }
+                    })?,
+                    None => self.inner.next_lane.fetch_add(1, Ordering::Relaxed) % count,
+                };
+                writers.get(lane).cloned().ok_or(Error::Closed)?
+            }
         };
-        let writer = self.inner.writers.get(lane).ok_or(Error::Closed)?;
         timeout_at(deadline, writer.send(outbound))
             .await
             .map_err(|_| Error::Deadline {
                 may_have_been_sent: false,
             })?
             .map_err(|_| Error::Closed)
+    }
+
+    async fn special_writer(
+        &self,
+        purpose: crate::StreamPurpose,
+        deadline: Instant,
+    ) -> Result<mpsc::Sender<Outbound>> {
+        let (cached, opening) = if purpose == crate::StreamPurpose::Ack {
+            (&self.inner.ack_writer, &self.inner.ack_open)
+        } else {
+            (&self.inner.request_writer, &self.inner.request_open)
+        };
+        if let Some(writer) = cached.lock().map_err(|_| Error::Closed)?.clone() {
+            return Ok(writer);
+        }
+        let _opening = timeout_at(deadline, opening.lock())
+            .await
+            .map_err(|_| Error::Deadline {
+                may_have_been_sent: false,
+            })?;
+        if let Some(writer) = cached.lock().map_err(|_| Error::Closed)?.clone() {
+            return Ok(writer);
+        }
+        let session = self.inner._session.as_ref().ok_or(Error::Configuration {
+            reason: "RPC without a session requires supplied lanes for each traffic priority",
+        })?;
+        let stream = session
+            .connection()
+            .open(purpose, deadline)
+            .await
+            .map_err(|source| Error::Transport { source })?;
+        // Pair task registration with the cached lane before shutdown can take the task list.
+        let mut writer = cached.lock().map_err(|_| Error::Closed)?;
+        let mut tasks = self.inner.tasks.lock().map_err(|_| Error::Closed)?;
+        if self.is_closed() || self.inner.state.draining.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
+        let (sender, receiver) = stream.split();
+        let (tx, rx) = mpsc::channel(self.inner.max_pending_requests);
+        tasks.push(tokio::spawn(write_loop(
+            sender,
+            rx,
+            Arc::downgrade(&self.inner.state),
+        )));
+        tasks.push(tokio::spawn(read_loop(
+            receiver,
+            Arc::downgrade(&self.inner.state),
+            self.inner.read_idle_timeout,
+        )));
+        *writer = Some(tx.clone());
+        Ok(tx)
     }
 
     /// Waits only until the supplied deadline, then releases all tasks and waiters.
@@ -489,6 +718,49 @@ impl RpcClient {
             let _ = session.shutdown(deadline).await;
         }
     }
+}
+
+fn control_capacity(
+    streams: &[FramedStream],
+    session: Option<&Session>,
+    config: &RpcConfig,
+) -> Result<Option<Capacity>> {
+    let control = streams
+        .iter()
+        .any(|stream| stream.purpose() == crate::StreamPurpose::Core)
+        || session.is_some_and(|session| session.connection().class() == TrafficClass::Control);
+    let supplied_ack = streams
+        .iter()
+        .filter(|stream| stream.purpose() == crate::StreamPurpose::Ack)
+        .count();
+    if supplied_ack > 1
+        || streams
+            .iter()
+            .all(|stream| stream.purpose() == crate::StreamPurpose::Ack)
+    {
+        return Err(Error::Configuration {
+            reason: "RPC requires normal lanes and at most one supplied ACK lane",
+        });
+    }
+    if control || supplied_ack > 0 {
+        if config.max_pending_requests < 3 || config.max_pending_bytes < 3 {
+            return Err(Error::Configuration {
+                reason: "control RPC capacity must fit request, core, and completion work",
+            });
+        }
+        Ok(Some(Capacity {
+            slots: Arc::new(Semaphore::new((config.max_pending_requests / 4).max(1))),
+            bytes: Arc::new(Semaphore::new(
+                (config.max_pending_bytes as usize / 4).max(1),
+            )),
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+fn completion_frame(frame: &Frame) -> bool {
+    FrameKind::try_from(frame.kind).is_ok_and(tidemq_protocol::framing::is_completion)
 }
 
 pub struct RpcResponse {
@@ -665,6 +937,8 @@ mod tests {
             slots: Arc::new(Semaphore::new(2)),
             bytes: Arc::new(Semaphore::new(100)),
             connection: None,
+            completion: None,
+            core: None,
         });
         let id = Id::new_v7().unwrap();
         let old_ticket = Arc::new(state.slots.clone().try_acquire_owned().unwrap());

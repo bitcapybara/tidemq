@@ -131,6 +131,27 @@ impl PeerRpc {
         deadline: Instant,
         affinity: u64,
     ) -> Result<Pending> {
+        let forwarded = (class == TrafficClass::Control && request.kind == FORWARD)
+            .then(|| {
+                tidemq_protocol::framing::decode_frame(request.body.clone(), class, &self.limits)
+            })
+            .transpose()
+            .map_err(|source| Error::operation("validate forwarded control priority", source))?;
+        let completion = forwarded.as_ref().is_some_and(|inner| {
+            FrameKind::try_from(inner.kind).is_ok_and(tidemq_protocol::framing::is_completion)
+        });
+        let core = class == TrafficClass::Control
+            && (matches!(
+                request.kind,
+                AUTHORITY
+                    | OWNERSHIP
+                    | LEADER
+                    | super::auth::AUTH_QUERY
+                    | crate::lifecycle::remote::LIFECYCLE_QUERY
+                    | crate::lifecycle::remote::LIFECYCLE_COMMAND
+            ) || forwarded.as_ref().is_some_and(|inner| {
+                tidemq_protocol::framing::is_core_control(inner, &self.limits).unwrap_or(false)
+            }));
         let request_id = Id::new_v7()
             .map_err(|source| Error::operation("allocate internal request identity", source))?;
         let payload = InternalCommand {
@@ -158,7 +179,11 @@ impl PeerRpc {
             .connection(target, class, deadline)
             .await
             .map_err(|source| Error::operation("connect internal peer", source))?;
-        let response = if class == TrafficClass::Control {
+        let response = if completion {
+            rpc.submit_completion(frame, deadline).await
+        } else if core {
+            rpc.submit_core(frame, deadline).await
+        } else if class == TrafficClass::Control {
             rpc.submit(frame, deadline).await
         } else {
             rpc.submit_affinity(frame, deadline, affinity).await

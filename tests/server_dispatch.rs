@@ -26,6 +26,7 @@ struct Service {
     submitted: Mutex<Vec<u64>>,
     replies: Semaphore,
     flushed: Semaphore,
+    memory: MemoryBudget,
 }
 
 impl WireService for Service {
@@ -84,10 +85,22 @@ impl WireService for Service {
                 5000,
                 &ProtocolLimits::default(),
             )?,
+            FrameKind::GroupAck => new_frame(
+                FrameKind::GroupAckResult,
+                class,
+                Id::from_slice(&request.request_id)?,
+                Id::from_slice(&request.operation_id)?,
+                &tidemq_protocol::public::GroupAckResult {
+                    redelivery_scheduled: false,
+                    due_ms: 0,
+                },
+                5000,
+                &ProtocolLimits::default(),
+            )?,
             _ => {
                 let diagnostic: CreateTopic =
                     decode_payload(request.payload.clone(), &ProtocolLimits::default())?;
-                if diagnostic.name == "deferred" {
+                if diagnostic.name.starts_with("deferred") {
                     self.submitted.lock().unwrap().push(0);
                     self.replies.acquire().await.unwrap().forget();
                 }
@@ -157,6 +170,8 @@ impl Fixture {
                     vec![
                         FrameKind::ProduceBatch,
                         FrameKind::AckBatch,
+                        FrameKind::GroupAck,
+                        FrameKind::CreateLogicalTopic,
                         FrameKind::Diagnose,
                     ],
                 )
@@ -172,6 +187,7 @@ impl Fixture {
             submitted: Mutex::new(Vec::new()),
             replies: Semaphore::new(0),
             flushed: Semaphore::new(0),
+            memory: budget.clone(),
         });
         let (shutdown, receiver) = watch::channel(false);
         let task = tokio::spawn(tidemq::server::run(
@@ -772,4 +788,134 @@ async fn native_idle_produce_connection_records_lane_read_errors_while_control_p
         .unwrap()
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturated() {
+    for (capacity, padding, normal_requests) in [
+        (
+            RpcConfig {
+                max_pending_requests: 5,
+                ..Default::default()
+            },
+            0,
+            3,
+        ),
+        (
+            RpcConfig {
+                max_pending_requests: 32,
+                max_pending_bytes: 24 * 1024,
+                ..Default::default()
+            },
+            8192,
+            1,
+        ),
+    ] {
+        let Fixture {
+            client,
+            service,
+            target,
+            credentials,
+            shutdown,
+            task,
+            ..
+        } = Fixture::start(DispatchConfig::default()).await;
+        let session = client
+            .connect(target, &credentials, TrafficClass::Control, deadline())
+            .await
+            .unwrap();
+        let rpc = RpcClient::from_session(session, capacity).await.unwrap();
+        let mut pending = Vec::new();
+        for _ in 0..normal_requests {
+            pending.push(
+                rpc.submit(
+                    request(
+                        FrameKind::CreateLogicalTopic,
+                        TrafficClass::Control,
+                        &CreateTopic {
+                            name: format!("deferred{}", "x".repeat(padding)),
+                            partitions: 1,
+                        },
+                    ),
+                    deadline(),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        assert!(matches!(
+            rpc.submit(
+                request(
+                    FrameKind::CreateLogicalTopic,
+                    TrafficClass::Control,
+                    &CreateTopic {
+                        name: format!("deferred{}", "x".repeat(padding)),
+                        partitions: 1
+                    }
+                ),
+                deadline()
+            )
+            .await,
+            Err(tidemq::transport::rpc::Error::Admission { .. })
+        ));
+        let until = deadline();
+        while service.submitted.lock().unwrap().len() < normal_requests {
+            assert!(
+                Instant::now() < until,
+                "Normal control requests did not reach the handler"
+            );
+            tokio::task::yield_now().await;
+        }
+        let held_normal = service
+            .memory
+            .try_reserve(
+                TrafficClass::Control,
+                u32::try_from(service.memory.available_normal_bytes()).unwrap(),
+            )
+            .unwrap();
+        let inspected = rpc
+            .call(
+                request(
+                    FrameKind::Diagnose,
+                    TrafficClass::Control,
+                    &CreateTopic {
+                        name: "core-inspection".into(),
+                        partitions: 1,
+                    },
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            inspected.frame().kind,
+            i32::from(FrameKind::DiagnosticResult)
+        );
+        let acknowledged = rpc
+            .call(
+                request(
+                    FrameKind::GroupAck,
+                    TrafficClass::Control,
+                    &tidemq_protocol::public::GroupAck::default(),
+                ),
+                deadline(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            acknowledged.frame().kind,
+            i32::from(FrameKind::GroupAckResult)
+        );
+        assert_eq!(rpc.lane_count(), 4);
+        assert_eq!(rpc.snapshot().admitted_requests, normal_requests);
+        drop(held_normal);
+        service.replies.add_permits(normal_requests);
+        for request in pending {
+            request.receive().await.unwrap();
+        }
+        rpc.shutdown(deadline()).await;
+        client.close(deadline()).await.unwrap();
+        shutdown.send(true).unwrap();
+        task.await.unwrap().unwrap();
+    }
 }

@@ -27,6 +27,7 @@ const MIN_SHARED_PAYLOAD_BYTES: usize = 16 * 1024;
 pub(super) enum FrameAdmission {
     Handshake(Option<TrafficClass>),
     Core,
+    Ack,
     Normal(TrafficClass),
 }
 
@@ -34,7 +35,7 @@ impl FrameAdmission {
     fn class(self) -> Option<TrafficClass> {
         match self {
             Self::Handshake(class) => class,
-            Self::Core => Some(TrafficClass::Control),
+            Self::Core | Self::Ack => Some(TrafficClass::Control),
             Self::Normal(class) => Some(class),
         }
     }
@@ -42,6 +43,7 @@ impl FrameAdmission {
         match self {
             Self::Handshake(_) => budget.try_reserve_handshake(bytes),
             Self::Core => budget.try_reserve_core(bytes),
+            Self::Ack => budget.try_reserve_ack(bytes),
             Self::Normal(class) => budget.try_reserve(class, bytes),
         }
         .map_err(|source| Error::Memory { source })
@@ -106,6 +108,9 @@ impl<P> AsRef<[u8]> for ChargedBytes<P> {
 }
 
 impl FramedStream {
+    pub(crate) fn protocol_limits(&self) -> &tidemq_protocol::ProtocolLimits {
+        &self.sender.lease.state.config.protocol
+    }
     pub(super) fn new(stream: s2n_quic::stream::BidirectionalStream, lease: StreamLease) -> Self {
         let (receive, send) = stream.split();
         Self::from_halves(receive, send, lease)
@@ -244,10 +249,10 @@ impl FrameSender {
         let state = &self.lease.state;
         let (mut chunks, length) = encode_charged_owned(
             frame,
-            if self.lease.purpose == StreamPurpose::Core {
-                FrameAdmission::Core
-            } else {
-                FrameAdmission::Normal(state.class)
+            match self.lease.purpose {
+                StreamPurpose::Core => FrameAdmission::Core,
+                StreamPurpose::Ack => FrameAdmission::Ack,
+                _ => FrameAdmission::Normal(state.class),
             },
             &state.config,
             &state.budget,
@@ -363,10 +368,10 @@ impl FrameReceiver {
         let state = &self.lease.state;
         let result = read_wire_started(
             &mut self.stream,
-            if self.lease.purpose == StreamPurpose::Core {
-                FrameAdmission::Core
-            } else {
-                FrameAdmission::Normal(state.class)
+            match self.lease.purpose {
+                StreamPurpose::Core => FrameAdmission::Core,
+                StreamPurpose::Ack => FrameAdmission::Ack,
+                _ => FrameAdmission::Normal(state.class),
             },
             &state.config,
             &state.budget,

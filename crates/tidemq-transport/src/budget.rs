@@ -31,6 +31,7 @@ pub struct MemoryBudget {
     data: Arc<Semaphore>,
     normal: Arc<Semaphore>,
     core: Arc<Semaphore>,
+    ack: Arc<Semaphore>,
     handshake: Arc<Semaphore>,
     cache: Arc<Semaphore>,
 }
@@ -60,17 +61,19 @@ impl MemoryBudget {
             usize::try_from(config.control_reserved_bytes).map_err(|_| Error::Configuration {
                 reason: "control memory does not fit the platform",
             })?;
-        let core = reserved / 2;
         let handshake = reserved / 4;
+        let ack = reserved / 8;
+        let core = (reserved / 2).saturating_sub(ack);
         let normal = total
             .checked_sub(core)
             .and_then(|value| value.checked_sub(handshake))
+            .and_then(|value| value.checked_sub(ack))
             .ok_or(Error::Configuration {
                 reason: "critical memory reservation exceeds total",
             })?;
-        if core == 0 || handshake == 0 {
+        if core == 0 || handshake == 0 || ack == 0 {
             return Err(Error::Configuration {
-                reason: "control_reserved_bytes must be at least 4 bytes to reserve core and handshake capacity",
+                reason: "control_reserved_bytes must be at least 8 bytes to reserve core, ACK, and handshake capacity",
             });
         }
         if total > Semaphore::MAX_PERMITS {
@@ -83,6 +86,7 @@ impl MemoryBudget {
             data: Arc::new(Semaphore::new(data)),
             normal: Arc::new(Semaphore::new(normal)),
             core: Arc::new(Semaphore::new(core)),
+            ack: Arc::new(Semaphore::new(ack)),
             handshake: Arc::new(Semaphore::new(handshake)),
             // Cached ownership must leave headroom for new requests, uploads and decoding.
             cache: Arc::new(Semaphore::new(data / 8)),
@@ -157,6 +161,10 @@ impl MemoryBudget {
         self.try_reserve_critical(&self.core, "core", bytes)
     }
 
+    pub fn try_reserve_ack(&self, bytes: u32) -> Result<MemoryPermit> {
+        self.try_reserve_critical(&self.ack, "ack", bytes)
+    }
+
     /// Unauthenticated work has a separate cap and cannot consume the core reserve.
     pub fn try_reserve_handshake(&self, bytes: u32) -> Result<MemoryPermit> {
         self.try_reserve_critical(&self.handshake, "handshake", bytes)
@@ -206,6 +214,9 @@ impl MemoryBudget {
     }
     pub fn available_core_bytes(&self) -> usize {
         self.core.available_permits()
+    }
+    pub fn available_ack_bytes(&self) -> usize {
+        self.ack.available_permits()
     }
     pub fn available_handshake_bytes(&self) -> usize {
         self.handshake.available_permits()
@@ -260,13 +271,15 @@ mod tests {
         let data = budget.try_reserve(TrafficClass::Produce, 80).unwrap();
         assert!(budget.try_reserve(TrafficClass::Bulk, 1).is_err());
         let control = budget.try_reserve(TrafficClass::Control, 5).unwrap();
-        let core = budget.try_reserve_core(10).unwrap();
+        let ack = budget.try_reserve_ack(2).unwrap();
+        let core = budget.try_reserve_core(8).unwrap();
         let handshake = budget.try_reserve_handshake(5).unwrap();
         assert_eq!(budget.available_bytes(), 0);
         drop(data);
         drop(control);
         drop(core);
         drop(handshake);
+        drop(ack);
         assert_eq!(budget.available_bytes(), 100);
     }
 
@@ -284,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn saturated_normal_control_cannot_consume_core_or_handshake() {
+    fn saturated_normal_control_cannot_consume_ack_core_or_handshake() {
         let config = MemoryLimits {
             total_bytes: 100,
             control_reserved_bytes: 20,
@@ -293,11 +306,13 @@ mod tests {
         let normal = budget.try_reserve(TrafficClass::Control, 85).unwrap();
         assert!(budget.try_reserve(TrafficClass::Produce, 1).is_err());
         assert!(budget.try_reserve(TrafficClass::Control, 1).is_err());
-        let core = budget.try_reserve_core(10).unwrap();
+        let core = budget.try_reserve_core(8).unwrap();
         let handshake = budget.try_reserve_handshake(5).unwrap();
+        let ack = budget.try_reserve_ack(2).unwrap();
+        assert!(budget.try_reserve_ack(1).is_err());
         assert!(budget.try_reserve_handshake(1).is_err());
         assert!(budget.try_reserve_core(1).is_err());
-        drop((normal, core, handshake));
+        drop((normal, core, handshake, ack));
         assert_eq!(budget.available_bytes(), 100);
     }
 }

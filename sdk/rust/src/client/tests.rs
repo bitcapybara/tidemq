@@ -127,7 +127,7 @@ fn nested_validation_keeps_protocol_transport_and_memory_reasons() {
             .source()
             .unwrap()
             .to_string()
-            .contains("at least 4 bytes")
+            .contains("at least 8 bytes")
     );
     ClientConfig::new("localhost:7443").validate().unwrap();
 }

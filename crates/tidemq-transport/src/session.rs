@@ -73,7 +73,6 @@ pub(super) struct StreamLease {
     pub state: Arc<ConnectionState>,
     pub purpose: StreamPurpose,
     _slot: OwnedSemaphorePermit,
-    _ack: Option<OwnedSemaphorePermit>,
     core_live: AtomicBool,
 }
 
@@ -90,10 +89,15 @@ impl StreamLease {
     }
     pub fn validate_kind(&self, frame: &Frame) -> Result<()> {
         let kind = FrameKind::try_from(frame.kind).map_err(|_| Error::Prelude)?;
-        let ack = matches!(kind, FrameKind::AckBatch | FrameKind::AckResult);
+        let ack = tidemq_protocol::framing::is_completion(kind);
+        let internal = matches!(kind, FrameKind::InternalCommand | FrameKind::InternalResult);
         let common = matches!(kind, FrameKind::Error | FrameKind::Cancel);
-        if (self.purpose == StreamPurpose::Core && ack)
-            || (self.purpose == StreamPurpose::Ack && !ack && !common)
+        let core = self.purpose == StreamPurpose::Core
+            && (internal
+                || tidemq_protocol::framing::is_core_control(frame, &self.state.config.protocol)
+                    .map_err(|source| Error::Protocol { source })?);
+        if (self.purpose == StreamPurpose::Core && !core && !common)
+            || (self.purpose == StreamPurpose::Ack && !ack && !common && !internal)
         {
             return Err(Error::Authorization {
                 reason: "frame does not match the stream purpose",
@@ -297,7 +301,15 @@ impl ConnectionState {
             authorization,
             session_id,
             core: Arc::new(Semaphore::new(config.core_streams)),
-            ordinary: Arc::new(Semaphore::new(ordinary_capacity(class, &config))),
+            ordinary: Arc::new(Semaphore::new(
+                ordinary_capacity(class, &config).saturating_sub(
+                    if class == TrafficClass::Control {
+                        config.max_ack_streams
+                    } else {
+                        0
+                    },
+                ),
+            )),
             ack: Arc::new(Semaphore::new(config.max_ack_streams)),
             config,
             budget,
@@ -314,9 +326,7 @@ impl ConnectionState {
         if self.closed.load(Ordering::Acquire) {
             return Err(Error::Closed);
         }
-        if (self.class == TrafficClass::Control && purpose == StreamPurpose::Request)
-            || (self.class != TrafficClass::Control && purpose != StreamPurpose::Request)
-        {
+        if self.class != TrafficClass::Control && purpose != StreamPurpose::Request {
             return Err(Error::Authorization {
                 reason: "stream purpose does not match the connection class",
             });
@@ -328,10 +338,10 @@ impl ConnectionState {
                 resource: "core control lanes must be restored before ACK admission",
             });
         }
-        let semaphore = if purpose == StreamPurpose::Core {
-            &self.core
-        } else {
-            &self.ordinary
+        let semaphore = match purpose {
+            StreamPurpose::Core => &self.core,
+            StreamPurpose::Ack => &self.ack,
+            StreamPurpose::Request => &self.ordinary,
         };
         let slot = semaphore
             .clone()
@@ -339,18 +349,6 @@ impl ConnectionState {
             .map_err(|_| Error::Admission {
                 resource: "connection stream slots",
             })?;
-        let ack = if purpose == StreamPurpose::Ack {
-            Some(
-                self.ack
-                    .clone()
-                    .try_acquire_owned()
-                    .map_err(|_| Error::Admission {
-                        resource: "ACK stream slots",
-                    })?,
-            )
-        } else {
-            None
-        };
         if purpose == StreamPurpose::Core {
             self.core_live.fetch_add(1, Ordering::AcqRel);
         }
@@ -359,7 +357,6 @@ impl ConnectionState {
             state: self.clone(),
             purpose,
             _slot: slot,
-            _ack: ack,
             core_live: AtomicBool::new(purpose == StreamPurpose::Core),
         })
     }

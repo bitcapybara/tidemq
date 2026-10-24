@@ -10,6 +10,66 @@ pub const PROTOCOL_VERSION: u32 = 1;
 pub const ALPN: &[u8] = b"tidemq/1";
 pub const MAX_TIMEOUT_MS: u64 = 300_000;
 
+pub fn is_completion(kind: FrameKind) -> bool {
+    matches!(
+        kind,
+        FrameKind::GroupAck
+            | FrameKind::GroupAckResult
+            | FrameKind::GroupRetireRead
+            | FrameKind::GroupRetireAck
+            | FrameKind::GroupRetired
+            | FrameKind::RetirePublishes
+            | FrameKind::PublishesRetired
+            | FrameKind::AckBatch
+            | FrameKind::AckResult
+    )
+}
+
+pub fn is_core_control(frame: &Frame, limits: &ProtocolLimits) -> Result<bool> {
+    use crate::public;
+    if frame.payload.len() > limits.max_control_frame_bytes as usize {
+        return Err(Error::Limit {
+            name: "core control payload bytes",
+        });
+    }
+    Ok(match FrameKind::try_from(frame.kind) {
+        Ok(FrameKind::ConsumerControl) => {
+            let request: public::ConsumerControl = decode_payload(frame.payload.clone(), limits)?;
+            matches!(
+                public::ConsumerAction::try_from(request.action),
+                Ok(public::ConsumerAction::HeartbeatConsumer
+                    | public::ConsumerAction::LeaveConsumer
+                    | public::ConsumerAction::RetireConsumer
+                    | public::ConsumerAction::ConsumerStatus)
+            )
+        }
+        Ok(FrameKind::PublisherControl) => {
+            let request: public::PublisherControl = decode_payload(frame.payload.clone(), limits)?;
+            matches!(
+                public::PublisherAction::try_from(request.action),
+                Ok(public::PublisherAction::HeartbeatPublisher
+                    | public::PublisherAction::ClosePublisher
+                    | public::PublisherAction::PublisherStatus)
+            )
+        }
+        Ok(
+            FrameKind::ConsumerControlResult
+            | FrameKind::PublisherControlResult
+            | FrameKind::Cancel
+            | FrameKind::Diagnose
+            | FrameKind::DiagnosticResult
+            | FrameKind::GetTopic
+            | FrameKind::TopicResult
+            | FrameKind::GetTopicLayout
+            | FrameKind::TopicLayoutResult
+            | FrameKind::RaftVote
+            | FrameKind::RaftAppend
+            | FrameKind::RaftResult,
+        ) => true,
+        _ => false,
+    })
+}
+
 pub fn frame_limit(class: TrafficClass, limits: &ProtocolLimits) -> u32 {
     if class == TrafficClass::Control {
         limits.max_control_frame_bytes
