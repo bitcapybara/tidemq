@@ -112,7 +112,7 @@ fn release_local(core: &Core) {
     core.changed.notify_waiters();
 }
 
-async fn cleanup(core: &Core, original: Option<Arc<Error>>) -> CloseResult {
+async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
     let deadline = core
         .close_deadline
         .lock()
@@ -134,20 +134,62 @@ async fn cleanup(core: &Core, original: Option<Arc<Error>>) -> CloseResult {
             }
         }
     }
-    match leave {
-        Ok(()) => {
-            report.members_left = 1;
-            if let Some(source) = original {
-                Err(CloseError { report, source })
-            } else {
-                Ok(report)
-            }
+    if let Err(error) = leave {
+        failure.get_or_insert_with(|| Arc::new(error));
+    } else {
+        report.members_left = 1;
+        if let Err(error) = retire_pending_reads(core, deadline).await {
+            failure.get_or_insert_with(|| Arc::new(error));
         }
-        Err(error) => Err(CloseError {
-            report,
-            source: original.unwrap_or_else(|| Arc::new(error)),
-        }),
     }
+    if let Ok(state) = core.state() {
+        report.unresolved_reads = state
+            .domains
+            .values()
+            .filter(|domain| domain.read.is_some())
+            .count();
+    }
+    match failure {
+        Some(source) => Err(CloseError { report, source }),
+        None => Ok(report),
+    }
+}
+
+async fn retire_pending_reads(core: &Core, deadline: Instant) -> Result<()> {
+    let reads: Vec<_> = core
+        .state()?
+        .domains
+        .iter()
+        .filter_map(|(domain, state)| state.read.as_ref().map(|read| (*domain, read.clone())))
+        .collect();
+    for (domain, read) in reads {
+        let (request, operation) = {
+            let read = read.lock().map_err(|_| Error::Closed)?;
+            (read.request.clone(), read.operation)
+        };
+        let _: public::GroupRetired = core
+            .client
+            .request(
+                FrameKind::GroupRetireRead,
+                FrameKind::GroupRetired,
+                TrafficClass::Control,
+                operation,
+                &public::GroupRetire {
+                    topic_id: request.topic_id,
+                    partition_id: request.partition_id,
+                    subscription_id: request.subscription_id,
+                    member_id: request.member_id,
+                    member_epoch: request.member_epoch,
+                    sequence: request.sequence,
+                },
+                deadline,
+            )
+            .await?;
+        if let Some(state) = core.state()?.domains.get_mut(&domain) {
+            state.read = None;
+        }
+    }
+    Ok(())
 }
 
 async fn leave_and_retire(core: &Core, deadline: Instant) -> Result<()> {

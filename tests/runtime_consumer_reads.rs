@@ -193,3 +193,30 @@ async fn cancelling_a_receive_waiter_preserves_the_owned_read_and_its_credit() {
     fixture.receive_all(&queue).await;
     fixture.close(queue).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn closing_an_unknown_read_retires_the_original_result_and_allows_subscription_deletion() {
+    let _serial = SERIAL.lock().await;
+    let fixture = ReadFixture::new().await;
+    let pause = InstalledPause::hot_delivery(fixture.partition, 0).unwrap();
+    let queue = fixture.consumer().await;
+    pause.wait(deadline()).await.unwrap();
+    assert!(queue.try_receive().unwrap().is_none());
+    let report = queue.close().await.unwrap();
+    assert_eq!(report.members_left(), 1);
+    assert_eq!(report.unresolved_reads(), 0);
+    pause.resume();
+    let replacement = fixture.consumer().await;
+    fixture.receive_all(&replacement).await;
+    let report = replacement.close().await.unwrap();
+    assert_eq!(report.unresolved_reads(), 0);
+    fixture
+        .client
+        .admin()
+        .delete_queue_subscription(TOPIC, "durable")
+        .await
+        .unwrap();
+    fixture.producer.close().await.unwrap();
+    fixture.client.close().await.unwrap();
+    fixture.runtime.close().await;
+}

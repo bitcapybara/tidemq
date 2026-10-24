@@ -83,7 +83,7 @@ Admin provides `stream_subscription`/`queue_subscription` and `delete_stream_sub
 
 Resource and credential creation, credential changes, and Topic split/merge retain their original operation in an owned driver. An unknown result carries `Error::Administration { pending, .. }`. Use `pending.retry().await?` or inspect `admin.pending_operations()?`; each retry returns an `AdminReceipt` for that original operation. The shared recovery reserve bounds retained administration work to 16 entries and 128 KiB per entry, and may reject earlier when other logical resources occupy that reserve. A lost one-time credential secret resolves to `CredentialSecretUnavailable` with the committed credential ID; revoke it before issuing another credential.
 
-All close methods return a CloseReport or a CloseError containing a report. Inspect local cleanup, member departures, unresolved sends/ACKs/deletions/administration and unclaimed results. Close never performs business ACKs or deletes a durable subscription. Host-held messages and recovery handles retain their shared memory charges until their final release.
+All close methods return a CloseReport or a CloseError containing a report. Inspect local cleanup, member departures, unresolved reads/sends/ACKs/deletions/administration and unclaimed results. Consumer close fences its member and retires accepted or uncertain Read results; failed retirement is reported through `unresolved_reads()`. Close never performs business ACKs or deletes a durable subscription. Host-held messages and recovery handles retain their shared memory charges until their final release.
 
 ## Memory and observability
 

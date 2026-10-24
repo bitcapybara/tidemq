@@ -48,6 +48,41 @@ fn read(member: Id, sequence: u64, now_ms: u64) -> GroupRead {
 }
 
 #[test]
+fn closing_a_fenced_member_retires_unknown_reads_and_rejects_late_execution_after_reassignment() {
+    let mut cursor = cursor(SubscriptionKind::Queue);
+    let member = id();
+    let other = id();
+    let candidate = Candidate {
+        offset: 0,
+        hash: 7,
+        bytes: 1,
+    };
+    cursor
+        .install_members(1, &[grant(member, vec![])], 0)
+        .unwrap();
+    assert_eq!(
+        cursor.retire_read(member, 1, 1),
+        Err(Rejection::InvalidBarrier)
+    );
+    cursor.install_members(2, &[], 1).unwrap();
+    cursor.retire_read(member, 1, 1).unwrap();
+    cursor.validate().unwrap();
+    let mut recovered: GroupCursor =
+        postcard::from_bytes(&postcard::to_stdvec(&cursor).unwrap()).unwrap();
+    recovered
+        .install_members(3, &[grant(member, vec![]), grant(other, vec![])], 2)
+        .unwrap();
+    assert_eq!(
+        recovered.read(read(member, 1, 3), &[candidate]),
+        Err(Rejection::OutcomeExpired)
+    );
+    let replay = recovered.read(read(other, 1, 3), &[candidate]).unwrap();
+    assert_eq!(replay.deliveries.len(), 1);
+    assert_eq!(replay.deliveries[0].offset, 0);
+    recovered.validate().unwrap();
+}
+
+#[test]
 fn an_original_ack_refusal_survives_attempt_changes_and_checks_the_exact_digest() {
     let mut cursor = cursor(SubscriptionKind::Queue);
     let member = id();

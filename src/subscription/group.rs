@@ -167,6 +167,7 @@ struct Member {
     in_flight: u32,
     bytes: u64,
     read_sequence: u64,
+    retired_read_sequence: u64,
     read: Option<ReadResult>,
     read_digest: [u8; 32],
     ack_floor: u64,
@@ -461,6 +462,7 @@ impl GroupCursor {
                     in_flight: 0,
                     bytes: 0,
                     read_sequence: 0,
+                    retired_read_sequence: 0,
                     read: None,
                     read_digest: [0; 32],
                     ack_floor: 0,
@@ -596,7 +598,9 @@ impl GroupCursor {
                     .ok_or(Rejection::OutcomeExpired)
             });
         }
-        (request.sequence < member.read_sequence).then_some(Err(Rejection::OutcomeExpired))
+        (request.sequence < member.read_sequence
+            || request.sequence > 0 && request.sequence <= member.retired_read_sequence)
+            .then_some(Err(Rejection::OutcomeExpired))
     }
 
     pub(crate) fn first_delivery_bytes(
@@ -635,6 +639,7 @@ impl GroupCursor {
         if request.sequence
             != member
                 .read_sequence
+                .max(member.retired_read_sequence)
                 .checked_add(1)
                 .ok_or(Rejection::CounterOverflow)?
             || member.read.as_ref().is_some_and(|read| !read.retired)
@@ -827,6 +832,15 @@ impl GroupCursor {
             .members
             .get_mut(&(member, epoch))
             .ok_or(Rejection::SessionMismatch)?;
+        if sequence > member.read_sequence && !member.active {
+            // Fence a cancelled Read that may still be queued after this member was revoked.
+            member.retired_read_sequence = member.retired_read_sequence.max(sequence);
+            if let Some(read) = &mut member.read {
+                read.deliveries = Vec::new();
+                read.retired = true;
+            }
+            return Ok(());
+        }
         if sequence > 0 && sequence < member.read_sequence {
             return Ok(());
         }
@@ -837,6 +851,7 @@ impl GroupCursor {
         // The next Read replaces this vector; keep only the retired identity during recovery.
         read.deliveries = Vec::new();
         read.retired = true;
+        member.retired_read_sequence = member.retired_read_sequence.max(sequence);
         Ok(())
     }
 
@@ -1199,6 +1214,7 @@ impl GroupCursor {
                 if read.sequence != member.read_sequence
                     || read.assignment_version == 0
                     || read.assignment_version > self.version
+                    || !read.retired && read.sequence <= member.retired_read_sequence
                     || read.retired && !read.deliveries.is_empty()
                 {
                     return Err(Rejection::InvalidSnapshot);
