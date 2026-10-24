@@ -52,6 +52,7 @@ pub(crate) struct Service {
     pub delivery_key: [u8; 32],
     pub budget: MemoryBudget,
     pub metrics: Metrics,
+    pub(super) producer_metrics: ProducerMetrics,
     pub dispatch_metrics: Arc<crate::server::DispatchMetrics>,
     pub runtime_metrics: super::telemetry::RuntimeMetrics,
     pub ownership_metrics: crate::ownership::OwnershipMetrics,
@@ -155,6 +156,7 @@ impl Service {
             consumer_delete_after: std::sync::Mutex::new(None),
             delivery_key,
             budget,
+            producer_metrics: producer,
             metrics,
             dispatch_metrics,
             runtime_metrics,
@@ -387,8 +389,9 @@ impl Service {
         hops: u32,
     ) -> Result<Frame> {
         let operation = match FrameKind::try_from(frame.kind) {
-            Ok(FrameKind::Read) => Some(Operation::Read),
-            Ok(FrameKind::AckBatch) => Some(Operation::Ack),
+            Ok(FrameKind::Read | FrameKind::GroupRead) => Some(Operation::Read),
+            Ok(FrameKind::AckBatch | FrameKind::GroupAck) => Some(Operation::Ack),
+            Ok(FrameKind::Publish) => Some(Operation::Produce),
             Ok(
                 FrameKind::ProduceBatch
                 | FrameKind::OpenProducer

@@ -166,7 +166,28 @@ impl Service {
                 &self.config.protocol,
             );
         }
-        self.publish_public(access, frame, route, deadline).await
+        let mut attempt = self.producer_metrics.begin_attempt();
+        attempt.finish(crate::broker::AttemptOutcome::Unknown);
+        let _pending = self
+            .producer_metrics
+            .begin_submission(frame.payload.len() as u64);
+        match self.publish_public(access, frame, route, deadline).await {
+            Ok((frame, outcome)) => {
+                attempt.finish(outcome);
+                Ok(frame)
+            }
+            Err(error) => {
+                let outcome = if error.failure().outcome
+                    == i32::from(tidemq_protocol::common::Outcome::Unknown)
+                {
+                    crate::broker::AttemptOutcome::Unknown
+                } else {
+                    crate::broker::AttemptOutcome::Rejected
+                };
+                attempt.finish(outcome);
+                Err(error)
+            }
+        }
     }
 
     async fn publish_public(
@@ -175,7 +196,7 @@ impl Service {
         frame: &Frame,
         route: Route,
         deadline: Instant,
-    ) -> Result<Frame> {
+    ) -> Result<(Frame, crate::broker::AttemptOutcome)> {
         self.admit_produce()?;
         let request: public::Publish = decode_payload(frame.payload.clone(), &self.config.protocol)
             .map_err(|source| Error::operation("decode logical publish", source))?;
@@ -251,8 +272,24 @@ impl Service {
                 now_ms,
             })
             .await?;
-        let (offset, permanent_seal, sealed_end, permanently_closed) = match result {
-            DataResponse::Published(result) => (Some(result.offset), Bytes::new(), 0, false),
+        use crate::broker::AttemptOutcome;
+        let (offset, permanent_seal, sealed_end, permanently_closed, outcome) = match result {
+            DataResponse::Published(result) => {
+                if !result.duplicate {
+                    self.producer_metrics.committed_batch(1, bytes);
+                }
+                (
+                    Some(result.offset),
+                    Bytes::new(),
+                    0,
+                    false,
+                    if result.duplicate {
+                        AttemptOutcome::Duplicate
+                    } else {
+                        AttemptOutcome::Committed
+                    },
+                )
+            }
             DataResponse::ShardSealed {
                 plan,
                 committed_end,
@@ -261,11 +298,12 @@ impl Service {
                 Bytes::copy_from_slice(plan.as_bytes()),
                 committed_end,
                 false,
+                AttemptOutcome::Rejected,
             ),
-            DataResponse::PublishClosed => (None, Bytes::new(), 0, true),
+            DataResponse::PublishClosed => (None, Bytes::new(), 0, true, AttemptOutcome::Rejected),
             _ => return Err(Error::invalid("Logical publish returned an invalid result")),
         };
-        wire::response(
+        let frame = wire::response(
             frame,
             FrameKind::PublishResult,
             &public::PublishResult {
@@ -281,7 +319,8 @@ impl Service {
                 permanently_closed,
             },
             &self.config.protocol,
-        )
+        )?;
+        Ok((frame, outcome))
     }
 
     async fn publish_commit(

@@ -106,6 +106,7 @@ impl fmt::Display for MessageId {
 }
 
 pub(crate) struct ReceivedData {
+    pub _charge: crate::metrics::Charge,
     pub id: MessageId,
     pub key: Bytes,
     pub key_present: bool,
@@ -170,7 +171,9 @@ mod credit_tests {
         let slots = Arc::new(tokio::sync::Semaphore::new(1));
         let memory = Arc::new(tokio::sync::Semaphore::new(512));
         let id = Id::new_v7().unwrap();
+        let metrics = Arc::new(crate::Metrics::default());
         let data = Arc::new(ReceivedData {
+            _charge: metrics.charge(512, true),
             id: MessageId {
                 topic: id,
                 shard: id,
@@ -200,9 +203,13 @@ mod credit_tests {
         data.release_credit().unwrap();
         assert_eq!(slots.available_permits(), 1);
         assert_eq!(memory.available_permits(), 0);
+        assert_eq!(metrics.snapshot().admitted_bytes, 512);
+        assert_eq!(metrics.snapshot().active_deliveries, 1);
         drop(data);
         assert_eq!(memory.available_permits(), 0);
         drop(retained);
         assert_eq!(memory.available_permits(), 512);
+        assert_eq!(metrics.snapshot().admitted_bytes, 0);
+        assert_eq!(metrics.snapshot().active_deliveries, 0);
     }
 }

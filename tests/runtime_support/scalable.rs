@@ -19,12 +19,8 @@ async fn dynamic_fixture() -> Fixture {
 }
 
 async fn configure_dynamic_fixture(fixture: &mut Fixture) {
-    let bootstrap = fixture.directory.join("bootstrap.token");
-    tokio::fs::write(&bootstrap, TOKEN).await.unwrap();
-    private_file(bootstrap.clone()).await;
+    fixture.enable_dynamic_auth().await;
     let config = fixture.configs.get_mut(&1).unwrap();
-    config.runtime.dynamic_auth = true;
-    config.runtime.bootstrap_admin_token_file = Some(bootstrap);
     config.runtime.groups.push(GroupConfig {
         group_id: 3,
         voters: vec![1],

@@ -23,4 +23,5 @@ pub use application::{
 };
 pub use error::{Error, Result};
 pub use runtime::{Broker, HotRead, ProducerStatus, ProducerSubmission, RequestContext};
+pub(crate) use telemetry::AttemptOutcome;
 pub use telemetry::{ProducerMetrics, ProducerMetricsSnapshot};

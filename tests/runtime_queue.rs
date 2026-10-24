@@ -105,73 +105,72 @@ async fn wait_process(fixture: &Fixture, node: u64, child: &mut tokio::process::
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() {
-    let fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    fixture.enable_dynamic_auth().await;
     let mut process = start_process(&fixture, 1).await;
     let client = fixture.client(1).await;
-    let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
+    create_logical_resources(&client).await;
+    let consumer = client
+        .new_queue_consumer(RUNTIME_TOPIC, "jobs")
+        .build()
         .await
         .unwrap();
-    let message = || public::Message {
-        key: Bytes::from_static(b"process-key"),
-        body: Bytes::from_static(b"process-body"),
-    };
-    producer.produce(vec![message()]).await.unwrap();
-    let consumer = Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        ConsumerConfig::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(consumer.fill().await.unwrap(), 1);
-    let first = consumer.next().await.unwrap().unwrap();
-    assert_eq!(consumer.ack(&first).await.unwrap().acknowledged_before, 1);
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let message = || tidemq_sdk::Message::new("process-body").key("process-key");
+    let first = producer.send(message()).await.unwrap().message_id();
+    let received = consumer.receive().await.unwrap();
+    assert_eq!(received.message_id(), first);
+    consumer.ack(&received).await.unwrap();
     process.kill().await.unwrap();
     assert!(!process.wait().await.unwrap().success());
-    let failure =
-        tidemq_sdk::RequestContext::with_deadline(Instant::now() + Duration::from_millis(200))
-            .scope(producer.produce(vec![message()]))
-            .await
-            .unwrap_err();
+    let failure = tidemq_sdk::RequestContext::with_timeout(Duration::from_millis(200))
+        .unwrap()
+        .scope(producer.send(message()))
+        .await
+        .unwrap_err();
     assert!(failure.outcome_unknown());
-    let batches = producer.pending_batches().await.unwrap();
-    assert_eq!(batches.len(), 1);
-    let batch = batches.first().unwrap();
-    let identity = (
-        batch.operation_id(),
-        batch.producer_epoch(),
-        batch.first_sequence(),
-        batch.digest().to_vec(),
-    );
+    let pending = producer.pending_sends().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let pending = pending.first().unwrap();
     let started = Instant::now();
     let mut process = start_process(&fixture, 1).await;
-    let receipt = producer.retry(batch).await.unwrap();
-    assert_eq!(receipt.first_offset, 1);
+    let receipt = pending.retry().await.unwrap();
+    assert_ne!(receipt.message_id(), first);
     assert_eq!(
-        identity,
-        (
-            batch.operation_id(),
-            batch.producer_epoch(),
-            batch.first_sequence(),
-            batch.digest().to_vec()
-        )
+        pending.retry().await.unwrap().message_id(),
+        receipt.message_id()
     );
-    assert!(producer.pending_batches().await.unwrap().is_empty());
-    assert_eq!(consumer.fill().await.unwrap(), 1);
-    let second = consumer.next().await.unwrap().unwrap();
-    assert_eq!(second.offset(), 1);
-    assert_eq!(consumer.ack(&second).await.unwrap().acknowledged_before, 2);
+    assert!(producer.pending_sends().await.unwrap().is_empty());
+    let second = consumer.receive().await.unwrap();
+    assert_eq!(second.message_id(), receipt.message_id());
+    assert_eq!(second.payload(), b"process-body");
+    consumer.ack(&second).await.unwrap();
     eprintln!(
         "Original SDK producer and consumer recovered after process restart in {:?}",
         started.elapsed()
     );
+    consumer.close().await.unwrap();
+    producer.close().await.unwrap();
     client.close().await.unwrap();
     process.kill().await.unwrap();
     let _ = process.wait().await.unwrap();
     fixture.close().await;
+}
+
+const RUNTIME_TOPIC: &str = "test/app/events";
+
+async fn create_logical_resources(client: &Client) -> tidemq_sdk::TopicInfo {
+    let tenant = client.admin().create_tenant("test").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .create_logical_topic(RUNTIME_TOPIC)
+        .await
+        .unwrap()
 }
 
 async fn durable_produce(producer: &Producer, body: &'static [u8]) -> u64 {
@@ -462,36 +461,24 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    fixture.enable_dynamic_auth().await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
-    let (topic, subscription) = create(&client).await;
-    let producer = Producer::open(client.clone(), topic, 0, Id::new_v7().unwrap())
+    let topic = create_logical_resources(&client).await.id().to_string();
+    let consumer = client
+        .new_queue_consumer(RUNTIME_TOPIC, "jobs")
+        .build()
         .await
         .unwrap();
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
     let receipt = producer
-        .produce(vec![public::Message {
-            key: Bytes::from_static(b"key"),
-            body: Bytes::from_static(b"durable-body"),
-        }])
+        .send(tidemq_sdk::Message::new("durable-body").key("key"))
         .await
         .unwrap();
-    assert_eq!(receipt.first_offset, 0);
-    let consumer = Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        ConsumerConfig::default(),
-    )
-    .await
-    .unwrap();
-    assert_eq!(consumer.fill().await.unwrap(), 1);
-    let delivery = consumer.next().await.unwrap().unwrap();
-    assert_eq!(delivery.body(), b"durable-body");
-    assert_eq!(
-        consumer.ack(&delivery).await.unwrap().acknowledged_before,
-        1
-    );
+    let delivery = consumer.receive().await.unwrap();
+    assert_eq!(delivery.message_id(), receipt.message_id());
+    assert_eq!(delivery.payload(), b"durable-body");
+    consumer.ack(&delivery).await.unwrap();
     let metrics = http(
         fixture.running.get(&1).unwrap().management_address,
         "/metrics",
@@ -585,12 +572,19 @@ async fn rf1_sdk_produce_consume_durable_ack_survives_restart() {
     fixture.stop(1).await;
     fixture.restart(1).await;
     let client = fixture.client(1).await;
-    let status = client
-        .admin()
-        .subscription_status(topic, 0, subscription)
+    let consumer = client
+        .new_queue_consumer(RUNTIME_TOPIC, "jobs")
+        .build()
         .await
         .unwrap();
-    assert_eq!(status.assignment.unwrap().acknowledged_before, 1);
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let after = producer.send("after-restart").await.unwrap();
+    let message = consumer.receive().await.unwrap();
+    assert_eq!(message.message_id(), after.message_id());
+    assert_eq!(message.payload(), b"after-restart");
+    consumer.ack(&message).await.unwrap();
+    consumer.close().await.unwrap();
+    producer.close().await.unwrap();
     client.close().await.unwrap();
     drop(client);
     fixture.close().await;

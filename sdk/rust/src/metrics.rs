@@ -144,6 +144,21 @@ pub(crate) struct Charge {
     bytes: u32,
     delivery: bool,
 }
+impl Charge {
+    pub(crate) fn retain_bytes(&mut self, remaining: u32) {
+        let retained = self.bytes.min(remaining);
+        let released = self.bytes.saturating_sub(retained);
+        let _ =
+            self.metrics
+                .admitted_bytes
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                    Some(old.saturating_sub(u64::from(released)))
+                });
+        #[cfg(feature = "opentelemetry")]
+        self.metrics.telemetry.release_bytes(released);
+        self.bytes = retained;
+    }
+}
 impl Drop for Charge {
     fn drop(&mut self) {
         let _ =

@@ -8,6 +8,16 @@ pub(super) struct Fixture {
 }
 
 impl Fixture {
+    pub(super) async fn enable_dynamic_auth(&mut self) {
+        let bootstrap = self.directory.join("bootstrap.token");
+        tokio::fs::write(&bootstrap, TOKEN).await.unwrap();
+        private_file(bootstrap.clone()).await;
+        for config in self.configs.values_mut() {
+            config.runtime.dynamic_auth = true;
+            config.runtime.bootstrap_admin_token_file = Some(bootstrap.clone());
+        }
+    }
+
     pub(super) async fn new(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) -> Self {
         let directory =
             std::env::temp_dir().join(format!("tidemq-runtime-{}", Id::new_v7().unwrap()));

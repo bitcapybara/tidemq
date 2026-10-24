@@ -690,6 +690,12 @@ fn accept_read(
         let mut proof = delivery.proof.ok_or(Error::Closed)?;
         proof.mac = Bytes::copy_from_slice(&proof.mac);
         let data = ReceivedData {
+            _charge: core.client.inner.metrics.charge(
+                u32::try_from(length).map_err(|_| Error::Admission {
+                    resource: "retained consumer bytes",
+                })?,
+                true,
+            ),
             id: MessageId {
                 topic: core.topic_id,
                 shard: domain,

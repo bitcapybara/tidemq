@@ -89,6 +89,10 @@ impl ConfigFile {
 struct AuthorizationConfig {
     access_file: PathBuf,
     delivery_key_file: PathBuf,
+    #[serde(default)]
+    dynamic_auth: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bootstrap_admin_token_file: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -173,6 +177,8 @@ impl TryFrom<ConfigFile> for Config {
         if let Some(authorization) = file.authorization {
             runtime.access_file = authorization.access_file;
             runtime.delivery_key_file = authorization.delivery_key_file;
+            runtime.dynamic_auth = authorization.dynamic_auth;
+            runtime.bootstrap_admin_token_file = authorization.bootstrap_admin_token_file;
         }
         if let Some(storage) = file.storage {
             runtime.retention = storage.retention;
@@ -225,6 +231,8 @@ impl From<Config> for ConfigFile {
             authorization: Some(AuthorizationConfig {
                 access_file: config.runtime.access_file.clone(),
                 delivery_key_file: config.runtime.delivery_key_file.clone(),
+                dynamic_auth: config.runtime.dynamic_auth,
+                bootstrap_admin_token_file: config.runtime.bootstrap_admin_token_file.clone(),
             }),
             runtime: RuntimeFile::from(config.runtime),
             gateway,

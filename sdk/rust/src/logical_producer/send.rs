@@ -4,6 +4,7 @@ use tidemq_protocol::topic::{SendIdentity, message_digest, routing_hash};
 use tokio::sync::OwnedSemaphorePermit;
 
 struct Credit {
+    charge: Option<crate::metrics::Charge>,
     slots: OwnedSemaphorePermit,
     requests: OwnedSemaphorePermit,
     memory: OwnedSemaphorePermit,
@@ -260,12 +261,14 @@ async fn acquire(
         .map_err(|_| Error::Closed)
 }
 async fn reserve(core: &Core, count: u32, size: u32, deadline: Instant) -> Result<Credit> {
+    let _timer = core.client.inner.metrics.admission_timer();
     if size > core.max_bytes || u64::from(size) > core.client.inner.config.max_pending_bytes / 2 {
         return Err(Error::Configuration {
             reason: "message or batch cannot fit the shared producer budget",
         });
     }
     Ok(Credit {
+        charge: None,
         slots: acquire(&core.slots, count, deadline).await?,
         requests: acquire(&core.client.inner.requests, count, deadline).await?,
         memory: acquire(&core.memory, size, deadline).await?,
@@ -274,6 +277,7 @@ async fn reserve(core: &Core, count: u32, size: u32, deadline: Instant) -> Resul
 }
 fn split_credit(credit: &mut Credit, size: u32) -> Result<Credit> {
     Ok(Credit {
+        charge: None,
         slots: credit.slots.split(1).ok_or(Error::Closed)?,
         requests: credit.requests.split(1).ok_or(Error::Closed)?,
         memory: credit.memory.split(size as usize).ok_or(Error::Closed)?,
@@ -281,7 +285,7 @@ fn split_credit(credit: &mut Credit, size: u32) -> Result<Credit> {
     })
 }
 
-fn admit(core: &Arc<Core>, mut message: Message, credit: Credit) -> Result<PendingSend> {
+fn admit(core: &Arc<Core>, mut message: Message, mut credit: Credit) -> Result<PendingSend> {
     if core.stop.is_cancelled() {
         return Err(Error::Closed);
     }
@@ -353,6 +357,10 @@ fn admit(core: &Arc<Core>, mut message: Message, credit: Credit) -> Result<Pendi
             .first_key_value()
             .map_or(sequence, |(sequence, _)| *sequence),
     };
+    let charged = u32::try_from(credit.bytes.num_permits()).map_err(|_| Error::Admission {
+        resource: "retained producer bytes",
+    })?;
+    credit.charge = Some(core.client.inner.metrics.charge(charged, false));
     let pending = PendingSend {
         work: Arc::new(Work {
             core: Arc::downgrade(core),
@@ -388,6 +396,9 @@ fn release_payload(work: &Work) {
         drop(credit.memory.split(memory));
         let bytes = credit.bytes.num_permits().saturating_sub(4096);
         drop(credit.bytes.split(bytes));
+        if let Some(charge) = &mut credit.charge {
+            charge.retain_bytes(4096);
+        }
     }
 }
 

@@ -503,6 +503,7 @@ impl Core {
             state.next_delivery = sequence.checked_add(1).ok_or(Error::SessionExpired)?;
             message.delivery_sequence = sequence;
             state.ledger.insert(sequence, message.clone());
+            self.client.inner.metrics.record_deliveries(1);
             return Ok(Some(message));
         }
         Ok(None)

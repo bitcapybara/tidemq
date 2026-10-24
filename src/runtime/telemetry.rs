@@ -209,6 +209,22 @@ impl OperationTimer {
                 .map(|error| operation_outcome(error.outcome))
                 .unwrap_or(Outcome::Failed)
             }
+            Ok(frame)
+                if frame.kind == i32::from(tidemq_protocol::common::FrameKind::PublishResult) =>
+            {
+                tidemq_protocol::framing::decode_payload::<tidemq_protocol::public::PublishResult>(
+                    frame.payload.clone(),
+                    limits,
+                )
+                .map(|result| {
+                    if result.offset.is_some() {
+                        Outcome::Committed
+                    } else {
+                        Outcome::Rejected
+                    }
+                })
+                .unwrap_or(Outcome::Failed)
+            }
             Ok(_) => Outcome::Committed,
             Err(error) => operation_outcome(error.failure().outcome),
         };

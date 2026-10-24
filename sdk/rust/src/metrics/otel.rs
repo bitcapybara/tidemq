@@ -79,6 +79,9 @@ impl Instruments {
         };
         objects.add(direction, &[]);
     }
+    pub fn release_bytes(&self, bytes: u32) {
+        self.admitted_bytes.add(-i64::from(bytes), &[]);
+    }
 }
 
 fn histogram(meter: &Meter, name: &'static str, description: &'static str) -> Histogram<f64> {

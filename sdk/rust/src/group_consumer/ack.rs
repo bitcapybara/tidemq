@@ -482,9 +482,12 @@ fn settle_batch(
         return Ok(());
     }
     let mut state = core.state()?;
+    let mut acknowledged = 0;
     for sequence in &batch.entries {
         if let Ok(receipt) = outcome {
-            state.ledger.remove(sequence);
+            if state.ledger.remove(sequence).is_some() && *receipt == AckReceipt::Acknowledged {
+                acknowledged += 1;
+            }
             if let Some(data) = work.deliveries.get(sequence).and_then(Weak::upgrade) {
                 let _ = data.acknowledgement.set(*receipt);
                 data.release_credit()?;
@@ -493,6 +496,7 @@ fn settle_batch(
         state.claims.remove(sequence);
     }
     batch.settled = true;
+    core.client.inner.metrics.record_acknowledged(acknowledged);
     core.changed.notify_waiters();
     Ok(())
 }
