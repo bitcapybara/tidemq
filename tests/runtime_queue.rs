@@ -975,10 +975,35 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
         if reclaimed >= expected_reclaimed {
             break;
         }
-        assert!(
-            Instant::now() < until,
-            "Default background archive did not publish, checkpoint and reclaim in time"
-        );
+        if Instant::now() >= until {
+            let mut state = BTreeMap::new();
+            for (id, node) in &fixture.running {
+                let metrics = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    http(node.management_address, "/metrics"),
+                )
+                .await
+                .ok();
+                let diagnostics = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    http(node.management_address, "/diagnostics"),
+                )
+                .await
+                .ok();
+                state.insert(
+                    *id,
+                    serde_json::json!({"metrics": metrics, "diagnostics": diagnostics}),
+                );
+            }
+            let evidence = fixture.directory.join("s3-reclamation-timeout.json");
+            tokio::fs::write(&evidence, serde_json::to_vec_pretty(&serde_json::json!({
+                "expected_reclaimed_bytes": expected_reclaimed, "observed_reclaimed_bytes": reclaimed, "nodes": state,
+            })).unwrap()).await.unwrap();
+            panic!(
+                "Default background archive did not publish, checkpoint and reclaim; inspect {}",
+                evidence.display()
+            );
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let consumer = client
