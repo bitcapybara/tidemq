@@ -287,10 +287,10 @@ impl MetadataState {
             .topology
             .pending_transfers()
             .any(|plan| plan.partition.topic_id == topic)
-            || self
-                .consumer_subscriptions
-                .values()
-                .any(|row| row.topic == topic && row.is_deleting())
+            || self.consumer_subscriptions.values().any(|row| {
+                row.topic == topic && (row.is_deleting() || !row.prepared && !row.is_deleted())
+            })
+            || self.pending_retention(topic)
         {
             return Err(Rejection::RecoveryRequired);
         }

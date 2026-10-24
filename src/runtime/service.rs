@@ -82,6 +82,7 @@ pub(crate) struct Service {
     pub metadata_mutation: Mutex<()>,
     pub(super) transfer_serial: Mutex<()>,
     pub(super) tenant_quota_serial: Mutex<()>,
+    pub(super) retention_deferrals: std::sync::atomic::AtomicU64,
     cancellations: Arc<std::sync::Mutex<BTreeMap<CancelKey, watch::Sender<bool>>>>,
 }
 
@@ -185,6 +186,7 @@ impl Service {
             metadata_mutation: Mutex::new(()),
             transfer_serial: Mutex::new(()),
             tenant_quota_serial: Mutex::new(()),
+            retention_deferrals: std::sync::atomic::AtomicU64::new(0),
             cancellations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
         })
     }
@@ -599,6 +601,7 @@ impl Service {
             | super::cluster::HOSTED_GROUP
             | super::metadata_membership::STATUS
             | super::metadata_membership::CHECKPOINT
+            | super::retention_control::CONTROL
             | super::auth::AUTH_QUERY
             | crate::lifecycle::remote::LIFECYCLE_QUERY
             | crate::lifecycle::remote::LIFECYCLE_COMMAND => Some(StreamPurpose::Core),
@@ -705,6 +708,17 @@ impl Service {
                     return Err(forbidden());
                 }
                 self.quota_control_command(peer.node_id, &request.body, deadline)
+                    .await?
+            }
+            super::retention_control::CONTROL => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                    || !matches!(peer.role.as_str(), "metadata" | "storage" | "combined")
+                {
+                    return Err(forbidden());
+                }
+                self.retention_control_command(peer.node_id, &request.body, deadline)
                     .await?
             }
             super::resource_leases::RESOURCE_LEASE => {

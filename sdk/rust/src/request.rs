@@ -270,7 +270,11 @@ pub(crate) fn mark_sent() {
 
 // The outer context can drop the business future; retain its exact admitted work first.
 pub(crate) fn retain(recovery: Recovery) {
-    let _ = OPERATION.try_with(|operation| operation.recovery.set(recovery));
+    let _ = OPERATION.try_with(|operation| {
+        let _ = operation.recovery.set(recovery);
+        // Owned work can execute after its waiting future is dropped.
+        operation.sent.store(true, Ordering::Release);
+    });
 }
 
 #[cfg(test)]

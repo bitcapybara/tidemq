@@ -285,3 +285,60 @@ pub(super) fn lose_consumer_reply(partition: PartitionKey) -> bool {
 pub(super) fn fail_consumer_body(partition: PartitionKey, offset: u64) -> bool {
     trigger_read_fault(partition, ReadPoint::Body(offset))
 }
+
+static CONSUMER_CREATION: Mutex<Option<Arc<ConsumerCreationBlock>>> = Mutex::new(None);
+
+struct ConsumerCreationBlock {
+    partition: PartitionKey,
+    observed: AtomicBool,
+}
+
+pub struct InstalledConsumerCreationBlock(Arc<ConsumerCreationBlock>);
+
+impl InstalledConsumerCreationBlock {
+    pub fn install(partition: PartitionKey) -> io::Result<Self> {
+        let mut slot = CONSUMER_CREATION
+            .lock()
+            .map_err(|_| io::Error::other("Creation hook is poisoned"))?;
+        if slot.is_some() {
+            return Err(io::Error::other(
+                "A consumer creation block is already installed",
+            ));
+        }
+        let block = Arc::new(ConsumerCreationBlock {
+            partition,
+            observed: AtomicBool::new(false),
+        });
+        *slot = Some(block.clone());
+        Ok(Self(block))
+    }
+    pub fn was_triggered(&self) -> bool {
+        self.0.observed.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for InstalledConsumerCreationBlock {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = CONSUMER_CREATION.lock()
+            && slot
+                .as_ref()
+                .is_some_and(|block| Arc::ptr_eq(block, &self.0))
+        {
+            slot.take();
+        }
+    }
+}
+
+pub(super) fn reject_consumer_creation(partition: PartitionKey) -> bool {
+    CONSUMER_CREATION
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().cloned())
+        .is_some_and(|block| {
+            if block.partition != partition {
+                return false;
+            }
+            block.observed.store(true, Ordering::Release);
+            true
+        })
+}

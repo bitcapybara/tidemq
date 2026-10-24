@@ -81,6 +81,8 @@ Stream 的累计确认覆盖应用实际接收的共享前缀，不包含预取�
 
 ## Clone、预算与关闭
 
+订阅创建意图与保留前沿推进在 Metadata 中持久排序。创建期间保护尚未全部安装时，回收等待；已准入的回收先对账原 Data CAS，再允许新订阅创建。控制器重启不解除这项保护。
+
 Stream lane 与物理分片独立。服务端按成员数有界细分、合并范围，粘性保留未变范围的 owner；变更范围完成 fencing 后才重新授予。初始 4 lane、上限 128 是待后续校准的功能默认值，普通 SDK 调用不配置物理范围。
 
 Client、Producer、StreamConsumer 和 QueueConsumer 的 clone 共享同一逻辑实例、身份、预算、驱动和关闭状态。Consumer clone 竞争同一队列，可确认另一 clone 返回的有效消息。新建独立实例应再次调用具名 new_* builder。任一 clone 的 close 关闭整个逻辑实例。

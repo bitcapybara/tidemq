@@ -18,6 +18,7 @@ mod publishers;
 mod quotas;
 mod replicated;
 mod resource_leases;
+mod retention;
 mod scaling;
 mod state;
 mod tenant_limits;
@@ -60,6 +61,7 @@ pub use quotas::{
 pub use resource_leases::{
     RESOURCE_LEASE_MS, ResourceLease, ResourceLeaseCommand, ResourceLeaseTarget, ResourceLeases,
 };
+pub use retention::{RetentionControl, RetentionPlan};
 pub use state::MetadataState;
 pub use tenant_limits::TenantLimits;
 pub use topic_delete::{TopicDeletion, TopicDeletionCommand};

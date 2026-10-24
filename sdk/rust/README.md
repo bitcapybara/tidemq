@@ -77,6 +77,8 @@ Client, producer, StreamConsumer and QueueConsumer clones share their logical in
 
 ## Deadlines and recovery
 
+Subscription creation and retention advancement are durably ordered. A pending creation protects history until every data domain is installed. An interrupted retention reservation resolves its original data CAS before a new subscription is admitted; controller restart does not release that protection.
+
 Cancelled or timed-out read-only queries do not report an unknown business mutation. This also applies to a mutation's preflight lookups when its change has not been submitted.
 
 Network operations use the configured finite request timeout. Each new physical connection resolves the endpoint again and uses `connect_timeout` for DNS, candidate attempts, authentication and stream setup, within the remaining request deadline. Healthy connections remain reusable. Candidate addresses share that connect budget; reconnects retain the logical session and resource bounds. Use `RequestContext::with_timeout(Duration)` and `context.scope(operation)` for a shared total deadline or cancellation token. Queueing, retries and subrequests use the same remaining budget. A receive without an explicit context keeps waiting while its individual network requests remain finite.

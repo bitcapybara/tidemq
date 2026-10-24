@@ -14,6 +14,7 @@ pub struct ConsumerSubscription {
     pub topic: Id,
     pub name: String,
     pub members: MembersBook,
+    pub prepared: bool,
     pub open_gates: std::collections::BTreeSet<Id>,
     pub deletion: Option<super::ConsumerDeletion>,
 }
@@ -247,13 +248,17 @@ impl MetadataState {
                 fenced,
                 domain,
                 now_ms,
-            } => self
-                .consumer_subscriptions
-                .get_mut(subscription)
-                .ok_or(Rejection::NotFound)?
-                .members
-                .observe_installed(*version, *fenced, *domain, *now_ms)
-                .map(ConsumerOutcome::Plan),
+            } => {
+                let row = self
+                    .consumer_subscriptions
+                    .get_mut(subscription)
+                    .ok_or(Rejection::NotFound)?;
+                let plan = row
+                    .members
+                    .observe_installed(*version, *fenced, *domain, *now_ms)?;
+                row.prepared |= plan.active;
+                Ok(ConsumerOutcome::Plan(plan))
+            }
             ConsumerCommand::Refresh {
                 subscription,
                 now_ms,
@@ -289,11 +294,15 @@ impl MetadataState {
         }
         if self.topology.pending_transfers().any(|plan| {
             plan.partition.topic_id == topic && plan.stage < super::TransferStage::Published
-        }) {
+        }) || self.topology.pending().any(|plan| plan.topic == topic)
+        {
             return Err(Rejection::RecoveryRequired);
         }
         if self.consumer_subscriptions.contains_key(&operation) {
             return Err(Rejection::OperationConflict);
+        }
+        if self.pending_retention(topic) {
+            return Err(Rejection::RecoveryRequired);
         }
         if self
             .consumer_subscriptions
@@ -324,6 +333,7 @@ impl MetadataState {
                 topic,
                 name: name.to_owned(),
                 members,
+                prepared: false,
                 open_gates,
                 deletion: None,
             },
@@ -385,6 +395,9 @@ impl MetadataState {
                 return Err(Rejection::InvalidSubscription);
             }
             row.members.validate()?;
+            if row.members.plan().active && !row.prepared {
+                return Err(Rejection::InvalidEvidence);
+            }
             if let Some(plan) = &row.deletion {
                 plan.validate(row)?;
             }

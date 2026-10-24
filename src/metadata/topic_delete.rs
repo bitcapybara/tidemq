@@ -149,6 +149,7 @@ impl MetadataState {
             return Err(Rejection::SubscriptionInUse);
         }
         if self.topology.pending().any(|plan| plan.topic == topic)
+            || self.pending_retention(topic)
             || self
                 .topology
                 .pending_transfers()

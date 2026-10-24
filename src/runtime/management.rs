@@ -237,7 +237,9 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             "available_ack_bytes": service.budget.available_ack_bytes(),
             "available_handshake_bytes": service.budget.available_handshake_bytes(),
         });
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":draining,"schedulable":schedulable,"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic,"registry":service.registry.diagnostic().ok()});
+        let retention =
+            serde_json::json!({"deferrals":service.retention_deferrals.load(Ordering::Relaxed)});
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":draining,"schedulable":schedulable,"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic,"registry":service.registry.diagnostic().ok(),"retention":retention});
     }
 }
 

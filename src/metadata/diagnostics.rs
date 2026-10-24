@@ -17,6 +17,8 @@ pub struct MetadataSummary {
     pub retired_topics: usize,
     pub partitions: usize,
     pub subscriptions: usize,
+    pub creating_subscriptions: usize,
+    pub pending_retention_plans: usize,
     pub nodes: usize,
     pub groups: usize,
     pub remaining_operations: usize,
@@ -58,7 +60,7 @@ pub struct OwnershipDiagnostic {
 }
 
 impl MetadataState {
-    /// O(1) counts from the applied view. This is not a linearizable read proof.
+    /// Bounded counts from the applied view. This is not a linearizable read proof.
     pub fn summary(&self) -> MetadataSummary {
         MetadataSummary {
             source: "local_applied",
@@ -69,6 +71,16 @@ impl MetadataState {
             retired_topics: self.topics.len().saturating_sub(self.topic_names.len()),
             partitions: self.partitions.len(),
             subscriptions: self.subscriptions.len(),
+            creating_subscriptions: self
+                .consumer_subscriptions
+                .values()
+                .filter(|row| !row.prepared && !row.is_deleted())
+                .count(),
+            pending_retention_plans: self
+                .retention_plans
+                .values()
+                .filter(|plan| plan.completed_revision.is_none())
+                .count(),
             nodes: self.nodes.len(),
             groups: self.groups.len(),
             remaining_operations: self.remaining_operations(),

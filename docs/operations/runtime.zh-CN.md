@@ -12,6 +12,8 @@
 
 ## 常见阻塞
 
+`metadata.creating_subscriptions` 表示尚未完成全部数据域保护的订阅数量；`metadata.pending_retention_plans` 表示尚未对账完成的保留前沿计划。`retention.deferrals` 统计本进程因创建或拓扑保护而暂缓的新回收准入，重启后重新计数。恢复依赖原计划，不通过删除元数据、对象或 WAL 解除阻塞。
+
 | 现象 | 应检查的证据 | 行动 |
 | --- | --- | --- |
 | 新写 Unavailable，Read/ACK 仍可完成 | 元数据 quorum、lease 时效、joint membership、quota 样本年龄 | 恢复控制或采样链路，按原身份重试 |

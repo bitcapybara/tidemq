@@ -172,6 +172,7 @@ impl PeerRpc {
                     | super::cluster::HOSTED_GROUP
                     | super::metadata_membership::STATUS
                     | super::metadata_membership::CHECKPOINT
+                    | super::retention_control::CONTROL
                     | super::resource_leases::RESOURCE_LEASE
                     | crate::lifecycle::remote::LIFECYCLE_QUERY
                     | crate::lifecycle::remote::LIFECYCLE_COMMAND

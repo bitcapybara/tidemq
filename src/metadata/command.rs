@@ -76,6 +76,7 @@ pub(crate) enum Action {
     },
     CompleteMembership(crate::scaling::MembershipEvidence),
     Lifecycle(crate::lifecycle::MetadataOperation),
+    Retention(super::RetentionControl),
     PrepareLayout {
         topic: Id,
         revision: u64,
@@ -481,6 +482,7 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    Retention(super::RetentionPlan),
     MetadataChange(Box<super::MetadataChange>),
     Cluster(Box<super::ClusterResult>),
     QuotaPolicy(super::QuotaPolicy),

@@ -497,6 +497,10 @@ impl Service {
         blocked: bool,
         deadline: Instant,
     ) -> Result<()> {
+        #[cfg(feature = "test-hooks")]
+        if super::test_hooks::reject_consumer_creation(route.partition) {
+            return Err(Error::unavailable());
+        }
         let replica = self
             .data
             .get(&route.group_id)

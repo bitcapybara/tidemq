@@ -96,6 +96,9 @@ impl MetadataState {
         }
         let source = self.transfer_source(shard, layout_revision, target_group)?;
         let partition = source.partition;
+        if self.pending_retention(partition.topic_id) {
+            return Err(Rejection::RecoveryRequired);
+        }
         let target = self.transfer_target(&source, target_group, target_owner, revision)?;
         let source_voters = self
             .group(source.group_id)

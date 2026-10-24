@@ -8,7 +8,7 @@ use tidemq_protocol::state::OffsetRange;
 use tokio::sync::{Notify, watch};
 use tokio::time::Instant;
 
-use crate::broker::{DataCommand, DataResponse, WriterFence};
+use crate::broker::{DataCommand, WriterFence};
 use crate::budget::MemoryBudget;
 use crate::lifecycle::{Coordinator, ObjectPhase, RangeRequest};
 use crate::metadata::PartitionKey;
@@ -16,7 +16,7 @@ use crate::ownership::Work;
 use crate::producer::{MessageData, ProducerState, Rejection};
 
 use super::service::Service;
-use super::{Error, Result};
+use super::{Error, Result, wire};
 
 const ARCHIVE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const ARCHIVE_MAX_MESSAGES: usize = 8192;
@@ -596,6 +596,9 @@ impl Service {
     ) -> Result<()> {
         let lease = self.data_lease(group, partition, deadline).await?;
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
+        wire::within(deadline, replica.raft.ensure_linearizable())
+            .await?
+            .map_err(|_| Error::unavailable())?;
         let now_ms = super::data::unix_millis()?;
         let (status, fence) = replica
             .state
@@ -611,37 +614,24 @@ impl Service {
             .await
             .map_err(|source| Error::operation("read same-lock retention status", source))?;
         let status = status.ok_or_else(Error::unavailable)?;
-        if status.maximum_floor <= status.floor {
-            return Ok(());
-        }
         lease
             .check(
                 &fence.ok_or_else(Error::unavailable)?,
                 Work::ControlMutation,
             )
             .map_err(|_| Error::unavailable())?;
-        let response = self
-            .data_write(
-                group,
-                DataCommand::Retention {
-                    partition,
-                    writer: WriterFence {
-                        node_id: lease.grant().owner_node,
-                        owner_epoch: lease.grant().epoch,
-                    },
-                    command: crate::retention::Command {
-                        expected_revision: status.revision,
-                        before: status.maximum_floor,
-                        now_ms,
-                    },
-                },
-                deadline,
-            )
-            .await?;
-        if !matches!(response, DataResponse::Retention(_)) {
-            return Err(Error::invalid("Unexpected retention command outcome"));
-        }
-        Ok(())
+        self.reserve_and_advance_retention(
+            group,
+            partition,
+            status,
+            now_ms,
+            WriterFence {
+                node_id: lease.grant().owner_node,
+                owner_epoch: lease.grant().epoch,
+            },
+            deadline.min(lease.expires_at().into()),
+        )
+        .await
     }
 }
 

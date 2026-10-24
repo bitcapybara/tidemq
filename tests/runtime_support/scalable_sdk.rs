@@ -186,7 +186,22 @@ async fn send_pressure(requests: u32, payload_bytes: usize) {
     for _ in 0..3 {
         initial.push(producer.send("small").await.unwrap().message_id());
     }
-    let held = queue.receive().await.unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    let held = loop {
+        match tidemq_sdk::RequestContext::with_deadline(until)
+            .scope(queue.receive())
+            .await
+        {
+            Ok(message) => break message,
+            Err(error) => {
+                assert!(
+                    recoverable_member_error(&error) && Instant::now() < until,
+                    "Initial read did not recover its original result: {error:#}"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    };
     assert_eq!(held.message_id(), *initial.first().unwrap());
     proxy.set_mtu(1199);
     let payload = vec![7; payload_bytes];

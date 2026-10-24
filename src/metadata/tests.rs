@@ -4,6 +4,8 @@ use tidemq_protocol::Id;
 
 #[path = "../../tests/scalable_support/consumer_deletion.rs"]
 mod consumer_deletion_tests;
+#[path = "../../tests/scalable_support/subscription_retention.rs"]
+mod subscription_retention_tests;
 #[path = "../../tests/scalable_support/tenant_quotas.rs"]
 mod tenant_quota_tests;
 #[path = "../../tests/scalable_support/topic_deletion.rs"]

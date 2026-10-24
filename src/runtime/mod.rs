@@ -24,6 +24,7 @@ pub(crate) mod physical;
 mod publishing;
 mod registry;
 mod resource_leases;
+mod retention_control;
 pub(crate) mod scaling;
 mod service;
 mod telemetry;

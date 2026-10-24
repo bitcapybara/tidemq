@@ -204,18 +204,33 @@ async fn partial_domain_deletion_resumes_after_restart_and_old_replay_cannot_del
             .await
             .is_err()
     );
-    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(1)).unwrap();
-    let interrupted = context
-        .scope(client.admin().delete_queue_subscription(topic, "jobs"))
-        .await
-        .unwrap_err();
-    assert!(interrupted.outcome_unknown());
-    let pending = client
-        .admin()
-        .pending_subscription_deletions()
-        .unwrap()
-        .pop()
-        .unwrap();
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(5)).unwrap();
+    let cancellation = context.cancellation_token();
+    let caller = client.clone();
+    let waiting = tokio::spawn(async move {
+        context
+            .scope(caller.admin().delete_queue_subscription(topic, "jobs"))
+            .await
+    });
+    let until = deadline();
+    let pending = loop {
+        if let Some(pending) = client
+            .admin()
+            .pending_subscription_deletions()
+            .unwrap()
+            .pop()
+        {
+            break pending;
+        }
+        assert!(
+            !waiting.is_finished() && Instant::now() < until,
+            "Deletion did not pass its read-only preflight"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    cancellation.cancel();
+    assert!(waiting.await.unwrap().unwrap_err().outcome_unknown());
+    assert!(pending.retry().await.unwrap_err().outcome_unknown());
     assert_eq!(pending.subscription_id(), old);
     fixture.stop(1).await;
     fixture.running.insert(

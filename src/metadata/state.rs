@@ -83,6 +83,7 @@ pub struct MetadataState {
     pub(crate) partitions: BTreeMap<PartitionKey, PartitionRecord>,
     pub(crate) subscriptions: BTreeMap<Id, SubscriptionRecord>,
     pub(crate) consumer_subscriptions: BTreeMap<Id, super::ConsumerSubscription>,
+    pub(crate) retention_plans: BTreeMap<PartitionKey, super::RetentionPlan>,
     pub(crate) topic_deletions: BTreeMap<Id, super::TopicDeletion>,
     pub(crate) subscription_names: BTreeMap<Id, BTreeMap<String, Id>>,
     // shortcut: Retain CRUD decisions to the hard cap; review retirement fences before raising lifecycle capacity.
@@ -208,6 +209,7 @@ impl MetadataState {
             && matches!(
                 command.action,
                 Action::Lifecycle(_)
+                    | Action::Retention(_)
                     | Action::Consumer(_)
                     | Action::Publisher(_)
                     | Action::Transfer(_)
@@ -451,6 +453,7 @@ impl MetadataState {
             Action::ObserveRecovery(evidence) => self.observe_recovery(evidence),
             Action::ActivateRoute(evidence) => self.activate_route(evidence),
             Action::Lifecycle(operation) => self.apply_lifecycle(operation.clone()),
+            Action::Retention(control) => self.retention_control(control).map(Outcome::Retention),
             Action::PrepareLayout {
                 topic,
                 revision,

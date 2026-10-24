@@ -22,6 +22,9 @@ mod node_drain;
 mod quotas;
 #[path = "scalable_registry.rs"]
 mod registry;
+#[cfg(feature = "test-hooks")]
+#[path = "scalable_retention.rs"]
+mod retention;
 #[path = "scalable_sdk.rs"]
 mod sdk;
 #[path = "scalable_transfer.rs"]
@@ -623,7 +626,10 @@ async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() 
 fn recoverable_member_error(error: &tidemq_sdk::Error) -> bool {
     use tidemq_protocol::common::ErrorCode;
     use tidemq_sdk::Error;
-    error.outcome_unknown()
+    matches!(
+        error.kind(),
+        tidemq_sdk::ErrorKind::DeadlineExceeded | tidemq_sdk::ErrorKind::Unavailable
+    ) || error.outcome_unknown()
         || match error {
             Error::Background { source } => recoverable_member_error(source),
             Error::SessionExpired => true,
