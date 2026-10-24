@@ -6,6 +6,16 @@ async fn a_lost_publish_reply_recovers_its_original_success_after_topic_removal(
     fixture.start_all().await;
     let admin = fixture.client(1).await;
     create_logical_resources(&admin).await;
+    let tenants = admin.admin().tenants().next_page().await.unwrap().unwrap();
+    let tenant = tenants.first().unwrap().id;
+    let namespaces = admin
+        .admin()
+        .namespaces(tenant)
+        .next_page()
+        .await
+        .unwrap()
+        .unwrap();
+    let namespace = namespaces.first().unwrap().id;
     let backend = fixture.configs.get(&1).unwrap().listen;
     let proxy = udp_proxy::Proxy::start([backend, backend]).await;
     let client = Client::builder(
@@ -50,6 +60,15 @@ async fn a_lost_publish_reply_recovers_its_original_success_after_topic_removal(
         .await
         .unwrap();
     admin.admin().delete_topic(RUNTIME_TOPIC).await.unwrap();
+    admin.admin().delete_namespace(namespace).await.unwrap();
+    admin.admin().delete_tenant(tenant).await.unwrap();
+    let replacement = admin.admin().create_tenant("test").await.unwrap();
+    assert_ne!(replacement, tenant);
+    admin
+        .admin()
+        .create_namespace(replacement, "app")
+        .await
+        .unwrap();
     admin.admin().create_topic(RUNTIME_TOPIC).await.unwrap();
     proxy.set_response_mtu(1200);
     let receipt = pending.first().unwrap().retry().await.unwrap();

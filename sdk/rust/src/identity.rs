@@ -260,6 +260,51 @@ impl Admin {
         Ok(())
     }
 
+    pub async fn set_namespace_enabled(&self, namespace: NamespaceId, enabled: bool) -> Result<()> {
+        let receipt = self
+            .manage_identity(&public::ManageIdentity {
+                action: public::IdentityAction::SetNamespaceEnabled.into(),
+                target_id: bytes(namespace.0),
+                enabled,
+                ..Default::default()
+            })
+            .await?;
+        match receipt {
+            AdminReceipt::NamespaceStatusChanged(id) if id == namespace => Ok(()),
+            _ => Err(result_mismatch()),
+        }
+    }
+
+    /// Requires explicitly removed topics and revoked credentials for disabled child principals.
+    pub async fn delete_namespace(&self, namespace: NamespaceId) -> Result<()> {
+        let receipt = self
+            .manage_identity(&public::ManageIdentity {
+                action: public::IdentityAction::DeleteNamespaceIdentity.into(),
+                target_id: bytes(namespace.0),
+                ..Default::default()
+            })
+            .await?;
+        match receipt {
+            AdminReceipt::NamespaceDeleted(id) if id == namespace => Ok(()),
+            _ => Err(result_mismatch()),
+        }
+    }
+
+    /// Requires explicitly removed namespaces and revoked credentials for disabled child principals.
+    pub async fn delete_tenant(&self, tenant: TenantId) -> Result<()> {
+        let receipt = self
+            .manage_identity(&public::ManageIdentity {
+                action: public::IdentityAction::DeleteTenantIdentity.into(),
+                target_id: bytes(tenant.0),
+                ..Default::default()
+            })
+            .await?;
+        match receipt {
+            AdminReceipt::TenantDeleted(id) if id == tenant => Ok(()),
+            _ => Err(result_mismatch()),
+        }
+    }
+
     async fn manage_identity(&self, request: &public::ManageIdentity) -> Result<AdminReceipt> {
         self.execute(crate::admin::pending::Request::Identity(request.clone()))
             .await
@@ -286,6 +331,9 @@ pub(crate) fn receipt(
         | Action::SetPrincipalEnabled
         | Action::SetTenantLimits
         | Action::SetNamespaceLimits => Id::from_slice(&request.target_id)?,
+        Action::DeleteTenantIdentity
+        | Action::DeleteNamespaceIdentity
+        | Action::SetNamespaceEnabled => Id::from_slice(&request.target_id)?,
         Action::PutPrincipalIdentity if !request.target_id.is_empty() => {
             Id::from_slice(&request.target_id)?
         }
@@ -310,6 +358,9 @@ pub(crate) fn receipt(
         Action::SetTenantLimits => AdminReceipt::TenantLimitsChanged(TenantId(id)),
         Action::SetNamespaceLimits => AdminReceipt::NamespaceLimitsChanged(NamespaceId(id)),
         Action::SetPrincipalEnabled => AdminReceipt::PrincipalStatusChanged(PrincipalId(id)),
+        Action::SetNamespaceEnabled => AdminReceipt::NamespaceStatusChanged(NamespaceId(id)),
+        Action::DeleteTenantIdentity => AdminReceipt::TenantDeleted(TenantId(id)),
+        Action::DeleteNamespaceIdentity => AdminReceipt::NamespaceDeleted(NamespaceId(id)),
         Action::IssueCredential => {
             if result.parent_id != request.parent_id || result.expires_at_ms == 0 {
                 return Err(result_mismatch());

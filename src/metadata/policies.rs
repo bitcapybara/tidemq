@@ -27,6 +27,7 @@ impl MetadataState {
         operation: Id,
         command: &AuthCommand,
     ) -> Result<AuthResult, Rejection> {
+        self.validate_identity_deletion(command)?;
         let mut outcome = self.auth.apply(command).map_err(Rejection::Authorization)?;
         let target = match command.action {
             AuthAction::SetTenantLimits { id, limits } => Some((id, None, limits)),

@@ -86,6 +86,7 @@ impl AuthState {
                     id: bytes(row.id),
                     name: row.name.clone(),
                     enabled: row.enabled,
+                    deleted: self.tenant_deleted(row.id),
                     limits: Some(row.limits.to_wire()?),
                     ..Default::default()
                 })
@@ -115,6 +116,7 @@ impl AuthState {
                     parent_id: bytes(row.tenant),
                     name: row.name.clone(),
                     enabled: row.enabled,
+                    deleted: self.namespace_deleted(row.id),
                     limits: Some(self.limits(row.tenant, row.id)?.1.to_wire()?),
                     ..Default::default()
                 })

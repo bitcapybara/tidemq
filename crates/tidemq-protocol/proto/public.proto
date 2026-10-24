@@ -55,6 +55,9 @@ enum IdentityAction {
   SET_TENANT_LIMITS = 7;
   SET_NAMESPACE_LIMITS = 8;
   SET_PRINCIPAL_ENABLED = 9;
+  DELETE_TENANT_IDENTITY = 10;
+  DELETE_NAMESPACE_IDENTITY = 11;
+  SET_NAMESPACE_ENABLED = 12;
 }
 message ResourceLimits {
   // Zero retains the current value; namespace defaults inherit their tenant's current limit.
@@ -114,6 +117,7 @@ message IdentityInfo {
   repeated string permissions = 6;
   uint64 expires_at_ms = 7;
   ResourceLimits limits = 8;
+  bool deleted = 9;
 }
 message IdentityPage {
   repeated IdentityInfo entries = 1;

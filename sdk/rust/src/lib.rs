@@ -33,7 +33,9 @@ pub use group_consumer::{
 pub use identity::{
     AccessToken, CredentialId, NamespaceId, Permission, PrincipalBuilder, PrincipalId, TenantId,
 };
-pub use identity_list::{CredentialInfo, NamespaceInfo, PrincipalInfo, ResourceList, TenantInfo};
+pub use identity_list::{
+    CredentialInfo, IdentityStatus, NamespaceInfo, PrincipalInfo, ResourceList, TenantInfo,
+};
 pub use logical_producer::{PendingSend, Producer, ProducerBuilder, SendBatchResult, SendReceipt};
 pub use message::{Message, MessageId, ReceivedMessage};
 pub use metrics::{Metrics, MetricsSnapshot};

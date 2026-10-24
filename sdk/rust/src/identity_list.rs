@@ -10,11 +10,18 @@ use crate::{
     Result, TenantId, admin::bytes,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdentityStatus {
+    Active,
+    Disabled,
+    Deleted,
+}
+
 #[derive(Clone, Debug)]
 pub struct TenantInfo {
     pub id: TenantId,
     pub name: String,
-    pub enabled: bool,
+    pub status: IdentityStatus,
     pub limits: ResourceLimits,
 }
 #[derive(Clone, Debug)]
@@ -22,7 +29,7 @@ pub struct NamespaceInfo {
     pub id: NamespaceId,
     pub tenant: TenantId,
     pub name: String,
-    pub enabled: bool,
+    pub status: IdentityStatus,
     pub limits: ResourceLimits,
 }
 #[derive(Clone, Debug)]
@@ -217,7 +224,7 @@ fn tenant_info(row: public::IdentityInfo) -> Result<TenantInfo> {
     Ok(TenantInfo {
         id: TenantId(Id::from_slice(&row.id)?),
         name: row.name,
-        enabled: row.enabled,
+        status: identity_status(row.enabled, row.deleted)?,
         limits: effective_limits(row.limits)?,
     })
 }
@@ -227,13 +234,13 @@ fn namespace_info(row: public::IdentityInfo) -> Result<NamespaceInfo> {
         id: NamespaceId(Id::from_slice(&row.id)?),
         tenant: TenantId(Id::from_slice(&row.parent_id)?),
         name: row.name,
-        enabled: row.enabled,
+        status: identity_status(row.enabled, row.deleted)?,
         limits: effective_limits(row.limits)?,
     })
 }
 fn principal_info(row: public::IdentityInfo) -> Result<PrincipalInfo> {
     crate::admin::validate_name(&row.name)?;
-    if row.permissions.is_empty() || row.permissions.len() > 6 {
+    if row.deleted || row.permissions.is_empty() || row.permissions.len() > 6 {
         return Err(mismatch());
     }
     let permissions = row
@@ -259,7 +266,7 @@ fn principal_info(row: public::IdentityInfo) -> Result<PrincipalInfo> {
     })
 }
 fn credential_info(row: public::IdentityInfo) -> Result<CredentialInfo> {
-    if row.expires_at_ms == 0 {
+    if row.deleted || row.expires_at_ms == 0 {
         return Err(mismatch());
     }
     Ok(CredentialInfo {
@@ -268,6 +275,15 @@ fn credential_info(row: public::IdentityInfo) -> Result<CredentialInfo> {
         enabled: row.enabled,
         expires_at_unix_ms: row.expires_at_ms,
     })
+}
+
+fn identity_status(enabled: bool, deleted: bool) -> Result<IdentityStatus> {
+    match (enabled, deleted) {
+        (true, false) => Ok(IdentityStatus::Active),
+        (false, false) => Ok(IdentityStatus::Disabled),
+        (false, true) => Ok(IdentityStatus::Deleted),
+        (true, true) => Err(mismatch()),
+    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use tidemq_protocol::Id;
 
+#[path = "identity_delete.rs"]
+mod deletion;
 #[path = "identity_list.rs"]
 mod listing;
 
@@ -130,6 +132,16 @@ pub enum AuthAction {
         id: Id,
         enabled: bool,
     },
+    DeleteTenant {
+        id: Id,
+    },
+    DeleteNamespace {
+        id: Id,
+    },
+    SetNamespaceEnabled {
+        id: Id,
+        enabled: bool,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -160,6 +172,8 @@ pub struct AuthState {
     revision: u64,
     tenants: BTreeMap<Id, Tenant>,
     namespaces: BTreeMap<Id, Namespace>,
+    retired_tenants: BTreeSet<Id>,
+    retired_namespaces: BTreeSet<Id>,
     principals: BTreeMap<Id, Principal>,
     credentials: BTreeMap<Id, Credential>,
     digests: BTreeMap<[u8; 32], Id>,
@@ -210,6 +224,12 @@ impl AuthState {
     pub fn tenant(&self, id: Id) -> Option<&Tenant> {
         self.tenants.get(&id)
     }
+    pub fn tenant_deleted(&self, id: Id) -> bool {
+        self.retired_tenants.contains(&id)
+    }
+    pub fn namespace_deleted(&self, id: Id) -> bool {
+        self.retired_namespaces.contains(&id)
+    }
     pub fn limits(
         &self,
         tenant: Id,
@@ -248,6 +268,11 @@ impl AuthState {
             .namespace
             .and_then(|id| self.namespaces.get(&id))
             .ok_or(AuthRejection::Invalid)?;
+        if topic.status == super::RecordStatus::Active
+            && (self.tenant_deleted(tenant.id) || self.namespace_deleted(namespace.id))
+        {
+            return Err(AuthRejection::Invalid);
+        }
         let mut parts = topic.name.split('/');
         if namespace.tenant != tenant.id
             || parts.next() != Some(&tenant.name)
@@ -452,6 +477,7 @@ impl AuthState {
             AuthAction::CreateTenant(_)
                 | AuthAction::SetTenantEnabled { .. }
                 | AuthAction::SetTenantLimits { .. }
+                | AuthAction::DeleteTenant { .. }
         ) {
             Permission::ManageTenants
         } else {
@@ -487,7 +513,7 @@ impl AuthState {
                     || self
                         .tenants
                         .values()
-                        .any(|record| record.name == tenant.name)
+                        .any(|record| record.name == tenant.name && !self.tenant_deleted(record.id))
                 {
                     return Err(AuthRejection::Conflict);
                 }
@@ -500,6 +526,9 @@ impl AuthState {
                 }
                 valid_component(&namespace.name)?;
                 self.manage_tenant(actor, namespace.tenant)?;
+                if self.tenant_deleted(namespace.tenant) {
+                    return Err(AuthRejection::NotFound);
+                }
                 if let Some(limits) = namespace.limits {
                     limits.validate()?;
                     let parent = self
@@ -515,7 +544,9 @@ impl AuthState {
                 }
                 if self.namespaces.contains_key(&namespace.id)
                     || self.namespaces.values().any(|record| {
-                        record.tenant == namespace.tenant && record.name == namespace.name
+                        record.tenant == namespace.tenant
+                            && record.name == namespace.name
+                            && !self.namespace_deleted(record.id)
                     })
                 {
                     return Err(AuthRejection::Conflict);
@@ -536,6 +567,7 @@ impl AuthState {
                     .get(principal)
                     .ok_or(AuthRejection::NotFound)?;
                 self.manage_principal(actor, target)?;
+                self.validate_live_parents(target)?;
                 if !target.permissions.is_subset(&actor.permissions) {
                     return Err(AuthRejection::Forbidden);
                 }
@@ -613,6 +645,9 @@ impl AuthState {
                 if actor.tenant.is_some() {
                     return Err(AuthRejection::Forbidden);
                 }
+                if self.tenant_deleted(*id) {
+                    return Err(AuthRejection::NotFound);
+                }
                 self.tenants
                     .get_mut(id)
                     .ok_or(AuthRejection::NotFound)?
@@ -623,6 +658,9 @@ impl AuthState {
                 if actor.tenant.is_some() {
                     return Err(AuthRejection::Forbidden);
                 }
+                if self.tenant_deleted(*id) {
+                    return Err(AuthRejection::NotFound);
+                }
                 limits.validate()?;
                 self.tenants
                     .get_mut(id)
@@ -632,6 +670,9 @@ impl AuthState {
             }
             AuthAction::SetNamespaceLimits { id, limits } => {
                 let namespace = self.namespaces.get(id).ok_or(AuthRejection::NotFound)?;
+                if self.namespace_deleted(*id) || self.tenant_deleted(namespace.tenant) {
+                    return Err(AuthRejection::NotFound);
+                }
                 if actor.namespace.is_some() {
                     return Err(AuthRejection::Forbidden);
                 }
@@ -654,11 +695,28 @@ impl AuthState {
             AuthAction::SetPrincipalEnabled { id, enabled } => {
                 let principal = self.principals.get(id).ok_or(AuthRejection::NotFound)?;
                 self.manage_principal(actor, principal)?;
+                if *enabled {
+                    self.validate_live_parents(principal)?;
+                }
                 self.principals
                     .get_mut(id)
                     .ok_or(AuthRejection::NotFound)?
                     .enabled = *enabled;
                 Ok(AuthOutcome::Principal(*id))
+            }
+            AuthAction::DeleteTenant { id } => self.delete_tenant(actor, *id, command.now_ms),
+            AuthAction::DeleteNamespace { id } => self.delete_namespace(actor, *id, command.now_ms),
+            AuthAction::SetNamespaceEnabled { id, enabled } => {
+                let row = self.namespaces.get(id).ok_or(AuthRejection::NotFound)?;
+                self.manage_namespace_deletion(actor, row)?;
+                if self.namespace_deleted(*id) || self.tenant_deleted(row.tenant) {
+                    return Err(AuthRejection::NotFound);
+                }
+                self.namespaces
+                    .get_mut(id)
+                    .ok_or(AuthRejection::NotFound)?
+                    .enabled = *enabled;
+                Ok(AuthOutcome::Namespace(*id))
             }
             AuthAction::Bootstrap { .. } => Err(AuthRejection::Conflict),
         }
@@ -671,6 +729,7 @@ impl AuthState {
     ) -> Result<AuthOutcome, AuthRejection> {
         valid_component(&principal.name)?;
         self.manage_principal(actor, principal)?;
+        self.validate_live_parents(principal)?;
         if self.principals.values().any(|record| {
             record.id != principal.id
                 && record.name == principal.name
@@ -763,6 +822,7 @@ impl AuthState {
     }
 
     pub fn validate(&self) -> Result<(), AuthRejection> {
+        self.validate_deletions()?;
         if self.tenants.len() > 256
             || self.namespaces.len() > 4096
             || self.principals.len() > 4096

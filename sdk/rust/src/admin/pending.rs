@@ -27,6 +27,8 @@ pub enum AdminReceipt {
     TopicDeleted(crate::TopicId),
     TenantCreated(crate::TenantId),
     NamespaceCreated(crate::NamespaceId),
+    TenantDeleted(crate::TenantId),
+    NamespaceDeleted(crate::NamespaceId),
     PrincipalConfigured(crate::PrincipalId),
     CredentialIssued(crate::AccessToken),
     CredentialSecretUnavailable {
@@ -35,6 +37,7 @@ pub enum AdminReceipt {
     },
     CredentialRevoked(crate::CredentialId),
     TenantStatusChanged(crate::TenantId),
+    NamespaceStatusChanged(crate::NamespaceId),
     PrincipalStatusChanged(crate::PrincipalId),
     TenantLimitsChanged(crate::TenantId),
     NamespaceLimitsChanged(crate::NamespaceId),

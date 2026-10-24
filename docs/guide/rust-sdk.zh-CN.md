@@ -56,6 +56,8 @@ TlsTrust 接受服务端 CA 文件或 PEM，不接收 CA 私钥。Credentials �
 
 `admin.tenants()`、`namespaces(tenant)`、`principals(tenant)`、`platform_principals()` 和 `credentials(principal)` 返回强类型分页对象。使用 `page_size(1..=32)` 与 `next_page().await?` 逐页读取，None 表示本次枚举结束。页面按真实父资源和主体作用域过滤，返回身份及有效限额，不含 token 原值或校验摘要。身份目录在翻页中发生变化时返回 `CatalogChanged`，应重新创建分页对象；常规消息、成员和额度操作不使身份分页失效。
 
+`delete_namespace(id)` 要求先显式删除 Topic、禁用该 Namespace 下的主体，并撤销仍有效的凭据；`delete_tenant(id)` 还要求先删除其 Namespace。删除保留旧身份和原结果，同名重建分配新身份。Tenant、Namespace 的分页结果通过 `IdentityStatus::{Active, Disabled, Deleted}` 区分状态。临时停用使用 `set_tenant_enabled` 或 `set_namespace_enabled`，已删除身份不能重新启用。
+
 ## 生产与并发
 
 send 接受 Into<Message>，简单消息可写 producer.send("hello").await。Message 用于设置 key 和属性。成功回执表示数据 Raft 已持久提交；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。

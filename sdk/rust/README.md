@@ -59,6 +59,8 @@ Administrators configure tenant or namespace budgets with `ResourceLimits::build
 
 `admin.tenants()`, `namespaces(tenant)`, `principals(tenant)`, `platform_principals()` and `credentials(principal)` return typed listings. Use `page_size(1..=32)` and `next_page().await?`; None ends that enumeration. Pages contain identities and effective limits, without token values or verification digests. A concurrent identity change returns `CatalogChanged`; start a new listing. Routine message, membership and quota activity does not invalidate identity pagination.
 
+`delete_namespace(id)` requires explicitly deleted topics, disabled child principals, and revoked or expired child credentials. `delete_tenant(id)` additionally requires explicitly deleted namespaces. These operations retain identity tombstones and original results; recreating a name allocates a new identity. Tenant and namespace listings expose `IdentityStatus::{Active, Disabled, Deleted}`. Use `set_tenant_enabled` or `set_namespace_enabled` for reversible suspension; deleted identities cannot be enabled again.
+
 Connection limits count physical connections across gateways and traffic classes. Reusing a Client shares its connection pool; distinct Client instances consume separate capacity. Connection admission and cold-read batches use finite Metadata Raft leases, so adding a node or changing a data leader does not duplicate their allowance. `set_principal_enabled(id, false)` disables a principal's credentials for new admission.
 
 ## Sending and receiving

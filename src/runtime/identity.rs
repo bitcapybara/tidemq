@@ -339,6 +339,12 @@ fn identity_action(
             id: target()?,
             enabled: request.enabled,
         },
+        Action::DeleteTenantIdentity => AuthAction::DeleteTenant { id: target()? },
+        Action::DeleteNamespaceIdentity => AuthAction::DeleteNamespace { id: target()? },
+        Action::SetNamespaceEnabled => AuthAction::SetNamespaceEnabled {
+            id: target()?,
+            enabled: request.enabled,
+        },
         Action::Unspecified => return Err(Error::invalid("Identity action is unspecified")),
     };
     Ok((value, None))

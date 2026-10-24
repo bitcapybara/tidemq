@@ -189,6 +189,8 @@ pub struct IdentityInfo {
     pub expires_at_ms: u64,
     #[prost(message, optional, tag = "8")]
     pub limits: ::core::option::Option<ResourceLimits>,
+    #[prost(bool, tag = "9")]
+    pub deleted: bool,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct IdentityPage {
@@ -531,6 +533,9 @@ pub enum IdentityAction {
     SetTenantLimits = 7,
     SetNamespaceLimits = 8,
     SetPrincipalEnabled = 9,
+    DeleteTenantIdentity = 10,
+    DeleteNamespaceIdentity = 11,
+    SetNamespaceEnabled = 12,
 }
 impl IdentityAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -549,6 +554,9 @@ impl IdentityAction {
             Self::SetTenantLimits => "SET_TENANT_LIMITS",
             Self::SetNamespaceLimits => "SET_NAMESPACE_LIMITS",
             Self::SetPrincipalEnabled => "SET_PRINCIPAL_ENABLED",
+            Self::DeleteTenantIdentity => "DELETE_TENANT_IDENTITY",
+            Self::DeleteNamespaceIdentity => "DELETE_NAMESPACE_IDENTITY",
+            Self::SetNamespaceEnabled => "SET_NAMESPACE_ENABLED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -564,6 +572,9 @@ impl IdentityAction {
             "SET_TENANT_LIMITS" => Some(Self::SetTenantLimits),
             "SET_NAMESPACE_LIMITS" => Some(Self::SetNamespaceLimits),
             "SET_PRINCIPAL_ENABLED" => Some(Self::SetPrincipalEnabled),
+            "DELETE_TENANT_IDENTITY" => Some(Self::DeleteTenantIdentity),
+            "DELETE_NAMESPACE_IDENTITY" => Some(Self::DeleteNamespaceIdentity),
+            "SET_NAMESPACE_ENABLED" => Some(Self::SetNamespaceEnabled),
             _ => None,
         }
     }

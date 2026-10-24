@@ -864,3 +864,177 @@ fn tenant_administrator_cannot_create_platform_privileges_or_credentials_for_str
     ));
     state.validate_snapshot().unwrap();
 }
+
+#[test]
+fn recreated_parent_names_never_authorize_a_new_principal_for_old_topic_identities() {
+    use tidemq::metadata::{RecordStatus, TopicRecord};
+    let mut state = MetadataState::default();
+    assert!(
+        state
+            .apply(Command::bootstrap(
+                id(),
+                id(),
+                1,
+                DeploymentMode::LocalRf1,
+                MetadataLimits::default()
+            ))
+            .is_applied()
+    );
+    let root = id();
+    assert!(
+        apply(
+            &mut state,
+            None,
+            AuthAction::Bootstrap {
+                principal: id(),
+                credential: root,
+                digest: TokenDigest::of(ROOT_TOKEN).unwrap(),
+                expires_ms: 100000,
+            }
+        )
+        .is_applied()
+    );
+    let original = tenant("acme");
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::CreateTenant(original.clone())
+        )
+        .is_applied()
+    );
+    let old_namespace = id();
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::CreateNamespace(Namespace {
+                id: old_namespace,
+                tenant: original.id,
+                name: "app".into(),
+                enabled: true,
+                limits: None,
+            })
+        )
+        .is_applied()
+    );
+    let resource = TopicRecord {
+        topic_id: id(),
+        tenant: Some(original.id),
+        namespace: Some(old_namespace),
+        name: "acme/app/orders".into(),
+        generation: 1,
+        partition_count: 1,
+        status: RecordStatus::Retired,
+    };
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::DeleteTenant { id: original.id }
+        )
+        .eq(&Response::Rejected {
+            revision: state.revision(),
+            reason: Rejection::Authorization(AuthRejection::Conflict),
+        })
+    );
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::DeleteNamespace { id: old_namespace }
+        )
+        .is_applied()
+    );
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::DeleteTenant { id: original.id }
+        )
+        .is_applied()
+    );
+    let current = tenant("acme");
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::CreateTenant(current.clone())
+        )
+        .is_applied()
+    );
+    let namespace = id();
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::CreateNamespace(Namespace {
+                id: namespace,
+                tenant: current.id,
+                name: "app".into(),
+                enabled: true,
+                limits: None,
+            })
+        )
+        .is_applied()
+    );
+    let principal = id();
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::PutPrincipal(Principal {
+                id: principal,
+                tenant: Some(current.id),
+                namespace: Some(namespace),
+                name: "writer".into(),
+                enabled: true,
+                permissions: [Permission::Produce].into(),
+            })
+        )
+        .is_applied()
+    );
+    let credential = id();
+    assert!(
+        apply(
+            &mut state,
+            Some(root),
+            AuthAction::CreateCredential {
+                id: credential,
+                principal,
+                digest: TokenDigest::of(APP_TOKEN).unwrap(),
+                expires_ms: 100000,
+            }
+        )
+        .is_applied()
+    );
+    assert!(
+        state
+            .auth()
+            .authorize(
+                credential,
+                NOW,
+                Permission::Produce,
+                Some("acme/app/orders")
+            )
+            .is_ok()
+    );
+    assert!(
+        state
+            .auth()
+            .authorize_topic(credential, NOW, Permission::Produce, &resource)
+            .is_err()
+    );
+    assert!(
+        state
+            .auth()
+            .authorize_topic(root, NOW, Permission::Produce, &resource)
+            .is_ok()
+    );
+    let restored: MetadataState =
+        postcard::from_bytes(&postcard::to_stdvec(&state).unwrap()).unwrap();
+    restored.validate_snapshot().unwrap();
+    assert!(restored.auth().tenant_deleted(original.id));
+    assert!(restored.auth().namespace_deleted(old_namespace));
+    assert!(!restored.auth().tenant_deleted(current.id));
+}
