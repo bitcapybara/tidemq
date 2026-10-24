@@ -102,6 +102,7 @@ impl Service {
         partition: PartitionKey,
         deadline: Instant,
     ) -> Result<()> {
+        let _guard = wire::within(deadline, self.tenant_quota_serial.lock()).await?;
         for _ in 0..3 {
             let status = self.quota_status(partition, deadline).await?;
             if status.group != group {
@@ -573,6 +574,8 @@ impl Service {
         {
             return Ok(());
         }
+        // Coalesce local growth with background reclamation; data admission remains concurrent.
+        let _guard = wire::within(deadline, self.tenant_quota_serial.lock()).await?;
         for _ in 0..4 {
             let status = self.quota_status(partition, deadline).await?;
             if status.group != group {

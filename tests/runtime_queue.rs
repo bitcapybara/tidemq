@@ -1062,7 +1062,7 @@ fn maintenance_test_logging() {
     if std::env::var_os("TIDEMQ_TEST_MAINTENANCE_LOG").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_test_writer()
-            .with_env_filter("tidemq::runtime::maintenance=debug,tidemq::server::dispatch=debug,tidemq_sdk=debug")
+            .with_env_filter("tidemq::runtime::maintenance=debug,tidemq::runtime::tenant_quota=debug,tidemq::server::dispatch=debug,tidemq_sdk=debug")
             .try_init();
     }
 }

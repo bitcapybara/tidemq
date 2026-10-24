@@ -231,13 +231,10 @@ impl Service {
             .ok_or_else(Error::unavailable)?
             .state
             .try_with_application(|state| {
-                let name = &state
-                    .topic(topic)
-                    .ok_or_else(super::metadata::not_found)?
-                    .name;
+                let topic = state.topic(topic).ok_or_else(super::metadata::not_found)?;
                 state
                     .auth()
-                    .authorize(credential, now, metadata::Permission::Consume, Some(name))
+                    .authorize_topic(credential, now, metadata::Permission::Consume, topic)
                     .map_err(|_| forbidden())?;
                 state
                     .auth()

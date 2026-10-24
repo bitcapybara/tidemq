@@ -69,11 +69,11 @@ impl Service {
                 let resource = state.topic(topic).ok_or_else(super::metadata::not_found)?;
                 state
                     .auth()
-                    .authorize(
+                    .authorize_topic(
                         credential,
                         now,
                         metadata::Permission::ManageTopics,
-                        Some(&resource.name),
+                        resource,
                     )
                     .map_err(|_| super::service::forbidden())?;
                 Ok::<_, Error>(

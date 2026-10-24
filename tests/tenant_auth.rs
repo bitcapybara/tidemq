@@ -685,6 +685,70 @@ fn durable_credentials_enforce_tenant_namespace_and_live_revocation() {
             .is_err()
     );
     assert!(state.auth().authenticate(digest, 100000).is_err());
+    let mut resource = tidemq::metadata::TopicRecord {
+        topic_id: id(),
+        tenant: Some(acme.id),
+        namespace: Some(namespace.id),
+        name: "acme/app/orders".into(),
+        generation: 1,
+        partition_count: 1,
+        status: tidemq::metadata::RecordStatus::Active,
+    };
+    assert!(
+        state
+            .auth()
+            .authorize_topic(credential, NOW, Permission::Produce, &resource)
+            .is_ok()
+    );
+    resource.tenant = Some(other.id);
+    resource.namespace = Some(other_namespace.id);
+    assert!(
+        state
+            .auth()
+            .authorize_topic(credential, NOW, Permission::Produce, &resource)
+            .is_err()
+    );
+    resource.name = "other/app/orders".into();
+    assert!(
+        state
+            .auth()
+            .authorize_topic(credential, NOW, Permission::Produce, &resource)
+            .is_err()
+    );
+    resource.tenant = Some(acme.id);
+    resource.namespace = Some(namespace.id);
+    resource.name = "acme/app/orders".into();
+    let mut disabled = state.clone();
+    assert!(
+        apply(
+            &mut disabled,
+            Some(root),
+            AuthAction::SetTenantEnabled {
+                id: acme.id,
+                enabled: false
+            }
+        )
+        .is_applied()
+    );
+    assert!(
+        disabled
+            .auth()
+            .authorize_topic(root, NOW, Permission::Produce, &resource)
+            .is_err()
+    );
+    resource.status = tidemq::metadata::RecordStatus::Retired;
+    assert!(
+        disabled
+            .auth()
+            .authorize_topic(root, NOW, Permission::Produce, &resource)
+            .is_ok()
+    );
+    assert!(
+        disabled
+            .auth()
+            .authorize_topic(credential, NOW, Permission::Produce, &resource)
+            .is_err()
+    );
     let bytes = postcard::to_stdvec(&state).unwrap();
     assert!(
         !bytes

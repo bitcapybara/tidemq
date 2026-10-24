@@ -74,6 +74,7 @@ pub(crate) struct Service {
     pub leases: std::sync::Mutex<BTreeMap<PartitionKey, LeaseSlot>>,
     pub metadata_mutation: Mutex<()>,
     pub(super) transfer_serial: Mutex<()>,
+    pub(super) tenant_quota_serial: Mutex<()>,
     cancellations: Arc<std::sync::Mutex<BTreeMap<CancelKey, watch::Sender<bool>>>>,
 }
 
@@ -147,6 +148,7 @@ impl Service {
             leases: std::sync::Mutex::new(BTreeMap::new()),
             metadata_mutation: Mutex::new(()),
             transfer_serial: Mutex::new(()),
+            tenant_quota_serial: Mutex::new(()),
             cancellations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
         })
     }

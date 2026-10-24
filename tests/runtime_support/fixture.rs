@@ -310,8 +310,14 @@ pub(super) fn udp_address() -> SocketAddr {
     panic!("No test UDP port is available outside the observed ephemeral range");
 }
 pub(super) fn tcp_address() -> SocketAddr {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    for _ in 0..64_512 {
+        // Share the cross-process reservations and stay outside client ephemeral ports.
+        let address = udp_address();
+        if std::net::TcpListener::bind(address).is_ok() {
+            return address;
+        }
+    }
+    panic!("No test TCP port is available outside the observed ephemeral range");
 }
 pub(super) fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(10)

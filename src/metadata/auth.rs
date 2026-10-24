@@ -285,6 +285,58 @@ impl AuthState {
         permission: Permission,
         name: Option<&str>,
     ) -> Result<&Principal, AuthRejection> {
+        let principal = self.authorized_principal(credential, now_ms, permission)?;
+        if let Some(name) = name {
+            let (tenant, namespace, _) = self.resolve_topic(name)?;
+            Self::authorize_scope(principal, tenant.id, namespace.id)?;
+        }
+        Ok(principal)
+    }
+
+    pub fn authorize_topic(
+        &self,
+        credential: Id,
+        now_ms: u64,
+        permission: Permission,
+        topic: &super::TopicRecord,
+    ) -> Result<&Principal, AuthRejection> {
+        let principal = self.authorized_principal(credential, now_ms, permission)?;
+        self.validate_topic_parent(topic)?;
+        let tenant = topic.tenant.ok_or(AuthRejection::Invalid)?;
+        let namespace = topic.namespace.ok_or(AuthRejection::Invalid)?;
+        Self::authorize_scope(principal, tenant, namespace)?;
+        let active = self.tenants.get(&tenant).is_some_and(|row| row.enabled)
+            && self
+                .namespaces
+                .get(&namespace)
+                .is_some_and(|row| row.enabled);
+        // Platform recovery can still address sealed tombstones after their parents are retired.
+        if !active && !(principal.tenant.is_none() && topic.status == super::RecordStatus::Retired)
+        {
+            return Err(AuthRejection::Forbidden);
+        }
+        Ok(principal)
+    }
+
+    fn authorize_scope(
+        principal: &Principal,
+        tenant: Id,
+        namespace: Id,
+    ) -> Result<(), AuthRejection> {
+        if principal.tenant.is_some_and(|id| id != tenant)
+            || principal.namespace.is_some_and(|id| id != namespace)
+        {
+            return Err(AuthRejection::Forbidden);
+        }
+        Ok(())
+    }
+
+    fn authorized_principal(
+        &self,
+        credential: Id,
+        now_ms: u64,
+        permission: Permission,
+    ) -> Result<&Principal, AuthRejection> {
         let credential = self
             .credentials
             .get(&credential)
@@ -301,14 +353,6 @@ impl AuthState {
                 }))
         {
             return Err(AuthRejection::Forbidden);
-        }
-        if let Some(name) = name {
-            let (tenant, namespace, _) = self.resolve_topic(name)?;
-            if principal.tenant.is_some_and(|id| id != tenant.id)
-                || principal.namespace.is_some_and(|id| id != namespace.id)
-            {
-                return Err(AuthRejection::Forbidden);
-            }
         }
         Ok(principal)
     }

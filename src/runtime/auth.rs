@@ -75,6 +75,13 @@ pub(super) struct DeletionPermit {
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+enum AuthResource {
+    None,
+    Name(String),
+    Topic(Id),
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthQuery {
     PublisherRecovery {
         topic: Id,
@@ -90,7 +97,6 @@ enum AuthQuery {
         domain: Id,
     },
     BirthShard(Id),
-    TopicResource(Id),
     Publisher {
         topic: Id,
         producer: Id,
@@ -103,7 +109,7 @@ enum AuthQuery {
     Authorize {
         credential: Id,
         permission: Permission,
-        name: Option<String>,
+        resource: AuthResource,
     },
 }
 
@@ -112,7 +118,6 @@ struct AuthReply {
     deletion: Option<DeletionPermit>,
     consumer_expires_ms: u64,
     birth: Option<crate::metadata::BirthShard>,
-    resource: Option<String>,
     publisher: Option<crate::producer::PublisherPermit>,
     credential: Option<Id>,
     expires_ms: u64,
@@ -432,15 +437,6 @@ impl Service {
                         ..Default::default()
                     })
                 }
-                AuthQuery::TopicResource(topic) => {
-                    let topic = state.topic(topic).ok_or_else(super::service::forbidden)?;
-                    Ok(AuthReply {
-                        resource: Some(topic.name.clone()),
-                        expires_ms: now.saturating_add(1000),
-                        now_ms: now,
-                        ..Default::default()
-                    })
-                }
                 AuthQuery::PublisherRecovery {
                     topic,
                     producer,
@@ -507,12 +503,7 @@ impl Service {
                     let topic_record = state.topic(topic).ok_or_else(super::service::forbidden)?;
                     state
                         .auth()
-                        .authorize(
-                            credential,
-                            now,
-                            Permission::Produce,
-                            Some(&topic_record.name),
-                        )
+                        .authorize_topic(credential, now, Permission::Produce, topic_record)
                         .map_err(auth_rejection)?;
                     let record = state
                         .publishers()
@@ -567,12 +558,25 @@ impl Service {
                 AuthQuery::Authorize {
                     credential,
                     permission,
-                    name,
+                    resource,
                 } => {
-                    state
-                        .auth()
-                        .authorize(credential, now, permission, name.as_deref())
-                        .map_err(auth_rejection)?;
+                    match resource {
+                        AuthResource::Topic(topic) => state.auth().authorize_topic(
+                            credential,
+                            now,
+                            permission,
+                            state.topic(topic).ok_or_else(super::service::forbidden)?,
+                        ),
+                        AuthResource::Name(name) => {
+                            state
+                                .auth()
+                                .authorize(credential, now, permission, Some(&name))
+                        }
+                        AuthResource::None => {
+                            state.auth().authorize(credential, now, permission, None)
+                        }
+                    }
+                    .map_err(auth_rejection)?;
                     let record = state
                         .auth()
                         .credential(credential)
@@ -634,13 +638,13 @@ impl Service {
             FrameKind::Diagnose => Permission::ManageTenants,
             _ => Permission::Consume,
         };
-        let name = self.auth_resource_name(frame, deadline).await?;
+        let resource = self.auth_resource(frame)?;
         let (_, expires) = self
             .auth_query(
                 AuthQuery::Authorize {
                     credential,
                     permission,
-                    name,
+                    resource,
                 },
                 deadline,
             )
@@ -655,13 +659,19 @@ impl Service {
         ))
     }
 
-    async fn auth_resource_name(&self, frame: &Frame, deadline: Instant) -> Result<Option<String>> {
+    fn auth_resource(&self, frame: &Frame) -> Result<AuthResource> {
         let kind = super::service::frame_kind(frame)?;
         let topic = match kind {
             FrameKind::CreateLogicalTopic => {
-                return Ok(Some(decode::<public::LogicalTopic>(self, frame)?.name));
+                return Ok(AuthResource::Name(
+                    decode::<public::LogicalTopic>(self, frame)?.name,
+                ));
             }
-            FrameKind::GetTopic => return Ok(Some(decode::<public::GetTopic>(self, frame)?.name)),
+            FrameKind::GetTopic => {
+                return Ok(AuthResource::Name(
+                    decode::<public::GetTopic>(self, frame)?.name,
+                ));
+            }
             FrameKind::GetTopicLayout => {
                 wire::id(&decode::<public::GetTopicLayout>(self, frame)?.topic_id)?
             }
@@ -683,13 +693,10 @@ impl Service {
             FrameKind::Cancel
             | FrameKind::Diagnose
             | FrameKind::ManageIdentity
-            | FrameKind::ListIdentities => return Ok(None),
+            | FrameKind::ListIdentities => return Ok(AuthResource::None),
             _ => super::data::partition(frame, &self.config.protocol)?.topic_id,
         };
-        let (reply, _) = self
-            .auth_query(AuthQuery::TopicResource(topic), deadline)
-            .await?;
-        Ok(Some(reply.resource.ok_or_else(super::service::forbidden)?))
+        Ok(AuthResource::Topic(topic))
     }
 }
 

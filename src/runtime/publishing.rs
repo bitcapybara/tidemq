@@ -114,7 +114,7 @@ impl Service {
                 let topic = state.topic(topic).ok_or_else(super::metadata::not_found)?;
                 state
                     .auth()
-                    .authorize(credential, now, Permission::Produce, Some(&topic.name))
+                    .authorize_topic(credential, now, Permission::Produce, topic)
                     .map_err(|_| forbidden())?;
                 state
                     .auth()

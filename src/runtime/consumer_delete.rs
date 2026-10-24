@@ -53,7 +53,7 @@ impl Service {
                 let resource = state.topic(topic).ok_or_else(super::metadata::not_found)?;
                 state
                     .auth()
-                    .authorize(credential, now, permission, Some(&resource.name))
+                    .authorize_topic(credential, now, permission, resource)
                     .map_err(|_| super::service::forbidden())?;
                 let row = match subscription {
                     Some(id) => state.consumer_subscription(id),
