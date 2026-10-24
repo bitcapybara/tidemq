@@ -31,6 +31,7 @@ pub(crate) struct ClientConfig {
     pub endpoint: String,
     pub namespace: Option<String>,
     pub close_timeout: Duration,
+    pub connect_timeout: Duration,
     pub request_timeout_ms: u64,
     pub max_pending_requests: u32,
     pub max_pending_bytes: u64,
@@ -69,6 +70,7 @@ impl ClientConfig {
             endpoint: endpoint.into(),
             namespace: None,
             close_timeout: Duration::from_secs(5),
+            connect_timeout: Duration::from_secs(5),
             request_timeout_ms: 30_000,
             max_pending_requests: 256,
             max_pending_bytes: 16 * 1024 * 1024,
@@ -89,6 +91,10 @@ impl ClientConfig {
         self.transport.validate()?;
         self.validate_queues()?;
         for (valid, reason) in [
+            (
+                !self.connect_timeout.is_zero() && self.connect_timeout <= Duration::from_secs(300),
+                "connect_timeout must be greater than zero and at most five minutes",
+            ),
             (
                 (!self.close_timeout.is_zero() && self.close_timeout <= Duration::from_secs(300)),
                 "close timeout must be between one nanosecond and five minutes",
@@ -266,7 +272,8 @@ pub(crate) struct Inner {
     pub config: ClientConfig,
     transport: tidemq_transport::Client,
     credentials: ClientCredentials,
-    target: PeerTarget,
+    server_name: String,
+    dual_stack: bool,
     pool: Pool,
     pub bytes: Arc<Semaphore>,
     pub producer_bytes: Arc<Semaphore>,
@@ -314,7 +321,7 @@ impl Drop for ClientOwner {
 }
 
 impl Client {
-    /// Resolves the stable endpoint once; each reconnect uses the same total request deadline.
+    /// Connects within the configured total connect budget; reconnects resolve the endpoint again.
     pub(crate) async fn connect(
         config: ClientConfig,
         trust_roots: Bytes,
@@ -322,7 +329,7 @@ impl Client {
     ) -> Result<Self> {
         config.validate()?;
         crate::request::run(
-            Duration::from_millis(config.request_timeout_ms),
+            config.connect_timeout,
             &CancellationToken::new(),
             |deadline| Self::connect_inner(config, trust_roots, access_token, deadline),
         )
@@ -330,88 +337,20 @@ impl Client {
     }
 
     async fn connect_inner(
-        config: ClientConfig,
+        mut config: ClientConfig,
         trust_roots: Bytes,
         access_token: String,
         deadline: Instant,
     ) -> Result<Self> {
-        let addresses = timeout_at(deadline, tokio::net::lookup_host(config.endpoint.as_str()))
-            .await
-            .map_err(|_| Error::Deadline)?
-            .map_err(|source| Error::Resolve {
-                endpoint: config.endpoint.clone(),
-                source,
-            })?;
-        let mut candidates = Vec::new();
-        candidates
-            .try_reserve_exact(32)
-            .map_err(|_| Error::Admission {
-                resource: "DNS candidate address allocation",
-            })?;
-        candidates.extend(addresses.take(32));
-        let address = candidates
-            .iter()
-            .find(|address| address.is_ipv4())
-            .or_else(|| candidates.first())
-            .copied()
-            .ok_or(Error::Configuration {
-                reason: "endpoint resolved to no address",
-            })?;
-        let host = config
+        let server_name = config
             .endpoint
             .rsplit_once(':')
-            .map(|(host, _)| host.trim_matches(['[', ']']))
+            .map(|(host, _)| host.trim_matches(['[', ']']).to_owned())
             .ok_or(Error::Configuration {
                 reason: "endpoint requires a host and port",
-            })?
-            .to_owned();
-        let target = PeerTarget {
-            address,
-            server_name: host,
-            local_role: "sdk".into(),
-            remote_role: "gateway".into(),
-            cluster_id: None,
-            node_id: None,
-        };
-        Self::with_target_inner(
-            config.clone(),
-            ClientTls {
-                trust_roots,
-                identity: None,
-                expected_nodes: vec![],
-            },
-            target,
-            access_token,
-            deadline,
-        )
-        .await
-    }
-
-    async fn with_target_inner(
-        mut config: ClientConfig,
-        tls: ClientTls,
-        target: PeerTarget,
-        access_token: String,
-        deadline: Instant,
-    ) -> Result<Self> {
-        config.validate()?;
+            })?;
         config.transport.protocol = config.protocol.clone();
-        let bind: SocketAddr = if target.address.is_ipv6() {
-            "[::]:0"
-        } else {
-            "0.0.0.0:0"
-        }
-        .parse()
-        .map_err(|_| Error::Configuration {
-            reason: "local bind address is invalid",
-        })?;
-        let budget = MemoryBudget::new(MemoryLimits {
-            total_bytes: config.transport_memory_bytes,
-            control_reserved_bytes: config.transport_control_reserved_bytes,
-        })
-        .map_err(|source| Error::Memory { source })?;
-        let transport =
-            tidemq_transport::Client::bind(bind, tls, config.transport.clone(), budget)?;
+        let (transport, dual_stack) = bind_transport(&config, trust_roots, &server_name)?;
         let bytes = Arc::new(Semaphore::new(config.max_pending_bytes as usize));
         let reserved = (config.max_pending_bytes / 8) as u32;
         let reserved_memory = bytes
@@ -443,7 +382,8 @@ impl Client {
                 session_id: Id::new_v7()?,
                 access_token,
             },
-            target,
+            server_name,
+            dual_stack,
             pool: Pool {
                 control: Mutex::new(None),
                 produce: Mutex::new(None),
@@ -512,22 +452,74 @@ impl Client {
             return Ok(rpc.clone());
         }
         *slot = None;
+        let connect_deadline = deadline.min(deadline_after(self.inner.config.connect_timeout)?);
+        let rpc = self.connect_rpc(class, connect_deadline).await?;
+        if self.inner.closed.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
+        *slot = Some(rpc.clone());
+        Ok(rpc)
+    }
+
+    async fn connect_rpc(&self, class: TrafficClass, deadline: Instant) -> Result<RpcClient> {
+        let candidates = resolve(&self.inner.config.endpoint, deadline).await?;
+        let mut last = Error::Deadline;
+        for (index, address) in candidates.iter().enumerate() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let count = u32::try_from(candidates.len().saturating_sub(index)).map_err(|_| {
+                Error::Configuration {
+                    reason: "DNS candidate count is excessive",
+                }
+            })?;
+            let budget = remaining.checked_div(count).ok_or(Error::Deadline)?;
+            if budget.is_zero() {
+                return Err(last);
+            }
+            let attempt = deadline.min(Instant::now().checked_add(budget).ok_or(Error::Deadline)?);
+            match self.connect_address(*address, class, attempt).await {
+                Ok(rpc) => return Ok(rpc),
+                Err(error) if error.retry_transport() => last = error,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last)
+    }
+
+    async fn connect_address(
+        &self,
+        address: SocketAddr,
+        class: TrafficClass,
+        deadline: Instant,
+    ) -> Result<RpcClient> {
+        let address = if self.inner.dual_stack {
+            match address {
+                SocketAddr::V4(address) => {
+                    SocketAddr::from((address.ip().to_ipv6_mapped(), address.port()))
+                }
+                address => address,
+            }
+        } else {
+            address
+        };
+        let target = PeerTarget {
+            address,
+            server_name: self.inner.server_name.clone(),
+            local_role: "sdk".into(),
+            remote_role: "gateway".into(),
+            cluster_id: None,
+            node_id: None,
+        };
         let session = self
             .inner
             .transport
-            .pooled(
-                self.inner.target.clone(),
-                &self.inner.credentials,
-                class,
-                deadline,
-            )
+            .pooled(target, &self.inner.credentials, class, deadline)
             .await?;
         if self.inner.closed.load(Ordering::Acquire) {
             session.close();
             return Err(Error::Closed);
         }
-        let rpc = RpcClient::from_session_with_lanes(
-            session,
+        let result = RpcClient::from_session_with_lanes(
+            session.clone(),
             RpcConfig {
                 max_pending_requests: self.inner.config.max_pending_requests as usize,
                 max_pending_bytes: self.inner.config.max_pending_bytes as u32,
@@ -537,9 +529,14 @@ impl Client {
             self.inner.config.request_lanes,
             deadline,
         )
-        .await?;
-        *slot = Some(rpc.clone());
-        Ok(rpc)
+        .await;
+        match result {
+            Ok(rpc) => Ok(rpc),
+            Err(source) => {
+                session.close();
+                Err(source.into())
+            }
+        }
     }
 
     pub(crate) fn frame<M: Message>(
@@ -1007,3 +1004,75 @@ fn backoff_delay(base: Duration, operation: Id, attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests;
+
+async fn resolve(endpoint: &str, deadline: Instant) -> Result<Vec<SocketAddr>> {
+    let addresses = timeout_at(deadline, tokio::net::lookup_host(endpoint))
+        .await
+        .map_err(|_| Error::Deadline)?
+        .map_err(|source| Error::Resolve {
+            endpoint: endpoint.to_owned(),
+            source,
+        })?;
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve_exact(32)
+        .map_err(|_| Error::Admission {
+            resource: "DNS candidate address allocation",
+        })?;
+    for address in addresses.take(32) {
+        if !candidates.contains(&address) {
+            candidates.push(address);
+        }
+    }
+    candidates.sort_by_key(|address| !address.is_ipv4());
+    if candidates.is_empty() {
+        return Err(Error::Resolve {
+            endpoint: endpoint.to_owned(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                "Endpoint resolved to no address",
+            ),
+        });
+    }
+    Ok(candidates)
+}
+
+fn bind_transport(
+    config: &ClientConfig,
+    trust_roots: Bytes,
+    server_name: &str,
+) -> Result<(tidemq_transport::Client, bool)> {
+    let budget = MemoryBudget::new(MemoryLimits {
+        total_bytes: config.transport_memory_bytes,
+        control_reserved_bytes: config.transport_control_reserved_bytes,
+    })
+    .map_err(|source| Error::Memory { source })?;
+    let tls = || ClientTls {
+        trust_roots: trust_roots.clone(),
+        identity: None,
+        expected_nodes: Vec::new(),
+    };
+    let ipv4 = SocketAddr::from(([0, 0, 0, 0], 0));
+    let prefer_dual = server_name.parse::<std::net::Ipv4Addr>().is_err();
+    // One dual-stack endpoint keeps DNS address-family changes within the same budget and session.
+    let result = if prefer_dual {
+        match tidemq_transport::Client::bind(
+            SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+            tls(),
+            config.transport.clone(),
+            budget.clone(),
+        ) {
+            Ok(transport) => (transport, true),
+            Err(_) => (
+                tidemq_transport::Client::bind(ipv4, tls(), config.transport.clone(), budget)?,
+                false,
+            ),
+        }
+    } else {
+        (
+            tidemq_transport::Client::bind(ipv4, tls(), config.transport.clone(), budget)?,
+            false,
+        )
+    };
+    Ok(result)
+}

@@ -91,7 +91,6 @@ pub struct ClientBuilder {
     config: ClientConfig,
     trust: TlsTrust,
     credentials: Credentials,
-    connect_timeout: Duration,
 }
 
 impl ClientBuilder {
@@ -104,7 +103,6 @@ impl ClientBuilder {
             config: ClientConfig::new(endpoint),
             trust,
             credentials,
-            connect_timeout: Duration::from_secs(5),
         }
     }
 
@@ -113,7 +111,7 @@ impl ClientBuilder {
         self
     }
     pub fn connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout = timeout;
+        self.config.connect_timeout = timeout;
         self
     }
     pub fn request_timeout(mut self, timeout: Duration) -> Self {
@@ -145,16 +143,7 @@ impl ClientBuilder {
     pub async fn build(self) -> Result<Client> {
         self.config.validate()?;
         validate_namespace(self.config.namespace.as_deref())?;
-        if self.connect_timeout.is_zero()
-            || self.connect_timeout > Duration::from_secs(300)
-            || self.config.close_timeout.is_zero()
-            || self.config.close_timeout > Duration::from_secs(300)
-        {
-            return Err(Error::Configuration {
-                reason: "connect and close timeouts must be greater than zero and at most 300 seconds",
-            });
-        }
-        let context = RequestContext::with_timeout(self.connect_timeout)?;
+        let context = RequestContext::with_timeout(self.config.connect_timeout)?;
         context
             .scope(async {
                 let trust = self.trust.load().await?;

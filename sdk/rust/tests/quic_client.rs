@@ -1,5 +1,6 @@
 //! A real UDP/TLS peer for SDK transport boundaries; durable delivery is tested against the runtime.
 use std::{
+    net::{Ipv6Addr, SocketAddr},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -51,6 +52,7 @@ struct Peer {
     task: JoinHandle<()>,
     ca: Bytes,
     endpoint: String,
+    identity: TlsIdentity,
 }
 
 impl Drop for Peer {
@@ -65,14 +67,35 @@ async fn peer() -> Peer {
         .unwrap()
         .self_signed(&key)
         .unwrap();
-    let mut server = Server::bind(
-        "127.0.0.1:0".parse().unwrap(),
+    let ca = Bytes::from(certificate.pem());
+    let identity = TlsIdentity::new(ca.clone(), Bytes::from(key.serialize_pem())).unwrap();
+    let server = server("127.0.0.1:0".parse().unwrap(), identity.clone());
+    let endpoint = format!("localhost:{}", server.local_addr().port());
+    let state = Arc::new(Mutex::new(PeerState::default()));
+    let task = accept(server, state.clone());
+    let client = Client::builder(
+        &endpoint,
+        TlsTrust::ca_pem(ca.clone()),
+        Credentials::token(TOKEN),
+    )
+    .build()
+    .await
+    .unwrap();
+    Peer {
+        client,
+        state,
+        task,
+        ca,
+        endpoint,
+        identity,
+    }
+}
+
+fn server(address: SocketAddr, identity: TlsIdentity) -> Server {
+    Server::bind(
+        address,
         ServerTls {
-            identity: TlsIdentity::new(
-                Bytes::from(certificate.pem()),
-                Bytes::from(key.serialize_pem()),
-            )
-            .unwrap(),
+            identity,
             client_trust_roots: None,
         },
         ServerAuthorization::External(vec![
@@ -96,12 +119,11 @@ async fn peer() -> Peer {
         })
         .unwrap(),
     )
-    .unwrap();
-    let endpoint = format!("localhost:{}", server.local_addr().port());
-    let ca = Bytes::from(certificate.pem());
-    let state = Arc::new(Mutex::new(PeerState::default()));
-    let observed = state.clone();
-    let task = tokio::spawn(async move {
+    .unwrap()
+}
+
+fn accept(mut server: Server, observed: Arc<Mutex<PeerState>>) -> JoinHandle<()> {
+    tokio::spawn(async move {
         let mut sessions = JoinSet::new();
         loop {
             tokio::select! {
@@ -117,22 +139,7 @@ async fn peer() -> Peer {
                 _ = sessions.join_next(), if !sessions.is_empty() => {},
             }
         }
-    });
-    let client = Client::builder(
-        &endpoint,
-        TlsTrust::ca_pem(ca.clone()),
-        Credentials::token(TOKEN),
-    )
-    .build()
-    .await
-    .unwrap();
-    Peer {
-        client,
-        state,
-        task,
-        ca,
-        endpoint,
-    }
+    })
 }
 
 async fn serve_session(session: Arc<Session>, state: Arc<Mutex<PeerState>>) {
@@ -348,4 +355,98 @@ async fn optional_metrics_register_into_the_hosts_registry() {
     assert!(text.contains("host_queue_client_requests_total 2"));
     assert!(text.contains("host_queue_client_operation_duration_seconds_bucket"));
     assert!(!text.contains(TOKEN));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dns_reconnect_falls_back_to_ipv6_without_replacing_the_logical_session() {
+    let mut peer = peer().await;
+    let port = peer
+        .endpoint
+        .rsplit_once(':')
+        .unwrap()
+        .1
+        .parse::<u16>()
+        .unwrap();
+    let replacement = server(
+        SocketAddr::from((Ipv6Addr::LOCALHOST, port)),
+        peer.identity.clone(),
+    );
+    let replacement_task = accept(replacement, peer.state.clone());
+    peer.task.abort();
+    let _ = (&mut peer.task).await;
+    let info = tokio::time::timeout(
+        Duration::from_secs(12),
+        peer.client.admin().topic_info(TOPIC),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(info.name(), TOPIC);
+    {
+        let state = peer.state.lock().unwrap();
+        assert!(state.sessions.len() >= 2);
+        assert!(
+            state
+                .sessions
+                .iter()
+                .all(|session| Some(session) == state.sessions.first())
+        );
+    }
+    peer.client.close().await.unwrap();
+    replacement_task.abort();
+    let _ = replacement_task.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_uses_the_configured_connect_budget_inside_the_request_deadline() {
+    let mut peer = peer().await;
+    let client = Client::builder(
+        &peer.endpoint,
+        TlsTrust::ca_pem(peer.ca.clone()),
+        Credentials::token(TOKEN),
+    )
+    .connect_timeout(Duration::from_millis(200))
+    .request_timeout(Duration::from_secs(10))
+    .build()
+    .await
+    .unwrap();
+    peer.client.close().await.unwrap();
+    let port = peer
+        .endpoint
+        .rsplit_once(':')
+        .unwrap()
+        .1
+        .parse::<u16>()
+        .unwrap();
+    peer.task.abort();
+    let _ = (&mut peer.task).await;
+    let until = deadline();
+    let ipv4 = loop {
+        match tokio::net::UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], port))).await {
+            Ok(socket) => break socket,
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                assert!(
+                    Instant::now() < until,
+                    "Stopped peer did not release its UDP listener"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(error) => panic!("Cannot bind the blackhole listener: {error}"),
+        }
+    };
+    let ipv6 = tokio::net::UdpSocket::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, port)))
+        .await
+        .unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), client.admin().topic_info(TOPIC))
+        .await
+        .expect(
+            "Reconnect must use the configured 200 ms budget instead of the 10 s request deadline",
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error.kind(),
+        tidemq_sdk::ErrorKind::DeadlineExceeded | tidemq_sdk::ErrorKind::Unavailable
+    ));
+    client.close().await.unwrap();
+    drop((ipv4, ipv6));
 }

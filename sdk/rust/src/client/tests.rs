@@ -38,6 +38,10 @@ fn configuration_errors_identify_the_invalid_field() {
         ("endpoint port", |c| {
             c.endpoint = "localhost:not-a-port".into()
         }),
+        ("connect_timeout", |c| c.connect_timeout = Duration::ZERO),
+        ("connect_timeout", |c| {
+            c.connect_timeout = Duration::from_secs(301)
+        }),
         ("request_timeout_ms", |c| c.request_timeout_ms = 0),
         ("request_timeout_ms", |c| c.request_timeout_ms = 300_001),
         ("max_pending_requests", |c| c.max_pending_requests = 0),

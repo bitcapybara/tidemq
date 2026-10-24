@@ -77,7 +77,7 @@ close 使用独立 close_timeout，返回 CloseReport，失败返回携带报告
 
 ## 总期限、取消和恢复
 
-默认网络操作使用 request_timeout。排队、连接、子请求、重试和退避共用总期限。无显式 context 的 receive 持续等待，其网络子请求仍有有限期限。
+默认网络操作使用 request_timeout。每次新建物理连接重新解析 endpoint；DNS、候选地址尝试、认证与流初始化共用 connect_timeout，同时受当前请求剩余期限限制。健康连接继续复用，重连保持原逻辑会话和共享预算。排队、连接、子请求、重试和退避共用总期限。无显式 context 的 receive 持续等待，其网络子请求仍有有限期限。
 
 ```rust,no_run
 use std::time::Duration;

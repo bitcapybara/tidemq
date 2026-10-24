@@ -67,7 +67,7 @@ Client, producer, StreamConsumer and QueueConsumer clones share their logical in
 
 ## Deadlines and recovery
 
-Network operations use the configured finite request timeout. Use `RequestContext::with_timeout(Duration)` and `context.scope(operation)` for a shared total deadline or cancellation token. Queueing, retries and subrequests use the same remaining budget. A receive without an explicit context keeps waiting while its individual network requests remain finite.
+Network operations use the configured finite request timeout. Each new physical connection resolves the endpoint again and uses `connect_timeout` for DNS, candidate attempts, authentication and stream setup, within the remaining request deadline. Healthy connections remain reusable. Candidate addresses share that connect budget; reconnects retain the logical session and resource bounds. Use `RequestContext::with_timeout(Duration)` and `context.scope(operation)` for a shared total deadline or cancellation token. Queueing, retries and subrequests use the same remaining budget. A receive without an explicit context keeps waiting while its individual network requests remain finite.
 
 Cancellation does not undo a committed operation. An admitted send or ACK is retained by its owned driver. Inspect `producer.pending_sends().await?` or `consumer.pending_acks().await?`, then call `pending.retry().await?` to query or continue the original operation. Snapshots include unresolved work and completed results that the application has not claimed. They do not drain results or acknowledge unprocessed messages. Recover before closing the original Client; there is no SDK persistent outbox.
 
