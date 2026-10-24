@@ -47,6 +47,7 @@ struct PeerState {
     drop_mutation_replies: bool,
     mutations: std::collections::BTreeSet<Id>,
     topic_delay: Duration,
+    topic_requests: usize,
     control_timeouts: Vec<(FrameKind, u64)>,
 }
 
@@ -172,7 +173,11 @@ async fn serve_stream(stream: FramedStream, session: Arc<Session>, state: Arc<Mu
     let (mut sender, mut receiver) = stream.split();
     while let Ok(Some(received)) = receiver.receive(deadline()).await {
         if received.frame().kind == i32::from(FrameKind::GetTopic) {
-            let delay = state.lock().unwrap().topic_delay;
+            let delay = {
+                let mut state = state.lock().unwrap();
+                state.topic_requests += 1;
+                state.topic_delay
+            };
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
@@ -484,6 +489,38 @@ async fn split_lookups_and_mutation_share_one_original_request_deadline() {
         client.close().await.unwrap().unresolved_administrations(),
         1
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_queries_and_expired_preflight_lookups_do_not_report_unknown_mutations() {
+    let peer = peer().await;
+    peer.state.lock().unwrap().topic_delay = Duration::from_secs(1);
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(5)).unwrap();
+    let cancellation = context.cancellation_token();
+    let admin = peer.client.admin();
+    let query = async {
+        let until = deadline();
+        while peer.state.lock().unwrap().topic_requests == 0 {
+            assert!(Instant::now() < until, "The query did not reach the peer");
+            tokio::task::yield_now().await;
+        }
+        cancellation.cancel();
+    };
+    let (result, ()) = tokio::join!(context.scope(admin.topic_info(TOPIC)), query);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind(), tidemq_sdk::ErrorKind::Cancelled);
+    assert!(!error.outcome_unknown());
+
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_millis(50)).unwrap();
+    let error = context
+        .scope(peer.client.admin().split_topic_at(TOPIC, 1 << 63))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), tidemq_sdk::ErrorKind::DeadlineExceeded);
+    assert!(!error.outcome_unknown());
+    assert!(peer.state.lock().unwrap().mutations.is_empty());
+    assert!(peer.client.admin().pending_operations().unwrap().is_empty());
+    peer.client.close().await.unwrap();
 }
 
 #[tokio::test]

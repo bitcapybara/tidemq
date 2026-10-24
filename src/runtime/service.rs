@@ -10,6 +10,7 @@ use tidemq_protocol::common::{
 };
 use tidemq_protocol::framing::{decode_frame, decode_payload, encode_payload, frame_limit};
 use tidemq_protocol::internal::{InternalCommand, RaftRequest, SnapshotChunk};
+use tidemq_protocol::public;
 use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio::time::Instant;
 
@@ -408,6 +409,19 @@ impl Service {
             return Err(forbidden());
         }
         let kind = frame_kind(frame)?;
+        if kind == FrameKind::ManageCluster && self.config.role.serves_gateway() {
+            let request: public::ManageCluster =
+                decode_payload(frame.payload.clone(), &self.config.protocol)
+                    .map_err(|source| Error::operation("decode cluster request", source))?;
+            if request.action == i32::from(public::ClusterAction::RetireClusterNode)
+                && request.node_id == self.config.node_id
+            {
+                // Quiescing this ingress would wait for its own forwarded request.
+                return Err(Error::invalid(
+                    "Use a surviving gateway for node retirement",
+                ));
+            }
+        }
         if matches!(
             kind,
             FrameKind::CreateLogicalTopic

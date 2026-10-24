@@ -646,10 +646,13 @@ impl Client {
                 .map_err(Error::from)
                 .and_then(|request| self.frame(kind, class, request, operation, payload, deadline))
                 .map_err(|error| error.preserve_uncertainty(uncertain))?;
+            let read_only = read_only_request(&frame, &self.inner.config.protocol);
             self.inner.metrics.record_request();
             let response = match self.rpc(class, deadline).await {
                 Ok(rpc) => {
-                    crate::request::mark_sent();
+                    if !read_only {
+                        crate::request::mark_sent();
+                    }
                     match affinity {
                         Some(affinity) => rpc
                             .call_affinity(frame, deadline, affinity)
@@ -660,7 +663,9 @@ impl Client {
                 }
                 Err(error) => Err(error),
             };
-            let result = response.and_then(|response| self.decode(response, response_kind));
+            let result = response
+                .and_then(|response| self.decode(response, response_kind))
+                .map_err(|error| error.read_only(read_only));
             if let Err(error) = &result {
                 if error.outcome_unknown() {
                     self.inner.metrics.record_unknown();
@@ -1044,6 +1049,41 @@ async fn resolve(endpoint: &str, deadline: Instant) -> Result<Vec<SocketAddr>> {
         });
     }
     Ok(candidates)
+}
+
+fn read_only_request(frame: &Frame, limits: &ProtocolLimits) -> bool {
+    use tidemq_protocol::public;
+    match FrameKind::try_from(frame.kind) {
+        Ok(
+            FrameKind::GetTopic
+            | FrameKind::GetTopicLayout
+            | FrameKind::GetClusterRegistry
+            | FrameKind::ListIdentities,
+        ) => true,
+        Ok(FrameKind::ConsumerControl) => {
+            decode_payload::<public::ConsumerControl>(frame.payload.clone(), limits).is_ok_and(
+                |request| request.action == i32::from(public::ConsumerAction::ConsumerStatus),
+            )
+        }
+        Ok(FrameKind::PublisherControl) => {
+            decode_payload::<public::PublisherControl>(frame.payload.clone(), limits).is_ok_and(
+                |request| request.action == i32::from(public::PublisherAction::PublisherStatus),
+            )
+        }
+        Ok(FrameKind::SubscriptionAdmin) => decode_payload::<public::SubscriptionAdmin>(
+            frame.payload.clone(),
+            limits,
+        )
+        .is_ok_and(|request| {
+            request.action == i32::from(public::SubscriptionAdminAction::InspectSubscription)
+        }),
+        Ok(FrameKind::ManageCluster) => {
+            decode_payload::<public::ManageCluster>(frame.payload.clone(), limits).is_ok_and(
+                |request| request.action == i32::from(public::ClusterAction::InspectNodeDrain),
+            )
+        }
+        _ => false,
+    }
 }
 
 fn bind_transport(

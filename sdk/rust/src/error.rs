@@ -88,6 +88,8 @@ pub enum Error {
     Cancelled,
     #[snafu(display("Request interrupted after submission; its outcome is unknown"))]
     RequestUnknown { source: Box<Error> },
+    #[snafu(display("Read-only request failed"))]
+    Query { source: Box<Error> },
     #[snafu(display("Client admission failed for {resource}"))]
     Admission { resource: &'static str },
     #[snafu(display("Invalid client transport memory budget"))]
@@ -136,7 +138,7 @@ impl Error {
             | Self::SendUnresolved { source, .. }
             | Self::BatchSendInterrupted { source, .. }
             | Self::SendNotSubmitted { source } => source.kind(),
-            Self::RequestUnknown { source } => source.kind(),
+            Self::RequestUnknown { source } | Self::Query { source } => source.kind(),
             Self::Configuration { .. } | Self::Material { .. } | Self::Memory { .. } => {
                 ErrorKind::InvalidArgument
             }
@@ -192,9 +194,19 @@ impl Error {
         }
     }
 
+    pub(crate) fn read_only(self, read_only: bool) -> Self {
+        if read_only && self.outcome_unknown() {
+            Self::Query {
+                source: Box::new(self),
+            }
+        } else {
+            self
+        }
+    }
+
     pub(crate) fn permission_denied(&self) -> bool {
         match self {
-            Self::RequestUnknown { source } => source.permission_denied(),
+            Self::RequestUnknown { source } | Self::Query { source } => source.permission_denied(),
             Self::Background { source }
             | Self::Administration { source, .. }
             | Self::SubscriptionDeletion { source, .. }
@@ -238,7 +250,7 @@ impl Error {
             return false;
         }
         match self {
-            Self::RequestUnknown { source } => source.retry_original(),
+            Self::RequestUnknown { source } | Self::Query { source } => source.retry_original(),
             Self::Remote {
                 outcome: Outcome::Unknown,
                 retryable: true,
@@ -285,6 +297,7 @@ impl Error {
 
     pub(crate) fn retry_transport(&self) -> bool {
         match self {
+            Self::Query { source } => source.retry_transport(),
             Self::Transport { source } => transient_transport(source),
             Self::Rpc { source } => match source {
                 tidemq_transport::rpc::Error::Closed

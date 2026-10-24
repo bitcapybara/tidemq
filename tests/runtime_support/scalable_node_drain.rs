@@ -196,3 +196,82 @@ async fn lost_local_retirement_proof_survives_a_restart_without_reopening_busine
     fixture.close().await;
     proxy.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn combined_node_retires_all_roles_and_rejects_retirement_through_its_own_gateway() {
+    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Combined)], &[1], &[1]).await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.groups.first_mut().unwrap().standby = vec![2];
+    }
+    fixture.start_all().await;
+    let ingress = fixture.client(1).await;
+    let client = fixture.client(2).await;
+    create_logical_resources(&client).await;
+    let stream = client
+        .new_stream_consumer(RUNTIME_TOPIC, "ordered")
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let first = producer
+        .send(Message::new("before").key("key"))
+        .await
+        .unwrap()
+        .message_id();
+    let held = stream.receive().await.unwrap();
+    assert_eq!(held.message_id(), first);
+    client.admin().replace_data_replica(2, 1, 2).await.unwrap();
+    client.admin().replace_metadata_replica(1, 2).await.unwrap();
+    client.admin().begin_node_drain(1).await.unwrap();
+    let until = deadline();
+    loop {
+        if client
+            .admin()
+            .node_drain_status(1)
+            .await
+            .unwrap()
+            .durable_state_drained()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "Combined node retained a role blocker"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let rejected = ingress.admin().retire_node(1).await.unwrap_err();
+    assert!(
+        !rejected.outcome_unknown(),
+        "Retirement through the retiring gateway must reject before quiescing it"
+    );
+    assert!(
+        !fixture
+            .configs
+            .get(&1)
+            .unwrap()
+            .data_dir
+            .join("node-retirement.json")
+            .is_file()
+    );
+    ingress.close().await.unwrap();
+    client.admin().retire_node(1).await.unwrap();
+    fixture.stop(1).await;
+    stream.ack_cumulative(&held).await.unwrap();
+    let next = producer
+        .send(Message::new("after").key("key"))
+        .await
+        .unwrap()
+        .message_id();
+    let message = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(10))
+        .unwrap()
+        .scope(stream.receive())
+        .await
+        .unwrap();
+    assert_eq!(message.message_id(), next);
+    stream.ack_cumulative(&message).await.unwrap();
+    stream.close().await.unwrap();
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
