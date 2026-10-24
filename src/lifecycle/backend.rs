@@ -238,10 +238,13 @@ impl LocalMetadata {
         command: CatalogCommand,
         deadline: Instant,
     ) -> Result<CatalogOutcome> {
-        for _ in 0..3 {
+        let operation_id = Id::new_v7().map_err(|source| Error::Identity { source })?;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(Error::Deadline);
+            }
             let started = Instant::now();
             let revision = self.read(0, Query::Health, deadline).await?.revision;
-            let operation_id = Id::new_v7().map_err(|source| Error::Identity { source })?;
             self.state
                 .try_with_application(|state| {
                     MetadataOperation {
@@ -274,7 +277,11 @@ impl LocalMetadata {
                 Response::Rejected {
                     reason: crate::metadata::Rejection::RevisionConflict,
                     ..
-                } => continue,
+                } => {
+                    // Unrelated metadata writes do not change the catalog generation or admit this operation.
+                    tokio::task::yield_now().await;
+                    continue;
+                }
                 Response::Rejected {
                     reason: crate::metadata::Rejection::Lifecycle(reason),
                     ..
@@ -286,9 +293,6 @@ impl LocalMetadata {
                 }
             }
         }
-        Err(Error::Rejected {
-            reason: Rejection::StaleGeneration,
-        })
     }
     async fn lease(&self, fence: FenceRecord, deadline: Instant) -> Result<ControlLease> {
         let authority = MetadataAuthority::new(
