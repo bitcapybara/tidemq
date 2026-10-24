@@ -33,7 +33,7 @@ impl Fixture {
         let mut peers = Vec::new();
         for (node, role) in nodes {
             let key = KeyPair::generate().unwrap();
-            let mut names = vec![format!("node-{node}.local")];
+            let mut names = vec![format!("node-{node}.local"), "127.0.0.1".into()];
             if role.serves_gateway() {
                 names.push("queue.local".into());
             }

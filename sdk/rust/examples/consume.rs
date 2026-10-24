@@ -1,76 +1,48 @@
 use std::{env, error::Error, time::Duration};
-use tidemq_sdk::{
-    Client, ClientConfig, Consumer, ConsumerConfig, DeliveryOrdering, Id, RequestContext,
-};
-use tokio::{task::JoinSet, time::Instant};
+use tidemq_sdk::{Client, Credentials, RequestContext, TlsTrust};
+use tokio::task::JoinSet;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let endpoint = env::var("TIDEMQ_ENDPOINT").unwrap_or_else(|_| "localhost:7443".into());
-    let roots = tokio::fs::read(env::var("TIDEMQ_CA_PEM")?).await?;
-    let client = Client::connect(
-        ClientConfig::new(endpoint),
-        roots.into(),
-        env::var("TIDEMQ_TOKEN")?,
+    let client = Client::builder(
+        env::var("TIDEMQ_ENDPOINT").unwrap_or_else(|_| "localhost:7443".into()),
+        TlsTrust::ca_file(env::var("TIDEMQ_CA_PEM")?),
+        Credentials::token_env("TIDEMQ_TOKEN"),
     )
+    .build()
     .await?;
-    let ordering = match env::var("TIDEMQ_ORDERING").as_deref() {
-        Ok("key") => DeliveryOrdering::KeySerial,
-        _ => DeliveryOrdering::Parallel,
-    };
-    let topic: Id = env::var("TIDEMQ_TOPIC_ID")?.parse()?;
-    let subscription: Id = env::var("TIDEMQ_SUBSCRIPTION_ID")?.parse()?;
-    let consumer = Consumer::claim(
-        client.clone(),
-        topic,
-        0,
-        subscription,
-        ConsumerConfig {
-            ordering,
-            ..ConsumerConfig::default()
-        },
-    )
-    .await?;
+    let consumer = client
+        .new_queue_consumer(env::var("TIDEMQ_TOPIC")?, env::var("TIDEMQ_SUBSCRIPTION")?)
+        .build()
+        .await?;
+    let count: usize = env::var("TIDEMQ_MESSAGE_COUNT")
+        .unwrap_or_else(|_| "10".into())
+        .parse()?;
     let context = RequestContext::with_timeout(Duration::from_secs(30))?;
-    let stop = context.deadline();
     let mut handlers = JoinSet::new();
-    while Instant::now() < stop {
-        if handlers.len() < 8
-            && let Some(delivery) = context.scope(consumer.recv()).await?
+    for _ in 0..count {
+        if handlers.len() >= 8
+            && let Some(result) = handlers.join_next().await
         {
-            let consumer = consumer.clone();
-            let context = context.clone();
-            handlers.spawn(async move {
-                // Replace this action with the application's idempotent business operation.
-                println!(
-                    "Handled offset {}, body_bytes={}",
-                    delivery.offset(),
-                    delivery.body().len()
-                );
-                context.scope(consumer.ack(&delivery)).await.map(|_| ())
-            });
+            result??;
         }
-        if handlers.len() >= 8 {
-            if let Some(result) = handlers.join_next().await {
-                result??;
-            }
-        } else {
-            while let Some(result) = handlers.try_join_next() {
-                result??;
-            }
-            tokio::time::sleep_until(
-                stop.min(
-                    Instant::now()
-                        .checked_add(Duration::from_millis(10))
-                        .ok_or("deadline overflow")?,
-                ),
-            )
-            .await;
-        }
+        let message = context.scope(consumer.receive()).await?;
+        let consumer = consumer.clone();
+        let context = context.clone();
+        handlers.spawn(async move {
+            // Replace this action with the application's idempotent business operation.
+            println!(
+                "Handled message {}, payload_bytes={}",
+                message.message_id(),
+                message.payload().len()
+            );
+            context.scope(consumer.ack(&message)).await.map(|_| ())
+        });
     }
     while let Some(result) = handlers.join_next().await {
         result??;
     }
-    client.close().await;
+    consumer.close().await?;
+    client.close().await?;
     Ok(())
 }

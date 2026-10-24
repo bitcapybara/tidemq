@@ -1,88 +1,90 @@
 # TideMQ Rust SDK
 
-Native authenticated QUIC client facilities in the TideMQ repository. The library depends on the shared protocol and transport crates, without server, OpenRaft, WAL, S3, allocator or subscriber initialization.
+Use logical Topic names, optional message keys, and durable Stream or Queue subscriptions. The SDK follows shard routing and manages producer identities, membership, and acknowledgements. It depends on the protocol and transport crates, without linking server storage or installing an allocator, logger, or exporter.
 
 ```toml
 [dependencies]
-tidemq-sdk = { path = "sdk/rust", features = ["metrics"] }
+tidemq-sdk = { path = "sdk/rust" }
 ```
 
-Create a `Client` with `ClientConfig`, a trusted CA PEM and an access token. Use `client.admin()` for resource creation and lookup. `Producer::open` explicitly registers a caller-chosen producer ID; concurrent `produce` calls enqueue in sequence order and wait for responses independently. `Consumer::claim` provides bounded delivery queues, manual durable ACKs and explicit assignment takeover.
-
-```rust,no_run
-use tidemq_sdk::{Client, ClientConfig, Id, Producer, Bytes, public::Message};
-
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let ca = tokio::fs::read("certs/ca.pem").await?;
-let client = Client::connect(ClientConfig::new("localhost:7443"), ca.into(),
-    std::env::var("TIDEMQ_TOKEN")?).await?;
-let topic = client.admin().create_topic("events", 1).await?;
-let producer = Producer::open(client.clone(), Id::from_slice(&topic.topic_id)?, 0,
-    Id::new_v7()?).await?;
-let receipt = producer.produce(vec![Message {
-    key: Bytes::from_static(b"key"), body: Bytes::from_static(b"message"),
-}]).await?;
-println!("Committed offset {}", receipt.first_offset);
-client.close().await;
-# Ok(()) }
-```
-
-Generate ordinary producer and operation identities with `Id::new_v7()?`. Generation propagates entropy and clock errors through `Result`; it uses the UUID builder without a global monotonic counter. UUID ordering does not establish message or distributed operation order. Retries retain their original operation identities.
-
-Configuration errors name the failed field and its constraint. `Error::Remote` retains the server's diagnostic `message`, typed code, outcome, retryability and optional sequence/epoch hints. `Admission { resource }` identifies the exhausted budget; `ResponseMismatch { reason }` identifies the invalid response field. Nested errors preserve their `source` chain. When the host needs the complete chain, wrap the error with `anyhow::Error::new(err)` and render it with `"{err:#}"`; individual error displays describe only their own context. Retry decisions use typed fields, never message text. See [error diagnostics](../../docs/operations/error-diagnostics.zh-CN.md).
-
-Every network operation uses `ClientConfig::request_timeout_ms` by default, including admission queues, connection establishment, retries and backoff. Callers no longer create an `Instant` for every request. Set an explicit shared total budget and a Tokio cancellation parent with `RequestContext`:
+The Topic must already exist. Create subscriptions before publishing messages that they must protect.
 
 ```rust,no_run
 use std::time::Duration;
-use tidemq_sdk::{Client, RequestContext};
+use tidemq_sdk::{Client, Credentials, Message, TlsTrust};
 
-# async fn example(client: &Client) -> tidemq_sdk::Result<()> {
-let context = RequestContext::with_timeout(Duration::from_secs(5))?;
-let cancellation = context.cancellation_token();
-// Pass a clone of cancellation to the task that owns shutdown or user cancellation.
-context.scope(async {
-    client.admin().topic("events").await?;
-    client.admin().subscription(tidemq_sdk::Id::new_v7()?, "workers").await?;
-    Ok(())
-}).await?;
-cancellation.cancel();
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::builder(
+    "mq.example.com:7443",
+    TlsTrust::ca_file("certs/ca.pem"),
+    Credentials::token_file("secrets/app.token"),
+)
+.namespace("acme/app")
+.connect_timeout(Duration::from_secs(5))
+.request_timeout(Duration::from_secs(30))
+.close_timeout(Duration::from_secs(5))
+.build()
+.await?;
+
+let stream = client.new_stream_consumer("orders", "order-state").build().await?;
+let queue = client.new_queue_consumer("orders", "billing-jobs").build().await?;
+let producer = client.new_producer("orders").build().await?;
+let receipt = producer.send(Message::new("created").key("order-42")).await?;
+println!("Committed message {}", receipt.message_id());
+
+let message = stream.receive().await?;
+process(message.payload()).await?;
+stream.ack_cumulative(&message).await?;
+
+let message = queue.receive().await?;
+process(message.payload()).await?;
+queue.ack(&message).await?;
+
+stream.close().await?;
+queue.close().await?;
+producer.close().await?;
+let report = client.close().await?;
+println!("Unresolved sends: {}", report.unresolved_sends());
 # Ok(()) }
+# async fn process(_: &[u8]) -> std::io::Result<()> { Ok(()) }
 ```
 
-`RequestContext::new(absolute_deadline, cancellation_token)` accepts an existing `tokio_util::sync::CancellationToken`; the SDK also re-exports this type. A token signals cancellation and is not a timer: an inline Tokio timeout enforces the absolute deadline without spawning timer tasks. Each operation uses the earlier of the configured client timeout and the context deadline. Reusing a context across calls preserves its original total budget; nested SDK calls and retries never refresh an operation deadline. Nested scopes use the earliest deadline and preserve every parent cancellation; nesting is bounded to 16 scopes. `context.child()` isolates cancellation from its parent and siblings. Scope carries this policy for SDK calls and does not cancel unrelated host computation between calls. It follows the future being polled and does not implicitly propagate to spawned Tokio tasks; explicitly clone and scope the context inside each spawned task.
+Required inputs belong in the builder constructor; optional settings use chained setters. Constructors and setters perform no I/O. Successful `build().await` returns a connected client or a usable logical producer/consumer. Without a namespace, supply the full `tenant/namespace/topic` name.
 
-Cancellation drops the current operation future and releases transient admission permits. It does not roll back a server operation or reset a shared QUIC lane. `Cancelled` before submission has no submitted request; `RequestUnknown` means interruption after potential submission. Registration interruption preserves its epoch through `RegistrationUnknown`, and an admitted producer batch remains available as `ProduceUnknown` with the original identity in `pending_batches()`. Those unresolved batches intentionally retain their bounded permits until resolved or dropped. `client.close().await` cancels in-flight operations, rejects new ones, and performs cleanup within the configured timeout. It does not use an already-cancelled request context to skip connection cleanup. Local pending-batch inspection remains available after close.
+TLS trust contains the server CA certificate; a CA private key is never a client input. Credentials support token files, environment variables, and explicit tokens. The cluster stores credential verification records in Metadata Raft. Applications receive their tokens through private files or deployment Secrets. Debug output omits secrets and message content.
 
-`ProduceUnknown` and a dropped produce future retain the original batch in `pending_batches()`. Retry the earliest batch with `retry`, preserving producer, epoch, sequence and digest. New sequences remain blocked until unresolved batches recover. Expired sessions never silently acquire a new identity. `RegistrationUnknown` exposes the original producer ID and registration epoch for `open_at`. There is no persistent SDK outbox or process-restart recovery promise.
+## Sending and receiving
 
-Explicitly rejected, retryable `Unavailable` and `Fenced` responses retry within the original deadline and attempt budget. Producer transport loss also retries the original batch within that budget. Each attempt has a new request ID and preserves its operation and business identity. An unresolved outcome after exhaustion remains available through `pending_batches()`; permanent errors never trigger a new registration.
+`send` accepts `Into<Message>`: use `producer.send("hello").await?` for a plain message, or `Message` for keys and properties. Success means durable data Raft commitment. One logical producer concurrently sends to multiple shards; use a bounded task pool or FuturesOrdered/FuturesUnordered to drive concurrent calls. Awaiting each call before creating the next call deliberately serializes the application.
 
-A `Consumer` clone shares one assignment. Default ordering is parallel; `KeySerial` releases a key after durable ACK, while `fail` blocks it until explicit `retry_failed`. A receive barrier proves continuous bounded SDK enqueue, independently of business ACK. Bulk retries below the cold boundary remain possible after hot delivery starts. Seek and ownership generation changes invalidate older deliveries. A stale token cannot ACK a newer attempt.
+Stream preserves effective delivery order for the same key. Only Stream provides cumulative ACK, which covers the application's shared delivery prefix, including messages received through other clones. Coordinate concurrent business work before advancing that prefix. Queue distributes each message to one member and provides individual `ack` and `nack(message, delay)`. NACK durably schedules redelivery; it does not acknowledge successful processing. Delivery is at least once, so business effects should be idempotent.
 
-Each traffic class uses one independently authenticated connection under the same logical session. Four reusable data lanes are the initial default, with stable order-domain affinity. Producers share finite FIFO admission, at most 32 pending batches per producer and 256 across the client by default. Request deadlines include bounded reconnect attempts and backoff. Cancellation never resets a lane shared with unrelated requests.
+`receive().await` waits for a message. `try_receive()` only checks the local queue; None does not prove that the server has no backlog. Each subscription has independent progress. Zero members preserve the subscription and its backlog.
 
-While work is in flight, a native PING probe requires acknowledgement of a newly sent 1-RTT packet. Application response latency alone never triggers a reconnect. The initial probe interval and timeout are one second each, configurable through `ClientConfig::liveness_timeout`; total recovery also includes reconnect and authority recovery. PING/packet ACK proves network progress, never durable message completion. `client.transport_metrics()` exposes the fixed native collector, including liveness probes and failures, for the host registry.
+Client, producer, StreamConsumer and QueueConsumer clones share their logical instance, budgets and closing state. Consumer clones compete for one receive queue and may acknowledge each other's valid deliveries. Use another `new_*().build().await` for an independent instance. Closing any clone closes that entire logical instance.
 
-The host owns Tokio, certificates, credentials, logging, exporter and allocator policy. The optional `metrics` feature registers fixed-series metrics into the host registry through `client.metrics().register(...)`. Logical byte accounting includes retained message objects and metadata; it does not claim to cap host-owned shared allocations, allocator overhead or RSS. Debug and spans omit payloads and secrets.
+## Deadlines and recovery
 
-Use `scope_traceparent(valid_w3c_context, sdk_operation).await` to propagate a host trace through one finite operation. Invalid contexts are rejected before polling the operation. Context is task-scoped, never stored on a shared connection, and newly spawned host tasks scope their own context. No OpenTelemetry backend is installed.
+Network operations use the configured finite request timeout. Use `RequestContext::with_timeout(Duration)` and `context.scope(operation)` for a shared total deadline or cancellation token. Queueing, retries and subrequests use the same remaining budget. A receive without an explicit context keeps waiting while its individual network requests remain finite.
 
-The optional `opentelemetry` feature reads the current host tracing span through OpenTelemetry 0.33 and tracing-opentelemetry 0.34. The host supplies its subscriber and bridge layer, including the `tidemq_trace` target. SDK spans skip all arguments; an explicit `scope_traceparent` takes precedence. The feature installs no provider, exporter, subscriber, global propagator or HTTP listener. See [bounded service trace export](../../docs/operations/tracing.zh-CN.md) for the independent server-side policy.
+Cancellation does not undo a committed operation. An admitted send or ACK is retained by its owned driver. Inspect `producer.pending_sends().await?` or `consumer.pending_acks().await?`, then call `pending.retry().await?` to query or continue the original operation. Snapshots include unresolved work and completed results that the application has not claimed. They do not drain results or acknowledge unprocessed messages. Recover before closing the original Client; there is no SDK persistent outbox.
 
-This feature also records ten fixed, unlabelled instruments through the host's global `MeterProvider`, under scope `tidemq-sdk`. Install that provider before creating clients. Request/retry/unknown/delivery/ACK counters aggregate across clients; operation and admission durations are second-based histograms. UpDownCounters track admitted bytes and retained batch/delivery objects until their final release. Client destruction does not reset cumulative event counters. The SDK creates no metric exporter or background reader; the host owns export budgets, flush and shutdown. The existing Prometheus registry API remains independently available; do not add both representations of the same measurement together. See [the SDK guide](../../docs/guide/rust-sdk.zh-CN.md) for instrument names and ownership.
+Admin provides `stream_subscription`/`queue_subscription` and `delete_stream_subscription`/`delete_queue_subscription`. Deletion rejects online members, freezes the fixed subscription UUID, and removes protection in every data domain before succeeding. Interrupted deletions remain in `admin.pending_subscription_deletions()?`; retry those handles instead of deleting by name again. A later subscription with the same name has a different identity.
 
-Run from the repository root:
+All close methods return a CloseReport or a CloseError containing a report. Inspect local cleanup, member departures, unresolved sends/ACKs/deletions and unclaimed results. Close never performs business ACKs or deletes a durable subscription. Host-held messages and recovery handles retain their shared memory charges until their final release.
+
+## Memory and observability
+
+Client and logical instance limits bound retained messages and bytes, requests, results, connections and tasks. Consumer prefetch limits cover reserved reads, the local queue and application-held payloads. ACK releases logical delivery credit; retained payload clones keep their memory charge. Transport, control and recovery reserves have separate limits. These logical budgets are not a process RSS limit.
+
+The host owns Tokio, logging, metrics, TLS materials and allocator policy. `metrics` registers fixed series through `client.metrics().register(...)`. `opentelemetry` uses the host's provider and tracing bridge. `scope_traceparent` propagates a validated explicit trace context. See the [SDK guide](../../docs/guide/rust-sdk.zh-CN.md) and [trace export contract](../../docs/operations/tracing.zh-CN.md).
+
+The `produce` and `consume` examples use TIDEMQ_ENDPOINT, TIDEMQ_CA_PEM, TIDEMQ_TOKEN and TIDEMQ_TOPIC. Consumption also requires TIDEMQ_SUBSCRIPTION; TIDEMQ_MESSAGE_COUNT defaults to ten.
 
 ```bash
 cargo clippy -p tidemq-sdk --all-features --all-targets --no-deps --locked -- -D warnings
-cargo nextest run -p tidemq-sdk --all-features --all-targets --locked --profile ci
 cargo test -p tidemq-sdk --all-features --doc --locked
 cargo run -p tidemq-sdk --example host_observability --features metrics
 ```
 
-`produce` and `consume` examples use `TIDEMQ_ENDPOINT`, `TIDEMQ_CA_PEM`, `TIDEMQ_TOKEN`, and `TIDEMQ_TOPIC_ID`. Consumption also requires `TIDEMQ_SUBSCRIPTION_ID`; `TIDEMQ_ORDERING=key` selects key-serial scheduling. See [the SDK guide](../../docs/guide/rust-sdk.zh-CN.md) for lifecycle, errors, memory and takeover contracts.
-
-The SDK tests run against a real UDP/TLS protocol peer. They do not replace the runtime RF1/RF3, failover, load-balancer, Linux or three-zone durability and performance suites.
-
-The shared pending-byte budget reserves at least one quarter for consumption, including one maximum delivery and its metadata. Read credit is reserved before issuing the request. Retained producer payloads are compact copies, so small `Bytes` views do not pin arbitrarily large caller allocations. The final consumer clone releases its local claim without acknowledging or deleting the durable assignment.
+Functional and fault integration cases live under the repository's tests directory. Functional validation does not establish throughput or calibrated capacity.

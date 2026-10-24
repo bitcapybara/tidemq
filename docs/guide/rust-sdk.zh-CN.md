@@ -1,140 +1,117 @@
-# Rust SDK 接入与恢复契约
+# Rust SDK 接入与恢复
 
-SDK 位于同仓库 `sdk/rust`，依赖 `tidemq-protocol` 和 `tidemq-transport`，不链接服务端、OpenRaft、WAL、S3 或全局分配器。运行环境为原生 QUIC/UDP；连接必须校验证书与服务名，并使用作用域静态 token。宿主负责 CA、凭证、Tokio runtime、日志、指标出口和分配器。
+SDK 位于 sdk/rust，只依赖共享协议和传输库。应用使用逻辑 Topic、可选业务 key 和持久订阅；服务端与 SDK 处理分片、路由和成员代次。SDK 不安装全局分配器、日志订阅器或遥测出口。
 
-## 创建客户端与资源
+## 创建与使用
 
-```rust,no_run
-use tidemq_sdk::{Bytes, Client, ClientConfig, Id, Producer, public};
-
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let roots = tokio::fs::read("certs/ca.pem").await?;
-let token = std::env::var("TIDEMQ_TOKEN")?;
-let client = Client::connect(ClientConfig::new("localhost:7443"), roots.into(), token).await?;
-let topic = client.admin().create_topic("events", 4).await?;
-let topic_id = Id::from_slice(&topic.topic_id)?;
-let subscription = client.admin().create_subscription(
-    topic_id, "worker", 0, public::DeliveryMode::Parallel,
-).await?;
-# let _ = (Bytes::new(), subscription);
-# Ok(()) }
-```
-
-`Client::with_target` 可显式传入地址与 TLS 服务名，适合测试和固定解析结果。`connect` 在创建时解析稳定地址；当前客户端重连沿用该解析结果，地址变更时重建 Client。它不接收内部节点表，不接受外部客户端自行指定 Broker owner epoch。发送到 Gateway 的 owner epoch 固定为 0，由服务端按新鲜路由填充。
-
-`Admin` 提供创建、按名称查询 Topic/Subscription，查询生产会话和订阅分配，以及带期望代次和 operation ID 的分区订阅删除。创建操作的自动网络重试保持 operation ID；最终结果未知时，按唯一资源名查询并核对配置。删除某个分区不代表所有分区均已删除，积压保护的全局解除由服务端协调。
-
-## 身份与错误诊断
-
-普通 producer、operation、request、session 身份使用 `Id::new_v7()?`。生成保留 `Result`，传播熵源或时间错误；使用 `uuid` 的标准 Builder，不为同毫秒顺序增加全局锁或计数器。v7 不能替代 sequence、epoch 或消息 offset；未知结果继续复用原业务身份，不能重新生成一个 ID 绕过未决结果。
-
-`ClientConfig::validate` 按具体字段返回约束，例如 `request_lanes must not exceed transport.max_streams`。嵌套的协议、传输和内存校验保留原错误链；消费队列、资源名及响应校验也返回各自原因。`Admission { resource }` 说明具体预算或分配位置，`ResponseMismatch { reason }` 指出响应中不符合约定的字段。
-
-`Error::Remote` 保留服务端 `message`，同时保留 code、outcome、retryable、expected_sequence、expected_registration_epoch 和 retry_after_ms；服务端明确拒绝与结果未知不能混淆。文本用于解释问题，程序仍通过枚举和结构化字段决定重试。收到缺少 message 的错误回复时，SDK 明确说明服务端未提供诊断文本，不悄悄丢弃错误码。
-
-每层错误的 `display` 只说明本层上下文，不直接拼接 source。宿主需要打印完整底层链时，先执行 `let err = anyhow::Error::new(err)`，再以 `"{err:#}"` 格式输出；`err.to_string()` 仅适合顶层提示。SDK 不额外安装日志设施，也不增加运行时 anyhow 依赖。更多边界、日志字段与排查步骤见[错误诊断约定](../operations/error-diagnostics.zh-CN.md)。
-
-## 总期限与主动取消
-
-默认网络操作使用 `ClientConfig::request_timeout_ms`，期限在操作入口计算一次，排队、连接、发送、重试与退避共同消耗这个预算；公共 API 不再要求传入 `Instant`，也不再提供 `client.deadline()`。
-
-需要让多步操作共享总期限时，复用 `RequestContext`。它使用 `tokio_util::sync::CancellationToken`，SDK 同时导出该类型。`RequestContext::new(absolute_deadline, cancellation_token)` 可接入宿主已有的任务生命周期；`with_timeout` 在创建 context 时计算绝对期限，复用时不会重新计时。
+Topic 由管理端预先创建。订阅只保护其起始位置以来仍可用的消息；需要保护未来生产的消息时，先创建订阅。
 
 ```rust,no_run
 use std::time::Duration;
-use tidemq_sdk::{Client, RequestContext};
+use tidemq_sdk::{Client, Credentials, Message, TlsTrust};
 
-# async fn example(client: &Client) -> tidemq_sdk::Result<()> {
-let context = RequestContext::with_timeout(Duration::from_secs(5))?;
-let cancellation = context.cancellation_token();
-let topic = context.scope(client.admin().create_topic("events", 4)).await?;
-let _ = context.scope(client.admin().topic("events")).await?;
-cancellation.cancel();
-# let _ = topic;
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::builder(
+    "mq.example.com:7443",
+    TlsTrust::ca_file("certs/ca.pem"),
+    Credentials::token_file("secrets/app.token"),
+)
+.namespace("acme/app")
+.connect_timeout(Duration::from_secs(5))
+.request_timeout(Duration::from_secs(30))
+.close_timeout(Duration::from_secs(5))
+.build()
+.await?;
+
+let queue = client.new_queue_consumer("orders", "jobs").build().await?;
+let producer = client.new_producer("orders").build().await?;
+let receipt = producer.send(Message::new("created").key("order-42")).await?;
+println!("Committed message {}", receipt.message_id());
+
+let message = queue.receive().await?;
+process(message.payload()).await?;
+queue.ack(&message).await?;
+
+queue.close().await?;
+producer.close().await?;
+let report = client.close().await?;
+println!("Unresolved sends: {}", report.unresolved_sends());
+# Ok(()) }
+# async fn process(_: &[u8]) -> std::io::Result<()> { Ok(()) }
+```
+
+必填项在 builder 构造时传入，选填项链式设置。构造器和 setter 不做 I/O；build().await 成功才返回可用实例。未配置 Namespace 时使用完整 tenant/namespace/topic 名称。Client 上的 Namespace 只解析名称，不授予权限。
+
+TlsTrust 接受服务端 CA 文件或 PEM，不接收 CA 私钥。Credentials 支持 token_file、token_env 和 token。集群在线签发凭据，Metadata Raft 持久保存校验记录；应用通过私有文件或部署 Secret 取得 token。撤销和过期影响已有连接的新准入。Debug、日志和管理元数据不得输出凭据原值或签名材料。
+
+## 生产与并发
+
+send 接受 Into<Message>，简单消息可写 producer.send("hello").await。Message 用于设置 key 和属性。成功回执表示数据 Raft 已持久提交；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。
+
+一个 Producer 可并发发送到多个分片。应用使用有界 FuturesOrdered/FuturesUnordered 或任务池驱动多个 send；集合 push 本身不推进 Future。逐条 await 会按应用写法串行等待。同 key 的发送按同一逻辑 Producer 的准入顺序推进，返回回执的顺序不建立跨 key 顺序。
+
+send_batch 保留各条输入关联，允许跨组部分完成，不提供跨组事务。未知结果沿原发送身份和摘要恢复；不要重新 send 一遍来处理未知结果。
+
+## 两类持久订阅
+
+| 入口 | 语义 |
+| --- | --- |
+| new_stream_consumer(topic, subscription) | 同 key 有效交付有序，提供 ack_cumulative |
+| new_queue_consumer(topic, subscription) | 多成员共同分摊消息，提供单条 ack 和 nack |
+| receive().await | 等待并返回一条消息 |
+| try_receive() | 只检查本地队列，返回 Option；None 不证明远端没有积压 |
+
+同一 Topic 可有多个独立订阅。零成员保留订阅、确认进度和积压。Consumer 关闭或 Drop 不删除订阅。交付至少一次，业务副作用需要幂等。
+
+Stream 的累计确认覆盖应用实际接收的共享前缀，不包含预取消息或别的成员的消息。多个 clone 共用该前缀；并行业务处理应先协调全部前置处理结果，才能累计确认较后的消息。Queue 不提供累计确认；nack(message, delay) 持久安排重投，成功回执表示重投已安排，不表示业务成功。在线成员的慢处理不会仅因缓存授权租约过期而被当成处理超时。
+
+## Clone、预算与关闭
+
+Client、Producer、StreamConsumer 和 QueueConsumer 的 clone 共享同一逻辑实例、身份、预算、驱动和关闭状态。Consumer clone 竞争同一队列，可确认另一 clone 返回的有效消息。新建独立实例应再次调用具名 new_* builder。任一 clone 的 close 关闭整个逻辑实例。
+
+Client 和各逻辑实例分别限制消息数、字节、请求、结果、连接与任务。Consumer prefetch 覆盖 Read 预留、本地队列及应用持有的正文，不能按分片放大额度。ACK 释放逻辑交付额度后，应用仍持有的正文继续计费。传输、控制和恢复额度单独受限；逻辑计费不能当作进程 RSS 上限。
+
+close 使用独立 close_timeout，返回 CloseReport，失败返回携带报告的 CloseError。报告区分本地清理、成员退出、未决发送/ACK/订阅删除和未领取结果。close 不替应用 ACK，不删除持久订阅；调用前应收束应用自身的发送和业务任务。
+
+## 总期限、取消和恢复
+
+默认网络操作使用 request_timeout。排队、连接、子请求、重试和退避共用总期限。无显式 context 的 receive 持续等待，其网络子请求仍有有限期限。
+
+```rust,no_run
+use std::time::Duration;
+use tidemq_sdk::{QueueConsumer, RequestContext};
+
+# async fn example(queue: &QueueConsumer) -> tidemq_sdk::Result<()> {
+let context = RequestContext::with_timeout(Duration::from_secs(10))?;
+let message = context.scope(queue.receive()).await?;
+# let _ = message;
 # Ok(()) }
 ```
 
-单次调用取配置超时与作用域期限中较早者；嵌套作用域保留最早期限和父级取消。`child()` 派生的 token 只向下取消，取消一个子任务不会取消父级或兄弟请求。作用域约束 SDK 操作；两次调用之间的宿主计算仍由宿主管理。通过 `tokio::spawn` 创建的任务需要显式克隆 context 并在新任务中调用 `scope`。实现同时等待 token 和绝对期限，不为每个 RPC 派生计时任务。
+context.cancellation_token() 可接入宿主取消。嵌套调用使用更早期限；通过 tokio::spawn 创建的新任务要显式传入 context。取消等待不撤销已提交操作，已准入发送和确认由 SDK owned driver 在原期限内收尾。
 
-取消不能撤销已提交的业务。发出后的普通变更可能返回 `RequestUnknown`；生产返回 `ProduceUnknown` 时，通过 `pending_batches()` 恢复原身份。预先取消或已经过期的 context 不发起新请求；取消等待准入的操作会释放其已持有额度。`Client::close()` 取消在途操作并停止新准入，仍需按原身份处理未知结果。
+| 快照 | 恢复 |
+| --- | --- |
+| producer.pending_sends().await | PendingSend::retry().await 查询或继续原发送 |
+| consumer.pending_acks().await | PendingAck::retry().await 查询或继续原 ACK/NACK |
+| admin.pending_subscription_deletions() | PendingSubscriptionDeletion::retry().await 继续固定 UUID 的删除 |
 
-## 生产：有序发出、并行等回执
+快照包含仍在处理、未知或部分完成，以及完成但尚未领取的结果。查询不 drain、不自动重试、不替业务确认。未知结果保留原身份和范围，不能为了腾空间静默丢弃。恢复句柄与正文均计入预算；没有 SDK 持久 outbox，跨进程重启不会自动找回本地账本。网络恢复须在原 Client 关闭前完成。
 
-`Producer::open(client, topic, partition, producer_id)` 查询注册 epoch 提示并显式注册。多个 clone 共享一个序号域。`produce(Vec<Message>)` 在有限的顺序锁中分配序号和 enqueue，离开该锁后独立等持久回执；并发调用可以流水发送。单条消息与整个编码帧分别受协议限制，没有隐式 linger；宿主显式组成批次。
+管理端使用 stream_subscription/queue_subscription 查询，使用 delete_stream_subscription/delete_queue_subscription 删除。删除默认拒绝在线成员，固定 UUID 并冻结新加入，逐数据域解除状态和保护，全部完成才成功。中断后继续 pending 句柄，不按名称发起替代删除；同名重建订阅使用新 UUID。
 
-每批保存 producer ID、epoch、first sequence、内容摘要、operation ID 和消息。每次网络尝试新建 request ID，重试保留业务身份与摘要。不同内容不能复用原序号。QUIC send、transport ACK 和取消均不等于 WAL/Raft 已提交。
+## 观测与验证
 
-服务端明确返回 `Rejected + retryable` 的 `Unavailable` 或 `Fenced` 时，在原总期限和固定尝试次数内自动退避重试；控制、读与 ACK 也复用这一规则。每次只更新 request ID。生产在网络结果未知时也会在原期限与次数预算内重试原业务身份；最终仍未知则保留 PendingBatch 供显式恢复。会话过期、权限失败和永久拒绝不自动换身份。已被明确拒绝但耗尽重试预算的批次仍占原序号，不能静默跳过。
+错误保留结构化状态与完整 source 链。outcome_unknown() 表示业务结果仍需恢复，不能仅凭外层 Display 或错误字符串决定重试。宿主需要完整链时，可用 anyhow::Error::new(error)，按 "{error:#}" 输出；SDK 不安装日志设施或增加 anyhow 运行时依赖。
 
-有未决 RPC 时，物理连接按 `ClientConfig::liveness_timeout` 运行有界原生 PING 探测，只有新的 1-RTT packet number 被对端确认才证明连接仍活跃。探测失败才替换该失活连接；慢业务 handler 不会单凭应用响应时间而误杀健康共享 lane。`client.transport_metrics()` 可查询探测与失败计数；该检测不把网络 ACK 当业务提交。
+宿主负责 Tokio、subscriber、provider、exporter 和 allocator。metrics feature 通过 client.metrics().register(...) 注册固定系列；opentelemetry feature 复用宿主的 MeterProvider 和 tracing bridge。scope_traceparent 为有限操作传递经过校验的 W3C 上下文；宿主创建的新任务自行设置作用域。不要重复累计 Prometheus 与 OpenTelemetry 的同义指标。
 
-如果 `produce` 返回 `ProduceUnknown`，或其 future 在提交后被丢弃，原批次仍可从 `pending_batches()` 查询。按升序对最早未决批次调用 `retry`；恢复完成前拒绝新序号，不更换 producer 身份。原批次成功返回 `duplicate=true` 也是持久成功。`SequenceGap`、`ContentConflict`、权限/配额等保留类型化错误；被明确拒绝的批次仍阻止自动跨过该序号，必须按原身份处理。`SessionExpired` 或去重窗口过期不会自动重新注册。
-
-注册回包未知返回 `RegistrationUnknown { producer_id, registration_epoch, .. }`；用 `open_at` 传回相同 ID 和 epoch，不能重新取新提示后悄悄创建另一会话。`retire` 只允许在没有未决批次时调用。SDK 没有持久 outbox：进程重启后不承诺自动重建未决消息、序号或原结果。跨进程业务幂等需要宿主保存业务身份与数据。
-
-## 消费、逐条 ACK 与冷热切换
-
-`Consumer::claim(client, topic, partition, subscription, config)` 先查询当前代次，再 CAS 取得分配。默认不抢占其他逻辑 session。确需接管时，先用 `Admin::subscription_status` 核对旧 session，再显式提供 `ConsumerConfig::replace_session_id`。同一 Client 的同一订阅分区只能建立一份消费状态；用 `Consumer::clone` 共享。已经创建过的 handle 被全部丢弃后，需要新 Client 和明确接管决定，避免复用丢失内存队列的旧代次。
-
-`fill` 将消息放入有界队列；`next` 从当前缓冲区选择可执行工作，`recv` 在队列为空时 fetch。`Parallel` 只对当前已缓冲的 offset 排序，不等待尚未收到的更低 offset；读取回复丢失后，后续消息可以先交付，较低 offset 在原 attempt 租约到期后重投。连续接收和持久 ACK 前沿仍不能跨过空洞，业务不能用“首次收到较高 offset”判断前缀已经确认或丢失。`Delivery` 的 key、body 和 token 不出现在 Debug；payload/token 在最后一个 clone 释放前一直计入逻辑预算。队列满、宿主长期持有 Delivery 或未决批次时，会得到背压，不无限缓存。保留消息超过服务端 attempt 期限后，ACK 可能报告旧 token；它不会确认新的 attempt。
-
-Read 已持久签发部分消息、后续读取失败时，整批返回 Unknown，不把部分消息放入 SDK 队列。调用方可在有界业务取消域内继续使用同一个 Consumer 读取，但恢复总预算应覆盖投递租约（默认 30 s）及后续 Read/ACK；一次空批次不证明租约内的前缀不存在。只有实际收到并处理成功的 Delivery 才能 ACK，不通过 seek、更换身份或跨过 offset 洞来“修复”未知结果。明确不可重试、权限和协议错误仍需终止处理。
-
-1. 分配冻结排他边界 H。B 只接收 H 之前的数据，D 只接收 H 及之后的数据。持续消费 D 后，持久 ACK 前沿可超过 H；H 不随 ACK 推进，后续接收屏障与 owner 恢复仍接受这种合法状态。
-2. SDK 只合并实际成功入队的 offset 和服务端给出的持久 ACK 区间。缺少 offset 时不取最大值推进；最早块缺失时保留有限预取和头部容量。
-3. 连续接收前沿通过 C 上的 `ReceiveBarrier` 确认；回包未知可用相同 tuple/前沿重试。服务端确认后才启用 D。
-4. 接收屏障不修改持久业务 ACK。H 之前仍未 ACK 的消息可能需要 B 重投，因此启用 D 后，在冷 ACK 前沿未达到 H 时有限轮换 B/D；慢业务 ACK 不阻止 D 开始。
-
-`ack`/`ack_many` 必须在业务成功之后调用；同时绑定 topic、partition、subscription、session、cursor/assignment/delivery generation。ACK 使用 C connection 的短 Ack streams，并按条数与真实编码帧大小切批，保留 Core 控制流。重复旧 token 不会确认新 attempt。一次 `ack_many` 的早期切片可能已提交而后续切片失败；重试原 Delivery 切片是幂等操作。
-
-默认 `DeliveryOrdering::Parallel` 允许消息交付和业务完成乱序。显式 `KeySerial` 还要求连续接收覆盖，并对同 key 同时只给一个 handler，已满足覆盖的其他 key 可并行；`fail(delivery)` 保留失败决定并阻塞该 key，`retry_failed(offset)` 明确重试。发生 owner fence 后只保留有上限的失败 offset 标记，释放 SDK 队列中的旧正文/token，等待新分配重新交付，仍不会偷偷解锁失败 key。新交付的连续接收证据建立后，其他 key 可以继续；显式 retry、持久 ACK 证据或显式 seek 才解除对应失败决定。不会把失败转换成自动 ACK、跳过或 DLQ。业务副作用仍须幂等或有业务 fence，SDK 不提供外部 exactly-once。
-
-KeySerial 按配置的最多缓冲条数，为失败 offset 元数据在 consumer/client 字节准入中额外固定预留每条 40 B；此保守逻辑额度不等于 allocator 或 RSS。收到新一代对应消息后复用已有 key 调度表，不在每次 `next` 上扫描所有失败 key。宿主持有的旧 Delivery clone 仍按原字节额度计费，SDK 无法替宿主释放它。
-
-`seek(offset, operation_id)` 使旧 token、排队数据、失败决定与接收屏障失效，并重新 Claim。seek 结果未知或 future 取消后，本地停止派发；以相同 operation ID 重试 seek。`fill`/`recv` 收到 owner 的 `Fenced`/`StaleGeneration` 后，在该操作的原总 deadline 和固定次数内查询最新 status 并 CAS 重新 Claim，Consumer clone 共享恢复后的状态。仅原逻辑 session 或未分配状态允许自动恢复；其他 session 已占用时返回 AssignmentBusy，自动路径不会复用配置中既有的 takeover consent 去抢占它。确需接管仍由业务明确调用 `reclaim`，并匹配 `replace_session_id`。
-
-接收屏障返回 Unknown 时，SDK 只在同一代次、同一 session、相同接收位置与同一 operation ID 下有限重试，次数受 `max_reconnect_attempts` 限制，所有尝试共享原总期限。服务端允许相等的接收位置，禁止倒退；确认之前不启用后续热读取。重试或退避预算耗尽时仍返回原 Unknown，不能解释为屏障未提交，也不创建替代分配。
-
-新代次从持久 ACK frontier 重新建立连续 enqueue/冷热屏障，旧 Delivery 的代次和 token 保持原样；旧 ACK 不会被改写到新分配或自动成功。`ack`/`ack_many` 本身返回原操作错误，让下一次 `fill`/`recv` 恢复，业务须按幂等契约处理重交付。`next` 只访问本地队列，没有网络 deadline，不主动恢复。普通 QUIC 断连自动重握手并保留原逻辑 session；无法确定的 seek 不会被 owner 自动恢复分支擅自重解释。
-
-## connection、stream 与公平准入
-
-一个 Client 的 C/P/D/B 共享逻辑 session，每类只使用一个到稳定入口的 connection；每条连接仍独立完成 TLS/应用认证。C 在 connect 时建立，P/D 按实际操作创建，B 在冷读或冷重投时创建。
-
-默认每个数据类别复用 4 个 Request lanes，C 持续驱动全部预建 Core lanes。生产顺序域固定绑定 lane，affinity 不含序号或网络 attempt；不同域共享有限 lane 集合。lane 计数不会随分区、订阅或 handle 数增长。物理连接更换时，旧未决批次先恢复，不能带着新序号跨 lane 发出。不同域哈希碰撞仍会共享一个 stream，是有限复用的性能边界；默认 lane 数须结合基准调优。
-
-全客户端生产在途/未决对象默认最多 256，每个 producer 最多 32；生产准入用 Tokio FIFO semaphore，在调用总期限内排队，顺序锁不跨等待回执。SDK 的 payload/元数据预算、每个 RPC 池的 pending 字节、原生传输 envelope 和控制保留分别受限，不能把其中一个数直接当作进程 RSS 上限。宿主输入 `Bytes` 的底层大块共享分配也不能仅凭切片长度还原；RSS/分配器开销由宿主观测。
-
-`Client::cancel(request_id)` 发送跨流取消，保留其他复用请求；它只说明取消已进入有限发送队列，不证明服务端业务已经撤销。`Client::close()` 取消在途操作、停止新准入并在配置超时内释放 owned 任务；超时未决结果按原身份查询/重试，不把 close 当事务回滚。
-
-## 宿主观测与验证
-
-SDK 从不安装全局 subscriber/exporter/HTTP 服务或 global allocator。`tracing` 使用有期限的请求 span，包含固定操作类别及 operation ID，跳过 token、正文、TLS key 和 Delivery token。生产端到端计时包含本地排队到结果；手动消费只能观察交付/ACK，真实 handler 时间由宿主记录。
-
-宿主需要跨进程追踪时，用 `scope_traceparent(w3c_context, sdk_operation_future).await` 为单次有限操作传入上下文。它复用协议的 W3C 校验，拒绝非法/超长值且不执行该操作，任务之间不互相污染；后续未作用域的调用不继承旧 context。宿主新 spawn 的任务需自己设置作用域。上下文只进请求帧，不影响业务摘要、幂等或授权，也不安装 OpenTelemetry 后端。
-
-可选 `opentelemetry` feature 使用 OpenTelemetry 0.33 与 tracing-opentelemetry 0.34，从宿主当前 span 获取 W3C 父上下文；显式 `scope_traceparent` 优先。宿主负责兼容的 layer、provider、采样和有界 exporter，SDK 不创建或替换全局设施。服务端可选导出的配置、隐私白名单及故障边界见[链路追踪](../operations/tracing.zh-CN.md)。
-
-同一 feature 也将 SDK 指标记录到宿主全局 `MeterProvider`，scope 为 `tidemq-sdk`。必须在创建 Client 之前安装 provider；未安装时为 no-op，事后安装不能追溯先前观测。固定十个无动态标签的 instrument：`tidemq.sdk.requests/retries/unknown/deliveries/acknowledged` 为累计 counter，`tidemq.sdk.operation.duration` 与 `tidemq.sdk.admission.wait` 为秒级 histogram，`tidemq.sdk.admitted.bytes/retained.batches/active.deliveries` 为按资源取得/释放更新的 UpDownCounter。共用宿主 meter 的多个 Client 合并计数，释放 Client 不会重置累计 counter；最终对象释放才归还相应资源量。
-
-SDK 只取得 instrument，不安装 recorder、provider、exporter 或后台导出线程。宿主负责 OTLP 目标、有限队列、导出周期、force-flush 和 shutdown；这些成本不计作 SDK 的独立设施。OpenTelemetry 路径与下面的 Prometheus 路径可分别启用，二者的同义指标不能重复求和。此处复用已有 OTel 依赖，没有为同一批事件再叠加 `metrics` 全局 facade。服务端保留现有固定类型 Prometheus 指标与 tracing 日志，指标可以继续由 Collector/Prometheus 采集，不增加第二套进程级 recorder。
-
-启用 `metrics` feature 后，调用 `client.metrics().register(registry.sub_registry_with_prefix("my_client"))` 复用宿主 registry。指标只有固定系列：请求/重试/未知结果、交付与持久 ACK 计数、操作时延直方图、准入等待累计时间，以及保留字节、批次、Delivery 的逻辑 gauge。completed 后仍被宿主持有的 `PendingBatch`/`Delivery` 也计费，不能把 gauge 直接解释为未提交消息数。
+更多内容见[错误诊断](../operations/error-diagnostics.zh-CN.md)和[链路追踪](../operations/tracing.zh-CN.md)。生产示例使用 TIDEMQ_TOPIC 的完整名称；消费示例再提供 TIDEMQ_SUBSCRIPTION，TIDEMQ_MESSAGE_COUNT 默认十条。示例连接真实服务，不内嵌伪造 Broker。
 
 ```bash
-cargo test -p tidemq-sdk --all-features
-cargo clippy -p tidemq-sdk --all-features --all-targets --no-deps
+cargo clippy -p tidemq-sdk --all-features --all-targets --no-deps --locked -- -D warnings
+cargo test -p tidemq-sdk --all-features --doc --locked
 cargo run -p tidemq-sdk --example host_observability --features metrics
 ```
 
-`produce` 示例需要 `TIDEMQ_ENDPOINT`、`TIDEMQ_CA_PEM`、`TIDEMQ_TOKEN`、`TIDEMQ_TOPIC_ID`；`consume` 再需要 `TIDEMQ_SUBSCRIPTION_ID`，设置 `TIDEMQ_ORDERING=key` 演示同 key 串行，否则并行。消息必须来自真实服务端，示例不内嵌伪造 broker。
-
-`sdk/rust/tests/quic_client.rs` 使用真实 UDP/TLS 的协议测试 peer，覆盖流水、回包丢失/取消/物理重连、固定 lanes、屏障/ACK 洞、同 key 失败、seek 隔离、ACK 切批和宿主 registry。它不证明 RF1/RF3 持久性、真实 Gateway 接管、Linux/负载均衡/三区性能；这些由集成运行时和后续端到端验收给出。
-
-## 小内存预算与句柄释放
-
-`max_pending_bytes` 是 SDK 逻辑在途数据和交付元数据的共享上限，传输端另有显式 `transport_memory_bytes` 预算。生产者最多占用共享上限扣除消费保留部分：保留至少四分之一，并且足以容纳一条最大消息及交付元数据。未决生产批次占满生产额度时，消费仍有准入空间；ACK 和控制继续使用独立核心传输额度。宿主持有的交付或 PendingBatch clone 会继续持有相应额度。
-
-消费 Read 在发出前预扣消息体、令牌及交付元数据的全部 credit，按返回交付拆分许可，未用部分归还；服务端不能用逻辑载荷字节越过调用者队列预算。小队列会降低请求条数，以容纳一条实际可装入的消息。SDK 为需跨未知结果保留的生产内容创建有界副本，避免一个很小的 Bytes 切片长期保留调用方的大块底层分配；这会增加一次复制，性能报告需包含该成本。
-
-最后一个 Consumer clone 释放后，本地 claim 额度回收；这不修改服务端持久 assignment，也不会替业务 ACK。连接关闭会终止并等待 SDK/RPC 所有的接收、发送和 stream acceptance 任务，最多等待关闭入口按配置计算的总 deadline。上游 QUIC endpoint 的异步释放可能仍需短暂调度与协议关闭过程；重启验证检测实际 UDP 端口释放，不通过复用端口绕过。
+服务功能和故障集成测试位于仓库 tests 目录。功能测试不证明吞吐提升、线性扩展或已校准的容量。

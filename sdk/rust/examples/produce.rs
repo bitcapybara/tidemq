@@ -1,39 +1,33 @@
 use std::{env, error::Error};
-use tidemq_sdk::{Bytes, Client, ClientConfig, Id, Producer, public::Message};
+use tidemq_sdk::{Client, Credentials, Message, TlsTrust};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let endpoint = env::var("TIDEMQ_ENDPOINT").unwrap_or_else(|_| "localhost:7443".into());
-    let roots = tokio::fs::read(env::var("TIDEMQ_CA_PEM")?).await?;
-    let client = Client::connect(
-        ClientConfig::new(endpoint),
-        roots.into(),
-        env::var("TIDEMQ_TOKEN")?,
+    let client = Client::builder(
+        env::var("TIDEMQ_ENDPOINT").unwrap_or_else(|_| "localhost:7443".into()),
+        TlsTrust::ca_file(env::var("TIDEMQ_CA_PEM")?),
+        Credentials::token_env("TIDEMQ_TOKEN"),
     )
+    .build()
     .await?;
-    let topic: Id = env::var("TIDEMQ_TOPIC_ID")?.parse()?;
-    let producer_id = Id::new_v7()?;
-    let producer = Producer::open(client.clone(), topic, 0, producer_id).await?;
-    let result = producer
-        .produce(vec![Message {
-            key: Bytes::from_static(b"example-key"),
-            body: Bytes::from_static(b"example-message"),
-        }])
-        .await;
-    match result {
-        Ok(receipt) => println!("Committed offset {}", receipt.first_offset),
+    let producer = client
+        .new_producer(env::var("TIDEMQ_TOPIC")?)
+        .build()
+        .await?;
+    match producer
+        .send(Message::new("example-message").key("example-key"))
+        .await
+    {
+        Ok(receipt) => println!("Committed message {}", receipt.message_id()),
         Err(error) if error.outcome_unknown() => {
-            for batch in producer.pending_batches().await? {
-                let receipt = producer.retry(&batch).await?;
-                println!(
-                    "Recovered offset {}, duplicate={}",
-                    receipt.first_offset, receipt.duplicate
-                );
+            for pending in producer.pending_sends().await? {
+                let receipt = pending.retry().await?;
+                println!("Recovered message {}", receipt.message_id());
             }
         }
         Err(error) => return Err(error.into()),
     }
-    producer.retire().await?;
-    client.close().await;
+    producer.close().await?;
+    client.close().await?;
     Ok(())
 }
