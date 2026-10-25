@@ -11,10 +11,10 @@ receivers:
     start_at: end
     convert_to_semantic_conventions: true
   filelog:
-    include: [/var/log/pods/*/*/*.log]
-    exclude: [/var/log/pods/*/otelcol/*.log]
+    include: [/var/log/pods/*/*/*.log, /var/log/pods/*/*/*.log.*]
+    exclude: [/var/log/pods/*/otelcol/*.log*, /var/log/pods/*/*/*.gz]
     include_file_path: true
-    start_at: end
+    start_at: beginning
     max_log_size: 64KiB
     storage: file_storage
     operators: [{type: container}]

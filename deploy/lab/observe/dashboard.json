@@ -1,9 +1,39 @@
 {
-  "uid": "tidemq-lab", "title": "TideMQ lab", "schemaVersion": 39, "version": 1,
-  "time": {"from": "now-30m", "to": "now"}, "refresh": "15s",
+  "uid": "tidemq-lab",
+  "title": "TideMQ lab",
+  "schemaVersion": 39,
+  "version": 2,
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "refresh": "15s",
+  "templating": {
+    "list": [
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(up{job=~\"(tidemq-lab/)?tidemq\"}, k8s_namespace_name)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "refresh": 1
+      }
+    ]
+  },
   "panels": [
-    {"id": 1, "type": "timeseries", "title": "VM telemetry agents", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "up{job=\"lab-agents\"}", "legendFormat": "{{instance}}"}]},
-    {"id": 2, "type": "timeseries", "title": "Observability backends", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "up{job=\"lab-backends\"}", "legendFormat": "{{instance}}"}]},
-    {"id": 3, "type": "logs", "title": "TideMQ logs", "gridPos": {"x": 0, "y": 8, "w": 24, "h": 10}, "datasource": {"type": "loki", "uid": "loki"}, "targets": [{"expr": "{service_namespace=\"tidemq-lab\"}", "refId": "A"}]}
+    {"id":1,"type":"timeseries","title":"VM telemetry agents","gridPos":{"x":0,"y":0,"w":12,"h":8},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"up{job=\"lab-agents\"}","legendFormat":"{{instance}}"}]},
+    {"id":2,"type":"timeseries","title":"Observability backends","gridPos":{"x":12,"y":0,"w":12,"h":8},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"up{job=~\"lab-backends|tidemq-collector\"}","legendFormat":"{{instance}}"}]},
+    {"id":3,"type":"logs","title":"TideMQ logs","gridPos":{"x":0,"y":8,"w":24,"h":10},"datasource":{"type":"loki","uid":"loki"},"targets":[{"expr":"{service_namespace=\"tidemq-lab\"} | k8s_namespace_name=~\"$namespace\"","refId":"A"}]},
+    {"id":4,"type":"timeseries","title":"Object storage readiness","gridPos":{"x":0,"y":18,"w":12,"h":8},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"rustfs_runtime_readiness_ready","legendFormat":"{{job}} {{instance}}"}]},
+    {"id":5,"type":"timeseries","title":"Application availability by namespace","gridPos":{"x":12,"y":18,"w":12,"h":8},"datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"up{job=~\"(tidemq-lab/)?tidemq\",k8s_namespace_name=~\"$namespace\"}","legendFormat":"{{k8s_namespace_name}} {{instance}}"}]}
   ]
 }

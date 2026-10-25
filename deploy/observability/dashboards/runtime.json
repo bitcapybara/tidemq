@@ -579,7 +579,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{job=\"tidemq\"}",
+          "expr": "up{job=~\"(tidemq-lab/)?tidemq\"}",
           "legendFormat": "{{instance}} up",
           "datasource": {
             "type": "prometheus",
@@ -588,7 +588,7 @@
         },
         {
           "refId": "B",
-          "expr": "scrape_duration_seconds{job=\"tidemq\"}",
+          "expr": "scrape_duration_seconds{job=~\"(tidemq-lab/)?tidemq\"}",
           "legendFormat": "{{instance}} seconds",
           "datasource": {
             "type": "prometheus",

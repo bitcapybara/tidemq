@@ -60,9 +60,15 @@ Environment=RUSTFS_SECRET_KEY_FILE=$path/secret
 Environment=RUSTFS_DURABILITY_MODE=strict
 Environment=RUSTFS_NEW_BUCKET_DURABILITY_MODE=inherit
 Environment=RUSTFS_CONSOLE_ENABLE=false
-Environment=RUSTFS_OBS_ENDPOINT=
-Environment=RUSTFS_LOG_LEVEL=warn
-Environment=RUSTFS_LOG_DIRECTORY=$path/logs
+Environment=RUSTFS_OBS_ENDPOINT=http://127.0.0.1:4318
+Environment=RUSTFS_OBS_SERVICE_NAME=rustfs-fixture-$instance
+Environment=RUSTFS_OBS_ENVIRONMENT=test
+Environment=RUSTFS_OBS_METER_INTERVAL=15
+Environment=RUSTFS_OBS_SAMPLE_RATIO=0.1
+Environment=RUSTFS_OBS_LOGS_EXPORT_ENABLED=false
+Environment=RUSTFS_OBS_LOG_STDOUT_ENABLED=true
+Environment=RUSTFS_OBS_LOGGER_LEVEL=warn
+Environment=OTEL_RESOURCE_ATTRIBUTES=service.namespace=tidemq-lab,k8s.namespace.name=$run,service.instance.id=$run-$instance
 ExecStart=/usr/local/bin/rustfs server --address 127.0.0.1:$backend --region us-east-1 $path/data
 EOF
   systemctl daemon-reload

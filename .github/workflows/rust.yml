@@ -40,10 +40,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: runner.os == 'macOS'
         with: {tool: 'nextest@0.9.148'}
-      - run: bash scripts/ci/validate.sh
-      - run: bash scripts/ci/integration.sh
+      - run: bash scripts/lab/with-lease.sh bash scripts/ci/validate-and-integrate.sh
+        if: runner.os == 'Linux'
+        env: {TIDEMQ_REQUIRE_EXTERNAL: '1'}
+      - run: bash scripts/ci/validate-and-integrate.sh
+        if: runner.os == 'macOS'
         env:
-          TIDEMQ_REQUIRE_EXTERNAL: ${{ runner.os == 'Linux' && '1' || '0' }}
+          TIDEMQ_REQUIRE_EXTERNAL: '0'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -84,7 +87,7 @@ jobs:
       - uses: actions/checkout@v4
         with: {ref: '${{ github.sha }}', path: candidate, fetch-depth: 0, persist-credentials: false}
       - run: node --test trusted/scripts/coverage/*.test.mjs
-      - run: bash trusted/scripts/coverage-run.sh candidate coverage-result $COVERAGE_GATE_MODE
+      - run: bash trusted/scripts/lab/with-lease.sh bash trusted/scripts/coverage-run.sh candidate coverage-result $COVERAGE_GATE_MODE
         env:
           CARGO_LLVM_COV_TARGET_DIR: /srv/tidemq/cargo-target/coverage
           COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}

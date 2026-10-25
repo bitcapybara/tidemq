@@ -11,6 +11,11 @@ groups:
         for: 2m
         labels: {severity: warning}
         annotations: {summary: 'A managed VM telemetry agent is unavailable'}
+      - alert: LabPublicObjectStoreUnavailable
+        expr: rustfs_runtime_readiness_ready{job="tidemq-lab/rustfs-public"} == 0 or absent_over_time(rustfs_runtime_readiness_ready{job="tidemq-lab/rustfs-public"}[2m])
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'Public object storage is not ready or its telemetry is missing'}
       - alert: LabTelemetryQueuePressure
         expr: otelcol_exporter_queue_size / otelcol_exporter_queue_capacity > 0.8
         for: 2m

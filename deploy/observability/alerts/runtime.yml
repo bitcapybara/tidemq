@@ -23,7 +23,7 @@ groups:
           description: "Inspect exporter failures, response limits, queue permits and shutdown timeouts. Head sampling is excluded. Preserve business quorum and ACK budgets; clear after loss counters stop increasing."
           runbook_url: "https://github.com/bitcapybara/tidemq/blob/main/docs/operations/tracing.zh-CN.md"
       - alert: TideMQScrapeUnavailable
-        expr: up{job="tidemq"} == 0
+        expr: up{job=~"(tidemq-lab/)?tidemq"} == 0
         for: 2m
         labels:
           severity: warning

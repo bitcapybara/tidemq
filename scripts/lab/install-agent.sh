@@ -4,6 +4,13 @@ set -euo pipefail
 name=$1 role=$2 address=$3 bundle=$4
 [[ "$name" =~ ^tidemq-[a-z-]+$ && "$role" =~ ^[a-z-]+$ && "$address" =~ ^192\.168\.240\.[0-9]+$ ]] || exit 2
 id otelcol >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin --groups adm,systemd-journal otelcol
+if [[ -d /var/lib/kubelet ]]; then
+  apt-get install -y acl
+  [[ -d /var/log/pods ]] || install -d -m 0750 /var/log/pods
+  # CRI files are root-owned; default ACLs also cover new pods and rotated log files.
+  find /var/log/pods -type d -exec setfacl -m g:otelcol:rx,d:g:otelcol:rx,d:o::--- {} +
+  find /var/log/pods -type f -name '*.log' -exec setfacl -m g:otelcol:r {} +
+fi
 install -d -m 0750 -o otelcol -g otelcol /var/lib/otelcol/storage
 install -d -m 0755 /etc/tidemq-lab /etc/systemd/journald.conf.d /var/log/journal
 install -d -m 0750 -o root -g otelcol /etc/tidemq-lab/tls
@@ -63,5 +70,5 @@ runuser -u otelcol -- /usr/local/bin/otelcol-contrib validate --config=/etc/tide
 systemctl daemon-reload
 systemctl enable --now tidemq-agent
 systemctl restart tidemq-agent
-curl --fail --silent --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:13133/ >/dev/null
+curl --fail --silent --max-time 2 --retry 30 --retry-all-errors --retry-max-time 45 --retry-delay 1 http://127.0.0.1:13133/ >/dev/null
 printf 'Installed telemetry agent on %s\n' "$name"

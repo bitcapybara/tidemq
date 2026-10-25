@@ -31,6 +31,7 @@ cat > /etc/profile.d/tidemq-runner.sh <<'EOF'
 export RUSTUP_HOME=/opt/tidemq-rust/rustup
 export CARGO_HOME=/opt/tidemq-rust/cargo
 export PATH=/opt/tidemq-rust/cargo/bin:/srv/tidemq/tools:$PATH
+export TMPDIR=/srv/tidemq/tmp
 EOF
 cat > /srv/tidemq/actions-runner/.env <<'EOF'
 RUSTUP_HOME=/opt/tidemq-rust/rustup

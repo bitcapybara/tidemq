@@ -69,12 +69,15 @@ async fn configured_credit_live_pages_preserve_every_identity_and_durable_ack() 
             let payload = message_body(sequence);
             assert_eq!(delivery.payload(), payload);
             assert!(seen.insert(sequence), "A healthy Queue repeated a message");
-            tidemq_sdk::RequestContext::with_deadline(until)
+            let acknowledgement = tidemq_sdk::RequestContext::with_deadline(until)
                 .scope(consumer.ack(&delivery))
+                .await;
+            let acknowledgement = finish_original_ack(acknowledgement, until)
                 .await
                 .unwrap_or_else(|error| {
                     panic!("ACK failed after {} messages: {error:?}", seen.len())
                 });
+            assert_eq!(acknowledgement, tidemq_sdk::AckReceipt::Acknowledged);
         }
         assert_eq!(seen, (0..MESSAGE_COUNT).collect());
         assert_eq!(client.metrics().snapshot().deliveries, MESSAGE_COUNT);
@@ -113,6 +116,24 @@ async fn finish_original_send(
                 if source.outcome_unknown() && Instant::now() < until =>
             {
                 // Saturated live reads may exhaust one RPC; preserve its original send identity.
+                result = tidemq_sdk::RequestContext::with_deadline(until)
+                    .scope(pending.retry())
+                    .await;
+            }
+            other => return other,
+        }
+    }
+}
+
+async fn finish_original_ack(
+    mut result: tidemq_sdk::Result<tidemq_sdk::AckReceipt>,
+    until: Instant,
+) -> tidemq_sdk::Result<tidemq_sdk::AckReceipt> {
+    loop {
+        match result {
+            Err(tidemq_sdk::Error::Acknowledgement { pending, source })
+                if source.outcome_unknown() && Instant::now() < until =>
+            {
                 result = tidemq_sdk::RequestContext::with_deadline(until)
                     .scope(pending.retry())
                     .await;

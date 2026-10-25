@@ -1246,7 +1246,29 @@ async fn exercise_runtime_scaling(automatic: bool) {
     assert!(!expected.contains(&identity));
     assert!(producer.pending_sends().await.unwrap().is_empty());
     logical_consume(&consumer, &[identity], b"scaling-body").await;
-    consumer.close().await.unwrap();
+    if let Err(error) = consumer.close().await {
+        let mut diagnostics = BTreeMap::new();
+        for (node, running) in &fixture.running {
+            diagnostics.insert(
+                *node,
+                http(running.management_address, "/diagnostics").await,
+            );
+        }
+        let path = fixture.directory.join("scaling-close-failure.json");
+        tokio::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "error": format!("{error:?}"), "diagnostics": diagnostics,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        panic!(
+            "Replica replacement member cleanup failed; inspect {}",
+            path.display()
+        );
+    }
     producer.close().await.unwrap();
     client.close().await.unwrap();
     drop(consumer);

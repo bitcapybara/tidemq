@@ -75,6 +75,8 @@ MQ 入口采用 `externalTrafficPolicy: Local`，由有本地 gateway 的节点�
 
 公共 RustFS 1.0.3 运行在 storage VM，原生 systemd 服务 `tidemq-rustfs`，严格持久化模式。`tidemq-dev` 和外部设备分别使用 `tidemq-dev` / `tidemq-devices` bucket 和不同账户；CI 不持有公共 RustFS root 凭据。
 
+RustFS 按[官方观测协议](https://docs.rustfs.com/en/operations/observability)向本机 `127.0.0.1:4318` 推送 metrics/traces，再由带持久队列的 agent 通过 mTLS 转发。公共服务名 `rustfs-public`，fixture 服务名 `rustfs-fixture-a/b`；metrics 每 15 秒发送、trace 采样 10%。日志只保留 stdout/journald 采集路径，关闭 RustFS 的 OTLP logs 导出，不再另外配置日志文件。公共 RustFS 的 readiness 和 telemetry 缺失均有告警；测试 fixture 的正常删除不会触发公共服务告警。
+
 每次 CI 在 fixtures VM 创建两个独立 RustFS 实例 a/b，各自有账户、进程、数据目录和恢复计时器：
 
 | 项目 | a | b |
@@ -91,6 +93,8 @@ CI 使用 `ci-RUN-ATTEMPT` namespace，运行结束删除依赖实例和数据�
 ## 5. log / tracing / metrics
 
 TideMQ 输出有界 JSON 到 stdout。Kubernetes 由 CRI/kubelet 保存并轮转本地日志，系统服务使用持久 journald（128 MiB，最长 7 天），每台 VM 的原生 OTel agent 采集 journald、CRI 文件和主机指标。无需应用再同步写一套无限增长的日志文件。
+
+Kubernetes 节点通过最小只读 ACL 允许 `otelcol` 访问 CRI 日志，新 Pod / 新轮转文件继承权限。filelog 从文件开头发现新文件，使用持久 checkpoint 避免重启后重复读取，并采集当前及未压缩轮转文件；已压缩的历史文件仍由 kubelet 本地保留策略管理。已验证 agent 停止期间发生轮转后，重启可以回补未压缩文件中的两条测试日志。超过本地保留范围或有界发送队列的观测数据仍可能丢失。
 
 宿主机也运行相同的 agent（实例 `tidemq-host`），覆盖物理 CPU、NVMe、内存和磁盘水位；自监控仅绑定 VM 管理桥 192.168.240.1:8888。所有 agent 合计 12 个，其中 11 个位于 VM。
 
@@ -138,7 +142,7 @@ RF3 集群测试由 loadgen VM 运行真实 SDK，runner 仅控制和收集证�
 
 已有性能 gate 保留固定 baseline/candidate 二进制、交替成对测量、RF1/RF3、可信 comparator 和原 baseline 策略。该 gate 在 runner VM 内测量本地进程拓扑，不应称作 Kubernetes 网络吞吐测试；loadgen 上的有限 SDK 检查也不是完整容量基准。长时稳定性、磁盘压力与高并发容量测量应独占实验室后执行专项测试。
 
-Rust / Performance workflow 共享 `tidemq-dev` concurrency group，不取消运行中的故障清理。手动操作也必须使用 `scripts/lab/with-lease.sh` 取得宿主 flock 租约。故障指令白名单只允许 cp、worker、fixtures、loadgen，禁止操作 storage、observe、runner；持续时间 5–300 秒，宿主先注册 systemd 恢复计时器再执行故障。
+Rust / Performance workflow 共享 `tidemq-dev` concurrency group，不取消运行中的故障清理。Linux 校验与集成、覆盖率、VM 故障和性能步骤都取得同一宿主 flock 租约；手动测试和部署也必须通过 `scripts/lab/with-lease.sh`，避免同时运行时争用测试资源。租约忙时明确失败，不会并发执行。故障指令白名单只允许 cp、worker、fixtures、loadgen，禁止操作 storage、observe、runner；持续时间 5–300 秒，宿主先注册 systemd 恢复计时器再执行故障。
 
 此仓库为公共仓库：fork PR 的单元测试走 GitHub-hosted runner；self-hosted jobs 不接受 fork 代码。GitHub outside contributor 审批策略设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
 
@@ -169,6 +173,8 @@ gh workflow run performance.yml --repo bitcapybara/tidemq --ref feat/yyx/kvm-ci-
 ```
 
 Runner 操作须以 actions 用户加载 `/etc/profile.d/tidemq-runner.sh`，设置 `TIDEMQ_LAB_HOME=/home/actions/.config/tidemq-lab`。部署接口：
+
+该 profile 同时将 `TMPDIR` 指向 `/srv/tidemq/tmp`。手动 Cargo / Node 集成测试也应加载它，不能让大测试目录落在 runner 的小根盘 `/tmp`。
 
 ```bash
 bash scripts/lab/with-lease.sh bash scripts/ci/lab.sh
