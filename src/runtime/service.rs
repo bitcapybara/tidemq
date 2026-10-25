@@ -547,6 +547,11 @@ impl Service {
         if hops > 2 {
             return Err(Error::invalid("Forwarding hop budget is exhausted"));
         }
+        #[cfg(feature = "test-hooks")]
+        if hops == 2 && frame.kind == i32::from(FrameKind::GroupAck) {
+            let partition = super::data::partition(frame, &self.config.protocol)?;
+            super::test_hooks::pause_consumer_delegation(partition, deadline).await;
+        }
         let class = TrafficClass::try_from(frame.traffic_class)
             .map_err(|_| Error::invalid("Forwarded traffic class is invalid"))?;
         let request = Request {
@@ -981,12 +986,10 @@ impl Service {
                             .authorize_partition(&access, partition, deadline)
                             .await?;
                     }
-                    if route.group_id != group
-                        || !matches!(peer.role.as_str(), "broker" | "combined")
-                    {
+                    if !matches!(peer.role.as_str(), "broker" | "combined") {
                         return Err(forbidden());
                     }
-                    if route.owner_node != peer.node_id {
+                    if route.group_id != group || route.owner_node != peer.node_id {
                         return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
                     }
                 }

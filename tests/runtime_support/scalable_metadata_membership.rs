@@ -300,10 +300,20 @@ async fn metadata_replacement_checkpoints_the_new_voter_and_old_seed_restart_kee
             "Metadata replacement invalidated an admitted delivery: {error:?}"
         );
         let pending = stream.pending_acks().await.unwrap();
-        assert_eq!(pending.len(), 1);
-        acknowledged = tidemq_sdk::RequestContext::with_deadline(until)
-            .scope(pending.first().unwrap().retry())
-            .await;
+        acknowledged = if let Some(original) = pending.first() {
+            assert_eq!(pending.len(), 1);
+            tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(original.retry())
+                .await
+        } else {
+            assert!(
+                !error.outcome_unknown(),
+                "An unknown ACK needs its original handle"
+            );
+            tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(stream.ack_cumulative(&held))
+                .await
+        };
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert_eq!(acknowledged.unwrap(), tidemq_sdk::AckReceipt::Acknowledged);

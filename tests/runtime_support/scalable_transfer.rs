@@ -1,5 +1,84 @@
 use super::*;
 
+#[cfg(feature = "test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn broker_ack_delegation_refreshes_the_original_operation_when_the_authority_group_changes() {
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Metadata),
+            (2, Role::Storage),
+            (3, Role::Storage),
+            (4, Role::Broker),
+            (5, Role::Gateway),
+        ],
+        &[1],
+        &[2],
+    )
+    .await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.groups.push(GroupConfig {
+            group_id: 3,
+            voters: vec![3],
+            standby: Vec::new(),
+        });
+    }
+    fixture.start_all().await;
+    let client = fixture.client(5).await;
+    create_logical_resources(&client).await;
+    let topic = client.admin().topic_info(RUNTIME_TOPIC).await.unwrap();
+    let partition = tidemq::metadata::PartitionKey {
+        topic_id: topic.id().to_string().parse().unwrap(),
+        partition: 0,
+    };
+    let queue = client
+        .new_queue_consumer(RUNTIME_TOPIC, "delegation-jobs")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let original = producer.send("held").await.unwrap().message_id();
+    let held = tokio::time::timeout_at(deadline(), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(held.message_id(), original);
+    let pause =
+        tidemq::runtime::test_hooks::InstalledPause::consumer_delegation(partition).unwrap();
+    let sender = queue.clone();
+    let acknowledged = tokio::spawn(async move { sender.ack(&held).await });
+    pause.wait(deadline()).await.unwrap();
+    let shard = client.admin().topic_shards(RUNTIME_TOPIC).await.unwrap()[0].id;
+    client.admin().transfer_shard(shard, 3).await.unwrap();
+    let until = deadline();
+    while fixture
+        .running
+        .get(&2)
+        .unwrap()
+        .route(partition, until)
+        .await
+        .unwrap()
+        .group_id
+        != 3
+    {
+        assert!(
+            Instant::now() < until,
+            "The source did not observe the new authority group"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    pause.resume();
+    assert_eq!(
+        acknowledged.await.unwrap().unwrap(),
+        tidemq_sdk::AckReceipt::Acknowledged
+    );
+    assert!(queue.pending_acks().await.unwrap().is_empty());
+    queue.close().await.unwrap();
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_operator_waiter_recovers_the_original_public_transfer_after_process_kill() {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
@@ -195,6 +274,21 @@ async fn operator_sdk_transfers_live_authority_and_tenant_credentials_cannot_mov
     let error = app.admin().transfer_shard(shard, 3).await.unwrap_err();
     assert_eq!(error.kind(), tidemq_sdk::ErrorKind::PermissionDenied);
     assert!(!error.outcome_unknown());
+    #[cfg(feature = "test-hooks")]
+    let delayed_ack = {
+        let topic = client.admin().topic_info(RUNTIME_TOPIC).await.unwrap();
+        let partition = tidemq::metadata::PartitionKey {
+            topic_id: topic.id().to_string().parse().unwrap(),
+            partition: 0,
+        };
+        let pause =
+            tidemq::runtime::test_hooks::InstalledPause::consumer_authorization(partition).unwrap();
+        let queue = queue.clone();
+        let held = held_queue.clone();
+        let task = tokio::spawn(async move { queue.ack(&held).await });
+        pause.wait(deadline()).await.unwrap();
+        (pause, task)
+    };
     let receipt = client.admin().transfer_shard(shard, 3).await.unwrap();
     assert_eq!(receipt.stage, tidemq_sdk::AuthorityTransferStage::Retired);
     assert_eq!(receipt.shard, shard);
@@ -215,6 +309,15 @@ async fn operator_sdk_transfers_live_authority_and_tenant_credentials_cannot_mov
             .kind(),
         tidemq_sdk::ErrorKind::PermissionDenied
     );
+    #[cfg(feature = "test-hooks")]
+    {
+        delayed_ack.0.resume();
+        assert_eq!(
+            delayed_ack.1.await.unwrap().unwrap(),
+            tidemq_sdk::AckReceipt::Acknowledged
+        );
+    }
+    #[cfg(not(feature = "test-hooks"))]
     queue.ack(&held_queue).await.unwrap();
     stream.ack_cumulative(&held_stream).await.unwrap();
     let next = producer

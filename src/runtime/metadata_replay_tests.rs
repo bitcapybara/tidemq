@@ -21,9 +21,19 @@ async fn dispatch(
     payload: &impl prost::Message,
 ) -> super::super::Result<Frame> {
     let frame = request(kind, operation, payload);
-    service
-        .metadata_public(access(service, &frame).await, &frame, deadline())
-        .await
+    let until = deadline();
+    loop {
+        match service
+            .metadata_public(access(service, &frame).await, &frame, until)
+            .await
+        {
+            Err(error) if error.failure().retryable && Instant::now() < until => {
+                tokio::time::sleep_until(until.min(Instant::now() + Duration::from_millis(10)))
+                    .await;
+            }
+            result => return result,
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

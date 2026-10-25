@@ -898,6 +898,10 @@ impl Service {
         self.data_lease(route.group_id, route.partition, deadline)
             .await?;
         let kind = super::service::frame_kind(frame)?;
+        #[cfg(feature = "test-hooks")]
+        if kind == FrameKind::GroupAck {
+            super::test_hooks::pause_consumer_authorization(route.partition, deadline).await;
+        }
         match kind {
             FrameKind::GroupRead => self.group_read_public(access, frame, route, deadline).await,
             FrameKind::GroupAck => self.group_ack_public(access, frame, route, deadline).await,
@@ -919,6 +923,10 @@ impl Service {
                     .await
                 {
                     if kind == FrameKind::GroupRetireRead
+                        && matches!(
+                            ErrorCode::try_from(error.failure().code),
+                            Ok(ErrorCode::NotFound | ErrorCode::Forbidden)
+                        )
                         && self
                             .closed_read_is_absent(access, &route, &request, deadline)
                             .await?
@@ -973,6 +981,17 @@ impl Service {
             .ok_or_else(Error::unavailable)?
             .state
             .try_with_application(|state| {
+                // Source retirement can race the earlier lease read; check the fence with the member.
+                if state
+                    .ownership()
+                    .and_then(|ownership| ownership.fence(route.partition))
+                    .is_none_or(|fence| {
+                        fence.grant.group_id != route.group_id
+                            || fence.grant.operation_id != route.ownership_operation
+                    })
+                {
+                    return Err(Error::unavailable());
+                }
                 let cursor = state
                     .consumer_group_cursor(route.partition, subscription)
                     .ok_or_else(super::metadata::not_found)?;

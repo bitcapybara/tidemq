@@ -14,6 +14,8 @@ use crate::metadata::PartitionKey;
 enum PausePoint {
     HotDelivery(u64),
     Publish(u64),
+    ConsumerAuthorization,
+    ConsumerDelegation,
     ColdRead,
     Layout,
     TopicCreation,
@@ -81,6 +83,12 @@ impl InstalledPause {
     pub fn publish(partition: PartitionKey, sequence: u64) -> io::Result<Self> {
         Self::install(partition, PausePoint::Publish(sequence))
     }
+    pub fn consumer_authorization(partition: PartitionKey) -> io::Result<Self> {
+        Self::install(partition, PausePoint::ConsumerAuthorization)
+    }
+    pub fn consumer_delegation(partition: PartitionKey) -> io::Result<Self> {
+        Self::install(partition, PausePoint::ConsumerDelegation)
+    }
     fn install(partition: PartitionKey, point: PausePoint) -> io::Result<Self> {
         Self::install_target(PauseTarget::Partition(partition), point)
     }
@@ -134,6 +142,12 @@ pub(super) async fn pause_hot_delivery(partition: PartitionKey, offset: u64, dea
 }
 pub(super) async fn pause_publish(partition: PartitionKey, sequence: u64, deadline: Instant) {
     pause(partition, PausePoint::Publish(sequence), deadline).await;
+}
+pub(super) async fn pause_consumer_authorization(partition: PartitionKey, deadline: Instant) {
+    pause(partition, PausePoint::ConsumerAuthorization, deadline).await;
+}
+pub(super) async fn pause_consumer_delegation(partition: PartitionKey, deadline: Instant) {
+    pause(partition, PausePoint::ConsumerDelegation, deadline).await;
 }
 pub(super) async fn pause_cold_read(partition: PartitionKey, deadline: Instant) {
     pause(partition, PausePoint::ColdRead, deadline).await;
