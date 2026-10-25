@@ -27,6 +27,8 @@ struct Request {
     hops: u32,
     #[prost(bytes = "bytes", tag = "6")]
     client_session: Bytes,
+    #[prost(bytes = "bytes", tag = "7")]
+    tenant: Bytes,
 }
 
 struct Observer<'a> {
@@ -233,6 +235,7 @@ async fn assert_old_broker_fenced(
     partition: PartitionKey,
     subscription: tidemq_sdk::SubscriptionId,
     credential: tidemq_sdk::CredentialId,
+    tenant: tidemq_sdk::TenantId,
 ) {
     let mut old = Observer::new(fixture, 31).await;
     let limits = ProtocolLimits::default();
@@ -266,6 +269,9 @@ async fn assert_old_broker_fenced(
                 scope: "*".into(),
                 hops: 2,
                 client_session: Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
+                tenant: Bytes::copy_from_slice(
+                    tenant.to_string().parse::<Id>().unwrap().as_bytes(),
+                ),
             },
             deadline(),
         )
@@ -362,7 +368,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     assert_eq!(after.generation, before.generation + 1);
     processes.insert(31, spawn_process(&fixture, 31).await);
     wait_process(&fixture, 31, processes.get_mut(&31).unwrap()).await;
-    assert_old_broker_fenced(&fixture, partition, subscription, credential).await;
+    assert_old_broker_fenced(&fixture, partition, subscription, credential, tenant).await;
     let third = logical_send(&producer, b"after-old-broker-restart").await;
     assert!(![first, second].contains(&third));
     logical_consume(&consumer, &[third], b"after-old-broker-restart").await;
