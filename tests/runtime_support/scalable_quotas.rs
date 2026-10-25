@@ -169,6 +169,8 @@ async fn lowering_backlog_below_usage_fences_new_writes_and_preserves_ack_and_or
     let tidemq_sdk::Error::SendUnresolved { pending, .. } = blocked else {
         panic!("Expected the original pending send");
     };
+    // Let the original background attempt finish before restoring admission.
+    tokio::time::sleep(Duration::from_millis(50)).await;
     queue.ack(&held).await.unwrap();
     assert_eq!(
         client
@@ -178,16 +180,7 @@ async fn lowering_backlog_below_usage_fences_new_writes_and_preserves_ack_and_or
             .unwrap(),
         PolicyUpdate::Applied
     );
-    let resumed = match pending.retry().await {
-        Ok(receipt) => receipt,
-        Err(error) => {
-            assert!(
-                !error.outcome_unknown(),
-                "The original send is still unresolved: {error:?}"
-            );
-            producer.send("after-quota-recovers").await.unwrap()
-        }
-    };
+    let resumed = pending.retry().await.unwrap();
     expected.insert(resumed.message_id());
     let mut seen = HashSet::from([held.message_id()]);
     while seen.len() < expected.len() {
@@ -197,6 +190,9 @@ async fn lowering_backlog_below_usage_fences_new_writes_and_preserves_ack_and_or
             .unwrap();
         assert!(expected.contains(&message.message_id()));
         assert!(seen.insert(message.message_id()));
+        if message.message_id() == resumed.message_id() {
+            assert_eq!(message.payload(), b"held-until-quota-recovers");
+        }
         queue.ack(&message).await.unwrap();
     }
     assert_eq!(seen, expected);

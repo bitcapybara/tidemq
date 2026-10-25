@@ -523,10 +523,14 @@ async fn drive_requests(
         let result = match result {
             Ok(result) => result,
             Err(error)
-                if (error.retry_admission()
-                    || (error.retry_rejected() && error.retry_original()))
-                    && Instant::now() < deadline =>
+                if (error.retry_admission() || error.retry_rejected())
+                    && !error.original_outcome_known() =>
             {
+                // A temporary admission refusal does not settle the locally admitted send.
+                work.uncertain.store(true, Ordering::Release);
+                if Instant::now() >= deadline {
+                    return Err((error.preserve_uncertainty(true), false));
+                }
                 tokio::time::sleep(Duration::from_millis(25)).await;
                 continue;
             }
