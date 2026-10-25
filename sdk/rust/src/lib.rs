@@ -3,6 +3,7 @@
 //! Producer retries retain their original identity. Receipt differs from durable acknowledgement.
 #![doc = include_str!("../README.md")]
 mod admin;
+mod authority;
 mod builder;
 mod client;
 mod close;
@@ -21,6 +22,9 @@ mod subscriptions;
 mod topic;
 
 pub use admin::{Admin, AdminReceipt, PendingAdmin};
+pub use authority::{
+    AdminOperationId, AuthorityTransferInfo, AuthorityTransferStage, ShardId, ShardInfo,
+};
 pub use builder::{ClientBuilder, Credentials, TlsTrust};
 use client::ClientConfig;
 pub use client::{Client, ClientLimits};

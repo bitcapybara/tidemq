@@ -161,6 +161,7 @@ impl Admin {
                     || result.group.is_some()
                     || result.metadata_change.is_some()
                     || result.data_change.is_some()
+                    || result.authority_transfer.is_some()
                 {
                     return Err(mismatch("Node drain query included unrelated results"));
                 }
@@ -390,6 +391,11 @@ pub(crate) fn receipt(
     result: public::ClusterControlResult,
     operation: tidemq_protocol::Id,
 ) -> Result<AdminReceipt> {
+    if result.authority_transfer.is_some()
+        || request.action == i32::from(public::ClusterAction::TransferShardAuthority)
+    {
+        return crate::authority::receipt(request, result, operation);
+    }
     if result.drain_progress.is_some() {
         return Err(mismatch("Mutation returned a node drain query"));
     }
@@ -474,6 +480,13 @@ pub(crate) fn membership_pending(
     result: &public::ClusterControlResult,
     operation: tidemq_protocol::Id,
 ) -> Result<bool> {
+    if result.authority_transfer.is_some()
+        && (result.metadata_change.is_some() || result.data_change.is_some())
+    {
+        return Err(mismatch(
+            "Authority transfer included unrelated membership results",
+        ));
+    }
     if result.metadata_change.is_none() && result.data_change.is_none() {
         return Ok(false);
     }

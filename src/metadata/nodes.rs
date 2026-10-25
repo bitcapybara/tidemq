@@ -84,6 +84,11 @@ pub struct RegistryPage {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClusterAction {
+    TransferShard {
+        operation: Id,
+        shard: Id,
+        target_group: u64,
+    },
     ReplaceMetadata(super::MetadataChange),
     ReplaceData(crate::scaling::MembershipPlan),
     BeginDrain {
@@ -118,6 +123,7 @@ pub struct ClusterCommand {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ClusterOutcome {
+    AuthorityTransfer(Id),
     MetadataChange(Id),
     DataChange(crate::scaling::MembershipPlan),
     Node(RegisteredNode),
@@ -235,6 +241,37 @@ impl MetadataState {
             return Err(Rejection::Authorization(AuthRejection::Forbidden));
         }
         let outcome = match &command.action {
+            ClusterAction::TransferShard {
+                operation,
+                shard,
+                target_group,
+            } => {
+                let birth = self.topology.shard(*shard).ok_or(Rejection::NotFound)?;
+                let layout_revision = self
+                    .topology
+                    .layout(birth.partition.topic_id)
+                    .ok_or(Rejection::NotFound)?
+                    .revision;
+                let target_owner = self
+                    .route(birth.partition)
+                    .ok_or(Rejection::NotFound)?
+                    .owner_node;
+                let revision = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or(Rejection::CounterExhausted)?;
+                self.transfer_command(
+                    *operation,
+                    &super::TransferCommand::Prepare {
+                        shard: *shard,
+                        layout_revision,
+                        target_group: *target_group,
+                        target_owner,
+                    },
+                    revision,
+                )?;
+                ClusterOutcome::AuthorityTransfer(*operation)
+            }
             ClusterAction::BeginDrain { node, operation } => {
                 if !super::control::is_random_operation_id(*operation) {
                     return Err(Rejection::InvalidEvidence);

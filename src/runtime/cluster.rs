@@ -108,6 +108,11 @@ impl Service {
         deadline: Instant,
     ) -> Result<Frame> {
         if frame_kind_action(frame, &self.config.protocol)?
+            == public::ClusterAction::InspectAuthorityTransfer
+        {
+            return self.authority_status_public(access, frame, deadline).await;
+        }
+        if frame_kind_action(frame, &self.config.protocol)?
             == public::ClusterAction::InspectNodeDrain
         {
             return self.node_drain_public(access, frame, deadline).await;
@@ -141,6 +146,7 @@ impl Service {
         operation: Id,
     ) -> Result<public::ClusterControlResult> {
         let result = match outcome {
+            ClusterOutcome::AuthorityTransfer(id) => self.authority_result(id).await?,
             ClusterOutcome::Node(node) => public::ClusterControlResult {
                 node: Some(node_result(node)),
                 ..Default::default()
@@ -354,6 +360,11 @@ impl Service {
     }
 
     async fn cluster_ready(&self, outcome: &ClusterOutcome, deadline: Instant) -> Result<()> {
+        if let ClusterOutcome::AuthorityTransfer(id) = outcome {
+            self.resume_authority_transfer(*id, deadline)
+                .await
+                .map_err(Error::admitted)?;
+        }
         self.refresh_registry(deadline)
             .await
             .map_err(Error::admitted)?;
@@ -489,6 +500,11 @@ fn cluster_action(request: public::ManageCluster, operation: Id) -> Result<Clust
     match Action::try_from(request.action)
         .map_err(|_| Error::invalid("Cluster action is invalid"))?
     {
+        Action::TransferShardAuthority => Ok(ClusterAction::TransferShard {
+            operation,
+            shard: wire::id(&request.shard_id)?,
+            target_group: request.group_id,
+        }),
         Action::RegisterClusterNode => {
             let node = request
                 .registration
@@ -548,6 +564,9 @@ fn cluster_action(request: public::ManageCluster, operation: Id) -> Result<Clust
             "Node retirement requires runtime drain evidence",
         )),
         Action::Unspecified => Err(Error::invalid("Cluster action is required")),
+        Action::InspectAuthorityTransfer => {
+            Err(Error::invalid("Authority transfer inspection is read-only"))
+        }
         Action::ReplaceDataReplica => Err(Error::invalid(
             "Data replacement requires a verified original group",
         )),

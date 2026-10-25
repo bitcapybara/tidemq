@@ -1,6 +1,7 @@
 //! Process-owned listeners and authenticated semantic routing to durable authorities.
 
 mod auth;
+mod authority_public;
 mod authority_transfer;
 mod broker_balance;
 mod cluster;

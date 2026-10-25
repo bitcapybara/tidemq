@@ -108,7 +108,7 @@ impl Service {
         }
     }
 
-    async fn resume_authority_transfer(
+    pub(in crate::runtime) async fn resume_authority_transfer(
         &self,
         id: Id,
         deadline: Instant,

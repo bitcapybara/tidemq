@@ -69,6 +69,10 @@ pub struct ManageCluster {
     pub removed_node: u64,
     #[prost(uint64, tag = "8")]
     pub added_node: u64,
+    #[prost(bytes = "bytes", tag = "9")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "10")]
+    pub transfer_operation: ::prost::bytes::Bytes,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct MetadataMembershipChange {
@@ -95,6 +99,24 @@ pub struct ClusterControlResult {
     pub drain_progress: ::core::option::Option<NodeDrainProgress>,
     #[prost(message, optional, tag = "5")]
     pub data_change: ::core::option::Option<DataMembershipChange>,
+    #[prost(message, optional, tag = "6")]
+    pub authority_transfer: ::core::option::Option<AuthorityTransferInfo>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct AuthorityTransferInfo {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub operation_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub source_group: u64,
+    #[prost(uint64, tag = "5")]
+    pub target_group: u64,
+    /// Prepare, Frozen, Exported, Imported, Published, Checkpointed, Retired.
+    #[prost(uint32, tag = "6")]
+    pub stage: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct DataMembershipChange {
@@ -661,6 +683,8 @@ pub enum ClusterAction {
     InspectNodeDrain = 6,
     RetireClusterNode = 7,
     ReplaceDataReplica = 8,
+    TransferShardAuthority = 9,
+    InspectAuthorityTransfer = 10,
 }
 impl ClusterAction {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -678,6 +702,8 @@ impl ClusterAction {
             Self::InspectNodeDrain => "INSPECT_NODE_DRAIN",
             Self::RetireClusterNode => "RETIRE_CLUSTER_NODE",
             Self::ReplaceDataReplica => "REPLACE_DATA_REPLICA",
+            Self::TransferShardAuthority => "TRANSFER_SHARD_AUTHORITY",
+            Self::InspectAuthorityTransfer => "INSPECT_AUTHORITY_TRANSFER",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -692,6 +718,8 @@ impl ClusterAction {
             "INSPECT_NODE_DRAIN" => Some(Self::InspectNodeDrain),
             "RETIRE_CLUSTER_NODE" => Some(Self::RetireClusterNode),
             "REPLACE_DATA_REPLICA" => Some(Self::ReplaceDataReplica),
+            "TRANSFER_SHARD_AUTHORITY" => Some(Self::TransferShardAuthority),
+            "INSPECT_AUTHORITY_TRANSFER" => Some(Self::InspectAuthorityTransfer),
             _ => None,
         }
     }

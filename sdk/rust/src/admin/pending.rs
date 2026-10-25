@@ -23,6 +23,7 @@ const MAX_PENDING: usize = 16;
 
 #[derive(Clone, Debug)]
 pub enum AdminReceipt {
+    ShardTransferred(crate::AuthorityTransferInfo),
     Topic(TopicInfo),
     TopicDeleted(crate::TopicId),
     TenantCreated(crate::TenantId),
@@ -244,6 +245,9 @@ impl std::fmt::Debug for PendingAdmin {
 }
 
 impl PendingAdmin {
+    pub fn operation_id(&self) -> crate::AdminOperationId {
+        crate::AdminOperationId(self.work.operation)
+    }
     pub async fn retry(&self) -> Result<AdminReceipt> {
         if let Some(result) = self.completed()? {
             return self.claim(result);

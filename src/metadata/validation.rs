@@ -340,6 +340,11 @@ impl MetadataState {
     fn validate_outcome(&self, operation_id: Id, outcome: &Outcome) -> Result<(), Rejection> {
         match outcome {
             Outcome::Cluster(result) => match &result.outcome {
+                super::ClusterOutcome::AuthorityTransfer(id) => {
+                    if *id != operation_id || self.topology().transfer(*id).is_none() {
+                        return Err(Rejection::InvalidEvidence);
+                    }
+                }
                 super::ClusterOutcome::DataChange(plan) => {
                     self.validate_data_replacement_history(plan)?
                 }

@@ -25,6 +25,8 @@ enum ClusterAction {
   INSPECT_NODE_DRAIN = 6;
   RETIRE_CLUSTER_NODE = 7;
   REPLACE_DATA_REPLICA = 8;
+  TRANSFER_SHARD_AUTHORITY = 9;
+  INSPECT_AUTHORITY_TRANSFER = 10;
 }
 message ClusterNode {
   uint64 node_id = 1;
@@ -48,6 +50,8 @@ message ManageCluster {
   repeated uint64 voters = 6;
   uint64 removed_node = 7;
   uint64 added_node = 8;
+  bytes shard_id = 9;
+  bytes transfer_operation = 10;
 }
 message MetadataMembershipChange {
   bytes operation_id = 1;
@@ -56,7 +60,16 @@ message MetadataMembershipChange {
   uint64 expected_membership_index = 4;
   optional uint64 completed_membership_index = 5;
 }
-message ClusterControlResult { ClusterNode node = 1; ClusterGroup group = 2; MetadataMembershipChange metadata_change = 3; NodeDrainProgress drain_progress = 4; DataMembershipChange data_change = 5; }
+message ClusterControlResult { ClusterNode node = 1; ClusterGroup group = 2; MetadataMembershipChange metadata_change = 3; NodeDrainProgress drain_progress = 4; DataMembershipChange data_change = 5; AuthorityTransferInfo authority_transfer = 6; }
+message AuthorityTransferInfo {
+  bytes operation_id = 1;
+  bytes shard_id = 2;
+  bytes topic_id = 3;
+  uint64 source_group = 4;
+  uint64 target_group = 5;
+  // Prepare, Frozen, Exported, Imported, Published, Checkpointed, Retired.
+  uint32 stage = 6;
+}
 message DataMembershipChange {
   bytes operation_id = 1;
   uint64 group_id = 2;

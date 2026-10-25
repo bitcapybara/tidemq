@@ -129,6 +129,8 @@ context.cancellation_token() 可接入宿主取消。嵌套调用使用更早期
 
 平台管理员通过 `admin.register_node(NodeRegistration { ... })` 在线登记节点 ID、角色、故障域、内部地址、证书名与精确证书 pin；`NodeRegistration::certificate_pin(der)` 从叶证书 DER 计算 pin。登记信息由 Metadata Raft 持久保存，已有进程自动更新内部信任和目标目录。节点 ID 和证书绑定不可复用；新增进程仍需提供自己的 TLS 材料及初始 Metadata 地址。
 
+跨组权威转移使用 `admin.topic_shards(topic).await?` 查询当前及历史分片，再把不透明的 ShardId 交给 `admin.transfer_shard(shard, target_group).await?`。调用方不填写 epoch、generation、复制 cut 或认领消息。服务端选择当前授权和布局条件，完成目标导入、全部必要 checkpoint 与源退休后返回 AuthorityTransferStage::Retired；原消息身份、不可变对象位置、应用持有的交付及原 Producer/Consumer 继续有效。此能力仅限平台运维，普通租户凭据不能发起或查询权威转移。未知/取消等待通过原 PendingAdmin 恢复，retry 返回 ShardTransferred；`pending.operation_id()` 返回可显示和解析的 AdminOperationId，可供 `admin.authority_transfer_status(operation).await?` 查询持久进度。关闭本地等待不会取消已接受的服务端计划。
+
 节点登记不等于数据组已就绪。部署端先启动新组的实际副本，再调用 `admin.create_data_group(group_id, voters)`；服务端核对各副本已初始化且具有一致的成员集合，持久登记后等待副本识别目录，再返回成功。新 Topic 和 Split 从持久登记的可分配组选择目标。`cluster_nodes()`、`data_groups()` 返回有界、一致的目录快照；`set_node_schedulable(id, false)` 只停止新放置，节点退出仍须完成排空。节点/组变更与其他管理操作共用 `pending_operations()` 恢复账本，普通 Producer/Consumer 无需管理这些物理对象。
 
 错误保留结构化状态与完整 source 链。outcome_unknown() 表示业务结果仍需恢复，不能仅凭外层 Display 或错误字符串决定重试。宿主需要完整链时，可用 anyhow::Error::new(error)，按 "{error:#}" 输出；SDK 不安装日志设施或增加 anyhow 运行时依赖。

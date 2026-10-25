@@ -1,6 +1,248 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_operator_waiter_recovers_the_original_public_transfer_after_process_kill() {
+    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    configure_dynamic_fixture(&mut fixture).await;
+    let mut process = start_process(&fixture, 1).await;
+    let client = fixture
+        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .await;
+    create_logical_resources(&client).await;
+    let queue = client
+        .new_queue_consumer(RUNTIME_TOPIC, "public-transfer-recovery")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let mut expected = Vec::new();
+    for index in 0..16 {
+        expected.push(
+            producer
+                .send(tidemq_sdk::Message::new(vec![index; 128 * 1024]).key("original-key"))
+                .await
+                .unwrap()
+                .message_id(),
+        );
+    }
+    let held = tokio::time::timeout_at(deadline(), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(held.message_id(), expected[0]);
+    let admin = client.admin();
+    let shard = admin
+        .topic_shards(RUNTIME_TOPIC)
+        .await
+        .unwrap()
+        .first()
+        .unwrap()
+        .id;
+    let (pending, before) = {
+        let mut moving = std::pin::pin!(admin.transfer_shard(shard, 3));
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            tokio::select! {
+                result = &mut moving => panic!("Transfer completed before its interruption boundary: {result:?}"),
+                _ = tokio::time::sleep(Duration::from_millis(2)) => {
+                    if let Some(pending) = admin.pending_operations().unwrap().first().cloned()
+                        && let Some(status) = admin.authority_transfer_status(pending.operation_id()).await.unwrap()
+                        && status.stage == tidemq_sdk::AuthorityTransferStage::Exported {
+                        break (pending, status);
+                    }
+                    assert!(Instant::now() < until, "Public transfer did not reach its durable export stage");
+                }
+            }
+        }
+    };
+    process.kill().await.unwrap();
+    process.wait().await.unwrap();
+    process = start_process(&fixture, 1).await;
+    let receipt = pending.retry().await.unwrap();
+    let tidemq_sdk::AdminReceipt::ShardTransferred(after) = receipt else {
+        panic!("Original transfer returned a different administration receipt");
+    };
+    assert_eq!(after.operation, before.operation);
+    assert_eq!(after.shard, before.shard);
+    assert_eq!(after.source_group, before.source_group);
+    assert_eq!(after.target_group, before.target_group);
+    assert_eq!(after.stage, tidemq_sdk::AuthorityTransferStage::Retired);
+    assert_eq!(
+        admin
+            .authority_transfer_status(after.operation)
+            .await
+            .unwrap(),
+        Some(after)
+    );
+    assert!(admin.pending_operations().unwrap().is_empty());
+    queue.ack(&held).await.unwrap();
+    for (index, identity) in expected.iter().enumerate().skip(1) {
+        let message = tokio::time::timeout_at(deadline(), queue.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(message.message_id(), *identity);
+        assert_eq!(message.payload(), vec![index as u8; 128 * 1024]);
+        queue.ack(&message).await.unwrap();
+    }
+    let id = producer
+        .send("after-public-transfer-recovery")
+        .await
+        .unwrap()
+        .message_id();
+    let message = tokio::time::timeout_at(deadline(), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.message_id(), id);
+    queue.ack(&message).await.unwrap();
+    producer.close().await.unwrap();
+    queue.close().await.unwrap();
+    client.close().await.unwrap();
+    process.kill().await.unwrap();
+    process.wait().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn operator_sdk_transfers_live_authority_and_tenant_credentials_cannot_move_or_inspect_it() {
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Metadata),
+            (2, Role::Storage),
+            (3, Role::Storage),
+            (4, Role::Broker),
+            (5, Role::Gateway),
+        ],
+        &[1],
+        &[2],
+    )
+    .await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.groups.push(GroupConfig {
+            group_id: 3,
+            voters: vec![3],
+            standby: Vec::new(),
+        });
+    }
+    fixture.start_all().await;
+    let client = fixture.client(5).await;
+    let tenant = client.admin().create_tenant("test").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client.admin().create_topic(RUNTIME_TOPIC).await.unwrap();
+    let principal = client
+        .admin()
+        .new_principal(
+            tenant,
+            "ordinary-application",
+            [
+                tidemq_sdk::Permission::Produce,
+                tidemq_sdk::Permission::Consume,
+                tidemq_sdk::Permission::Inspect,
+            ],
+        )
+        .build()
+        .await
+        .unwrap();
+    let token = client
+        .admin()
+        .issue_token(principal, Duration::from_secs(300))
+        .await
+        .unwrap();
+    let app = Client::builder(
+        fixture.configs.get(&5).unwrap().listen.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(token.expose_secret()),
+    )
+    .build()
+    .await
+    .unwrap();
+    let queue = client
+        .new_queue_consumer(RUNTIME_TOPIC, "operator-jobs")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let stream = client
+        .new_stream_consumer(RUNTIME_TOPIC, "operator-events")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let producer = app.new_producer(RUNTIME_TOPIC).build().await.unwrap();
+    let original = producer
+        .send(tidemq_sdk::Message::new("before-operator-transfer").key("same-key"))
+        .await
+        .unwrap()
+        .message_id();
+    let held_queue = tokio::time::timeout_at(deadline(), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let held_stream = tokio::time::timeout_at(deadline(), stream.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(held_queue.message_id(), original);
+    assert_eq!(held_stream.message_id(), original);
+    let shards = client.admin().topic_shards(RUNTIME_TOPIC).await.unwrap();
+    let shard = shards.first().unwrap().id;
+    let error = app.admin().transfer_shard(shard, 3).await.unwrap_err();
+    assert_eq!(error.kind(), tidemq_sdk::ErrorKind::PermissionDenied);
+    assert!(!error.outcome_unknown());
+    let receipt = client.admin().transfer_shard(shard, 3).await.unwrap();
+    assert_eq!(receipt.stage, tidemq_sdk::AuthorityTransferStage::Retired);
+    assert_eq!(receipt.shard, shard);
+    assert_eq!((receipt.source_group, receipt.target_group), (2, 3));
+    assert_eq!(
+        client
+            .admin()
+            .authority_transfer_status(receipt.operation)
+            .await
+            .unwrap(),
+        Some(receipt.clone())
+    );
+    assert_eq!(
+        app.admin()
+            .authority_transfer_status(receipt.operation)
+            .await
+            .unwrap_err()
+            .kind(),
+        tidemq_sdk::ErrorKind::PermissionDenied
+    );
+    queue.ack(&held_queue).await.unwrap();
+    stream.ack_cumulative(&held_stream).await.unwrap();
+    let next = producer
+        .send(tidemq_sdk::Message::new("after-operator-transfer").key("same-key"))
+        .await
+        .unwrap()
+        .message_id();
+    let message = tokio::time::timeout_at(deadline(), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.message_id(), next);
+    queue.ack(&message).await.unwrap();
+    let message = tokio::time::timeout_at(deadline(), stream.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.message_id(), next);
+    stream.ack_cumulative(&message).await.unwrap();
+    producer.close().await.unwrap();
+    stream.close().await.unwrap();
+    queue.close().await.unwrap();
+    app.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_transfer_waiter_resumes_the_original_manifest_automatically_after_restart() {
     let mut fixture = dynamic_fixture().await;
     let client = fixture

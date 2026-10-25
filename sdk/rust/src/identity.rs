@@ -19,6 +19,7 @@ macro_rules! resource_id {
         }
     };
 }
+pub(crate) use resource_id;
 
 resource_id!(TenantId);
 resource_id!(NamespaceId);
