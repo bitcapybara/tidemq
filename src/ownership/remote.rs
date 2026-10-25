@@ -337,14 +337,15 @@ fn validate_data_proof(
 ) -> Result<()> {
     if cluster != expected_cluster
         || group != expected.group_id
-        || actual_voters != voters
         || !position.validate()
-        || !voters.contains(&position.leader_node)
         || grant != expected
     {
         return Err(Error::invalid(
             "Data proof does not match its configured consensus authority",
         ));
+    }
+    if actual_voters != voters || !voters.contains(&position.leader_node) {
+        return Err(Error::unavailable());
     }
     Ok(())
 }
