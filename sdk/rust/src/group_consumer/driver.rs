@@ -159,7 +159,11 @@ async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
 
 async fn retire_member(core: &Core, deadline: Instant) -> Result<()> {
     let request = core.request(public::ConsumerAction::RetireConsumer);
-    control(&core.client, Id::new_v7()?, &request, deadline).await?;
+    let operation = Id::new_v7()?;
+    crate::request::retry_cleanup(deadline, || {
+        control(&core.client, operation, &request, deadline)
+    })
+    .await?;
     Ok(())
 }
 
@@ -175,24 +179,25 @@ async fn retire_pending_reads(core: &Core, deadline: Instant) -> Result<()> {
             let read = read.lock().map_err(|_| Error::Closed)?;
             (read.request.clone(), read.operation)
         };
-        let _: public::GroupRetired = core
-            .client
-            .request(
+        let request = public::GroupRetire {
+            topic_id: request.topic_id,
+            partition_id: request.partition_id,
+            subscription_id: request.subscription_id,
+            member_id: request.member_id,
+            member_epoch: request.member_epoch,
+            sequence: request.sequence,
+        };
+        let _: public::GroupRetired = crate::request::retry_cleanup(deadline, || {
+            core.client.request(
                 FrameKind::GroupRetireRead,
                 FrameKind::GroupRetired,
                 TrafficClass::Control,
                 operation,
-                &public::GroupRetire {
-                    topic_id: request.topic_id,
-                    partition_id: request.partition_id,
-                    subscription_id: request.subscription_id,
-                    member_id: request.member_id,
-                    member_epoch: request.member_epoch,
-                    sequence: request.sequence,
-                },
+                &request,
                 deadline,
             )
-            .await?;
+        })
+        .await?;
         if let Some(state) = core.state()?.domains.get_mut(&domain) {
             state.read = None;
         }

@@ -12,6 +12,35 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{Error, Result};
 
+pub(crate) async fn retry_cleanup<T, F, R>(deadline: Instant, mut action: F) -> Result<T>
+where
+    F: FnMut() -> R,
+    R: Future<Output = Result<T>>,
+{
+    if Instant::now() >= deadline {
+        return Err(Error::Deadline);
+    }
+    let mut uncertain = false;
+    loop {
+        let error = match action().await {
+            Ok(result) => return Ok(result),
+            Err(error) => error,
+        };
+        uncertain |= error.outcome_unknown();
+        if !(error.retry_original() || error.retry_admission()) || Instant::now() >= deadline {
+            return Err(error.preserve_uncertainty(uncertain));
+        }
+        tokio::time::sleep_until(deadline.min(Instant::now() + Duration::from_millis(10))).await;
+        if Instant::now() >= deadline {
+            return Err(error.preserve_uncertainty(uncertain));
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/scalable_support/sdk_cleanup.rs"]
+mod cleanup_tests;
+
 tokio::task_local! {
     static REQUEST_CONTEXT: Arc<ScopedContext>;
     static OPERATION: Arc<Operation>;

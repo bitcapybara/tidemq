@@ -162,7 +162,11 @@ async fn finish(core: Arc<Core>, original: Option<Arc<Error>>) {
 
 async fn close_remote(core: &Core, deadline: Instant) -> Result<()> {
     let request = core.request(public::PublisherAction::ClosePublisher);
-    control(&core.client, Id::new_v7()?, &request, deadline).await?;
+    let operation = Id::new_v7()?;
+    crate::request::retry_cleanup(deadline, || {
+        control(&core.client, operation, &request, deadline)
+    })
+    .await?;
     let (before, domains) = {
         let state = core.state()?;
         (
@@ -183,17 +187,18 @@ async fn close_remote(core: &Core, deadline: Instant) -> Result<()> {
             before,
             close: true,
         };
-        let result: public::PublishesRetired = core
-            .client
-            .request(
+        let operation = Id::new_v7()?;
+        let result: public::PublishesRetired = crate::request::retry_cleanup(deadline, || {
+            core.client.request(
                 FrameKind::RetirePublishes,
                 FrameKind::PublishesRetired,
                 TrafficClass::Control,
-                Id::new_v7()?,
+                operation,
                 &request,
                 deadline,
             )
-            .await?;
+        })
+        .await?;
         if result.before != before {
             return Err(Error::ResponseMismatch {
                 reason: "publisher retirement differs from its requested boundary".into(),
