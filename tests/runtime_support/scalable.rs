@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "scalable_admin_cli.rs"]
+mod admin_cli;
+
 #[path = "scalable_data_membership.rs"]
 mod data_membership;
 #[path = "scalable_deletion.rs"]

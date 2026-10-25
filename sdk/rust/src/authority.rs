@@ -21,6 +21,7 @@ resource_id!(AdminOperationId);
 pub struct ShardInfo {
     pub id: ShardId,
     pub topic: TopicId,
+    pub authority_group: u64,
     pub hash_start: u64,
     pub hash_end: Option<u64>,
     pub sealed: bool,
@@ -60,6 +61,7 @@ impl Admin {
                 Ok(ShardInfo {
                     id: ShardId(Id::from_slice(&shard.shard_id)?),
                     topic: topic.id(),
+                    authority_group: shard.group_id,
                     hash_start: shard.hash_start,
                     hash_end: shard.hash_end,
                     sealed: shard.sealed_end.is_some(),

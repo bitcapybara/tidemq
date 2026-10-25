@@ -45,6 +45,8 @@ jobs:
         with:
           tool: nextest@0.9.148
       - run: cargo fmt --all -- --check
+      - name: Validate Kubernetes preparation without contacting a cluster
+        run: bash deploy/kubernetes/selfcheck.sh
       - name: Lint every Rust target and optional SDK instrumentation
         run: cargo clippy --workspace --all-targets --no-deps --locked --features "$WORKSPACE_FEATURES" -- -D warnings
       - name: Audit production panic and indexing hazards

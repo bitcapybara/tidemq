@@ -3,6 +3,84 @@ use tidemq::metadata::PartitionKey;
 use tidemq_sdk::Message;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn new_topics_use_surviving_registered_brokers_after_the_bootstrap_broker_retires() {
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Metadata),
+            (2, Role::Storage),
+            (3, Role::Broker),
+            (4, Role::Gateway),
+            (5, Role::Broker),
+        ],
+        &[1],
+        &[2],
+    )
+    .await;
+    fixture.start_all().await;
+    let client = fixture.client(4).await;
+    create_logical_resources(&client).await;
+    client.admin().begin_node_drain(3).await.unwrap();
+    let until = deadline();
+    while !client
+        .admin()
+        .node_drain_status(3)
+        .await
+        .unwrap()
+        .durable_state_drained()
+    {
+        assert!(
+            Instant::now() < until,
+            "Bootstrap broker ownership did not drain"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    client.admin().retire_node(3).await.unwrap();
+    fixture.stop(3).await;
+    let name = "test/app/after-bootstrap-retirement";
+    let topic = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(2))
+        .unwrap()
+        .scope(client.admin().create_topic(name))
+        .await
+        .expect("New topic must use a surviving registered broker");
+    let partition = PartitionKey {
+        topic_id: topic.id().to_string().parse().unwrap(),
+        partition: 0,
+    };
+    assert_eq!(
+        fixture
+            .running
+            .get(&1)
+            .unwrap()
+            .route(partition, deadline())
+            .await
+            .unwrap()
+            .owner_node,
+        5
+    );
+    let queue = client
+        .new_queue_consumer(name, "survivor-jobs")
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(name).build().await.unwrap();
+    let id = producer
+        .send("surviving-broker")
+        .await
+        .unwrap()
+        .message_id();
+    let message = tokio::time::timeout_at(deadline(), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.message_id(), id);
+    queue.ack(&message).await.unwrap();
+    producer.close().await.unwrap();
+    queue.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_broker_receives_existing_topic_ownership_and_drain_bypasses_balance_cooldown() {
     let mut fixture = metadata_membership::fixture_without_candidate(
         &[(1, Role::Combined), (2, Role::Broker)],

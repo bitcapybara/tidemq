@@ -2,6 +2,32 @@
 
 本手册对应 `src/scaling` 的真实共识执行器、固定迁移槽和运行时 drain 接缝。不要直接修改 voter 配置、清空计划或删除仍有状态的节点目录。
 
+部署入口包括[单机配置生成器](../../deploy/local/generate.sh)、[Compose RF1/RF3](../../deploy/docker/README.zh-CN.md)和 [Kubernetes 人工部署](../../deploy/kubernetes/README.zh-CN.md)，共用下述管理与退休协议。
+
+## 管理 CLI
+
+`tidemq admin` 通过公开 SDK 和 QUIC 入口执行管理操作，要求 root 管理凭据；应用租户凭据不能注册节点、替换副本或查询/转移内部权威。每条命令都要求 `--endpoint`、`--ca`、`--token-file`，可选 `--timeout-seconds` 为 1–300 秒，默认 30 秒。下面以已注册的节点和现有数据组为例，实际 ID 先从查询结果取得：
+
+```bash
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token nodes
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token groups
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token shards tenant/ns/orders
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token set-schedulable --node-id 3 --enabled false
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token replace-data-replica --group-id 2 --removed 3 --added 4
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token replace-metadata-replica --removed 3 --added 4
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token drain-node --node-id 3
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token drain-status --node-id 3
+tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token retire-node --node-id 3
+```
+
+先以 `register-node` 注册目标的 `--node-id`、`--role`、`--zone`、`--internal-endpoint`、`--certificate-name` 和 `--certificate-der`，再启动其独立进程/容器。DER 是目标叶证书的公开内容，CLI 计算 pin；私钥不经管理接口传输。新增独立存储组使用 `create-group --group-id ID --voters ID,ID,ID`，目标须已经实际托管相应组。仅增加进程或组的目录记录不代表容量已经可用。
+
+`shards TOPIC` 返回不透明 shard ID、哈希范围和当前 `authority_group`。手动布局操作为 `split-topic TOPIC --at HASH` 和 `merge-topic TOPIC --boundary HASH`；跨组移动为 `transfer-shard SHARD --target-group GROUP`，恢复查询为 `transfer-status OPERATION`。源出生身份和历史对象位置不随当前组改变。
+
+标准输出是 JSON，`status` 区分 `completed`、`rejected`、`unresolved`；`result` 表示业务结果，`close` 单独报告本地清理和未领取结果。错误链写入标准错误，命令失败返回非零。Unknown 返回的 `operations` 是原操作身份，应查询并恢复原计划，不能以新身份重复执行。已完成业务也可能因客户端清理不完整而返回非零，此时保留 JSON 中的完成结果，不把它当作业务回滚。
+
+只有 `retire-node` 持久成功后部署端才能停止进程并处理卷；`drain-status` 的 `durable_state_drained` 不能替代退休提交。新 Topic 和新消费域从持久节点目录中选择可调度、容量检查通过的 Broker，已退休的启动节点不会再次被选中。
+
 ## 存储节点替换
 
 1. 保存当前 cluster、group、generation、旧 voter、目标 voter 和规范 operation ID。检查三个目标 zone、已注册 Storage 身份及目标 schedulable；向目标取得新鲜容量报告，包含复制量、已有预留和至少 1 GiB 额外余量。

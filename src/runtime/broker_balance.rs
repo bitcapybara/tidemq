@@ -7,6 +7,53 @@ use crate::{
 };
 
 impl Service {
+    pub(super) async fn select_initial_broker(&self, deadline: Instant) -> Result<u64> {
+        use std::sync::atomic::Ordering;
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        self.require_leader(replica)?;
+        super::wire::within(deadline, replica.raft.ensure_linearizable())
+            .await?
+            .map_err(|_| Error::unavailable())?;
+        let mut candidates = replica
+            .state
+            .try_with_application(|state| super::node_retirement::drain_targets(state).1)
+            .await
+            .map_err(|source| {
+                Error::operation("select registered initial broker ownership", source)
+            })?;
+        candidates.sort_unstable();
+        let after = self.initial_broker_probe_after.load(Ordering::Relaxed);
+        let start = candidates
+            .iter()
+            .position(|(_, node)| *node == after)
+            .map_or(0, |index| (index + 1) % candidates.len().max(1));
+        // Continue after failed probes so unavailable low-count nodes cannot hide later capacity.
+        for (_, node) in candidates
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(candidates.len().min(32))
+        {
+            if Instant::now() >= deadline {
+                break;
+            }
+            self.initial_broker_probe_after
+                .store(*node, Ordering::Relaxed);
+            if self
+                .probe_broker(
+                    *node,
+                    deadline.min(Instant::now() + std::time::Duration::from_millis(300)),
+                )
+                .await
+                == super::failover::Probe::Eligible
+            {
+                self.initial_broker_probe_after.store(0, Ordering::Relaxed);
+                return Ok(*node);
+            }
+        }
+        Err(Error::unavailable())
+    }
+
     pub(super) async fn balance_broker_ownership(&self, deadline: Instant) -> Result<bool> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         super::wire::within(deadline, replica.raft.ensure_linearizable())

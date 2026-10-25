@@ -414,14 +414,7 @@ impl Service {
                 .ok_or_else(Error::unavailable);
         }
         let grant = if diagnostic.phase == crate::ownership::OwnershipPhase::Unassigned {
-            let owner = self
-                .config
-                .runtime
-                .peers
-                .iter()
-                .find(|peer| peer.role.serves_broker())
-                .map(|peer| peer.node_id)
-                .ok_or_else(Error::unavailable)?;
+            let owner = self.select_initial_broker(deadline).await?;
             let command = Command::grant_ownership(
                 self.meta_revision().await?,
                 self.cluster,

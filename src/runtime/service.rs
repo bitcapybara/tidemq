@@ -61,6 +61,7 @@ pub(crate) struct Service {
     pub(super) failover_metrics: super::failover::Metrics,
     pub scaling_diagnostic: std::sync::Mutex<serde_json::Value>,
     pub(super) topic_scaling_diagnostic: std::sync::Mutex<super::topic_scaling::Diagnostic>,
+    pub(super) initial_broker_probe_after: std::sync::atomic::AtomicU64,
     pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
     pub scaling: super::scaling::RuntimeScaling,
     pub(super) transfer_exports: super::authority_transfer::ExportCache,
@@ -169,6 +170,7 @@ impl Service {
             failover_metrics,
             scaling_diagnostic: std::sync::Mutex::new(serde_json::json!({"status":"starting"})),
             topic_scaling_diagnostic: std::sync::Mutex::new(topic_scaling_diagnostic),
+            initial_broker_probe_after: std::sync::atomic::AtomicU64::new(0),
             transport_metrics,
             scaling,
             transfer_exports: super::authority_transfer::ExportCache::default(),
@@ -563,7 +565,7 @@ impl Service {
                 .map(super::metadata::bytes_id)
                 .unwrap_or_default(),
         };
-        let pending = self
+        let pending = match self
             .rpc
             .submit(
                 target,
@@ -574,7 +576,15 @@ impl Service {
                 deadline,
                 0,
             )
-            .await?;
+            .await
+        {
+            Ok(pending) => pending,
+            Err(error) => {
+                self.invalidate_forward(frame, group, error.failure().code)
+                    .await;
+                return Err(error);
+            }
+        };
         drop(order);
         let bytes = match pending.receive().await {
             Ok(bytes) => bytes,

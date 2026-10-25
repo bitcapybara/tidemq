@@ -7,6 +7,9 @@ use serde::Serialize;
 use tidemq::config::Config;
 use tidemq::{Error, Result, allocator};
 
+#[path = "cli/admin.rs"]
+mod admin;
+
 #[cfg(any(
     all(feature = "allocator-system", feature = "allocator-mimalloc"),
     all(feature = "allocator-system", feature = "allocator-jemalloc"),
@@ -35,6 +38,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Operate the live cluster through the authenticated public SDK.
+    Admin(admin::Args),
     /// Start authenticated listeners and durable queue authorities.
     Serve {
         #[arg(long)]
@@ -89,6 +94,7 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Some(Command::Admin(args)) => admin::run(args).await,
         Some(Command::Serve {
             config,
             trace_seconds,
