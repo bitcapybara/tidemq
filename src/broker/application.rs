@@ -19,6 +19,9 @@ use crate::subscription::{self, DataContext, SubscriptionState};
 mod authority_data;
 #[path = "groups.rs"]
 mod groups;
+#[path = "load.rs"]
+mod load;
+pub use load::{ShardLoad, ShardLoadReport};
 #[path = "publish.rs"]
 mod publish;
 #[path = "tenant_quota.rs"]
@@ -302,6 +305,7 @@ impl fmt::Debug for DataResponse {
 #[derive(Clone, Serialize, Deserialize)]
 struct PartitionState {
     quota: Option<tenant_quota::TenantQuotaState>,
+    load: ShardLoad,
     producer: ProducerState,
     subscriptions: SubscriptionState,
     retention: crate::retention::RetentionState,
@@ -525,12 +529,41 @@ impl DataApplication {
         self.hot_messages
     }
 
+    pub fn partition_load_report(
+        &self,
+        partition: PartitionKey,
+    ) -> Result<Option<ShardLoadReport>, DataRejection> {
+        let Some(state) = self.partitions.get(&partition) else {
+            return Ok(None);
+        };
+        let fence = self
+            .ownership
+            .as_ref()
+            .and_then(|fences| fences.fence(partition))
+            .ok_or(DataRejection::PartitionMissing)?;
+        Ok(Some(ShardLoadReport {
+            partition,
+            birth: state.birth,
+            owner_epoch: fence.grant.epoch,
+            committed_end: state.producer.committed_end(),
+            published_end: self.lifecycle.published_end(partition),
+            protected_backlog_bytes: state
+                .retention
+                .logical_backlog_upper_bytes(state.protected_before())
+                .map_err(DataRejection::Retention)?,
+            frozen: self.authority.is_frozen(partition),
+            sealed: state.seal.is_some(),
+            counters: state.load.clone(),
+        }))
+    }
+
     fn hot_state_bytes(&self) -> Result<u64, DataRejection> {
         self.partitions
             .values()
             .try_fold(self.hot_bytes, |bytes, state| {
                 bytes
                     .checked_add(state.producer.publish_state_bytes())
+                    .and_then(|bytes| bytes.checked_add(ShardLoad::LOGICAL_BYTES))
                     .ok_or(DataRejection::InvalidConfiguration)
             })
     }
@@ -598,6 +631,13 @@ impl DataApplication {
                 .map_err(DataRejection::Subscription)?;
         } else {
             if self
+                .hot_state_bytes()?
+                .checked_add(ShardLoad::LOGICAL_BYTES)
+                .is_none_or(|bytes| bytes > config.max_hot_bytes)
+            {
+                return Err(DataRejection::PartitionCapacity);
+            }
+            if self
                 .partitions
                 .len()
                 .saturating_add(usize::from(self.authority.reservation().is_some()))
@@ -624,6 +664,7 @@ impl DataApplication {
                 partition,
                 PartitionState {
                     quota: None,
+                    load: ShardLoad::default(),
                     producer,
                     subscriptions,
                     retention: crate::retention::RetentionState::new(config.retention)
@@ -946,6 +987,9 @@ impl DataApplication {
         let mut bytes = 0_u64;
         let mut messages = 0_usize;
         for (partition, state) in &self.partitions {
+            if !state.load.invalid && !state.load.valid() {
+                return Err(DataRejection::InvalidConfiguration);
+            }
             if let Some((birth, range)) = state.birth {
                 range
                     .validate()
@@ -1027,7 +1071,7 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 18;
+    const VERSION: u32 = 19;
     type Command = DataCommand;
     type Response = DataResponse;
 

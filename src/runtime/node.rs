@@ -403,6 +403,23 @@ impl RunningNode {
         }
     }
 
+    /// Fresh quorum observations carry a process identity to fence sampling across restarts.
+    pub async fn shard_loads(
+        &self,
+        group: u64,
+        partitions: &[crate::metadata::PartitionKey],
+        deadline: tokio::time::Instant,
+    ) -> Result<super::ShardLoadPage> {
+        if !self.service.config.role.stores_metadata() {
+            return Err(Error::invalid(
+                "Shard load inspection requires a metadata service identity",
+            ));
+        }
+        self.service
+            .query_shard_loads(group, partitions, deadline)
+            .await
+    }
+
     /// Trusted metadata-node control entry point; resumes the same persisted replacement plan.
     pub async fn replace_replica(
         &self,

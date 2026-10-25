@@ -12,6 +12,8 @@ mod handoff;
 mod identity_delete;
 #[path = "scalable_identity_list.rs"]
 mod identity_list;
+#[path = "scalable_load.rs"]
+mod load;
 #[path = "scalable_message_limits.rs"]
 mod message_limits;
 #[path = "scalable_metadata_membership.rs"]

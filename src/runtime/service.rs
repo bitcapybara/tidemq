@@ -40,6 +40,7 @@ type LeaseSlot = Arc<Mutex<Option<Arc<crate::ownership::ControlLease>>>>;
 pub(crate) struct Service {
     pub config: Config,
     pub cluster: Id,
+    pub(super) instance: Id,
     pub metadata: Option<Replica<MetadataState>>,
     pub data: BTreeMap<u64, Replica<DataApplication>>,
     pub objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
@@ -144,6 +145,7 @@ impl Service {
         Ok(Self {
             config,
             cluster,
+            instance: super::node::random_id()?,
             metadata,
             data,
             objects,
@@ -660,6 +662,16 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::shard_load::QUERY => {
+                drop(order);
+                if frame.traffic_class != i32::from(TrafficClass::Control)
+                    || !matches!(peer.role.as_str(), "metadata" | "combined")
+                {
+                    return Err(forbidden());
+                }
+                self.shard_load_command(group, &request.body, deadline)
+                    .await?
+            }
             super::metadata_membership::STATUS | super::metadata_membership::CHECKPOINT => {
                 drop(order);
                 if group != self.config.runtime.metadata_group

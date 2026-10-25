@@ -330,12 +330,27 @@ impl DataApplication {
             .ok_or(DataRejection::Subscription(
                 subscription::Rejection::NotFound,
             ))?;
+        let acknowledgement = match &command {
+            GroupCommand::Acknowledge { request, .. } if !cursor.ack_known(request) => Some((
+                crate::budget::encoded_size(request, crate::metadata::MAX_TRANSFER_BYTES).ok(),
+                request.proofs.len() as u64,
+            )),
+            _ => None,
+        };
         let outcome = execute_group(cursor, &state.producer, limits, usage, budget, command)
             .map_err(DataRejection::Subscription)?;
-        if let (Some(now_ms), GroupOutcome::Read(read)) = (read_now, &outcome)
-            && let Some(quota) = &mut state.quota
+        if let (Some(now_ms), GroupOutcome::Read(read)) = (read_now, &outcome) {
+            if let Some(quota) = &mut state.quota {
+                quota.commit_consume(read.delivery_bytes, now_ms);
+            }
+            state
+                .load
+                .deliver(read.delivery_bytes, read.deliveries.len() as u64);
+        }
+        if matches!(outcome, GroupOutcome::Acknowledged(_))
+            && let Some((bytes, messages)) = acknowledgement
         {
-            quota.commit_consume(read.delivery_bytes, now_ms);
+            state.load.acknowledge(bytes, messages);
         }
         Ok(DataResponse::ConsumerGroup(outcome))
     }

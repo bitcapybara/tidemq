@@ -19,7 +19,8 @@ pub(crate) use application::AuthorityExport;
 pub use application::{
     ArchiveCandidate, ArchivePage, AuthorityDataCommand, CapacityUsage, DataApplication,
     DataCommand, DataGroupConfig, DataRejection, DataResponse, ProducerCommand, QuotaRejection,
-    TransferCapacity, TransferDataRejection, TransferOutcome, TransferPage, WriterFence,
+    ShardLoad, ShardLoadReport, TransferCapacity, TransferDataRejection, TransferOutcome,
+    TransferPage, WriterFence,
 };
 pub use error::{Error, Result};
 pub use runtime::{Broker, HotRead, ProducerStatus, ProducerSubmission, RequestContext};

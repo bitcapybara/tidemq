@@ -28,6 +28,7 @@ mod resource_leases;
 mod retention_control;
 pub(crate) mod scaling;
 mod service;
+mod shard_load;
 mod telemetry;
 mod tenant_quota;
 #[cfg(feature = "test-hooks")]
@@ -45,6 +46,7 @@ use tokio::io::AsyncReadExt;
 pub use config::{GroupConfig, ObjectConfig, PeerConfig, RuntimeConfig};
 pub use error::{Error, Failure, Result};
 pub use node::RunningNode;
+pub use shard_load::ShardLoadPage;
 
 pub(crate) async fn read_bounded(path: &Path, max: u64) -> Result<Bytes> {
     let file = tokio::fs::File::open(path)

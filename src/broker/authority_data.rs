@@ -7,7 +7,7 @@ use snafu::Snafu;
 use std::io::Write;
 
 const MAX_FROZEN_METADATA_BYTES: u64 = 16 * 1024 * 1024;
-const TRANSFER_FORMAT: u32 = 3;
+const TRANSFER_FORMAT: u32 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TransferCapacity {
