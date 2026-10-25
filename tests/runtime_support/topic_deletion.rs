@@ -1,11 +1,12 @@
 use super::*;
 
+#[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_publish_reply_recovers_its_original_success_after_topic_removal() {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
     fixture.start_all().await;
     let admin = fixture.client(1).await;
-    create_logical_resources(&admin).await;
+    let topic = create_logical_resources(&admin).await;
     let tenants = admin.admin().tenants().next_page().await.unwrap().unwrap();
     let tenant = tenants.first().unwrap().id;
     let namespaces = admin
@@ -23,23 +24,29 @@ async fn a_lost_publish_reply_recovers_its_original_success_after_topic_removal(
         tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
         tidemq_sdk::Credentials::token(TOKEN),
     )
-    // Commit proof requires losing a reply on the already established request lane.
     .request_lanes(1)
-    .request_timeout(Duration::from_secs(5))
+    .request_timeout(Duration::from_secs(15))
     .build()
     .await
     .unwrap();
     let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
     producer.send("warm-up").await.unwrap();
+    let partition = tidemq::metadata::PartitionKey {
+        topic_id: topic.id().to_string().parse().unwrap(),
+        partition: 0,
+    };
+    let hook = tidemq::runtime::test_hooks::InstalledPause::publish(partition, 2).unwrap();
+    let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(10)).unwrap();
+    let send_context = context.clone();
+    let sender = producer.clone();
+    let sending = tokio::spawn(async move {
+        send_context
+            .scope(sender.send("committed-without-reply"))
+            .await
+    });
+    hook.wait(deadline()).await.unwrap();
     proxy.set_response_mtu(0);
-    let result = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(1))
-        .unwrap()
-        .scope(producer.send("committed-without-reply"))
-        .await;
-    assert!(result.as_ref().is_err_and(|error| error.outcome_unknown()));
-    assert!(proxy.snapshot().over_mtu > 0);
-    let pending = producer.pending_sends().await.unwrap();
-    assert_eq!(pending.len(), 1);
+    hook.resume();
     let queue = admin
         .new_queue_consumer(RUNTIME_TOPIC, "proof")
         .build()
@@ -54,6 +61,13 @@ async fn a_lost_publish_reply_recovers_its_original_success_after_topic_removal(
         .await
         .unwrap();
     assert_eq!(committed.payload(), b"committed-without-reply");
+    assert!(proxy.snapshot().over_mtu > 0);
+    context.cancellation_token().cancel();
+    let result = sending.await.unwrap();
+    assert!(result.as_ref().is_err_and(|error| error.outcome_unknown()));
+    let pending = producer.pending_sends().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    drop(hook);
     queue.ack(&committed).await.unwrap();
     queue.close().await.unwrap();
     admin
