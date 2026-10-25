@@ -187,17 +187,7 @@ impl RemoteMetadataAuthority {
                 Err(error) => return Err(error),
             };
             let proof: Proof = wire::decode_json(&bytes)?;
-            if proof.cluster != self.cluster
-                || proof.group != self.group
-                || proof.voters != voters
-                || !proof.position.validate()
-                || !voters.contains(&proof.position.leader_node)
-                || MonoInstant::now().saturating_duration_since(started) >= self.policy.ttl
-            {
-                return Err(Error::invalid(
-                    "Fresh metadata proof does not match its configured authority",
-                ));
-            }
+            proof.validate(self.cluster, self.group, &voters, started, self.policy.ttl)?;
             return Ok((proof.value, started));
         }
         Err(Error::unavailable())
@@ -303,6 +293,35 @@ impl RemoteMetadataAuthority {
         })
     }
 }
+
+impl Proof {
+    fn validate(
+        &self,
+        cluster: Id,
+        group: u64,
+        voters: &BTreeSet<u64>,
+        started: MonoInstant,
+        ttl: std::time::Duration,
+    ) -> Result<()> {
+        if self.cluster != cluster || self.group != group || !self.position.validate() {
+            return Err(Error::invalid(
+                "Fresh metadata proof does not match its configured authority",
+            ));
+        }
+        // Discovery and in-flight quorum reads can straddle a membership change or lease expiry.
+        if self.voters != *voters
+            || !voters.contains(&self.position.leader_node)
+            || started.elapsed() >= ttl
+        {
+            return Err(Error::unavailable());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/scalable_support/metadata_proof.rs"]
+mod tests;
 
 // Compare each independent authority identity before constructing a process-local capability.
 #[allow(clippy::too_many_arguments)]
