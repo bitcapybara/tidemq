@@ -209,6 +209,7 @@ async fn fixture_without_candidate(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn metadata_replacement_checkpoints_the_new_voter_and_old_seed_restart_keeps_original_sdk_working()
  {
+    maintenance_test_logging();
     let mut fixture = fixture_without_candidate(
         &[
             (1, Role::Metadata),
@@ -254,10 +255,28 @@ async fn metadata_replacement_checkpoints_the_new_voter_and_old_seed_restart_kee
             .unwrap(),
     );
     fixture.wait_ready().await;
+    #[cfg(feature = "test-hooks")]
+    let routing = {
+        let cluster = fixture.configs.get(&1).unwrap().cluster_id.parse().unwrap();
+        let hook = tidemq::runtime::test_hooks::InstalledPause::metadata_route(cluster, 1).unwrap();
+        let query_client = client.clone();
+        let query = tokio::spawn(async move { query_client.admin().topic_info(topic).await });
+        hook.wait(deadline()).await.unwrap();
+        (hook, query)
+    };
     let moved = client.admin().replace_metadata_replica(1, 2).await.unwrap();
     assert_eq!(moved.previous_voters, [1]);
     assert_eq!(moved.voters, [2]);
     assert!(moved.membership_index > 0);
+    #[cfg(feature = "test-hooks")]
+    {
+        assert!(
+            !routing.1.is_finished(),
+            "The old metadata route must remain in flight"
+        );
+        routing.0.resume();
+        assert_eq!(routing.1.await.unwrap().unwrap().name(), topic);
+    }
     client.admin().begin_node_drain(1).await.unwrap();
     assert!(
         client
@@ -269,7 +288,25 @@ async fn metadata_replacement_checkpoints_the_new_voter_and_old_seed_restart_kee
     );
     client.admin().retire_node(1).await.unwrap();
     fixture.stop(1).await;
-    stream.ack_cumulative(&held).await.unwrap();
+    let until = deadline();
+    let mut acknowledged = stream.ack_cumulative(&held).await;
+    while let Err(error) = acknowledged {
+        assert!(
+            Instant::now() < until,
+            "The original ACK did not recover: {error:?}"
+        );
+        assert!(
+            error.outcome_unknown() || error.kind() == tidemq_sdk::ErrorKind::Unavailable,
+            "Metadata replacement invalidated an admitted delivery: {error:?}"
+        );
+        let pending = stream.pending_acks().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        acknowledged = tidemq_sdk::RequestContext::with_deadline(until)
+            .scope(pending.first().unwrap().retry())
+            .await;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(acknowledged.unwrap(), tidemq_sdk::AckReceipt::Acknowledged);
     fixture.stop(4).await;
     fixture.restart(4).await;
     let next = producer

@@ -23,6 +23,8 @@ async fn a_lost_publish_reply_recovers_its_original_success_after_topic_removal(
         tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
         tidemq_sdk::Credentials::token(TOKEN),
     )
+    // Commit proof requires losing a reply on the already established request lane.
+    .request_lanes(1)
     .request_timeout(Duration::from_secs(5))
     .build()
     .await

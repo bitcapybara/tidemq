@@ -439,12 +439,25 @@ impl Service {
                 | FrameKind::PublisherControl
                 | FrameKind::GetTopic
         ) {
+            #[cfg(feature = "test-hooks")]
+            if hops > 0 && kind == FrameKind::GetTopic {
+                super::test_hooks::pause_metadata_route(
+                    self.cluster,
+                    self.config.node_id,
+                    deadline,
+                )
+                .await;
+            }
             let leader = self
                 .leader(self.config.runtime.metadata_group, deadline)
                 .await?;
             if leader == self.config.node_id {
                 drop(order);
                 return self.metadata_public(access, frame, deadline).await;
+            }
+            if hops > 0 {
+                // The gateway must rediscover a moved leader; metadata nodes do not delegate business authority.
+                return Err(Error::unavailable());
             }
             return self
                 .forward(

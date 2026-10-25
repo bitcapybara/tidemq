@@ -72,17 +72,19 @@ async fn creation_retention_case(objects: Option<&rustfs::RustFs>) {
         .id();
     if objects.is_some() {
         let node = fixture.running.get(&2).unwrap();
-        node.archive(
-            2,
-            vec![tidemq::lifecycle::RangeRequest {
-                partition,
-                offsets: tidemq_protocol::state::OffsetRange { start: 0, end: 3 },
-            }],
-            deadline(),
-        )
-        .await
-        .unwrap();
-        node.reclaim_local(partition, 3, deadline()).await.unwrap();
+        let until = deadline();
+        loop {
+            match node.reclaim_local(partition, 3, until).await {
+                Ok(()) => break,
+                Err(error) => {
+                    assert!(
+                        Instant::now() < until,
+                        "Background archive did not checkpoint protected history: {error:#}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
     }
     fixture.stop(1).await;
     fixture.restart(1).await;
