@@ -2,7 +2,7 @@
 
 这是使用稳定节点身份和 PVC 的 RF3 Combined 示例，包含三个活动实例和一个尚未启动的替换实例。节点 1/2/3 分别要求 Kubernetes 节点标签 `topology.kubernetes.io/zone=zone-1/zone-2/zone-0`，候选节点 4 位于 `zone-0`。真实部署应将标签映射到实际故障域；同机 Kind 的标签仅验证调度规则。分角色部署使用相同管理协议，不能通过增加 Metadata 副本提高数据写入容量。
 
-需要 Bash、OpenSSL、kubectl、可动态分配 RWO PVC 的 StorageClass，以及按源码提交构建的 TideMQ 镜像。镜像沿用 [Docker 构建](../docker/README.zh-CN.md)，使用固定 tag 或 digest；不能使用 `latest`。脚本要求显式 context，并且拒绝已有 namespace 和输出目录。它会在所选集群创建资源，不替换已有部署。
+需要 Bash、OpenSSL、kubectl、jq、可动态分配 RWO PVC 的 StorageClass，以及按源码提交构建的 TideMQ 镜像。镜像沿用 [Docker 构建](../docker/README.zh-CN.md)，使用固定 tag 或 digest；不能使用 `latest`。脚本要求显式 context，并且拒绝已有 namespace 和输出目录。它会在所选集群创建资源，不替换已有部署。
 
 ```bash
 bash deploy/kubernetes/selfcheck.sh
@@ -51,6 +51,17 @@ retire-node --node-id 3
 ## 验证与存储范围
 
 在活动 Pod 内可用镜像携带的 `deploy_validation` 执行少量真实 SDK 收发，`--output-dir` 使用 PVC 下新建目录。保留报告中的消息 ID、持久 ACK、SDK close 以及镜像/二进制身份；在替换前、退休后和 Pod 重启后分别执行。
+
+首次使用验证程序前创建 `validation/default` Namespace。以下仅在全新集群执行一次，后续验证复用其持久记录：
+
+```bash
+admin() {
+  kubectl --context CONTEXT -n tidemq-functional exec node-1-0 -- \
+    /usr/local/bin/tidemq admin --endpoint 127.0.0.1:7443 --ca /private/ca.pem --token-file /private/bootstrap.token "$@"
+}
+tenant_id=$(admin create-tenant validation | jq -er '.result.id')
+admin create-namespace "$tenant_id" default
+```
 
 本示例未配置 S3，功能验证依赖持久热数据和 Raft 副本。生产需在 `[storage.objects]` 配置所有副本可访问的对象存储、凭据和保留策略，不能把每 Pod 本地目录当作跨节点共享对象存储。S3 冷读、不可变历史和 GC 另由真实对象存储集成测试覆盖。示例资源数值是功能验证边界，未经压测或参数校准。
 

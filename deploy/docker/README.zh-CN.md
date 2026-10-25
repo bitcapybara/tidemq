@@ -174,15 +174,28 @@ done
 dc exec -T rustfs /bin/sh -c 'test -w /var/lib/tidemq/objects && test "$(stat -c "%u:%g:%a" /var/lib/tidemq/objects)" = 10001:10001:700'
 ```
 
-`init/` 保留完整初始化材料和 CA 私钥，绝不挂载给角色。`run/node-ID/` 只有该节点自己的私钥/证书、所有节点的 public DER、CA、共享 access/delivery 材料及其配置；只有 Combined/Storage 额外获得 S3 凭据。`client/` 严格只有 `ca.pem` 和 `access.token`。目录模式 `0700`，文件 `0600`；只对前述四个运行目录变更 owner，保留 `init/` 的初始化 owner。
+`init/` 保留完整初始化材料和 CA 私钥，绝不挂载给角色。`run/node-ID/` 只有该节点自己的私钥/证书、所有节点的 public DER、CA、公开 CA 和角色配置；只有 Combined/Storage 额外获得 S3 凭据。`client/` 严格只有 `ca.pem` 和 `access.token`。目录模式 `0700`，文件 `0600`；只对前述四个运行目录变更 owner，保留 `init/` 的初始化 owner。
 
 ## SDK 验证与诊断
 
-`validator` 属于显式 `tools` profile，挂载 `/run/client` 为只读，并独享 `validation-data:/var/lib/tidemq`。RF1 的网关地址为 `127.0.0.1:7410`，RF3 的 Gateway 41 为 `127.0.0.1:7810`。server name 必须匹配生成的 SAN，通过独立 TLS 参数传入，无需 DNS 或 `extra_hosts`；Docker 的 [container 网络模式不支持 add-host](https://docs.docker.com/engine/network/#container-networks)，不能在共享 namespace 服务上配置它。每次使用尚不存在的 case 子目录：
+新集群没有隐式公共租户。首次验证前，以本项目的 bootstrap 管理凭据创建验证专用 Namespace；只对全新项目执行一次，后续重启复用持久记录：
+
+```bash
+admin_endpoint=127.0.0.1:7410
+# For RF3: admin_endpoint=127.0.0.1:7810
+admin() {
+  dc --profile tools run --rm --no-deps --entrypoint /usr/local/bin/tidemq validator \
+    admin --endpoint "$admin_endpoint" --ca /run/client/ca.pem --token-file /run/client/access.token "$@"
+}
+tenant_id=$(admin create-tenant validation | jq -er '.result.id')
+admin create-namespace "$tenant_id" default
+```
+
+`validator` 属于显式 `tools` profile，挂载 `/run/client` 为只读，并独享 `validation-data:/var/lib/tidemq`。RF1 的网关地址为 `127.0.0.1:7410`，RF3 的 Gateway 41 为 `127.0.0.1:7810`。SDK 使用 endpoint 校验证书，生成证书包含 loopback IP SAN，无需独立 server-name 参数、DNS 或 `extra_hosts`。Docker 的 [container 网络模式不支持 add-host](https://docs.docker.com/engine/network/#container-networks)，不能在共享 namespace 服务上配置它。每次使用尚不存在的 case 子目录：
 
 ```bash
 dc --profile tools run --rm --no-deps validator \
-  --endpoint 127.0.0.1:7410 --server-name node-1.local \
+  --endpoint 127.0.0.1:7410 \
   --ca /run/client/ca.pem --token-file /run/client/access.token \
   --output-dir /var/lib/tidemq/rf1-case-001 \
   --messages 64 --message-bytes 1024 --replay-settle-ms 5000
@@ -207,13 +220,13 @@ bash "$REPO/scripts/docker-validate.sh" "$STATE" oom
 | CASE | 验证内容 |
 | --- | --- |
 | `smoke` | 64 条 × 1024 字节，完整唯一收发和持久 ACK |
-| `replay` | 64 条 × 64 KiB，先生产、等待 5000 ms，再从原 H 消费 |
+| `replay` | 64 条 × 64 KiB，先生产、等待 5000 ms，再从持久订阅消费 |
 | `storage-kill` | 21/22/23 的 group 2 leader/term 至少 2 份一致；只杀实际选择的 leader；离线期间新增 8 条提交且持久 ACK，剩余副本确认另一 leader 和更高 term |
 | `broker-kill` | 至少 2/3 Metadata 返回相同 `active` owner/epoch/route generation；只杀该 Broker；离线期间新增 8 条提交且持久 ACK，再确认另一 owner 和更高 epoch |
-| `metadata-quorum` | pause 11/12 并等待 4 秒租约失效；验证原 PendingBatch 没有成功回执，恢复 quorum 后完成 |
-| `storage-quorum` | pause Storage 21/22 并等待 4 秒；验证原 PendingBatch 没有成功回执，恢复原两个副本后重试并完成全部 80 条持久 ACK |
-| `gateway-kill` | 杀连接入口 41，验证未完成的原 PendingBatch，启动原容器恢复；只证明 Gateway 冷重启 |
-| `oom` | RF1 完成 warmup 后，将专用 node-1 的 memory/swap 从 384 MiB 强制降到 Docker 允许的最小 6 MiB；必须观察 `OOMKilled=true`、退出 137，再恢复原限额与原容器，完成原 PendingBatch；daemon 拒绝调整或未发生 OOM 都判失败 |
+| `metadata-quorum` | pause 11/12 并等待 4 秒租约失效；验证原 PendingSend 没有成功回执，恢复 quorum 后完成 |
+| `storage-quorum` | pause Storage 21/22 并等待 4 秒；验证原 PendingSend 没有成功回执，恢复原两个副本后重试并完成全部 80 条持久 ACK |
+| `gateway-kill` | 杀连接入口 41，验证未完成的原 PendingSend，启动原容器恢复；只证明 Gateway 冷重启 |
+| `oom` | RF1 完成 warmup 后，将专用 node-1 的 memory/swap 从 384 MiB 强制降到 Docker 允许的最小 6 MiB；必须观察 `OOMKilled=true`、退出 137，再恢复原限额与原容器，完成原 PendingSend；daemon 拒绝调整或未发生 OOM 都判失败 |
 
 故障场景按固定小文件 `waiting-fault.json` → `fault-injected` → `fault-observed.json` → `recovered` → `report.json` 协调，最终完整持久 ACK 范围为 80 条。driver output 子目录必须由 driver 自己创建；host 不预建它。每个阶段标记和退出等待最多 120 秒，Docker 命令在独立进程组内有硬超时，并夹在该阶段期限内，避免 Compose plugin 子进程越过 CLI 期限。Metadata/Broker 的诊断响应是 `local_applied`，2/3 诊断一致仍不是线性一致读证明；脚本保存原始响应及所选 tuple。Storage 诊断同样是进程内有界采样，故障前后都需一致证据，不能把单次旧采样当成准确 leader。
 

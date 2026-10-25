@@ -46,7 +46,13 @@ async fn operator_cli_lists_transfers_changes_layout_and_retires_a_broker_before
     configure_dynamic_fixture(&mut fixture).await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
-    create_logical_resources(&client).await;
+    let tenant = command(&fixture, &["create-tenant", "test"]).await;
+    command(
+        &fixture,
+        &["create-namespace", tenant["id"].as_str().unwrap(), "app"],
+    )
+    .await;
+    client.admin().create_topic(RUNTIME_TOPIC).await.unwrap();
     let producer = client.new_producer(RUNTIME_TOPIC).build().await.unwrap();
     let queue = client
         .new_queue_consumer(RUNTIME_TOPIC, "cli-jobs")

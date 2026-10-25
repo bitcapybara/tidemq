@@ -8,6 +8,8 @@
 
 `tidemq admin` 通过公开 SDK 和 QUIC 入口执行管理操作，要求 root 管理凭据；应用租户凭据不能注册节点、替换副本或查询/转移内部权威。每条命令都要求 `--endpoint`、`--ca`、`--token-file`，可选 `--timeout-seconds` 为 1–300 秒，默认 30 秒。下面以已注册的节点和现有数据组为例，实际 ID 先从查询结果取得：
 
+新集群先用 `create-tenant NAME` 创建租户，再用返回的 `result.id` 执行 `create-namespace TENANT_ID NAME`；普通 Topic 与订阅随后通过 SDK 创建。重复初始化前先确认已有资源，不能把名称冲突或 Unknown 当作创建了新身份。
+
 ```bash
 tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token nodes
 tidemq admin --endpoint mq.example.com:7443 --ca ca.pem --token-file root.token groups

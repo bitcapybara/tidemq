@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tidemq::{Error, Result};
 use tidemq_sdk::{
     Admin, AdminOperationId, AuthorityTransferInfo, Client, ClusterNodeInfo, ClusterRole,
-    Credentials, DataGroupInfo, NodeRegistration, ShardId, TlsTrust,
+    Credentials, DataGroupInfo, NodeRegistration, ShardId, TenantId, TlsTrust,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
@@ -25,6 +25,13 @@ pub(super) struct Args {
 
 #[derive(Subcommand)]
 enum Action {
+    CreateTenant {
+        name: String,
+    },
+    CreateNamespace {
+        tenant: TenantId,
+        name: String,
+    },
     Nodes,
     Groups,
     RegisterNode {
@@ -149,6 +156,8 @@ pub(super) async fn run(args: Args) -> Result<()> {
 
 async fn execute(admin: &Admin, action: Action) -> tidemq_sdk::Result<Value> {
     match action {
+        Action::CreateTenant { name } => Ok(json!({"id":admin.create_tenant(&name).await?.to_string()})),
+        Action::CreateNamespace { tenant, name } => Ok(json!({"id":admin.create_namespace(tenant, &name).await?.to_string()})),
         Action::Nodes => Ok(Value::Array(admin.cluster_nodes().await?.into_iter().map(node).collect())),
         Action::Groups => Ok(Value::Array(admin.data_groups().await?.into_iter().map(group).collect())),
         Action::RegisterNode { node_id, role, zone, internal_endpoint, certificate_name, certificate_der } => {
