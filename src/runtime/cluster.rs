@@ -433,7 +433,7 @@ impl Service {
         Ok(())
     }
 
-    async fn verify_prepared_group(
+    pub(super) async fn verify_prepared_group(
         &self,
         group: u64,
         voters: &BTreeSet<u64>,

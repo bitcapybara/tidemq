@@ -96,13 +96,16 @@ impl RepairBudget {
         if target == 0 || group == 0 {
             return Err(Error::Configuration);
         }
-        let permit = self
-            .0
+        let permit = self.try_acquire()?;
+        self.register_permit(target, group, permit)
+    }
+
+    pub(crate) fn try_acquire(&self) -> Result<OwnedSemaphorePermit> {
+        self.0
             .repairs
             .clone()
             .try_acquire_owned()
-            .map_err(|_| Error::Overloaded)?;
-        self.register_permit(target, group, permit)
+            .map_err(|_| Error::Overloaded)
     }
 
     fn register_permit(

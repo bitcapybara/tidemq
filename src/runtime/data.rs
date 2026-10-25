@@ -121,7 +121,7 @@ impl Service {
             self.authority
                 .active_lease(&fence, deadline)
                 .await
-                .map_err(|_| Error::unavailable())?,
+                .map_err(|source| Error::operation("refresh data control lease", source))?,
         );
         *cached = Some(lease.clone());
         if lease

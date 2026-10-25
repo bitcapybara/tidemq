@@ -39,9 +39,9 @@ impl Service {
         partitions: &[PartitionKey],
         deadline: Instant,
     ) -> Result<ShardLoadPage> {
-        if partitions.is_empty() || partitions.len() > PAGE {
+        if partitions.len() > PAGE {
             return Err(Error::invalid(
-                "Shard load queries require between one and sixteen domains",
+                "Shard load queries accept at most sixteen domains",
             ));
         }
         let mut requested = [None; PAGE];

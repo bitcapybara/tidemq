@@ -309,6 +309,7 @@ impl RunningNode {
             super::management::start(service.clone(), stopped.clone()).await?;
         tasks.push(task);
         tasks.push(tokio::spawn(service.clone().rebalance(stopped.clone())));
+        tasks.push(tokio::spawn(service.clone().scale_topics(stopped.clone())));
         tasks.push(tokio::spawn(
             service.clone().follow_node_drains(stopped.clone()),
         ));

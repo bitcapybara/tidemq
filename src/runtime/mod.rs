@@ -35,6 +35,7 @@ mod tenant_quota;
 #[doc(hidden)]
 pub mod test_hooks;
 mod topic_delete;
+mod topic_scaling;
 mod topology;
 pub(crate) mod wire;
 
@@ -47,6 +48,7 @@ pub use config::{GroupConfig, ObjectConfig, PeerConfig, RuntimeConfig};
 pub use error::{Error, Failure, Result};
 pub use node::RunningNode;
 pub use shard_load::ShardLoadPage;
+pub use topic_scaling::{TopicScalingPolicy, WorkCapacity};
 
 pub(crate) async fn read_bounded(path: &Path, max: u64) -> Result<Bytes> {
     let file = tokio::fs::File::open(path)

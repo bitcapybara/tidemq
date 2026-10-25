@@ -190,7 +190,18 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             Some(
                 replica
                     .state
-                    .with_application(crate::metadata::MetadataState::summary)
+                    .with_application(|state| {
+                        let mut summary = serde_json::json!(state.summary());
+                        if let Some(fields) = summary.as_object_mut() {
+                            fields.insert(
+                                "pending_layouts".into(),
+                                serde_json::json!(
+                                    state.topology().pending().take(8).collect::<Vec<_>>()
+                                ),
+                            );
+                        }
+                        summary
+                    })
                     .await,
             )
         } else {
@@ -224,6 +235,11 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             .lock()
             .ok()
             .map(|value| value.clone());
+        let topic_scaling = service
+            .topic_scaling_diagnostic
+            .lock()
+            .ok()
+            .and_then(|value| serde_json::to_value(*value).ok());
         let transport = service
             .transport_metrics
             .iter()
@@ -239,7 +255,7 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         });
         let retention =
             serde_json::json!({"deferrals":service.retention_deferrals.load(Ordering::Relaxed)});
-        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":draining,"schedulable":schedulable,"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic,"registry":service.registry.diagnostic().ok(),"retention":retention});
+        *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":draining,"schedulable":schedulable,"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic,"topic_scaling":topic_scaling,"registry":service.registry.diagnostic().ok(),"retention":retention});
     }
 }
 

@@ -117,6 +117,8 @@ struct RuntimeFile {
     peers: Vec<PeerConfig>,
     bootstrap: bool,
     capacity: crate::quota::Limits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    topic_scaling: Option<crate::runtime::TopicScalingPolicy>,
 }
 
 impl Default for RuntimeFile {
@@ -135,6 +137,7 @@ impl From<RuntimeConfig> for RuntimeFile {
             peers: runtime.peers,
             bootstrap: runtime.bootstrap,
             capacity: runtime.capacity,
+            topic_scaling: runtime.topic_scaling,
         }
     }
 }
@@ -149,6 +152,7 @@ impl RuntimeFile {
             peers: self.peers,
             bootstrap: self.bootstrap,
             capacity: self.capacity,
+            topic_scaling: self.topic_scaling,
             ..RuntimeConfig::default()
         }
     }

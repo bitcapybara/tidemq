@@ -22,6 +22,7 @@ pub struct RuntimeConfig {
     pub capacity: crate::quota::Limits,
     pub retention: crate::retention::Policy,
     pub archive_interval_ms: u64,
+    pub topic_scaling: Option<super::TopicScalingPolicy>,
 }
 
 impl Default for RuntimeConfig {
@@ -42,6 +43,7 @@ impl Default for RuntimeConfig {
             capacity: crate::quota::Limits::default(),
             retention: crate::retention::Policy::default(),
             archive_interval_ms: 1_000,
+            topic_scaling: None,
         }
     }
 }
@@ -127,6 +129,14 @@ impl RuntimeConfig {
         self.retention
             .validate()
             .map_err(|source| Error::operation("validate retention policy", source))?;
+        if let Some(policy) = &self.topic_scaling {
+            if !config.role.stores_metadata() {
+                return Err(Error::invalid(
+                    "Topic scaling policy belongs on metadata or combined nodes",
+                ));
+            }
+            policy.validate()?;
+        }
         if !(100..=60_000).contains(&self.archive_interval_ms) {
             return Err(Error::invalid(
                 "Archive interval must be between 100 and 60000 milliseconds",

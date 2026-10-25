@@ -60,6 +60,7 @@ pub(crate) struct Service {
     pub ownership_metrics: crate::ownership::OwnershipMetrics,
     pub(super) failover_metrics: super::failover::Metrics,
     pub scaling_diagnostic: std::sync::Mutex<serde_json::Value>,
+    pub(super) topic_scaling_diagnostic: std::sync::Mutex<super::topic_scaling::Diagnostic>,
     pub transport_metrics: Vec<Arc<crate::transport::TransportMetrics>>,
     pub scaling: super::scaling::RuntimeScaling,
     pub(super) transfer_exports: super::authority_transfer::ExportCache,
@@ -142,6 +143,8 @@ impl Service {
             public_admission.stop()?;
         }
         let retiring = retirement.is_some();
+        let topic_scaling_diagnostic =
+            super::topic_scaling::Diagnostic::configured(config.runtime.topic_scaling.is_some());
         Ok(Self {
             config,
             cluster,
@@ -165,6 +168,7 @@ impl Service {
             ownership_metrics,
             failover_metrics,
             scaling_diagnostic: std::sync::Mutex::new(serde_json::json!({"status":"starting"})),
+            topic_scaling_diagnostic: std::sync::Mutex::new(topic_scaling_diagnostic),
             transport_metrics,
             scaling,
             transfer_exports: super::authority_transfer::ExportCache::default(),
