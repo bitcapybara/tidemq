@@ -1,0 +1,11 @@
+route:
+  receiver: local-audit
+  group_by: [alertname, instance]
+  group_wait: 5s
+  group_interval: 15s
+  repeat_interval: 4h
+receivers:
+  - name: local-audit
+    webhook_configs:
+      - url: http://127.0.0.1:19094/alerts
+        send_resolved: true

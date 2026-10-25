@@ -1,0 +1,62 @@
+extensions:
+  file_storage: {directory: /var/lib/otelcol/storage}
+  health_check: {endpoint: '127.0.0.1:13133'}
+receivers:
+  otlp:
+    protocols:
+      http: {endpoint: '127.0.0.1:4318', max_request_body_size: 1048576}
+  journald:
+    directory: /var/log/journal
+    storage: file_storage
+    start_at: end
+    convert_to_semantic_conventions: true
+  filelog:
+    include: [/var/log/pods/*/*/*.log]
+    exclude: [/var/log/pods/*/otelcol/*.log]
+    include_file_path: true
+    start_at: end
+    max_log_size: 64KiB
+    storage: file_storage
+    operators: [{type: container}]
+  hostmetrics:
+    collection_interval: 15s
+    scrapers:
+      cpu: {}
+      memory: {}
+      network: {}
+      disk: {}
+      load: {}
+      paging: {}
+      filesystem:
+        exclude_fs_types: {fs_types: [sysfs, proc, devtmpfs, devpts, tmpfs, overlay, squashfs, nsfs, tracefs, debugfs, securityfs, cgroup2, bpf, pstore, hugetlbfs, mqueue, fusectl, configfs, efivarfs], match_type: strict}
+processors:
+  memory_limiter: {check_interval: 1s, limit_mib: 128, spike_limit_mib: 32}
+  resource:
+    attributes:
+      - {key: service.name, value: '${env:LAB_SERVICE_NAME}', action: insert}
+      - {key: service.namespace, value: tidemq-lab, action: insert}
+      - {key: service.instance.id, value: '${env:LAB_HOSTNAME}', action: insert}
+      - {key: deployment.environment.name, value: lab, action: upsert}
+  batch: {send_batch_size: 128, send_batch_max_size: 256, timeout: 1s}
+exporters:
+  otlp_http:
+    endpoint: https://otlp.lab.tidemq.test:4318
+    tls:
+      ca_file: /etc/tidemq-lab/tls/ca.pem
+      cert_file: /etc/tidemq-lab/tls/client.pem
+      key_file: /etc/tidemq-lab/tls/client.key
+    sending_queue: {enabled: true, queue_size: 256, storage: file_storage}
+    retry_on_failure: {enabled: true, max_elapsed_time: 5m}
+service:
+  extensions: [file_storage, health_check]
+  telemetry:
+    logs: {level: warn, encoding: json}
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus: {host: '${env:LAB_MANAGEMENT_IP}', port: 8888}
+  pipelines:
+    traces: {receivers: [otlp], processors: [memory_limiter, resource, batch], exporters: [otlp_http]}
+    metrics: {receivers: [otlp, hostmetrics], processors: [memory_limiter, resource, batch], exporters: [otlp_http]}
+    logs: {receivers: [otlp, journald, filelog], processors: [memory_limiter, resource, batch], exporters: [otlp_http]}

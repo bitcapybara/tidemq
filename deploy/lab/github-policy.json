@@ -1,0 +1,10 @@
+{
+  "repository": "bitcapybara/tidemq",
+  "forkPullRequestApproval": "all_external_contributors",
+  "runnerName": "tidemq-dev-u126-8",
+  "runnerLabels": ["self-hosted", "Linux", "X64", "tidemq-dev"],
+  "workflowConcurrencyGroup": "tidemq-dev",
+  "cancelRunningLabJobs": false,
+  "checkoutPersistsCredentials": false,
+  "forkJobsUseSelfHostedRunner": false
+}

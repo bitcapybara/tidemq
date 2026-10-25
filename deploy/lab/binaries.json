@@ -1,0 +1,45 @@
+{
+  "collector": {
+    "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.163.2/otelcol-contrib_0.163.2_linux_amd64.tar.gz",
+    "sha256": "cc19dd6a1b85ca694ef16655688e597f693d0e24d2baecdd50e2db597819eeff",
+    "member": "otelcol-contrib"
+  },
+  "collectorTest": {
+    "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.162.0/otelcol_0.162.0_linux_amd64.tar.gz",
+    "sha256": "f99929987a915d3c6b2c9b15bc4938c5cea903a37a3f49e478024a0fa0772339",
+    "member": "otelcol"
+  },
+  "rustfs": {
+    "url": "https://github.com/rustfs/rustfs/releases/download/1.0.3/rustfs-linux-x86_64-gnu-v1.0.3.zip",
+    "sha256": "0cb0924df93734d14f708004eff4b0e48a147fbdc074756ca0d6b8ec919629b8",
+    "member": "rustfs"
+  },
+  "nextest": {
+    "url": "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc",
+    "member": "cargo-nextest"
+  },
+  "llvmCov": {
+    "url": "https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz",
+    "sha256": "b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a",
+    "member": "cargo-llvm-cov"
+  },
+  "llvmTools": {
+    "url": "https://static.rust-lang.org/dist/2026-10-15/llvm-tools-1.99.1-x86_64-unknown-linux-gnu.tar.xz",
+    "sha256": "8429c5117debfb45c22cf2f97712ef00e0e94976c96cf92f661974a458ca7e84"
+  },
+  "mc": {
+    "url": "https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z",
+    "sha256": "01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891",
+    "raw": true
+  },
+  "runner": {
+    "url": "https://github.com/actions/runner/releases/download/v2.338.1/actions-runner-linux-x64-2.338.1.tar.gz",
+    "sha256": "08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37"
+  },
+  "helm": {
+    "url": "https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz",
+    "sha256": "0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b",
+    "member": "linux-amd64/helm"
+  }
+}

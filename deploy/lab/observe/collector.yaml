@@ -1,0 +1,35 @@
+extensions:
+  health_check: {endpoint: '127.0.0.1:13134'}
+  file_storage: {directory: /srv/tidemq/collector-queue}
+receivers:
+  otlp:
+    protocols:
+      http: {endpoint: '127.0.0.1:24318', max_request_body_size: 4194304}
+processors:
+  memory_limiter: {check_interval: 1s, limit_mib: 384, spike_limit_mib: 64}
+  batch: {send_batch_size: 256, send_batch_max_size: 512, timeout: 1s}
+exporters:
+  otlp_http/tempo:
+    endpoint: http://127.0.0.1:14318
+    sending_queue: {enabled: true, queue_size: 1024, storage: file_storage}
+    retry_on_failure: {enabled: true, max_elapsed_time: 5m}
+  otlp_http/loki:
+    endpoint: http://127.0.0.1:3100/otlp
+    sending_queue: {enabled: true, queue_size: 1024, storage: file_storage}
+    retry_on_failure: {enabled: true, max_elapsed_time: 5m}
+  otlp_http/prometheus:
+    endpoint: http://127.0.0.1:9090/api/v1/otlp
+    sending_queue: {enabled: true, queue_size: 1024, storage: file_storage}
+    retry_on_failure: {enabled: true, max_elapsed_time: 5m}
+service:
+  extensions: [health_check, file_storage]
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus: {host: 127.0.0.1, port: 8889}
+  pipelines:
+    traces: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/tempo]}
+    metrics: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/prometheus]}
+    logs: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlp_http/loki]}

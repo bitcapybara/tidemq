@@ -1,0 +1,9 @@
+{
+  "uid": "tidemq-lab", "title": "TideMQ lab", "schemaVersion": 39, "version": 1,
+  "time": {"from": "now-30m", "to": "now"}, "refresh": "15s",
+  "panels": [
+    {"id": 1, "type": "timeseries", "title": "VM telemetry agents", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "up{job=\"lab-agents\"}", "legendFormat": "{{instance}}"}]},
+    {"id": 2, "type": "timeseries", "title": "Observability backends", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"expr": "up{job=\"lab-backends\"}", "legendFormat": "{{instance}}"}]},
+    {"id": 3, "type": "logs", "title": "TideMQ logs", "gridPos": {"x": 0, "y": 8, "w": 24, "h": 10}, "datasource": {"type": "loki", "uid": "loki"}, "targets": [{"expr": "{service_namespace=\"tidemq-lab\"}", "refId": "A"}]}
+  ]
+}

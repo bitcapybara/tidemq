@@ -11,13 +11,13 @@ env:
   RUSTUP_TOOLCHAIN: 1.99.1
 
 concurrency:
-  group: performance-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: tidemq-dev
+  cancel-in-progress: false
 
 jobs:
   build:
     name: Build fixed performance binaries
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 45
     outputs:
       source_commit: ${{ steps.reference.outputs.source_commit }}
@@ -30,10 +30,6 @@ jobs:
           path: trusted
           fetch-depth: 0
           persist-credentials: false
-      - name: Free unused Android SDK space for release builds and durable workloads
-        run: |
-          sudo rm -rf -- /usr/local/lib/android
-          df -h .
       - name: Read protected baseline source
         id: reference
         run: node trusted/scripts/performance-gate.mjs source --tools trusted >> "$GITHUB_OUTPUT"
@@ -49,12 +45,6 @@ jobs:
           ref: ${{ github.sha }}
           path: candidate
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.99.1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: trusted -> target/performance-gate
-          shared-key: rust-Linux-performance-mimalloc-release
-          cache-on-failure: true
       - name: Validate the trusted comparator
         run: node --test trusted/scripts/performance/*.test.mjs
       - name: Build both service and SDK workload artifacts
@@ -62,7 +52,7 @@ jobs:
         env:
           REQUIRE_UNCHANGED: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || '' }}
         run: >-
-          node trusted/scripts/performance-gate.mjs prepare
+          bash trusted/scripts/lab/with-lease.sh node trusted/scripts/performance-gate.mjs prepare
           --tools trusted --baseline baseline --candidate candidate
           --output performance-build $REQUIRE_UNCHANGED >> "$GITHUB_OUTPUT"
       - name: Transfer fixed binary artifacts to the measurement job
@@ -92,9 +82,9 @@ jobs:
             performance-build/builds/*/build.log
 
   measure:
-    name: Measure RF1 and RF3 on a fresh runner
+    name: Measure fixed RF1 and RF3 artifacts in the leased runner VM
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 55
     steps:
       - name: Check out the same protected comparison tools
@@ -124,7 +114,7 @@ jobs:
           PREPARED_SHA256: ${{ needs.build.outputs.manifest_sha256 }}
           REQUIRE_UNCHANGED: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || '' }}
         run: >-
-          node trusted/scripts/performance-gate.mjs measure
+          bash trusted/scripts/lab/with-lease.sh node trusted/scripts/performance-gate.mjs measure
           --tools trusted --baseline baseline --candidate candidate
           --prepared performance-build --manifest-sha256 "$PREPARED_SHA256"
           --output performance-result $REQUIRE_UNCHANGED
@@ -183,29 +173,4 @@ jobs:
         env:
           VALIDATED_COMMIT: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "$(git rev-parse HEAD)" != "$VALIDATED_COMMIT" ]]; then
-            printf 'Main advanced during measurement; its own run will promote the next baseline\n'
-            exit 0
-          fi
-          gh run list --workflow rust.yml --branch main --commit "$VALIDATED_COMMIT" --event push --limit 1 --json databaseId,status,conclusion > rust-run.json
-          rust_run_id="$(node -e 'const [run] = require("./rust-run.json"); if (!Number.isSafeInteger(run?.databaseId)) throw new Error("No Rust push run exists for the measured main commit"); console.log(run.databaseId)')"
-          gh run watch "$rust_run_id" --exit-status --interval 30
-          gh run download "$rust_run_id" --name coverage-report --dir covered
-          git fetch origin main
-          if [[ "$(git rev-parse origin/main)" != "$VALIDATED_COMMIT" ]]; then
-            printf 'Main advanced while waiting for Rust validation; baselines remain unchanged\n'
-            exit 0
-          fi
-          node scripts/promote-baselines.mjs . measured/summary.json covered/coverage-result/summary.json covered/coverage-result/llvm.json "$rust_run_id" "$GITHUB_RUN_ID"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add performance/baseline.json performance/baseline-report.json coverage/baseline.json
-          git diff --cached --quiet && exit 0
-          git commit -m 'chore(ci): record validated performance and coverage baselines'
-          git fetch origin main
-          if [[ "$(git rev-parse origin/main)" != "$VALIDATED_COMMIT" ]]; then
-            printf 'Main advanced before baseline publication; the local baseline commit will not be pushed\n'
-            exit 0
-          fi
-          git push origin HEAD:main
+        run: bash scripts/ci/promote-baselines.sh

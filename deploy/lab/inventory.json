@@ -1,0 +1,316 @@
+{
+  "schemaVersion": 1,
+  "lab": "tidemq-dev",
+  "host": "192.168.126.8",
+  "stateDirectory": "/var/lib/tidemq-lab",
+  "repository": "https://github.com/bitcapybara/tidemq",
+  "docker": {
+    "runtimeBaseImage": "localhost/tidemq-runtime-base:ubuntu2404-68ee22004a91",
+    "runtimeBaseImageID": "sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
+    "runtimeBaseSource": "docker.io/library/ubuntu@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
+    "runtimeBaseOS": "Ubuntu 24.04 LTS"
+  },
+  "allowedClientCIDRs": [
+    "192.168.126.0/24",
+    "192.168.127.73/32"
+  ],
+  "minimumHostFreeGiB": 20,
+  "minimumHostMemoryReserveMiB": 8192,
+  "image": {
+    "url": "https://cloud-images.ubuntu.com/noble/20261017/noble-server-cloudimg-amd64.img",
+    "sha256": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94"
+  },
+  "networks": {
+    "management": {
+      "name": "tidemq-management",
+      "bridge": "virbr-tmq-mgmt",
+      "address": "192.168.240.1",
+      "prefix": 24,
+      "nat": true
+    },
+    "data": {
+      "name": "tidemq-data",
+      "bridge": "virbr-tmq-data",
+      "address": "192.168.241.1",
+      "prefix": 24,
+      "nat": false
+    }
+  },
+  "kubernetes": {
+    "version": "v1.36.5",
+    "apiVIP": "192.168.241.10",
+    "podCIDR": "10.244.0.0/16",
+    "serviceCIDR": "10.96.0.0/16",
+    "loadBalancerPool": "192.168.241.200-192.168.241.209",
+    "queueVIP": "192.168.241.200",
+    "ciQueueVIP": "192.168.241.201",
+    "storageClass": "tidemq-local"
+  },
+  "versions": {
+    "cilium": "1.20.4",
+    "kubeVip": "v1.3.1",
+    "metallb": "0.16.1",
+    "collector": "0.163.2",
+    "prometheus": "v3.15.1",
+    "loki": "3.7.9",
+    "tempo": "3.1.1",
+    "grafana": "13.2.4",
+    "alertmanager": "v0.34.1",
+    "runner": "2.338.1",
+    "rustfs": "1.0.3",
+    "rust": "1.99.1",
+    "nextest": "0.9.148",
+    "llvmCov": "0.9.1"
+  },
+  "endpoints": {
+    "s3": {
+      "host": "s3.lab.tidemq.test",
+      "port": 18443,
+      "node": "storage"
+    },
+    "rustfsConsole": {
+      "host": "rustfs.lab.tidemq.test",
+      "port": 18445,
+      "node": "storage"
+    },
+    "otlp": {
+      "host": "otlp.lab.tidemq.test",
+      "port": 4318,
+      "node": "observe"
+    },
+    "grafana": {
+      "host": "grafana.lab.tidemq.test",
+      "port": 18444,
+      "node": "observe"
+    },
+    "metrics": {
+      "host": "metrics.lab.tidemq.test",
+      "port": 18444,
+      "node": "observe"
+    },
+    "queue": {
+      "host": "mq.lab.tidemq.test",
+      "port": 17443,
+      "node": "loadbalancer"
+    }
+  },
+  "nodes": [
+    {
+      "name": "tidemq-cp-a",
+      "id": 11,
+      "role": "control-plane",
+      "zone": "zone-1",
+      "vcpus": 2,
+      "memoryMiB": 2048,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.11",
+      "dataIP": "192.168.241.11",
+      "managementMAC": "52:54:00:24:00:0b",
+      "dataMAC": "52:54:00:24:01:0b",
+      "disks": []
+    },
+    {
+      "name": "tidemq-cp-b",
+      "id": 12,
+      "role": "control-plane",
+      "zone": "zone-2",
+      "vcpus": 2,
+      "memoryMiB": 2048,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.12",
+      "dataIP": "192.168.241.12",
+      "managementMAC": "52:54:00:24:00:0c",
+      "dataMAC": "52:54:00:24:01:0c",
+      "disks": []
+    },
+    {
+      "name": "tidemq-cp-c",
+      "id": 13,
+      "role": "control-plane",
+      "zone": "zone-0",
+      "vcpus": 2,
+      "memoryMiB": 2048,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.13",
+      "dataIP": "192.168.241.13",
+      "managementMAC": "52:54:00:24:00:0d",
+      "dataMAC": "52:54:00:24:01:0d",
+      "disks": []
+    },
+    {
+      "name": "tidemq-worker-a",
+      "id": 21,
+      "role": "worker",
+      "zone": "zone-1",
+      "vcpus": 4,
+      "memoryMiB": 4096,
+      "rootGiB": 16,
+      "managementIP": "192.168.240.21",
+      "dataIP": "192.168.241.21",
+      "managementMAC": "52:54:00:24:00:15",
+      "dataMAC": "52:54:00:24:01:15",
+      "disks": [
+        {
+          "name": "wal",
+          "sizeGiB": 8,
+          "mount": "/var/lib/tidemq/storage"
+        },
+        {
+          "name": "metadata",
+          "sizeGiB": 2,
+          "mount": "/var/lib/tidemq/metadata"
+        }
+      ]
+    },
+    {
+      "name": "tidemq-worker-b",
+      "id": 22,
+      "role": "worker",
+      "zone": "zone-2",
+      "vcpus": 4,
+      "memoryMiB": 4096,
+      "rootGiB": 16,
+      "managementIP": "192.168.240.22",
+      "dataIP": "192.168.241.22",
+      "managementMAC": "52:54:00:24:00:16",
+      "dataMAC": "52:54:00:24:01:16",
+      "disks": [
+        {
+          "name": "wal",
+          "sizeGiB": 8,
+          "mount": "/var/lib/tidemq/storage"
+        },
+        {
+          "name": "metadata",
+          "sizeGiB": 2,
+          "mount": "/var/lib/tidemq/metadata"
+        }
+      ]
+    },
+    {
+      "name": "tidemq-worker-c",
+      "id": 23,
+      "role": "worker",
+      "zone": "zone-0",
+      "vcpus": 4,
+      "memoryMiB": 4096,
+      "rootGiB": 16,
+      "managementIP": "192.168.240.23",
+      "dataIP": "192.168.241.23",
+      "managementMAC": "52:54:00:24:00:17",
+      "dataMAC": "52:54:00:24:01:17",
+      "disks": [
+        {
+          "name": "wal",
+          "sizeGiB": 8,
+          "mount": "/var/lib/tidemq/storage"
+        },
+        {
+          "name": "metadata",
+          "sizeGiB": 2,
+          "mount": "/var/lib/tidemq/metadata"
+        }
+      ]
+    },
+    {
+      "name": "tidemq-storage",
+      "id": 31,
+      "role": "storage",
+      "zone": "infra",
+      "vcpus": 2,
+      "memoryMiB": 2048,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.31",
+      "dataIP": "192.168.241.31",
+      "managementMAC": "52:54:00:24:00:1f",
+      "dataMAC": "52:54:00:24:01:1f",
+      "disks": [
+        {
+          "name": "data",
+          "sizeGiB": 8,
+          "mount": "/srv/tidemq"
+        }
+      ]
+    },
+    {
+      "name": "tidemq-observe",
+      "id": 32,
+      "role": "observe",
+      "zone": "infra",
+      "vcpus": 4,
+      "memoryMiB": 6144,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.32",
+      "dataIP": "192.168.241.32",
+      "managementMAC": "52:54:00:24:00:20",
+      "dataMAC": "52:54:00:24:01:20",
+      "disks": [
+        {
+          "name": "data",
+          "sizeGiB": 16,
+          "mount": "/srv/tidemq"
+        }
+      ]
+    },
+    {
+      "name": "tidemq-runner",
+      "id": 33,
+      "role": "runner",
+      "zone": "infra",
+      "vcpus": 4,
+      "memoryMiB": 8192,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.33",
+      "dataIP": "192.168.241.33",
+      "managementMAC": "52:54:00:24:00:21",
+      "dataMAC": "52:54:00:24:01:21",
+      "disks": [
+        {
+          "name": "cache",
+          "sizeGiB": 64,
+          "mount": "/srv/tidemq"
+        }
+      ]
+    },
+    {
+      "name": "tidemq-fixtures",
+      "id": 34,
+      "role": "fixtures",
+      "zone": "infra",
+      "vcpus": 2,
+      "memoryMiB": 2048,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.34",
+      "dataIP": "192.168.241.34",
+      "managementMAC": "52:54:00:24:00:22",
+      "dataMAC": "52:54:00:24:01:22",
+      "disks": [
+        {
+          "name": "data",
+          "sizeGiB": 8,
+          "mount": "/srv/tidemq"
+        }
+      ]
+    },
+    {
+      "name": "tidemq-loadgen",
+      "id": 35,
+      "role": "loadgen",
+      "zone": "infra",
+      "vcpus": 2,
+      "memoryMiB": 2048,
+      "rootGiB": 8,
+      "managementIP": "192.168.240.35",
+      "dataIP": "192.168.241.35",
+      "managementMAC": "52:54:00:24:00:23",
+      "dataMAC": "52:54:00:24:01:23",
+      "disks": [
+        {
+          "name": "data",
+          "sizeGiB": 4,
+          "mount": "/srv/tidemq"
+        }
+      ]
+    }
+  ]
+}

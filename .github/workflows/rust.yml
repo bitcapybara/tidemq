@@ -5,170 +5,116 @@ on:
   pull_request:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
+permissions: {contents: read}
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: tidemq-dev
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 2
-  WORKSPACE_FEATURES: tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
   validate:
     name: Validate (${{ matrix.os }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+        include:
+          - os: Linux
+            runner: [self-hosted, Linux, X64, tidemq-dev]
+          - os: macOS
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Free unused Android SDK space for WAL and replica-copy headroom
-        if: runner.os == 'Linux'
-        run: |
-          sudo rm -rf -- /usr/local/lib/android
-          df -h .
+        with: {persist-credentials: false}
       - uses: dtolnay/rust-toolchain@1.99.1
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-${{ runner.os }}-debug
-          key: default
-          cache-on-failure: true
+        if: runner.os == 'macOS'
+        with: {components: 'rustfmt, clippy'}
       - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.148
-      - run: cargo fmt --all -- --check
-      - name: Validate Kubernetes preparation without contacting a cluster
-        run: bash deploy/kubernetes/selfcheck.sh
-      - name: Lint every Rust target and optional SDK instrumentation
-        run: cargo clippy --workspace --all-targets --no-deps --locked --features "$WORKSPACE_FEATURES" -- -D warnings
-      - name: Audit production panic and indexing hazards
-        run: cargo clippy --workspace --lib --bins --no-deps --locked --features "$WORKSPACE_FEATURES" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unimplemented -D clippy::todo -D clippy::unreachable -D clippy::indexing_slicing
-      - name: Run unit, integration and target test harnesses with nextest
-        run: cargo nextest run --workspace --all-targets --locked --features "$WORKSPACE_FEATURES" --profile ci
-      - name: Run deterministic runtime faults with test hooks
-        run: |
-          cp target/nextest/ci/junit.xml target/nextest/ci/workspace-junit.xml
-          cargo nextest run -p tidemq --test runtime_queue --test runtime_consumer_reads --test runtime_reclamation --locked --features "$WORKSPACE_FEATURES,test-hooks" --profile ci
-          cp target/nextest/ci/junit.xml target/nextest/ci/runtime-faults-junit.xml
-      - name: Run stable Rust documentation tests
-        run: cargo test --workspace --doc --locked --features "$WORKSPACE_FEATURES"
-      - name: Lint the SDK without optional instrumentation
-        if: runner.os == 'Linux'
-        run: cargo clippy -p tidemq-sdk --all-targets --no-deps --locked -- -D warnings
-      - name: Run the SDK without optional instrumentation
-        if: runner.os == 'Linux'
-        run: |
-          cargo nextest run -p tidemq-sdk --all-targets --locked --profile ci
-      - name: Check generated protocol sources
-        run: |
-          cargo build -p tidemq-protocol --features codegen --locked
-          cargo fmt --all
-          git diff --exit-code -- crates/tidemq-protocol/src/generated
-      - run: cargo run --locked -- validate-config --config config/local.toml
-      - name: Check coverage and performance gate trust boundaries
-        if: runner.os == 'Linux'
-        run: node --test scripts/coverage/*.test.mjs scripts/performance/*.test.mjs
-      - name: Preserve test results
+        if: runner.os == 'macOS'
+        with: {tool: 'nextest@0.9.148'}
+      - run: bash scripts/ci/validate.sh
+      - run: bash scripts/ci/integration.sh
+        env:
+          TIDEMQ_REQUIRE_EXTERNAL: ${{ runner.os == 'Linux' && '1' || '0' }}
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: tests-${{ matrix.os }}
-          path: target/nextest/ci/*junit.xml
-          if-no-files-found: warn
+          path: target/ci
           retention-days: 14
-      - name: Locate failed runtime logs
-        if: failure()
-        id: runtime-logs
-        run: printf 'root=%s\n' "$(node -p 'require("node:os").tmpdir()')" >> "$GITHUB_OUTPUT"
-      - name: Preserve failed runtime process logs
-        if: failure()
-        uses: actions/upload-artifact@v4
+
+  lab:
+    name: Kubernetes RF3 and VM faults
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: bash scripts/lab/with-lease.sh bash scripts/ci/lab.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: runtime-process-logs-${{ matrix.os }}
-          path: ${{ steps.runtime-logs.outputs.root }}/tidemq-runtime-*/process-*.log
-          if-no-files-found: ignore
-          retention-days: 7
+          name: kubernetes-lab
+          path: target/ci/lab-report
+          retention-days: 30
 
   coverage:
     name: Coverage baseline (Linux)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: validate
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
+    timeout-minutes: 90
     steps:
-      - name: Check out protected coverage scope and comparator
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: trusted
           fetch-depth: 0
           persist-credentials: false
-      - name: Check out the proposed source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-          path: candidate
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Free unused Android SDK space for instrumented builds
-        run: |
-          sudo rm -rf -- /usr/local/lib/android
-          df -h .
-      - uses: dtolnay/rust-toolchain@1.99.1
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: candidate -> target/llvm-cov-target
-          shared-key: rust-${{ runner.os }}-llvm-cov
-          cache-on-failure: true
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest@0.9.148,cargo-llvm-cov@0.9.1
-      - name: Validate the protected coverage comparator
-        run: node --test trusted/scripts/coverage/*.test.mjs
-      - name: Run instrumented nextest and compare exact LLVM counts
+      - uses: actions/checkout@v4
+        with: {ref: '${{ github.sha }}', path: candidate, fetch-depth: 0, persist-credentials: false}
+      - run: node --test trusted/scripts/coverage/*.test.mjs
+      - run: bash trusted/scripts/coverage-run.sh candidate coverage-result $COVERAGE_GATE_MODE
         env:
+          CARGO_LLVM_COV_TARGET_DIR: /srv/tidemq/cargo-target/coverage
           COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}
-        run: bash trusted/scripts/coverage-run.sh candidate coverage-result $COVERAGE_GATE_MODE
-      - name: Preserve LLVM JSON, LCOV, HTML and nextest results
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: |
-            coverage-result
-            candidate/target/llvm-cov-target/nextest/ci/junit.xml
-          if-no-files-found: warn
-          retention-days: 30
-      - name: Locate failed runtime logs
-        if: failure()
-        id: runtime-logs
-        run: printf 'root=%s\n' "$(node -p 'require("node:os").tmpdir()')" >> "$GITHUB_OUTPUT"
-      - name: Preserve failed runtime process logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-process-logs-coverage
-          path: ${{ steps.runtime-logs.outputs.root }}/tidemq-runtime-*/process-*.log
-          if-no-files-found: ignore
-          retention-days: 7
+        with: {name: coverage-report, path: coverage-result, retention-days: 30}
+
+  untrusted:
+    name: Fork unit tests
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with: {components: 'rustfmt, clippy'}
+      - uses: taiki-e/install-action@v2
+        with: {tool: 'nextest@0.9.148'}
+      - run: bash scripts/ci/validate.sh
 
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, coverage]
+    needs: [validate, lab, coverage, untrusted]
     runs-on: ubuntu-24.04
-    timeout-minutes: 1
+    timeout-minutes: 2
     steps:
-      - name: Require every validation and coverage job to pass
+      - run: >-
+          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; if(fork ? r.untrusted.result!=="success" : ["validate","lab","coverage"].some(k=>r[k].result!=="success")) process.exit(1)'
         env:
-          VALIDATE_RESULT: ${{ needs.validate.result }}
-          COVERAGE_RESULT: ${{ needs.coverage.result }}
-        run: '[[ "$VALIDATE_RESULT" == "success" && "$COVERAGE_RESULT" == "success" ]]'
+          RESULTS: ${{ toJSON(needs) }}
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

@@ -1,0 +1,23 @@
+groups:
+  - name: tidemq-lab
+    rules:
+      - alert: LabBackendUnavailable
+        expr: up{job="lab-backends"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'An observability backend is unavailable'}
+      - alert: LabAgentUnavailable
+        expr: up{job="lab-agents"} == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'A managed VM telemetry agent is unavailable'}
+      - alert: LabTelemetryQueuePressure
+        expr: otelcol_exporter_queue_size / otelcol_exporter_queue_capacity > 0.8
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'A telemetry export queue is nearly full'}
+      - alert: LabFilesystemFreeLow
+        expr: system_filesystem_usage_bytes{state="free"} / ignoring(state) group_left sum without(state) (system_filesystem_usage_bytes) < 0.15
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'A managed VM filesystem has less than 15 percent free space'}
