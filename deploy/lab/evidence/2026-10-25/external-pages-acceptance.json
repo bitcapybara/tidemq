@@ -1,0 +1,32 @@
+{
+  "capturedAt": "2026-10-25T17:04:50.649Z",
+  "rootRedirect": {
+    "status": 302,
+    "path": "/rustfs/console/index.html"
+  },
+  "consoleHtml": {
+    "status": 200,
+    "bytes": 34536
+  },
+  "consoleScript": {
+    "status": 200,
+    "bytes": 27544
+  },
+  "alertmanagerHtml": {
+    "status": 200
+  },
+  "alertmanagerScript": {
+    "status": 200,
+    "bytes": 123745
+  },
+  "alertmanagerApi": {
+    "status": 200
+  },
+  "metricsUnauthenticated": {
+    "status": 401
+  },
+  "otlpWithoutClientCertificate": {
+    "status": 400
+  },
+  "tlsVerification": true
+}

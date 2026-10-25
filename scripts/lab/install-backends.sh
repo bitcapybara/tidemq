@@ -80,6 +80,7 @@ server {
   ssl_certificate /etc/tidemq-lab/server-tls/server.pem;
   ssl_certificate_key /etc/tidemq-lab/server-tls/server.key;
   ssl_protocols TLSv1.2 TLSv1.3;
+  location = / { return 302 /rustfs/console/index.html; }
   location / {
     proxy_set_header Host $http_host;
     proxy_set_header X-Forwarded-Proto https;

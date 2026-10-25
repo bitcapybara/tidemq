@@ -39,6 +39,13 @@ test('application exporters stay on loopback and the sidecar authenticates the c
     {key: 'service.instance.id', value: 'ci-test-node-11', action: 'upsert'});
   assert.ok(config.exporters.otlp_http.sending_queue.queue_size <= 128);
 });
+test('trace batches can drain the admission budget within the export time budget', () => {
+  const config = runtimeConfig(roles[0], 'test-cluster', addresses, 'ci-test', 'https://example.test:443');
+  const number = name => Number(config.match(new RegExp(`^${name} = ([0-9]+)$`, 'm'))?.[1]);
+  const cycle = number('export_interval_ms') + number('export_timeout_ms');
+  assert.ok(number('batch_spans') * 1000 > number('spans_per_second') * cycle);
+  assert.ok(number('queue_spans') >= number('batch_spans'));
+});
 test('the UDP load balancer uses local gateways and distinct public and CI addresses', () => {
   const publicService = queueService('tidemq-dev').spec;
   const ciService = queueService('ci-test').spec;

@@ -37,6 +37,24 @@ fn distinct_keys() -> [String; 2] {
     keys.map(Option::unwrap)
 }
 
+async fn receive_during_scaling<F, Fut>(
+    mut receive: F,
+) -> tidemq_sdk::Result<tidemq_sdk::ReceivedMessage>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = tidemq_sdk::Result<tidemq_sdk::ReceivedMessage>>,
+{
+    loop {
+        match receive().await {
+            // The original Consumer retains and retries its uncertain background read.
+            Err(error) if error.outcome_unknown() => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            result => return result,
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independent_live_leader() {
     let mut fixture = Fixture::new(
@@ -125,18 +143,39 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
     );
     let mut stream_remaining: std::collections::HashSet<_> = expected.keys().copied().collect();
     let mut queue_remaining = stream_remaining.clone();
+    let until = Instant::now() + Duration::from_secs(20);
     for _ in 0..expected.len() {
-        let message = tokio::time::timeout_at(until, stream.receive())
+        let received =
+            tokio::time::timeout_at(until, receive_during_scaling(|| stream.receive())).await;
+        if !matches!(&received, Ok(Ok(_))) {
+            let remaining_ms = until.saturating_duration_since(Instant::now()).as_millis();
+            let mut diagnostics = BTreeMap::new();
+            for (id, node) in &fixture.running {
+                diagnostics.insert(*id, http(node.management_address, "/diagnostics").await);
+            }
+            let failure = serde_json::json!({
+                "error": format!("{received:?}"),
+                "total": expected.len(),
+                "stream_remaining": stream_remaining.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "queue_remaining": queue_remaining.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "remaining_ms": remaining_ms,
+                "diagnostics": diagnostics,
+            });
+            tokio::fs::write(
+                fixture.directory.join("scaling-delivery-failure.json"),
+                serde_json::to_vec_pretty(&failure).unwrap(),
+            )
             .await
-            .unwrap()
             .unwrap();
+        }
+        let message = received.unwrap().unwrap();
         assert!(stream_remaining.remove(&message.message_id()));
         assert_eq!(
             message.payload(),
             expected.get(&message.message_id()).unwrap().as_bytes()
         );
         stream.ack_cumulative(&message).await.unwrap();
-        let message = tokio::time::timeout_at(until, queue.receive())
+        let message = tokio::time::timeout_at(until, receive_during_scaling(|| queue.receive()))
             .await
             .unwrap()
             .unwrap();
@@ -173,13 +212,14 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
         .await
         .unwrap()
         .message_id();
-    let message = tokio::time::timeout_at(until, stream.receive())
+    let until = Instant::now() + Duration::from_secs(20);
+    let message = tokio::time::timeout_at(until, receive_during_scaling(|| stream.receive()))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(message.message_id(), id);
     stream.ack_cumulative(&message).await.unwrap();
-    let message = tokio::time::timeout_at(until, queue.receive())
+    let message = tokio::time::timeout_at(until, receive_during_scaling(|| queue.receive()))
         .await
         .unwrap()
         .unwrap();

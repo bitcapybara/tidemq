@@ -18,7 +18,7 @@ export function runtimeConfig(node, cluster, addresses, namespace, endpoint) {
     '[memory]', 'total_bytes = 201326592', 'control_reserved_bytes = 33554432',
     '[logging]', 'filter = "warn,tidemq=info"',
     '[tracing]', 'enabled = true', 'sample_per_mille = 1000', 'spans_per_second = 16',
-    'queue_spans = 128', 'batch_spans = 1', 'export_interval_ms = 100', 'export_timeout_ms = 500',
+    'queue_spans = 128', 'batch_spans = 16', 'export_interval_ms = 100', 'export_timeout_ms = 500',
     '[tls]', `certificate = "/private/node-${node.id}.pem"`, `private_key = "/private/node-${node.id}.key"`,
     'trust_roots = "/private/ca.pem"', '[authorization]'];
   if (node.role === 'metadata') lines.push('bootstrap_admin_token_file = "/private/bootstrap.token"');

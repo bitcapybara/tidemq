@@ -1,0 +1,28 @@
+{
+  "capturedAt": "2026-10-25T16:30:20.885Z",
+  "instance": "mac-1792934750620",
+  "traceID": "11627366d2f35fc349fe52f094f0f187",
+  "metrics": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        {
+          "metric": {
+            "__name__": "tidemq_external_check_total",
+            "instance": "mac-1792934750620",
+            "job": "tidemq-external-check",
+            "service_instance_id": "mac-1792934750620",
+            "service_name": "tidemq-external-check"
+          },
+          "value": [
+            1792934800,
+            "1"
+          ]
+        }
+      ]
+    }
+  },
+  "logEntries": 1,
+  "traceSpans": 1
+}

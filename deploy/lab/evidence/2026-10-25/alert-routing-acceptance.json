@@ -1,0 +1,68 @@
+{
+  "capturedAt": "2026-10-25T16:41:33Z",
+  "events": 69,
+  "firstReceivedAt": "2026-10-25T10:43:59.268Z",
+  "lastReceivedAt": "2026-10-25T16:11:13.913Z",
+  "alerts": [
+    {
+      "name": "LabBackendUnavailable",
+      "status": "firing",
+      "count": 1
+    },
+    {
+      "name": "LabBackendUnavailable",
+      "status": "resolved",
+      "count": 1
+    },
+    {
+      "name": "LabFilesystemFreeLow",
+      "status": "firing",
+      "count": 3
+    },
+    {
+      "name": "LabFilesystemFreeLow",
+      "status": "resolved",
+      "count": 3
+    },
+    {
+      "name": "LabTelemetryQueuePressure",
+      "status": "firing",
+      "count": 1
+    },
+    {
+      "name": "LabTelemetryQueuePressure",
+      "status": "resolved",
+      "count": 1
+    },
+    {
+      "name": "TideMQQuicLivenessFailures",
+      "status": "firing",
+      "count": 8
+    },
+    {
+      "name": "TideMQQuicLivenessFailures",
+      "status": "resolved",
+      "count": 8
+    },
+    {
+      "name": "TideMQRoleNotReady",
+      "status": "firing",
+      "count": 1
+    },
+    {
+      "name": "TideMQRoleNotReady",
+      "status": "resolved",
+      "count": 1
+    },
+    {
+      "name": "TideMQTraceEvidenceLost",
+      "status": "firing",
+      "count": 23
+    },
+    {
+      "name": "TideMQTraceEvidenceLost",
+      "status": "resolved",
+      "count": 18
+    }
+  ]
+}

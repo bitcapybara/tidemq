@@ -17,8 +17,8 @@ MaxRetentionSec=7day
 EOF
 systemctl restart systemd-journald
 rm -f /etc/nginx/sites-enabled/default
-if [[ "$role" != loadgen ]]; then
-  mountpoint -q /srv/tidemq || { printf 'The managed data disk is not mounted\n' >&2; exit 1; }
+mountpoint -q /srv/tidemq || { printf 'The managed data disk is not mounted\n' >&2; exit 1; }
+if [[ "$role" == observe || "$role" == runner ]]; then
   apt-get install -y docker.io docker-compose-v2
   install -d -m 0700 /etc/docker
   cat > /etc/docker/daemon.json <<'EOF'

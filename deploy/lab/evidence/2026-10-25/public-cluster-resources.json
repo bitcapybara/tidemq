@@ -1,0 +1,740 @@
+{
+  "nodes": [
+    {
+      "name": "tidemq-cp-a",
+      "addresses": [
+        {
+          "address": "192.168.241.11",
+          "type": "InternalIP"
+        },
+        {
+          "address": "tidemq-cp-a",
+          "type": "Hostname"
+        }
+      ],
+      "capacity": {
+        "cpu": "2",
+        "ephemeral-storage": "7034376Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "memory": "2014852Ki",
+        "pods": "110"
+      },
+      "conditions": [
+        {
+          "type": "NetworkUnavailable",
+          "status": "False"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        },
+        {
+          "type": "PIDPressure",
+          "status": "False"
+        },
+        {
+          "type": "Ready",
+          "status": "True"
+        }
+      ],
+      "nodeInfo": {
+        "architecture": "amd64",
+        "bootID": "4ee4f386-37fd-4b37-9f39-9b4913f38cbd",
+        "containerRuntimeVersion": "containerd://2.2.1",
+        "kernelVersion": "6.8.0-147-generic",
+        "kubeProxyVersion": "",
+        "kubeletVersion": "v1.36.5",
+        "machineID": "732fb8860ba44fc18e1aeee6323c0bf5",
+        "operatingSystem": "linux",
+        "osImage": "Ubuntu 24.04.5 LTS",
+        "systemUUID": "732fb886-0ba4-4fc1-8e1a-eee6323c0bf5"
+      }
+    },
+    {
+      "name": "tidemq-cp-b",
+      "addresses": [
+        {
+          "address": "192.168.241.12",
+          "type": "InternalIP"
+        },
+        {
+          "address": "tidemq-cp-b",
+          "type": "Hostname"
+        }
+      ],
+      "capacity": {
+        "cpu": "2",
+        "ephemeral-storage": "7034376Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "memory": "2014852Ki",
+        "pods": "110"
+      },
+      "conditions": [
+        {
+          "type": "NetworkUnavailable",
+          "status": "False"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        },
+        {
+          "type": "PIDPressure",
+          "status": "False"
+        },
+        {
+          "type": "Ready",
+          "status": "True"
+        }
+      ],
+      "nodeInfo": {
+        "architecture": "amd64",
+        "bootID": "810b5fb2-05f9-4b42-a0fc-6be0fcc782e8",
+        "containerRuntimeVersion": "containerd://2.2.1",
+        "kernelVersion": "6.8.0-147-generic",
+        "kubeProxyVersion": "",
+        "kubeletVersion": "v1.36.5",
+        "machineID": "dfa3b7e595ab403a8d50bdd5ac3bbdf9",
+        "operatingSystem": "linux",
+        "osImage": "Ubuntu 24.04.5 LTS",
+        "systemUUID": "dfa3b7e5-95ab-403a-8d50-bdd5ac3bbdf9"
+      }
+    },
+    {
+      "name": "tidemq-cp-c",
+      "addresses": [
+        {
+          "address": "192.168.241.13",
+          "type": "InternalIP"
+        },
+        {
+          "address": "tidemq-cp-c",
+          "type": "Hostname"
+        }
+      ],
+      "capacity": {
+        "cpu": "2",
+        "ephemeral-storage": "7034376Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "memory": "2014852Ki",
+        "pods": "110"
+      },
+      "conditions": [
+        {
+          "type": "NetworkUnavailable",
+          "status": "False"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        },
+        {
+          "type": "PIDPressure",
+          "status": "False"
+        },
+        {
+          "type": "Ready",
+          "status": "True"
+        }
+      ],
+      "nodeInfo": {
+        "architecture": "amd64",
+        "bootID": "69274748-1e41-44c5-9908-9d0a5402ef20",
+        "containerRuntimeVersion": "containerd://2.2.1",
+        "kernelVersion": "6.8.0-147-generic",
+        "kubeProxyVersion": "",
+        "kubeletVersion": "v1.36.5",
+        "machineID": "ece70563b8524c2d879cae24d031e2bb",
+        "operatingSystem": "linux",
+        "osImage": "Ubuntu 24.04.5 LTS",
+        "systemUUID": "ece70563-b852-4c2d-879c-ae24d031e2bb"
+      }
+    },
+    {
+      "name": "tidemq-worker-a",
+      "addresses": [
+        {
+          "address": "192.168.241.21",
+          "type": "InternalIP"
+        },
+        {
+          "address": "tidemq-worker-a",
+          "type": "Hostname"
+        }
+      ],
+      "capacity": {
+        "cpu": "4",
+        "ephemeral-storage": "7034376Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "memory": "4009152Ki",
+        "pods": "110"
+      },
+      "conditions": [
+        {
+          "type": "NetworkUnavailable",
+          "status": "False"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        },
+        {
+          "type": "PIDPressure",
+          "status": "False"
+        },
+        {
+          "type": "Ready",
+          "status": "True"
+        }
+      ],
+      "nodeInfo": {
+        "architecture": "amd64",
+        "bootID": "294df279-4d8e-4415-86d1-fb9345452b58",
+        "containerRuntimeVersion": "containerd://2.2.1",
+        "kernelVersion": "6.8.0-147-generic",
+        "kubeProxyVersion": "",
+        "kubeletVersion": "v1.36.5",
+        "machineID": "3bb94b98a7a14d6aa2fcb6229b983a89",
+        "operatingSystem": "linux",
+        "osImage": "Ubuntu 24.04.5 LTS",
+        "systemUUID": "3bb94b98-a7a1-4d6a-a2fc-b6229b983a89"
+      }
+    },
+    {
+      "name": "tidemq-worker-b",
+      "addresses": [
+        {
+          "address": "192.168.241.22",
+          "type": "InternalIP"
+        },
+        {
+          "address": "tidemq-worker-b",
+          "type": "Hostname"
+        }
+      ],
+      "capacity": {
+        "cpu": "4",
+        "ephemeral-storage": "15159300Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "memory": "4009160Ki",
+        "pods": "110"
+      },
+      "conditions": [
+        {
+          "type": "NetworkUnavailable",
+          "status": "False"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        },
+        {
+          "type": "PIDPressure",
+          "status": "False"
+        },
+        {
+          "type": "Ready",
+          "status": "True"
+        }
+      ],
+      "nodeInfo": {
+        "architecture": "amd64",
+        "bootID": "b7dd13e5-56bc-4e67-b983-2d65ec549413",
+        "containerRuntimeVersion": "containerd://2.2.1",
+        "kernelVersion": "6.8.0-147-generic",
+        "kubeProxyVersion": "",
+        "kubeletVersion": "v1.36.5",
+        "machineID": "41ad6c4d231749ef97236a576e9f6d49",
+        "operatingSystem": "linux",
+        "osImage": "Ubuntu 24.04.5 LTS",
+        "systemUUID": "41ad6c4d-2317-49ef-9723-6a576e9f6d49"
+      }
+    },
+    {
+      "name": "tidemq-worker-c",
+      "addresses": [
+        {
+          "address": "192.168.241.23",
+          "type": "InternalIP"
+        },
+        {
+          "address": "tidemq-worker-c",
+          "type": "Hostname"
+        }
+      ],
+      "capacity": {
+        "cpu": "4",
+        "ephemeral-storage": "15159300Ki",
+        "hugepages-1Gi": "0",
+        "hugepages-2Mi": "0",
+        "memory": "4009148Ki",
+        "pods": "110"
+      },
+      "conditions": [
+        {
+          "type": "NetworkUnavailable",
+          "status": "False"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        },
+        {
+          "type": "PIDPressure",
+          "status": "False"
+        },
+        {
+          "type": "Ready",
+          "status": "True"
+        }
+      ],
+      "nodeInfo": {
+        "architecture": "amd64",
+        "bootID": "e35036b7-09bf-45e7-b794-4356fb8fa460",
+        "containerRuntimeVersion": "containerd://2.2.1",
+        "kernelVersion": "6.8.0-147-generic",
+        "kubeProxyVersion": "",
+        "kubeletVersion": "v1.36.5",
+        "machineID": "27f5900d05d644ed99f8a84e4c27a244",
+        "operatingSystem": "linux",
+        "osImage": "Ubuntu 24.04.5 LTS",
+        "systemUUID": "27f5900d-05d6-44ed-99f8-a84e4c27a244"
+      }
+    }
+  ],
+  "pods": [
+    {
+      "name": "node-11-0",
+      "node": "tidemq-worker-a",
+      "ip": "10.244.3.58",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-12-0",
+      "node": "tidemq-worker-b",
+      "ip": "10.244.4.247",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-13-0",
+      "node": "tidemq-worker-c",
+      "ip": "10.244.5.131",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-21-0",
+      "node": "tidemq-worker-a",
+      "ip": "10.244.3.226",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-22-0",
+      "node": "tidemq-worker-b",
+      "ip": "10.244.4.213",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-23-0",
+      "node": "tidemq-worker-c",
+      "ip": "10.244.5.122",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-31-0",
+      "node": "tidemq-worker-a",
+      "ip": "10.244.3.214",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-32-0",
+      "node": "tidemq-worker-b",
+      "ip": "10.244.4.48",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-41-0",
+      "node": "tidemq-worker-a",
+      "ip": "10.244.3.24",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    },
+    {
+      "name": "node-42-0",
+      "node": "tidemq-worker-b",
+      "ip": "10.244.4.13",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
+          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a",
+          "ready": true,
+          "restartCount": 0
+        }
+      ]
+    }
+  ],
+  "services": [
+    {
+      "name": "mq",
+      "ip": "10.96.1.178",
+      "type": "LoadBalancer",
+      "ports": [
+        {
+          "name": "quic",
+          "nodePort": 31226,
+          "port": 7443,
+          "protocol": "UDP",
+          "targetPort": 7443
+        }
+      ],
+      "healthCheckNodePort": 32278,
+      "externalTrafficPolicy": "Local",
+      "ingress": [
+        {
+          "ip": "192.168.241.200",
+          "ipMode": "VIP"
+        }
+      ]
+    },
+    {
+      "name": "node-11",
+      "ip": "10.96.107.250",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-12",
+      "ip": "10.96.224.203",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-13",
+      "ip": "10.96.129.114",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-21",
+      "ip": "10.96.56.197",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-22",
+      "ip": "10.96.42.130",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-23",
+      "ip": "10.96.122.11",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-31",
+      "ip": "10.96.167.84",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-32",
+      "ip": "10.96.15.176",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-41",
+      "ip": "10.96.128.155",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    },
+    {
+      "name": "node-42",
+      "ip": "10.96.234.73",
+      "type": "ClusterIP",
+      "ports": [
+        {
+          "name": "peer",
+          "port": 7444,
+          "protocol": "UDP",
+          "targetPort": 7444
+        }
+      ],
+      "healthCheckNodePort": null,
+      "externalTrafficPolicy": null,
+      "ingress": null
+    }
+  ]
+}

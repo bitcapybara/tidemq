@@ -2,6 +2,8 @@
 
 本目录是已经选择的方案 A（KVM/libvirt + Ubuntu VM + kubeadm）的实施配置。机器为 `ssh dev`，物理地址 `192.168.126.8`。资源真值在 [inventory.json](inventory.json)，下载来源和校验值在 [binaries.json](binaries.json)。原来的开发计划不承担部署清单职责。
 
+实际部署快照与脱敏验收记录在 [evidence/2026-10-25/](evidence/2026-10-25/README.zh-CN.md)，记录中的时间使用 UTC。常驻 `tidemq-dev` 已部署；CI 使用独立的临时 namespace 和 RustFS 实例。
+
 实验室模拟独立 Linux 内核、节点磁盘、网络、Raft 副本和依赖故障。11 台 VM 共享一台物理机和一块 NVMe；软件拓扑测试不能证明物理可用区隔离、真实跨区延迟、宿主机断电或整块 NVMe 损坏时的行为。
 
 ## 1. 物理资源与 VM
@@ -45,6 +47,8 @@ Worker 挂载点为 `/var/lib/tidemq/storage` 和 `/var/lib/tidemq/metadata`。�
 
 MQ 入口采用 `externalTrafficPolicy: Local`，由有本地 gateway 的节点接流，避免入口再转到另一个节点的 UDP backend。[MetalLB 流量策略](https://metallb.io/usage/#traffic-policies)说明了 L2 模式的取舍；此模式的入口流量集中在当前公告节点，不能将两个 gateway 的 CPU 简单相加作为入口容量。
 
+常驻实例来自干净提交 `1ab8c17151aeee528f90fb68b5772254aad403b3`，镜像 `localhost/tidemq-lab:e6776e0e13a494afe040804d`。已创建 `validation` tenant 及其 `default` namespace，供 SDK 验收使用。Kubernetes 实际 Service IP、NodePort、容器镜像 digest 和节点状态见 [public-cluster-resources.json](evidence/2026-10-25/public-cluster-resources.json)。公网关的 Service IP 为 `10.96.1.178`，UDP NodePort `31226`，健康检查 TCP NodePort `32278`；这些 NodePort 没有作为外部入口发布。
+
 每个 namespace 独立创建 QUIC CA、节点证书、访问 token 和 cluster ID。配置由 [workload.mjs](../../scripts/lab/workload.mjs) 生成，沿用仓库已有的 RF3 配置生成器。私钥及含 Secret 的资源文件只保存在私有目录，禁止作为 GitHub artifact 上传。
 
 节点启动时通过 systemd 将 kubelet 排在 containerd 之后。故障恢复检查最多等待 110 秒，逐个访问 10 个角色的应用 `/readyz`；Node Ready 可能是重启前的旧状态，不能单独证明服务恢复。该基础设施等待耗时单独保存，之后才通知 SDK 开始原请求恢复。SDK 每次请求仍为 10 秒，原 Pending 恢复窗口仍为 60 秒，整个验证实例仍受原有总期限约束；接收暂态错误只重试原 Consumer，不创建替代消费者。
@@ -56,7 +60,7 @@ MQ 入口采用 `externalTrafficPolicy: Local`，由有本地 gateway 的节点�
 | 地址 | 用途 / 认证 |
 |---|---|
 | `https://s3.lab.tidemq.test:18443` | 公共 RustFS S3 API，独立 bucket 范围凭据 |
-| `https://rustfs.lab.tidemq.test:18445` | RustFS 管理页面，仅运维使用 root 管理凭据 |
+| `https://rustfs.lab.tidemq.test:18445/rustfs/console/index.html` | RustFS 管理页面，根路径会跳转到此处，仅运维使用 root 管理凭据 |
 | `https://grafana.lab.tidemq.test:18444` | Grafana 页面，admin + 私有密码 |
 | `https://metrics.lab.tidemq.test:18444` | Prometheus 查询 / 页面，reader + 私有密码，只放行 GET |
 | 同一 metrics 入口的 `/loki/api/v1/...` | Loki 只读查询 |
@@ -100,6 +104,8 @@ Kubernetes 节点通过最小只读 ACL 允许 `otelcol` 访问 CRI 日志，新
 
 应用 Pod 内的 sidecar 抓取 loopback OpenMetrics 和 OTLP traces，再通过 mTLS 发送到中央 Collector。原生 VM agent 提供 file_storage checkpoint 和持久发送队列；中央 Collector 也有持久队列。Pod sidecar 的队列有界但为内存队列，Pod 丢失时未导出的 telemetry 可能丢失，业务消息持久性不依赖 telemetry 队列。
 
+实验室 trace 采纳上限为每进程 16 spans/s，队列 128，批次 16，导出间隔 100 ms、超时 500 ms。批次容量覆盖采纳预算，避免健康状态下因为固定批次过小而持续丢弃。采样与丢弃是不同指标；export failure / discarded span 的告警保留。
+
 | 组件 | 版本 | 本地监听 | 持久化与保留 |
 |---|---|---|---|
 | OTel contrib agent / central | 0.163.2 | agent 127.0.0.1:4318；自监控管理 IP:8888；central 127.0.0.1:24318 / 8889 | agent `/var/lib/otelcol`；central `/srv/tidemq/collector-queue` |
@@ -112,15 +118,19 @@ Kubernetes 节点通过最小只读 ACL 允许 `otelcol` 访问 CRI 日志，新
 
 配置在 [observe/](observe)。Grafana 自动配置 Prometheus/Loki/Tempo 数据源和实验室 dashboard。日志、trace 与业务指标使用 service/instance/node/namespace 关联；CI namespace 保存在 structured metadata / resource attributes 中，不创建按消息 ID、Topic 名或任意 payload 增长的索引标签。
 
+直接打开 `https://grafana.lab.tidemq.test:18444/d/tidemq-lab` 查看 agent、后端、对象存储和按 namespace 过滤的应用状态。业务面板的 UID 分别是 `tidemq-runtime`、`tidemq-producer`、`tidemq-lifecycle`、`tidemq-scaling`；在同一 Grafana 的 `/d/UID` 路径访问。RustFS fixture 的 metrics/traces 也带有 `k8s.namespace.name=ci-RUN-ATTEMPT` 和对应的 `service.instance.id`，便于回查同一次故障。
+
 部署时复用仓库 `deploy/observability/alerts/` 与 `dashboards/` 中的 runtime、producer、object lifecycle、scaling 告警与面板；不复制维护第二套业务指标规则。
 
 告警覆盖后端不可用、VM agent 不可用、导出队列压力、磁盘剩余量。Alertmanager 将 firing/resolved 发到本机有界审计 webhook，便于验证完整告警链路；没有自动向人员发送消息。接入人员通知渠道需要另行配置和授权。
+
+常驻 MQ 还检查 10 个应用实例的 telemetry 是否齐全。OTLP 推送完全停止时，`up == 0` 本身不能发现缺失序列，因此另有 absence 检查；临时 CI namespace 的删除不会触发这条常驻服务告警。
 
 本地开发允许默认 nop tracing、stdout logging 和按需 metrics；CI 要求三类信号实际存储并可查询。正式生产应保持相同协议与字段，并采用独立故障域、HA 后端、持久存储、访问控制和经过容量评估的保留策略。本实验室的单体后端是测试实现，不是生产 HA 配额。
 
 ## 6. Runner 和 CI
 
-GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 21，标签 `self-hosted, Linux, X64, tidemq-dev`，运行在独立 runner VM 的 actions 用户下。Docker 仅位于该 VM，不挂载宿主 Docker / libvirt socket。
+GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 21，标签 `self-hosted, Linux, X64, tidemq-dev`，运行在独立 runner VM 的 actions 用户下。CI 的 Docker 位于 runner VM，不挂载宿主 Docker / libvirt socket。observe VM 用 Docker Compose 运行观测后端，宿主 Docker 仅用于准备固定工具链 bundle。
 
 | 路径 | 内容 |
 |---|---|
@@ -187,6 +197,20 @@ bash scripts/lab/deploy-workload.sh tidemq-dev PRIVATE_BUILD \
 `deploy-workload.sh` 会导入固定镜像、创建资源并等待全部角色 Ready。它要求新 namespace / 输出目录；重部署已有持久实例应先保存数据和身份材料，再按变更策略操作，不能直接删除公共 namespace 作为日常升级方式。
 
 公共服务私密材料在宿主 `/var/lib/tidemq-lab/private/credentials/`：`kubernetes.toml`、`devices.toml`、`grafana-password`、`metrics-password`。TLS 客户端材料在 `private/tls/`；发给外部设备时只提供对应客户端证书、私钥和 CA，不提供 CA 签名私钥。QUIC 客户端只取该 workload 的 `ca.pem` 和 `access.token`，不取节点私钥。
+
+常驻 MQ 的完整身份备份在宿主 `/var/lib/tidemq-lab/private/workloads/tidemq-dev/`，客户端只需其中 `workload/material/ca.pem` 与 `access.token`。loadgen VM 已有 `/srv/tidemq/public-dev/{tidemq,deploy_validation,ca.pem,access.token}`。例如，以私有客户端目录保存这两个文件后，在本机执行：
+
+```bash
+cargo build --locked --bin tidemq --example deploy_validation
+target/debug/examples/deploy_validation --endpoint 192.168.126.8:17443 \
+  --ca PRIVATE_CLIENT_DIRECTORY/ca.pem \
+  --token-file PRIVATE_CLIENT_DIRECTORY/access.token \
+  --messages 64 --output-dir NEW_PRIVATE_RESULT_DIRECTORY
+```
+
+结果目录必须尚不存在，父目录由使用者创建。两个验收位置（loadgen VM 与这台 Mac 的局域网/VPN 入口）均已完成 64 条消息的发送、接收和持久 ACK。
+
+服务入口 TLS 叶证书有效期 365 天，本批 storage 证书在 2027-10-25 UTC 到期。工作负载 QUIC 节点叶证书有效期 30 天，本批常驻实例在 **2026-11-24 16:01:30 UTC** 到期；CI 每次新建独立证书。当前未部署证书自动续期，常驻实例持续使用前需安排证书轮换；不得通过重新生成 cluster ID、token 或删除数据来代替轮换。可在宿主用 `openssl x509 -in /var/lib/tidemq-lab/private/workloads/tidemq-dev/workload/material/node-11.pem -noout -enddate` 检查日期。
 
 恢复 / 初始化脚本的顺序为：`provision-host.sh` → `prepare-nodes.sh` → `bootstrap-kubernetes.sh` → `install-kubernetes-addons.sh` → `prepare-infra.sh` → `create-certificates.sh` → `deploy-agents.sh` → `deploy-backends.sh` → `prepare-fixture-host.sh` → `install-host-control.sh` → `prepare-runner-assets.sh` → `deploy-runner.sh` → `register-runner.sh`。先阅读各脚本参数；不要为修复单个组件重跑整套初始化。首次准备工具先执行 `download-tools.sh`。注册 token 是短期凭据，禁止写进仓库。
 

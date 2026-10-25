@@ -1,0 +1,277 @@
+{
+  "schema_version": 2,
+  "status": "passed",
+  "configuration": {
+    "allocator": "system",
+    "batch_messages": 8,
+    "consumer_credit_bytes": 4194304,
+    "consumer_credit_messages": 256,
+    "consumer_instances": 1,
+    "endpoint": "192.168.241.200:7443",
+    "host_wait_timeout_seconds": 120,
+    "message_bytes": 1024,
+    "messages": 64,
+    "producer_workers": 1,
+    "recovery_attempt_bound": 300,
+    "recovery_timeout_seconds": 60,
+    "replay_settle_ms": 0,
+    "request_timeout_ms": 10000,
+    "require_unavailable": false,
+    "retry_delay_ms": 200,
+    "stage_fault": false,
+    "total_timeout_seconds": 180
+  },
+  "ledger": {
+    "expected": 64,
+    "committed": 64,
+    "received": 64,
+    "acknowledged": 64,
+    "frontier": 64
+  },
+  "topic_id": "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce",
+  "subscription_id": "01a173cb-e7a7-7fdd-836a-b44e045997c2",
+  "replay_started_after_publish": false,
+  "original_consumer_reused": true,
+  "batches": [
+    {
+      "first_sequence": 0,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:0",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:7",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:4",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:2",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:3",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:5",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:1",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:6"
+      ]
+    },
+    {
+      "first_sequence": 8,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:8",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:11",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:14",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:12",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:10",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:13",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:9",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:15"
+      ]
+    },
+    {
+      "first_sequence": 16,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:16",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:21",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:23",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:17",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:20",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:22",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:18",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:19"
+      ]
+    },
+    {
+      "first_sequence": 24,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:24",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:30",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:29",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:25",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:26",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:28",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:31",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:27"
+      ]
+    },
+    {
+      "first_sequence": 32,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:33",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:34",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:36",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:39",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:35",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:37",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:38",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:32"
+      ]
+    },
+    {
+      "first_sequence": 40,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:41",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:42",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:44",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:40",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:47",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:46",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:43",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:45"
+      ]
+    },
+    {
+      "first_sequence": 48,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:48",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:50",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:51",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:55",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:54",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:49",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:52",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:53"
+      ]
+    },
+    {
+      "first_sequence": 56,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:56",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:59",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:61",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:62",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:58",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:63",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:60",
+        "01a173cb-e6ce-71b8-bc8a-e40b56dbf7ce:8b7256ee-e76e-41a8-b80c-166e401fca46:57"
+      ]
+    }
+  ],
+  "phases": [
+    {
+      "phase": "connecting",
+      "unix_ms": 1792944105043,
+      "elapsed_ms": 1
+    },
+    {
+      "phase": "creating_queue",
+      "unix_ms": 1792944105166,
+      "elapsed_ms": 124
+    },
+    {
+      "phase": "initial_production",
+      "unix_ms": 1792944106272,
+      "elapsed_ms": 1230
+    },
+    {
+      "phase": "initial_consumption",
+      "unix_ms": 1792944107402,
+      "elapsed_ms": 2360
+    },
+    {
+      "phase": "initial_complete",
+      "unix_ms": 1792944110603,
+      "elapsed_ms": 5561
+    },
+    {
+      "phase": "ledger_complete",
+      "unix_ms": 1792944110882,
+      "elapsed_ms": 5840
+    },
+    {
+      "phase": "validation_finished",
+      "unix_ms": 1792944110886,
+      "elapsed_ms": 5843
+    }
+  ],
+  "last_phase": "validation_finished",
+  "failure_phase": null,
+  "failure_sdk_error": null,
+  "ack_unknown_retries": 0,
+  "receive_retries": 0,
+  "last_receive_error": null,
+  "sdk_before": {
+    "acknowledged": 0,
+    "active_deliveries": 0,
+    "admission_wait_ns": 0,
+    "admitted_bytes": 0,
+    "deliveries": 0,
+    "pending_sends": 0,
+    "request_duration_ns": 0,
+    "requests": 0,
+    "retries": 0,
+    "unknown": 0
+  },
+  "sdk_after": {
+    "acknowledged": 64,
+    "active_deliveries": 0,
+    "admission_wait_ns": 52208,
+    "admitted_bytes": 0,
+    "deliveries": 64,
+    "pending_sends": 0,
+    "request_duration_ns": 15435980102,
+    "requests": 254,
+    "retries": 1,
+    "unknown": 0
+  },
+  "transport_after": {
+    "active_connections": 3,
+    "bytes_received_total": 89804,
+    "bytes_sent_total": 98892,
+    "connections_total": 3,
+    "data_blocked_frames_total": 0,
+    "deadlines_total": 0,
+    "frames_received_total": 257,
+    "frames_sent_total": 254,
+    "liveness_failures_total": 0,
+    "liveness_probes_total": 9,
+    "malformed_total": 0,
+    "packets_lost_total": 0,
+    "rejected_total": 0,
+    "send_wait_ns_total": 5221985,
+    "stream_data_blocked_frames_total": 0,
+    "streams_blocked_frames_total": 0,
+    "streams_total": 12,
+    "tls_failed_total": 0
+  },
+  "client_close_completed": true
+}
