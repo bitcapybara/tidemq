@@ -1,8 +1,11 @@
 #[cfg(test)]
 #[path = "../../tests/scalable_support/data_quotas.rs"]
 mod tests;
+#[path = "tenant_quota/traffic.rs"]
+mod traffic;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
+use traffic::Traffic;
 
 use super::{DataApplication, DataRejection, DataResponse, PartitionState, WriterFence};
 use crate::metadata::{PartitionKey, QuotaCapacity, QuotaGrant};
@@ -65,6 +68,14 @@ impl RateState {
     }
 }
 
+fn rate_required(state: RateState, rate: u64, bytes: u64, now_ms: u64) -> u64 {
+    if state.refill(rate, now_ms).available < bytes {
+        bytes.max(rate.saturating_mul(2))
+    } else {
+        bytes
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(super) struct TenantQuotaState {
     pub grant: QuotaGrant,
@@ -73,6 +84,9 @@ pub(super) struct TenantQuotaState {
     consume: RateState,
     publish_activated: bool,
     consume_activated: bool,
+    publish_traffic: Traffic,
+    consume_traffic: Traffic,
+    rate_updated_ms: u64,
 }
 
 impl TenantQuotaState {
@@ -86,6 +100,9 @@ impl TenantQuotaState {
             consume: RateState::new(grant.capacity.consume_bytes_per_second, now_ms),
             publish_activated: grant.capacity.publish_bytes_per_second > 0,
             consume_activated: grant.capacity.consume_bytes_per_second > 0,
+            publish_traffic: Traffic::new(now_ms),
+            consume_traffic: Traffic::new(now_ms),
+            rate_updated_ms: now_ms,
             grant,
         })
     }
@@ -130,6 +147,15 @@ impl TenantQuotaState {
             self.publish_activated || grant.capacity.publish_bytes_per_second > 0;
         let consume_activated =
             self.consume_activated || grant.capacity.consume_bytes_per_second > 0;
+        let rates_changed = grant.capacity.publish_bytes_per_second
+            != self.grant.capacity.publish_bytes_per_second
+            || grant.capacity.consume_bytes_per_second
+                != self.grant.capacity.consume_bytes_per_second;
+        let rate_updated_ms = if rates_changed {
+            now_ms.max(self.last_activity_ms).max(self.rate_updated_ms)
+        } else {
+            self.rate_updated_ms
+        };
         Ok(Self {
             grant,
             last_activity_ms: self.last_activity_ms,
@@ -137,6 +163,9 @@ impl TenantQuotaState {
             consume,
             publish_activated,
             consume_activated,
+            publish_traffic: self.publish_traffic,
+            consume_traffic: self.consume_traffic,
+            rate_updated_ms,
         })
     }
 
@@ -160,8 +189,9 @@ impl TenantQuotaState {
             .reserve(self.grant.capacity.publish_bytes_per_second, bytes, now_ms)
     }
 
-    pub fn commit_publish(&mut self, next: RateState) {
+    pub fn commit_publish(&mut self, next: RateState, bytes: u64) {
         self.last_activity_ms = self.last_activity_ms.max(next.last_ms);
+        self.publish_traffic.record(bytes, next.last_ms);
         self.publish = next;
     }
 
@@ -200,8 +230,26 @@ impl TenantQuotaState {
         // Selection is bounded by read_budget in the same data Raft application step.
         self.consume.available = self.consume.available.saturating_sub(bytes);
         if bytes > 0 {
-            self.last_activity_ms = self.last_activity_ms.max(now_ms);
+            self.last_activity_ms = self.last_activity_ms.max(self.consume.last_ms);
+            self.consume_traffic.record(bytes, self.consume.last_ms);
         }
+    }
+
+    fn rates(&self, now_ms: u64) -> QuotaCapacity {
+        QuotaCapacity {
+            publish_bytes_per_second: self.publish_traffic.recent(now_ms),
+            consume_bytes_per_second: self.consume_traffic.recent(now_ms),
+            ..Default::default()
+        }
+    }
+
+    pub(super) fn consume_rate_required(&self, bytes: u64, now_ms: u64) -> u64 {
+        rate_required(
+            self.consume,
+            self.grant.capacity.consume_bytes_per_second,
+            bytes,
+            now_ms,
+        )
     }
 
     pub fn validate(&self) -> Result<(), QuotaRejection> {
@@ -210,6 +258,8 @@ impl TenantQuotaState {
             || self.consume.available > self.grant.capacity.consume_bytes_per_second
             || self.publish.remainder >= 1_000
             || self.consume.remainder >= 1_000
+            || !self.publish_traffic.valid(self.last_activity_ms)
+            || !self.consume_traffic.valid(self.last_activity_ms)
         {
             return Err(QuotaRejection::InvalidGrant);
         }
@@ -241,6 +291,14 @@ impl PartitionState {
 }
 
 impl DataApplication {
+    pub(crate) fn quota_rate_demand(
+        &self,
+        partition: PartitionKey,
+        now_ms: u64,
+    ) -> Option<(QuotaCapacity, u64)> {
+        let quota = self.partitions.get(&partition)?.quota.as_ref()?;
+        Some((quota.rates(now_ms), quota.rate_updated_ms))
+    }
     pub(crate) fn quota_partitions(&self, after: Option<PartitionKey>) -> Vec<PartitionKey> {
         self.partitions
             .keys()
@@ -266,6 +324,7 @@ impl DataApplication {
         &self,
         partition: PartitionKey,
         request: &crate::producer::PublishRequest,
+        now_ms: u64,
     ) -> Result<Option<QuotaCapacity>, DataRejection> {
         let state = self
             .partitions
@@ -296,7 +355,14 @@ impl DataApplication {
         };
         Ok(Some(QuotaCapacity {
             backlog_bytes,
-            publish_bytes_per_second: bytes,
+            publish_bytes_per_second: state.quota.as_ref().map_or(bytes, |quota| {
+                rate_required(
+                    quota.publish,
+                    quota.grant.capacity.publish_bytes_per_second,
+                    bytes,
+                    now_ms,
+                )
+            }),
             ..Default::default()
         }))
     }

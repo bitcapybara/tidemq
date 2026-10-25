@@ -640,7 +640,9 @@ impl DataApplication {
                 .inflight_messages
                 .checked_add(1)
                 .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?,
-            consume_bytes_per_second: bytes,
+            consume_bytes_per_second: state.quota.as_ref().map_or(bytes, |quota| {
+                quota.consume_rate_required(bytes, request.now_ms)
+            }),
             ..Default::default()
         }))
     }

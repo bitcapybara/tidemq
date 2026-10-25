@@ -156,7 +156,7 @@ impl DataApplication {
             .map_err(DataRejection::Producer)?;
         state.birth = Some(birth);
         if !result.duplicate {
-            quota.commit_publish(rate);
+            quota.commit_publish(rate, bytes);
             self.hot_bytes = self
                 .hot_bytes
                 .saturating_add(state.producer.hot_bytes().saturating_sub(before));

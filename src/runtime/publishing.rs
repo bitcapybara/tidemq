@@ -264,12 +264,15 @@ impl Service {
                     .into(),
             },
         };
+        let demand_now_ms = super::data::unix_millis()?;
         let demand = self
             .data
             .get(&route.group_id)
             .ok_or_else(Error::unavailable)?
             .state
-            .try_with_application(|state| state.publish_quota_demand(route.partition, &publish))
+            .try_with_application(|state| {
+                state.publish_quota_demand(route.partition, &publish, demand_now_ms)
+            })
             .await
             .map_err(|source| Error::operation("read tenant publish quota demand", source))?
             .map_err(super::data::data_rejection)?;

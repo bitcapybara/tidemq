@@ -19,6 +19,10 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+#[path = "../../tests/scalable_support/quota_policy.rs"]
+mod tests;
+
 pub(super) const CONTROL: u32 = 1_005;
 pub(super) const DATA: u32 = 1_006;
 
@@ -59,6 +63,9 @@ struct DataStatus {
     grant: Option<QuotaGrant>,
     usage: QuotaCapacity,
     last_activity_ms: Option<u64>,
+    rates: QuotaCapacity,
+    rate_updated_ms: Option<u64>,
+    now_ms: u64,
 }
 
 impl Service {
@@ -123,20 +130,9 @@ impl Service {
             if data.grant.as_ref() != Some(installed) {
                 return Err(Error::unavailable());
             }
-            let idle = data
-                .last_activity_ms
-                .is_some_and(|last| status.now_ms.saturating_sub(last) >= 5_000);
-            let (capacity, frozen) =
-                if installed.frozen && (installed.capacity != data.usage || !status.suspended) {
-                    (data.usage, status.suspended)
-                } else if status.suspended && !installed.frozen {
-                    (installed.capacity, true)
-                } else if idle && installed.capacity != data.usage {
-                    // Stop new use before measuring and returning credit to another authority.
-                    (installed.capacity, true)
-                } else {
-                    return Ok(());
-                };
+            let Some((capacity, frozen)) = reclaim_allocation(&status, &data, installed) else {
+                return Ok(());
+            };
             let ControlReply::Grant(grant) = self
                 .quota_control(
                     &ControlRequest::Prepare(AllocationRequest {
@@ -449,6 +445,7 @@ impl Service {
         wire::within(deadline, replica.raft.ensure_linearizable())
             .await?
             .map_err(|_| Error::unavailable())?;
+        let now_ms = super::data::unix_millis()?;
         let status = replica
             .state
             .try_with_application(|state| {
@@ -459,6 +456,13 @@ impl Service {
                         .tenant_quota_usage(partition)
                         .map_err(super::data::data_rejection)?,
                     last_activity_ms: state.quota_last_activity(partition),
+                    rates: state
+                        .quota_rate_demand(partition, now_ms)
+                        .map_or_default(|(rates, _)| rates),
+                    rate_updated_ms: state
+                        .quota_rate_demand(partition, now_ms)
+                        .map(|(_, updated)| updated),
+                    now_ms,
                 })
             })
             .await
@@ -637,6 +641,60 @@ fn exhausted() -> Error {
     Error::reject(ErrorCode::QuotaExceeded, Outcome::Rejected, true)
 }
 
+fn reclaim_target(data: &DataStatus, grant: &QuotaGrant, idle: bool) -> QuotaCapacity {
+    let mut retained = data.usage;
+    if !idle {
+        retained.publish_bytes_per_second = data
+            .rates
+            .publish_bytes_per_second
+            .min(grant.capacity.publish_bytes_per_second);
+        retained.consume_bytes_per_second = data
+            .rates
+            .consume_bytes_per_second
+            .min(grant.capacity.consume_bytes_per_second);
+    }
+    retained
+}
+
+fn reclaim_allocation(
+    status: &Status,
+    data: &DataStatus,
+    installed: &QuotaGrant,
+) -> Option<(QuotaCapacity, bool)> {
+    let idle = data
+        .last_activity_ms
+        .is_some_and(|last| status.now_ms.saturating_sub(last) >= 5_000);
+    let retained = reclaim_target(data, installed, idle || status.suspended);
+    let rate_excess = data
+        .rate_updated_ms
+        .is_some_and(|updated| data.now_ms.saturating_sub(updated) >= 10_000)
+        && (retained.publish_bytes_per_second < installed.capacity.publish_bytes_per_second / 2
+            || retained.consume_bytes_per_second < installed.capacity.consume_bytes_per_second / 2);
+    if installed.frozen && (installed.capacity != retained || !status.suspended) {
+        Some((retained, status.suspended))
+    } else if status.suspended && !installed.frozen
+        || (idle || rate_excess) && installed.capacity != retained
+    {
+        // Freeze before a fresh measurement can return credit to another authority.
+        Some((installed.capacity, true))
+    } else {
+        None
+    }
+}
+
+fn grow_rate(previous: u64, required: u64, maximum: u64) -> u64 {
+    if previous >= required {
+        previous
+    } else if previous > 0 {
+        required.max(previous.saturating_mul(2)).min(maximum)
+    } else {
+        required
+            .div_ceil(1024 * 1024)
+            .saturating_mul(1024 * 1024)
+            .min(maximum)
+    }
+}
+
 fn grow(
     previous: QuotaCapacity,
     demand: QuotaCapacity,
@@ -674,17 +732,15 @@ fn grow(
             maximum.inflight_messages,
             64,
         ),
-        publish_bytes_per_second: next(
+        publish_bytes_per_second: grow_rate(
             previous.publish_bytes_per_second,
             demand.publish_bytes_per_second,
             maximum.publish_bytes_per_second,
-            1024 * 1024,
         ),
-        consume_bytes_per_second: next(
+        consume_bytes_per_second: grow_rate(
             previous.consume_bytes_per_second,
             demand.consume_bytes_per_second,
             maximum.consume_bytes_per_second,
-            1024 * 1024,
         ),
         cold_reads: next(
             previous.cold_reads,

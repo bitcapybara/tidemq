@@ -26,7 +26,7 @@ fn grant(version: u64, rate: u64) -> crate::metadata::QuotaGrant {
 fn each_rate_dimension_receives_its_initial_burst_only_once_even_after_idle_credit_reclamation() {
     let quota = TenantQuotaState::new(grant(1, 0), 0).unwrap();
     let mut quota = quota.update(grant(2, 100), Default::default(), 0).unwrap();
-    quota.commit_publish(quota.publish(0, false, 80, 0).unwrap());
+    quota.commit_publish(quota.publish(0, false, 80, 0).unwrap(), 80);
     quota.commit_consume(80, 0);
     assert_eq!(quota.read_budget(Default::default(), 0).unwrap().bytes, 20);
     let quota = quota.update(grant(3, 0), Default::default(), 0).unwrap();
@@ -40,6 +40,44 @@ fn each_rate_dimension_receives_its_initial_burst_only_once_even_after_idle_cred
         quota.read_budget(Default::default(), 100).unwrap().bytes,
         10
     );
+}
+
+#[test]
+fn recent_rate_demand_is_bounded_persistent_and_expires_independently_per_dimension() {
+    let mut quota = TenantQuotaState::new(grant(1, 1_000), 0).unwrap();
+    quota.commit_publish(quota.publish(0, false, 100, 100).unwrap(), 100);
+    quota.commit_consume(200, 1_100);
+    assert_eq!(quota.rates(1_200).publish_bytes_per_second, 100);
+    assert_eq!(quota.rates(1_200).consume_bytes_per_second, 200);
+    let mut renewed = grant(2, 1_000);
+    renewed.capacity.backlog_bytes += 1;
+    let quota = quota.update(renewed, Default::default(), 10_000).unwrap();
+    assert_eq!(
+        quota.rate_updated_ms, 0,
+        "Non-rate grants cannot indefinitely delay active reclamation"
+    );
+    let recovered: TenantQuotaState =
+        postcard::from_bytes(&postcard::to_stdvec(&quota).unwrap()).unwrap();
+    recovered.validate().unwrap();
+    assert_eq!(recovered.rates(2_200).publish_bytes_per_second, 0);
+    assert_eq!(recovered.rates(2_200).consume_bytes_per_second, 200);
+    assert_eq!(recovered.rates(3_200), QuotaCapacity::default());
+    assert_eq!(recovered.rates(0).publish_bytes_per_second, 100);
+}
+
+#[test]
+fn exhausted_rate_hints_allow_regrowth_without_minting_credit_or_throttling_funded_requests() {
+    let mut quota = TenantQuotaState::new(grant(1, 100), 0).unwrap();
+    assert_eq!(rate_required(quota.publish, 100, 80, 0), 80);
+    quota.commit_publish(quota.publish(0, false, 80, 0).unwrap(), 80);
+    assert_eq!(rate_required(quota.publish, 100, 21, 0), 200);
+    assert_eq!(rate_required(quota.publish, 100, 21, 100), 21);
+    let quota = quota.update(grant(2, 200), Default::default(), 0).unwrap();
+    assert_eq!(
+        quota.publish(0, false, 21, 0),
+        Err(QuotaRejection::Exhausted)
+    );
+    assert_eq!(quota.rates(0).publish_bytes_per_second, 80);
 }
 
 #[test]
@@ -70,7 +108,7 @@ fn rate_reservations_only_commit_with_the_operation_and_quota_replays_do_not_ref
     let mut quota = TenantQuotaState::new(grant(1, 100), 1).unwrap();
     let reserved = quota.publish(0, false, 80, 1).unwrap();
     assert!(quota.publish(0, false, 100, 1).is_ok());
-    quota.commit_publish(reserved);
+    quota.commit_publish(reserved, 80);
     assert_eq!(
         quota.publish(0, false, 21, 1),
         Err(QuotaRejection::Exhausted)

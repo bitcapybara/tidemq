@@ -3,6 +3,130 @@ use std::collections::HashSet;
 use tidemq_sdk::{Credentials, Permission, PolicyUpdate, ResourceLimits, TlsTrust};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn active_small_domains_return_unused_rate_slices_and_preserve_committed_messages() {
+    let fixture = dynamic_fixture().await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("fair").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    client
+        .admin()
+        .set_tenant_limits(
+            tenant,
+            ResourceLimits::builder()
+                .publish_bytes_per_second(2 * 1024 * 1024)
+                .consume_bytes_per_second(2 * 1024 * 1024)
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut producers = Vec::new();
+    let mut queues = Vec::new();
+    for index in 0..3 {
+        let topic = format!("fair/app/small-{index}");
+        client.admin().create_topic(&topic).await.unwrap();
+        queues.push(
+            client
+                .new_queue_consumer(&topic, "jobs")
+                .build()
+                .await
+                .unwrap(),
+        );
+        producers.push(client.new_producer(&topic).build().await.unwrap());
+    }
+    let (stop, _) = tokio::sync::watch::channel(false);
+    let mut workers = Vec::new();
+    for producer in producers.iter().take(2) {
+        let first = producer.send("active").await.unwrap().message_id();
+        let producer = producer.clone();
+        let mut stop = stop.subscribe();
+        workers.push(tokio::spawn(async move {
+            let mut ids = vec![first];
+            loop {
+                tokio::select! {
+                    _ = stop.changed() => break,
+                    _ = tokio::time::sleep(Duration::from_millis(200)) => {},
+                }
+                ids.push(logical_send(&producer, b"active").await);
+            }
+            ids
+        }));
+    }
+    let third = producers.get(2).unwrap().clone();
+    let sender = third.clone();
+    let sending = tokio::spawn(async move {
+        let until = Instant::now() + Duration::from_secs(25);
+        let mut pending: Option<tidemq_sdk::PendingSend> = None;
+        loop {
+            let result = tidemq_sdk::RequestContext::with_deadline(
+                until.min(Instant::now() + Duration::from_secs(2)),
+            )
+            .scope(async {
+                match &pending {
+                    Some(pending) => pending.retry().await,
+                    None => sender.send("waiting").await,
+                }
+            })
+            .await;
+            match result {
+                Ok(receipt) => break receipt.message_id(),
+                Err(error) => {
+                    assert!(
+                        Instant::now() < until,
+                        "Rate credit was not returned: {error:?}"
+                    );
+                    if error.outcome_unknown() {
+                        let retained = sender.pending_sends().await.unwrap();
+                        assert_eq!(retained.len(), 1);
+                        pending = retained.into_iter().next();
+                    } else {
+                        assert!(
+                            matches!(
+                                error.kind(),
+                                tidemq_sdk::ErrorKind::Unavailable
+                                    | tidemq_sdk::ErrorKind::ResourceExhausted
+                                    | tidemq_sdk::ErrorKind::DeadlineExceeded
+                            ),
+                            "Unexpected send rejection: {error:?}"
+                        );
+                        pending = None;
+                    }
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            }
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !sending.is_finished(),
+        "The other domains still hold the rate slices"
+    );
+    let identity = sending.await.unwrap();
+    stop.send(true).unwrap();
+    for (worker, queue) in workers.into_iter().zip(&queues) {
+        let ids = worker.await.unwrap();
+        assert!(
+            ids.len() > 3,
+            "The original domains must stay active while rate credit is reclaimed"
+        );
+        logical_consume(queue, &ids, b"active").await;
+    }
+    logical_consume(queues.get(2).unwrap(), &[identity], b"waiting").await;
+    for queue in queues {
+        queue.close().await.unwrap();
+    }
+    for producer in producers {
+        producer.close().await.unwrap();
+    }
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lowering_backlog_below_usage_fences_new_writes_and_preserves_ack_and_original_result_recovery()
  {
     let mut fixture = dynamic_fixture().await;
