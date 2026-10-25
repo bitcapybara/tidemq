@@ -6,7 +6,7 @@ storage:
   tsdb: {out_of_order_time_window: 5m}
 otlp:
   promote_resource_attributes: [service.name, service.instance.id, service.namespace, deployment.environment.name, k8s.namespace.name, k8s.pod.name, tidemq.node.id]
-rule_files: [/config/rules.yaml]
+rule_files: [/config/rules.yaml, '/config/alerts/*.yml']
 alerting:
   alertmanagers: [{static_configs: [{targets: ['127.0.0.1:9093']}]}]
 scrape_configs:
@@ -21,4 +21,5 @@ scrape_configs:
       - targets: ['127.0.0.1:9090', '127.0.0.1:3100', '127.0.0.1:3200', '127.0.0.1:9093', '127.0.0.1:3000', '127.0.0.1:8889']
   - job_name: lab-agents
     static_configs:
+      - targets: ['192.168.240.1:8888']
       - targets: ['192.168.240.11:8888', '192.168.240.12:8888', '192.168.240.13:8888', '192.168.240.21:8888', '192.168.240.22:8888', '192.168.240.23:8888', '192.168.240.31:8888', '192.168.240.32:8888', '192.168.240.33:8888', '192.168.240.34:8888', '192.168.240.35:8888']

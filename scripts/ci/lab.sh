@@ -11,16 +11,28 @@ source scripts/lab/guest.sh
 run="ci-${GITHUB_RUN_ID:-$(date +%s)}-${GITHUB_RUN_ATTEMPT:-1}"
 [[ "$run" =~ ^ci-[0-9]+-[0-9]+$ ]] || exit 2
 private="$TIDEMQ_LAB_HOME/runs/$run"
-report="$PWD/target/ci/lab-report"
+report="$PWD/target/ci/lab-report/$run"
 load_root="/srv/tidemq/validation/$run"
 validator_pid=
 [[ ! -e "$private" ]] || { printf 'Use a new CI run identity\n' >&2; exit 1; }
 mkdir -m 0700 -p "$private" "$report"
 host_control() { ssh -n -F "$TIDEMQ_LAB_HOME/ssh_config" lab-host "$*"; }
-kube() { kubectl --namespace "$run" "$@"; }
+kube() { kubectl --request-timeout=15s --namespace "$run" "$@"; }
+wait_runtime() {
+  local end=$((SECONDS + 90)) id
+  for id in 11 12 13 21 22 23 31 32 41 42; do
+    until kube exec "node-$id-0" -c tidemq -- curl --fail --silent --max-time 1 http://127.0.0.1:9419/readyz >> "$report/readiness.log" 2>&1; do
+      (( SECONDS < end )) || { printf 'Runtime readiness did not recover within 90 seconds\n' >&2; return 1; }
+      sleep 1
+    done
+  done
+}
 cleanup() {
   local result=$? cleanup_result=0
   trap - EXIT
+  for file in build.log source-commit.txt source-patch-sha256.txt toolchain.txt sha256.txt image-id.txt; do
+    [[ ! -f "$private/build/$file" ]] || cp "$private/build/$file" "$report/$file"
+  done
   if [[ -n "$validator_pid" ]]; then kill "$validator_pid" 2>/dev/null || true; wait "$validator_pid" 2>/dev/null || true; fi
   lab_ssh tidemq-loadgen pkill -TERM -f "^$load_root/deploy_validation( |$)" >/dev/null 2>&1 || true
   for vm in tidemq-cp-{a,b,c} tidemq-worker-{a,b,c} tidemq-fixtures tidemq-loadgen; do host_control restore "$vm" 5 >> "$report/cleanup.log" 2>&1 || cleanup_result=1; done
@@ -35,7 +47,7 @@ cleanup() {
   else cleanup_result=1; fi
   lab_ssh tidemq-fixtures sudo /usr/local/sbin/tidemq-fixtures remove "$run" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
   scp -q -r -i "$TIDEMQ_LAB_KEY" -o "UserKnownHostsFile=$TIDEMQ_LAB_KNOWN_HOSTS" "lab@192.168.240.35:$load_root/results/." "$report/" >> "$report/cleanup.log" 2>&1 || true
-  lab_ssh tidemq-loadgen rm -rf -- "$load_root" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
+  lab_ssh tidemq-loadgen sudo rm -rf -- "$load_root" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
   rm -rf -- "$private"
   (( cleanup_result == 0 )) || result=1
   printf '{"exitCode":%s,"cleanupExitCode":%s}\n' "$result" "$cleanup_result" > "$report/result.json"
@@ -47,7 +59,7 @@ trap 'exit 143' TERM
 host_control status > "$report/vms-before.txt"
 kubectl get nodes -o json > "$report/nodes-before.json"
 bash scripts/lab/build-image.sh "$private/build"
-cp "$private/build/source-commit.txt" "$private/build/toolchain.txt" "$private/build/sha256.txt" "$private/build/image-id.txt" "$report/"
+cp "$private/build/source-commit.txt" "$private/build/source-patch-sha256.txt" "$private/build/toolchain.txt" "$private/build/sha256.txt" "$private/build/image-id.txt" "$report/"
 lab_ssh tidemq-fixtures sudo /usr/local/sbin/tidemq-fixtures create "$run" > "$report/fixtures-create.log" 2>&1
 lab_fetch tidemq-fixtures "/srv/tidemq/fixtures/$run/a/credentials.toml" "$private/objects.toml"
 bash scripts/lab/deploy-workload.sh "$run" "$private/build" https://192.168.241.34:36443 "$private/objects.toml" "$private/workload" > "$report/deploy.log" 2>&1
@@ -55,9 +67,13 @@ validator="$private/build/bin/deploy_validation"
 material="$private/workload/material"
 lab_ssh tidemq-loadgen sudo install -d -m 0700 -o lab -g lab "$load_root" "$load_root/results"
 lab_copy tidemq-loadgen "$validator" "$load_root/deploy_validation"
+lab_copy tidemq-loadgen "$private/build/bin/tidemq" "$load_root/tidemq"
 lab_copy tidemq-loadgen "$material/ca.pem" "$load_root/ca.pem"
 lab_copy tidemq-loadgen "$material/access.token" "$load_root/access.token"
-common=(--endpoint 192.168.241.201:7443 --ca "$load_root/ca.pem" --token-file "$load_root/access.token" --messages 64)
+connection=(--endpoint 192.168.241.201:7443 --ca "$load_root/ca.pem" --token-file "$load_root/access.token")
+common=("${connection[@]}" --messages 64)
+tenant=$(lab_ssh tidemq-loadgen "$load_root/tidemq" admin "${connection[@]}" create-tenant validation | jq -er '.result.id')
+lab_ssh tidemq-loadgen "$load_root/tidemq" admin "${connection[@]}" create-namespace "$tenant" default > "$report/namespace-created.json"
 smoke() {
   local name=$1
   shift
@@ -97,6 +113,7 @@ staged_fault() {
   mkdir -p "$report/$name"
   lab_fetch tidemq-loadgen "$load_root/results/$name/report.json" "$report/$name/report.json"
   jq -e '.status == "passed" and .original_consumer_reused == true and .client_close_completed == true' "$report/$name/report.json" >/dev/null
+  wait_runtime
 }
 staged_fault worker-poweroff off 0 tidemq-worker-c
 staged_fault data-isolation net-cut 0 tidemq-worker-b

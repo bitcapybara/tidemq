@@ -7,6 +7,10 @@ use tokio::time::Instant;
 
 use super::output::request_deadline;
 
+pub(super) const RECOVERY_SECONDS: u64 = 60;
+pub(super) const RETRY_DELAY_MS: u64 = 200;
+pub(super) const RECOVERY_ATTEMPTS: u32 = RECOVERY_SECONDS as u32 * 1_000 / RETRY_DELAY_MS as u32;
+
 #[derive(Clone, Serialize)]
 pub struct ErrorObservation {
     pub kind: String,
@@ -115,12 +119,13 @@ impl Batch {
     ) -> Result<Vec<SendReceipt>> {
         let until = deadline.min(
             Instant::now()
-                .checked_add(Duration::from_secs(60))
+                .checked_add(Duration::from_secs(RECOVERY_SECONDS))
                 .context("Retry budget overflow")?,
         );
         for (index, pending) in &self.pending {
             let mut complete = false;
-            for attempt in 0..8 {
+            // Fast rejections must not exhaust the fixed recovery window in only 1.6 seconds.
+            for attempt in 0..RECOVERY_ATTEMPTS {
                 evidence.retry_attempts = evidence
                     .retry_attempts
                     .checked_add(1)
@@ -139,14 +144,17 @@ impl Batch {
                     }
                     Err(error) => {
                         evidence.last_retry_error = Some(ErrorObservation::read(&error));
-                        if !retry_allowed(&error) || attempt == 7 || Instant::now() >= until {
+                        if !retry_allowed(&error)
+                            || attempt + 1 == RECOVERY_ATTEMPTS
+                            || Instant::now() >= until
+                        {
                             return Err(anyhow::Error::new(error))
                                 .context("Original send recovery failed");
                         }
-                        tokio::time::sleep_until(
-                            until.min(Instant::now() + Duration::from_millis(200)),
-                        )
-                        .await;
+                        let next = Instant::now()
+                            .checked_add(Duration::from_millis(RETRY_DELAY_MS))
+                            .context("Retry delay overflow")?;
+                        tokio::time::sleep_until(until.min(next)).await;
                     }
                 }
             }

@@ -5,6 +5,8 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/guest.sh"
 mode=${1:-all}
 [[ "$mode" == all || "$mode" == runtime || "$mode" == access ]] || exit 2
 if [[ "$mode" != access ]]; then
+lab_copy tidemq-runner "$lab_repo/scripts/lab/prepare-runner-image-store.sh" /tmp/tidemq-runner-image-store.sh
+lab_ssh tidemq-runner sudo bash /tmp/tidemq-runner-image-store.sh
 bundle="$lab_state/private/runner-bundle"
 for name in runner.archive rustfs collector collectorTest helm nextest llvmCov; do cp "$lab_state/tools/$name" "$bundle/$name"; done
 lab_fetch tidemq-cp-a /usr/bin/kubectl "$bundle/kubectl"

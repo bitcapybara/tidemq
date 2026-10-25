@@ -17,3 +17,7 @@ while IFS=$'\t' read -r name role address; do
   lab_ssh "$name" bash -c 'rm -rf /tmp/tidemq-agent /tmp/tidemq-agent.tar.gz'
   rm "$bundle/$name.pem" "$bundle/$name.key"
 done < <(jq -r '.nodes[] | [.name,.role,.managementIP] | @tsv' "$lab_inventory")
+cp "$lab_state/private/tls/tidemq-host.pem" "$lab_state/private/tls/tidemq-host.key" "$bundle/"
+sed -i 's@https://otlp.lab.tidemq.test:4318@https://192.168.240.32:4318@' "$bundle/agent.yaml"
+bash "$lab_repo/scripts/lab/install-agent.sh" tidemq-host host 192.168.240.1 "$bundle" > "$lab_state/logs/host-agent.log" 2>&1
+rm "$bundle/tidemq-host.pem" "$bundle/tidemq-host.key"

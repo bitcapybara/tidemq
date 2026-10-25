@@ -20,12 +20,16 @@ fi
 [[ $EUID == 0 ]] || exit 1
 restore_vm() {
   local vm=$1 state mac
+  local -a timers
   allowed_vm "$vm" || exit 2
   state=$(virsh domstate "$vm")
   if [[ "$state" == paused ]]; then virsh resume "$vm"; fi
   if [[ "$state" == 'shut off' ]]; then virsh start "$vm"; fi
   mac=$(jq -er --arg name "$vm" '.nodes[] | select(.name == $name) | .dataMAC' /etc/tidemq-lab/inventory.json)
-  virsh domif-setlink "$vm" "$mac" up --live
+  virsh domif-setlink "$vm" "$mac" up
+  # Retire the watchdog after recovery so it cannot heal a later fault scenario.
+  mapfile -t timers < <(systemctl list-units --all --type=timer --no-legend --plain "tidemq-restore-$vm-*.timer" | awk '{print $1}')
+  if (( ${#timers[@]} )); then systemctl stop "${timers[@]}"; fi
 }
 if [[ ${1:-} == restore && $# == 2 && -z ${SSH_ORIGINAL_COMMAND:-} ]]; then restore_vm "$2"; exit; fi
 request=${SSH_ORIGINAL_COMMAND:-}
@@ -43,14 +47,14 @@ read -r action vm duration <<< "$request"
 if [[ "$action" == restore ]]; then restore_vm "$vm"; exit; fi
 unit="tidemq-restore-$vm-$(date +%s)-$RANDOM"
 # Arm host-owned recovery before disrupting a guest; job cancellation cannot cancel this timer.
-systemd-run --quiet --unit="$unit" --on-active="${duration}s" --timer-property=AccuracySec=1s \
+systemd-run --quiet --collect --unit="$unit" --on-active="${duration}s" --timer-property=AccuracySec=1s \
   /usr/local/sbin/tidemq-lab-control restore "$vm"
 case "$action" in
   off) virsh destroy "$vm" ;;
   pause) virsh suspend "$vm" ;;
   net-cut)
     mac=$(jq -er --arg name "$vm" '.nodes[] | select(.name == $name) | .dataMAC' /etc/tidemq-lab/inventory.json)
-    virsh domif-setlink "$vm" "$mac" down --live
+    virsh domif-setlink "$vm" "$mac" down
     ;;
 esac
-printf 'Automatic recovery is armed for %s in %s seconds\n' "$vm" "$duration"
+printf 'Fault %s on %s at %s; recovery unit %s is armed for %s seconds\n' "$action" "$vm" "$(date --utc --iso-8601=ns)" "$unit" "$duration"

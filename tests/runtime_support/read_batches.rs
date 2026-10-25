@@ -31,6 +31,7 @@ async fn configured_credit_live_pages_preserve_every_identity_and_durable_ack() 
                 .unwrap();
             assert_eq!(receipts.outcomes.len(), PRODUCE_BATCH);
             for (index, receipt) in receipts.outcomes.into_iter().enumerate() {
+                let receipt = finish_original_send(receipt, until).await;
                 if receipt.is_err() {
                     let address = fixture.running.get(&1).unwrap().management_address;
                     let diagnostics = http(address, "/diagnostics").await;
@@ -100,6 +101,25 @@ async fn configured_credit_live_pages_preserve_every_identity_and_durable_ack() 
             > 1
     );
     fixture.close().await;
+}
+
+async fn finish_original_send(
+    mut result: tidemq_sdk::Result<tidemq_sdk::SendReceipt>,
+    until: Instant,
+) -> tidemq_sdk::Result<tidemq_sdk::SendReceipt> {
+    loop {
+        match result {
+            Err(tidemq_sdk::Error::SendUnresolved { pending, source })
+                if source.outcome_unknown() && Instant::now() < until =>
+            {
+                // Saturated live reads may exhaust one RPC; preserve its original send identity.
+                result = tidemq_sdk::RequestContext::with_deadline(until)
+                    .scope(pending.retry())
+                    .await;
+            }
+            other => return other,
+        }
+    }
 }
 
 fn message_body(identity: u64) -> Vec<u8> {

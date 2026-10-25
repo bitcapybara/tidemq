@@ -22,5 +22,6 @@ issue observe serverAuth 'DNS:otlp.lab.tidemq.test,DNS:grafana.lab.tidemq.test,D
 issue fixtures serverAuth 'DNS:fixture.lab.tidemq.test,IP:192.168.240.34,IP:192.168.241.34'
 while read -r name; do issue "$name" clientAuth "DNS:$name"; done < <(jq -r '.nodes[].name' "$lab_inventory")
 issue kubernetes clientAuth 'DNS:tidemq-kubernetes'
+issue tidemq-host clientAuth 'DNS:tidemq-host'
 issue external clientAuth 'DNS:tidemq-external-devices'
 printf 'Created private lab certificates in %s; only ca.pem is public.\n' "$directory"

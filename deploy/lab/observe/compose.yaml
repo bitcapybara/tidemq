@@ -1,7 +1,7 @@
 name: tidemq-observe
 services:
   prometheus:
-    image: prom/prometheus:v3.15.1
+    image: prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2
     user: '10001:10001'
     network_mode: host
     restart: unless-stopped
@@ -9,7 +9,7 @@ services:
     command: [--config.file=/config/prometheus.yaml, --storage.tsdb.path=/data, --storage.tsdb.retention.time=14d, --storage.tsdb.retention.size=2GB, --web.listen-address=127.0.0.1:9090, --web.enable-otlp-receiver]
     volumes: [./:/config:ro, /srv/tidemq/prometheus:/data]
   loki:
-    image: grafana/loki:3.7.9
+    image: grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28
     user: '10001:10001'
     network_mode: host
     restart: unless-stopped
@@ -17,7 +17,7 @@ services:
     command: [-config.file=/config/loki.yaml]
     volumes: [./:/config:ro, /srv/tidemq/loki:/data]
   tempo:
-    image: grafana/tempo:3.1.1
+    image: grafana/tempo:3.1.1@sha256:64e2fbd56d9c2b3412a4b430a58ea59e91a670b1e75f920a0c702213ad145044
     user: '10001:10001'
     network_mode: host
     restart: unless-stopped
@@ -25,7 +25,7 @@ services:
     command: [-config.file=/config/tempo.yaml, -target=all]
     volumes: [./:/config:ro, /srv/tidemq/tempo:/data]
   grafana:
-    image: grafana/grafana:13.2.4
+    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
     user: '10001:10001'
     network_mode: host
     restart: unless-stopped
@@ -44,9 +44,10 @@ services:
       - ./datasources.yaml:/etc/grafana/provisioning/datasources/lab.yaml:ro
       - ./dashboards.yaml:/etc/grafana/provisioning/dashboards/lab.yaml:ro
       - ./dashboard.json:/var/lib/grafana/dashboards/lab.json:ro
+      - ./dashboards:/var/lib/grafana/dashboards/application:ro
       - /etc/tidemq-lab/grafana-password:/run/secrets/grafana-password:ro
   alertmanager:
-    image: prom/alertmanager:v0.34.1
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
     user: '10001:10001'
     network_mode: host
     restart: unless-stopped

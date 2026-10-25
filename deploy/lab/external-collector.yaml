@@ -1,0 +1,29 @@
+extensions:
+  file_storage: {directory: '${env:OTEL_QUEUE_DIRECTORY}'}
+receivers:
+  otlp:
+    protocols:
+      http: {endpoint: '127.0.0.1:4318', max_request_body_size: 1048576}
+processors:
+  memory_limiter: {check_interval: 1s, limit_mib: 128, spike_limit_mib: 32}
+  resource:
+    attributes:
+      - {key: service.instance.id, value: '${env:OTEL_DEVICE_ID}', action: insert}
+      - {key: deployment.environment.name, value: lab, action: insert}
+  batch: {send_batch_size: 128, send_batch_max_size: 256, timeout: 1s}
+exporters:
+  otlp_http:
+    endpoint: https://otlp.lab.tidemq.test:4318
+    tls:
+      ca_file: '${env:OTEL_CA_FILE}'
+      cert_file: '${env:OTEL_CLIENT_CERT}'
+      key_file: '${env:OTEL_CLIENT_KEY}'
+    sending_queue: {enabled: true, queue_size: 128, storage: file_storage}
+    retry_on_failure: {enabled: true, max_elapsed_time: 5m}
+service:
+  extensions: [file_storage]
+  telemetry: {logs: {level: warn, encoding: json}, metrics: {level: none}}
+  pipelines:
+    traces: {receivers: [otlp], processors: [memory_limiter, resource, batch], exporters: [otlp_http]}
+    metrics: {receivers: [otlp], processors: [memory_limiter, resource, batch], exporters: [otlp_http]}
+    logs: {receivers: [otlp], processors: [memory_limiter, resource, batch], exporters: [otlp_http]}

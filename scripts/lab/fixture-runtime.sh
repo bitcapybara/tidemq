@@ -6,7 +6,10 @@ action=$1 run=$2
 [[ "$run" =~ ^[a-z0-9][a-z0-9-]{0,48}$ ]] || exit 2
 directory="/srv/tidemq/fixtures/$run"
 if [[ "$action" == remove ]]; then
+  systemctl stop "tidemq-fixture-expire-$run.timer" "tidemq-fixture-restore-$run-*.timer" 2>/dev/null || true
   for instance in a b; do systemctl stop "tidemq-fixture-$run-$instance.service" || true; done
+  rm -f "/etc/systemd/system/tidemq-fixture-$run-a.service" "/etc/systemd/system/tidemq-fixture-$run-b.service"
+  systemctl daemon-reload
   rm -f "/etc/nginx/conf.d/tidemq-fixture-$run.conf"
   nginx -t
   systemctl reload nginx
@@ -20,7 +23,7 @@ if [[ "$action" == fault ]]; then
   unit="tidemq-fixture-$run-$instance.service"
   restore=start
   [[ "$fault" != pause ]] || restore=thaw
-  systemd-run --quiet --unit="tidemq-fixture-restore-$run-$instance-$RANDOM" --on-active="${duration}s" \
+  systemd-run --quiet --collect --unit="tidemq-fixture-restore-$run-$instance-$RANDOM" --on-active="${duration}s" \
     --timer-property=AccuracySec=1s /usr/bin/systemctl "$restore" "$unit"
   if [[ "$fault" == pause ]]; then systemctl freeze "$unit"; else systemctl stop "$unit"; fi
   exit
@@ -39,13 +42,31 @@ for instance in a b; do
   printf "access_key = '%s'\nsecret_key = '%s'\n" "$(cat "$path/access")" "$(cat "$path/secret")" > "$path/credentials.toml"
   printf 'user = "%s:%s"\naws-sigv4 = "aws:amz:us-east-1:s3"\n' "$(cat "$path/access")" "$(cat "$path/secret")" > "$path/curl.conf"
   chown -R lab:lab "$path"
-  systemd-run --quiet --unit="tidemq-fixture-$run-$instance" --property=User=lab --property=Group=lab \
-    --property=MemoryMax=512M --property=CPUQuota=100% --property=NoNewPrivileges=yes \
-    --property=WorkingDirectory="$path" --property=Restart=on-failure --property=RuntimeMaxSec=7200 \
-    --setenv="RUSTFS_ACCESS_KEY_FILE=$path/access" --setenv="RUSTFS_SECRET_KEY_FILE=$path/secret" \
-    --setenv=RUSTFS_DURABILITY_MODE=strict --setenv=RUSTFS_NEW_BUCKET_DURABILITY_MODE=inherit \
-    --setenv=RUSTFS_CONSOLE_ENABLE=false --setenv=RUSTFS_OBS_ENDPOINT= --setenv=RUSTFS_LOG_LEVEL=warn \
-    --setenv="RUSTFS_LOG_DIRECTORY=$path/logs" /usr/local/bin/rustfs server --address "127.0.0.1:$backend" --region us-east-1 "$path/data"
+  # A persistent per-run unit survives stop/start fault injection; cleanup removes its definition.
+  cat > "/etc/systemd/system/tidemq-fixture-$run-$instance.service" <<EOF
+[Unit]
+Description=TideMQ disposable object store $run $instance
+After=network-online.target
+[Service]
+User=lab
+Group=lab
+WorkingDirectory=$path
+MemoryMax=512M
+CPUQuota=100%
+NoNewPrivileges=yes
+Restart=on-failure
+Environment=RUSTFS_ACCESS_KEY_FILE=$path/access
+Environment=RUSTFS_SECRET_KEY_FILE=$path/secret
+Environment=RUSTFS_DURABILITY_MODE=strict
+Environment=RUSTFS_NEW_BUCKET_DURABILITY_MODE=inherit
+Environment=RUSTFS_CONSOLE_ENABLE=false
+Environment=RUSTFS_OBS_ENDPOINT=
+Environment=RUSTFS_LOG_LEVEL=warn
+Environment=RUSTFS_LOG_DIRECTORY=$path/logs
+ExecStart=/usr/local/bin/rustfs server --address 127.0.0.1:$backend --region us-east-1 $path/data
+EOF
+  systemctl daemon-reload
+  systemctl start "tidemq-fixture-$run-$instance.service"
   cat >> "$nginx_config" <<EOF
 server {
   listen 192.168.241.34:$frontend ssl;
@@ -68,4 +89,6 @@ EOF
 done
 nginx -t
 systemctl reload nginx
+systemd-run --quiet --collect --unit="tidemq-fixture-expire-$run" --on-active=2h \
+  /usr/local/sbin/tidemq-fixtures remove "$run"
 printf 'Created independent RustFS fixtures a and b for %s\n' "$run"

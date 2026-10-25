@@ -522,7 +522,11 @@ async fn drive_requests(
             .await;
         let result = match result {
             Ok(result) => result,
-            Err(error) if error.retry_admission() && Instant::now() < deadline => {
+            Err(error)
+                if (error.retry_admission()
+                    || (error.retry_rejected() && error.retry_original()))
+                    && Instant::now() < deadline =>
+            {
                 tokio::time::sleep(Duration::from_millis(25)).await;
                 continue;
             }

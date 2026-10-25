@@ -43,6 +43,8 @@ Worker 挂载点为 `/var/lib/tidemq/storage` 和 `/var/lib/tidemq/metadata`。�
 
 每个 RF3 实例包含 3 metadata、3 storage、2 broker、2 gateway，共 10 个角色 Pod。metadata 11/12/13 与 storage 21/22/23 分别跨三个 worker；broker 31/32 和 gateway 41/42 在 worker-a/b。每个角色使用独立 StatefulSet、稳定 UDP Service IP 和独立证书。容器监听通配地址，广播可达的稳定 Service 地址；管理接口只监听 Pod loopback。
 
+MQ 入口采用 `externalTrafficPolicy: Local`，由有本地 gateway 的节点接流，避免入口再转到另一个节点的 UDP backend。[MetalLB 流量策略](https://metallb.io/usage/#traffic-policies)说明了 L2 模式的取舍；此模式的入口流量集中在当前公告节点，不能将两个 gateway 的 CPU 简单相加作为入口容量。
+
 每个 namespace 独立创建 QUIC CA、节点证书、访问 token 和 cluster ID。配置由 [workload.mjs](../../scripts/lab/workload.mjs) 生成，沿用仓库已有的 RF3 配置生成器。私钥及含 Secret 的资源文件只保存在私有目录，禁止作为 GitHub artifact 上传。
 
 ## 3. 外部设备可访问入口
@@ -62,6 +64,8 @@ Worker 挂载点为 `/var/lib/tidemq/storage` 和 `/var/lib/tidemq/metadata`。�
 | `mq.lab.tidemq.test:17443` | TideMQ 公共 QUIC/UDP，独立 QUIC CA 和 token |
 
 服务 TLS CA 为 [ca.pem](ca.pem)，它是公开证书。外部设备应显式信任该证书，不关闭 TLS 校验。QUIC 工作负载使用各自独立的 CA，不能用此服务 CA 替代。
+
+外部设备可运行 [external-collector.yaml](external-collector.yaml)：设置 `OTEL_QUEUE_DIRECTORY`、`OTEL_DEVICE_ID`、`OTEL_CA_FILE`、`OTEL_CLIENT_CERT`、`OTEL_CLIENT_KEY`，用锁定的 contrib Collector 启动。应用把 traces/metrics/OTLP logs 发给本机 `http://127.0.0.1:4318`。stdout / 文件日志应按设备 OS 增加 journald 或 filelog receiver，仍由 OS 轮转；不要同时采集同一份日志。每台设备应分配独立客户端证书，示例 `private/tls/external.{pem,key}` 仅用于初次联通验证。
 
 宿主机只用专属 iptables 链做受限 DNAT/SNAT，由 `tidemq-lab-ingress.service` 持久化；没有将整个 VM 子网或 Kubernetes API 暴露到局域网。新增允许源地址需要同步防火墙。VM 的 SSH 22、Kubernetes API 6443、内部监控端口不作公共入口。
 
@@ -86,6 +90,8 @@ CI 使用 `ci-RUN-ATTEMPT` namespace，运行结束删除依赖实例和数据�
 
 TideMQ 输出有界 JSON 到 stdout。Kubernetes 由 CRI/kubelet 保存并轮转本地日志，系统服务使用持久 journald（128 MiB，最长 7 天），每台 VM 的原生 OTel agent 采集 journald、CRI 文件和主机指标。无需应用再同步写一套无限增长的日志文件。
 
+宿主机也运行相同的 agent（实例 `tidemq-host`），覆盖物理 CPU、NVMe、内存和磁盘水位；自监控仅绑定 VM 管理桥 192.168.240.1:8888。所有 agent 合计 12 个，其中 11 个位于 VM。
+
 应用 Pod 内的 sidecar 抓取 loopback OpenMetrics 和 OTLP traces，再通过 mTLS 发送到中央 Collector。原生 VM agent 提供 file_storage checkpoint 和持久发送队列；中央 Collector 也有持久队列。Pod sidecar 的队列有界但为内存队列，Pod 丢失时未导出的 telemetry 可能丢失，业务消息持久性不依赖 telemetry 队列。
 
 | 组件 | 版本 | 本地监听 | 持久化与保留 |
@@ -99,6 +105,8 @@ TideMQ 输出有界 JSON 到 stdout。Kubernetes 由 CRI/kubelet 保存并轮转
 | alert-audit | 仓库脚本 | 127.0.0.1:19094 | 有界 current / previous JSONL，各 8 MiB |
 
 配置在 [observe/](observe)。Grafana 自动配置 Prometheus/Loki/Tempo 数据源和实验室 dashboard。日志、trace 与业务指标使用 service/instance/node/namespace 关联；CI namespace 保存在 structured metadata / resource attributes 中，不创建按消息 ID、Topic 名或任意 payload 增长的索引标签。
+
+部署时复用仓库 `deploy/observability/alerts/` 与 `dashboards/` 中的 runtime、producer、object lifecycle、scaling 告警与面板；不复制维护第二套业务指标规则。
 
 告警覆盖后端不可用、VM agent 不可用、导出队列压力、磁盘剩余量。Alertmanager 将 firing/resolved 发到本机有界审计 webhook，便于验证完整告警链路；没有自动向人员发送消息。接入人员通知渠道需要另行配置和授权。
 
@@ -118,9 +126,11 @@ GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 2
 | `/srv/tidemq/tmp` | 测试临时目录 |
 | `/home/actions/.config/tidemq-lab` | 私有 kubeconfig、受限 CI SSH key、telemetry 客户端证书与运行材料 |
 
+Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepare-runner-image-store.sh` 在无运行中构建容器时迁移并通过 bind mount 持久化，避免根盘被镜像解包填满。
+
 Linux 校验、集成测试、覆盖率、固定二进制性能比较均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
-单元测试只运行 `--lib --bins`，主动移除外部服务环境变量。外部进程 / 网络依赖测试放在 `tests/`，由独立 integration 阶段运行；内建本地 mock 不要求预装外部服务。ignored 的真实 RustFS / Collector 测试在 Linux 上显式执行，缺少固定二进制会失败。
+单元测试运行 `--lib --bins --examples`，主动移除外部服务环境变量。外部进程 / 网络依赖测试放在 `tests/`，由独立 integration 阶段运行；内建本地 mock 不要求预装外部服务。ignored 的真实 RustFS / Collector 测试在 Linux 上显式执行，缺少固定二进制会失败。
 
 RF3 集群测试由 loadgen VM 运行真实 SDK，runner 仅控制和收集证据；覆盖发送/接收/ACK、延后读取、单 worker 断电、数据网断链、双 worker 丢失仲裁及原 Pending/Consumer 恢复、control-plane 故障、对象存储实例隔离、runner 连接消失后独立恢复计时器，以及三类观测入库查询。
 

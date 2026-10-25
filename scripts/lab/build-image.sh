@@ -20,12 +20,14 @@ cp "$lab_home/ca.pem" "$output/ca.pem"
 cp deploy/lab/Dockerfile "$output/Dockerfile"
 hash=$(cd "$output" && sha256sum bin/tidemq bin/deploy_validation bin/collector ca.pem Dockerfile | sha256sum | cut -d ' ' -f 1)
 image="localhost/tidemq-lab:${hash:0:24}"
+git rev-parse HEAD > "$output/source-commit.txt"
+git diff --binary HEAD -- Cargo.toml Cargo.lock build.rs src crates sdk examples | sha256sum > "$output/source-patch-sha256.txt"
+rustc -Vv > "$output/toolchain.txt"
+sha256sum "$output/bin/tidemq" "$output/bin/deploy_validation" > "$output/sha256.txt"
 docker build --build-arg "RUNTIME_IMAGE=$base" --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" -t "$image" "$output" > "$output/build.log" 2>&1
+docker image inspect "$image" --format '{{.Id}}' > "$output/image-id.txt"
 docker run --rm --network none "$image" /usr/local/bin/tidemq --version
 docker save -o "$output/image.tar" "$image"
 printf '%s\n' "$image" > "$output/image.txt"
-docker image inspect "$image" --format '{{.Id}}' > "$output/image-id.txt"
-sha256sum "$output/bin/tidemq" "$output/bin/deploy_validation" "$output/image.tar" > "$output/sha256.txt"
-git rev-parse HEAD > "$output/source-commit.txt"
-rustc -Vv > "$output/toolchain.txt"
+sha256sum "$output/image.tar" >> "$output/sha256.txt"
 printf 'Built fixed lab image %s\n' "$image"

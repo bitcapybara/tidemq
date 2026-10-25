@@ -460,10 +460,13 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
     }
     let completed = meta
         .node(metadata_leader)
-        .raft
-        .metrics()
-        .borrow()
-        .last_applied
+        .state
+        .try_with_membership(|state, applied, _| {
+            assert!(state.membership_change(GROUP).unwrap().is_complete());
+            // Raft metrics can lag the completed write; read its actual state-machine index.
+            applied.unwrap()
+        })
+        .await
         .unwrap();
     meta.applied(&[1, 2, 3], completed.index).await;
     assert!(

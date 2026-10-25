@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {roles, runtimeConfig, workload, persistentVolume, sidecarConfig} from './workload.mjs';
+import {roles, runtimeConfig, workload, persistentVolume, sidecarConfig, queueService} from './workload.mjs';
 
 const addresses = Object.fromEntries(roles.map((node, index) => [node.id, `10.96.1.${index + 1}`]));
 test('RF3 storage and metadata quorums span separate guest kernels and failure zones', () => {
@@ -35,5 +35,15 @@ test('application exporters stay on loopback and the sidecar authenticates the c
   const config = sidecarConfig(roles[0], 'ci-test');
   assert.equal(config.receivers.otlp.protocols.http.endpoint, '127.0.0.1:4318');
   assert.equal(config.exporters.otlp_http.tls.key_file, '/telemetry/client.key');
+  assert.deepEqual(config.processors.resource.attributes.find(attribute => attribute.key === 'service.instance.id'),
+    {key: 'service.instance.id', value: 'ci-test-node-11', action: 'upsert'});
   assert.ok(config.exporters.otlp_http.sending_queue.queue_size <= 128);
+});
+test('the UDP load balancer uses local gateways and distinct public and CI addresses', () => {
+  const publicService = queueService('tidemq-dev').spec;
+  const ciService = queueService('ci-test').spec;
+  assert.equal(publicService.externalTrafficPolicy, 'Local');
+  assert.equal(ciService.externalTrafficPolicy, 'Local');
+  assert.equal(ciService.ports[0].protocol, 'UDP');
+  assert.notEqual(publicService.loadBalancerIP, ciService.loadBalancerIP);
 });

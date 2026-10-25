@@ -16,6 +16,7 @@ for role in storage observe; do
     cp "$lab_state/tools/rustfs" "$credentials/rustfs-access" "$credentials/rustfs-secret" "$bundle/"
   else
     cp -R "$lab_repo/deploy/lab/observe" "$bundle/"
+    cp -R "$lab_repo/deploy/observability/alerts" "$lab_repo/deploy/observability/dashboards" "$bundle/observe/"
     cp "$lab_state/tools/collector" "$credentials/grafana-password" "$credentials/metrics.htpasswd" "$lab_repo/scripts/lab/alert-audit.mjs" "$bundle/"
   fi
   tar -czf "$lab_state/private/$role-bundle.tar.gz" -C "$bundle" .

@@ -45,7 +45,7 @@ export function sidecarConfig(node, namespace) {
       resource: {attributes: [
         {key: 'service.name', value: 'tidemq', action: 'upsert'},
         {key: 'service.namespace', value: 'tidemq-lab', action: 'upsert'},
-        {key: 'service.instance.id', value: `${namespace}-node-${node.id}`, action: 'insert'},
+        {key: 'service.instance.id', value: `${namespace}-node-${node.id}`, action: 'upsert'},
         {key: 'k8s.namespace.name', value: namespace, action: 'upsert'},
         {key: 'tidemq.node.id', value: `${node.id}`, action: 'upsert'},
         {key: 'ci.run.id', value: namespace, action: 'upsert'},
@@ -111,6 +111,13 @@ export function persistentVolume(node, namespace) {
   });
 }
 
+export function queueService(namespace) {
+  const publicVIP = namespace === 'tidemq-dev' ? '192.168.241.200' : '192.168.241.201';
+  // Keep QUIC traffic on the announcing gateway node instead of another node's stale UDP backend.
+  return resource('v1', 'Service', 'mq', {type: 'LoadBalancer', loadBalancerIP: publicVIP,
+    selector: {app: 'tidemq', role: 'gateway'}, externalTrafficPolicy: 'Local', ports: [{name: 'quic', port: 7443, protocol: 'UDP'}]});
+}
+
 function run(command, args, input) {
   const result = spawnSync(command, args, {input, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024});
   if (result.error || result.status !== 0) throw new Error(`${command} failed: ${result.error?.message ?? result.stderr}`);
@@ -133,8 +140,7 @@ function main() {
   const services = roles.map(node => resource('v1', 'Service', `node-${node.id}`, {publishNotReadyAddresses: true,
     selector: {'tidemq-node': `node-${node.id}`}, ports: [{name: 'peer', port: 7444, protocol: 'UDP'}]}));
   const publicVIP = namespace === 'tidemq-dev' ? '192.168.241.200' : '192.168.241.201';
-  services.push(resource('v1', 'Service', 'mq', {type: 'LoadBalancer', loadBalancerIP: publicVIP,
-    selector: {app: 'tidemq', role: 'gateway'}, externalTrafficPolicy: 'Cluster', ports: [{name: 'quic', port: 7443, protocol: 'UDP'}]}));
+  services.push(queueService(namespace));
   for (const service of services) service.metadata.namespace = namespace;
   apply(services);
   run('bash', [new URL('../../deploy/local/generate.sh', import.meta.url).pathname, 'rf3', material]);
