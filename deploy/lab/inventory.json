@@ -8,7 +8,8 @@
     "runtimeBaseImage": "localhost/tidemq-runtime-base:ubuntu2404-68ee22004a91",
     "runtimeBaseImageID": "sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
     "runtimeBaseSource": "docker.io/library/ubuntu@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
-    "runtimeBaseOS": "Ubuntu 24.04 LTS"
+    "runtimeBaseOS": "Ubuntu 24.04 LTS",
+    "builderSource": "docker.io/library/rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29"
   },
   "allowedClientCIDRs": [
     "192.168.126.0/24",
@@ -239,7 +240,7 @@
       "zone": "infra",
       "vcpus": 4,
       "memoryMiB": 6144,
-      "rootGiB": 8,
+      "rootGiB": 16,
       "managementIP": "192.168.240.32",
       "dataIP": "192.168.241.32",
       "managementMAC": "52:54:00:24:00:20",

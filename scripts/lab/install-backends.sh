@@ -98,7 +98,10 @@ else
   install -m 0400 -o tidemq -g tidemq "$bundle/grafana-password" /etc/tidemq-lab/grafana-password
   install -m 0640 -o root -g www-data "$bundle/metrics.htpasswd" /etc/tidemq-lab/metrics.htpasswd
   install -m 0644 "$bundle/alert-audit.mjs" /opt/tidemq-lab/alert-audit.mjs
-  install -m 0755 "$bundle/collector" /usr/local/bin/otelcol-contrib
+  if ! cmp -s "$bundle/collector" /usr/local/bin/otelcol-contrib; then
+    install -m 0755 "$bundle/collector" /usr/local/bin/otelcol-contrib.next
+    mv -f /usr/local/bin/otelcol-contrib.next /usr/local/bin/otelcol-contrib
+  fi
   cat > /etc/systemd/system/tidemq-collector.service <<'EOF'
 [Unit]
 Description=TideMQ central OpenTelemetry gateway

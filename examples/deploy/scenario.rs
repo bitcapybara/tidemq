@@ -8,7 +8,7 @@ use tokio::time::Instant;
 use super::{
     Args, Report,
     output::{Output, request_deadline, unix_ms},
-    recovery::{Batch, BatchEvidence},
+    recovery::{Batch, BatchEvidence, ErrorObservation, RETRY_DELAY_MS, retry_receive},
 };
 
 struct Queue<'a> {
@@ -180,9 +180,26 @@ impl<'a> Queue<'a> {
             .as_ref()
             .context("The original consumer is unavailable")?;
         while report.ledger.acknowledged < target {
-            let delivery = tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
-                .scope(consumer.receive())
-                .await?;
+            let delivery =
+                match tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
+                    .scope(consumer.receive())
+                    .await
+                {
+                    Ok(delivery) => delivery,
+                    Err(error) if retry_receive(&error) => {
+                        report.receive_retries = report
+                            .receive_retries
+                            .checked_add(1)
+                            .context("Receive retry count overflow")?;
+                        report.last_receive_error = Some(ErrorObservation::read(&error));
+                        let next = Instant::now()
+                            .checked_add(Duration::from_millis(RETRY_DELAY_MS))
+                            .context("Receive retry delay overflow")?;
+                        tokio::time::sleep_until(deadline.min(next)).await;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
             let identity = report.ledger.observe(
                 &delivery.message_id().to_string(),
                 delivery.key().context("Delivery key is absent")?,

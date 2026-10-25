@@ -396,7 +396,7 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
     assert_ne!(replacement_metadata, previous_metadata);
     // A genuine metadata leader election still cannot bypass a subsequent quorum loss.
     meta.isolated.write().await.insert(replacement_metadata);
-    let (mut metadata_leader, leader) = {
+    let (mut metadata_leader, mut leader) = {
         let ready = coordinator_leaders(
             &meta,
             &data,
@@ -443,6 +443,7 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
         )
         .await;
         metadata_leader = next_metadata;
+        leader = next;
         let resumed = MembershipCoordinator::new(
             meta.node(next_metadata).raft.clone(),
             meta.node(next_metadata).state.clone(),

@@ -182,3 +182,44 @@ fn retry_allowed(error: &Error) -> bool {
             ErrorKind::Unavailable | ErrorKind::ResourceExhausted
         )
 }
+
+pub(super) fn retry_receive(error: &Error) -> bool {
+    match error {
+        Error::Background { source } => retry_receive(source),
+        Error::SessionExpired => true,
+        _ => matches!(
+            error.kind(),
+            ErrorKind::Unavailable
+                | ErrorKind::ResourceExhausted
+                | ErrorKind::DeadlineExceeded
+                | ErrorKind::StaleDelivery
+                | ErrorKind::OutcomeUnknown
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn receive_recovery_waits_for_the_original_member_but_keeps_terminal_errors() {
+        for error in [Error::SessionExpired, Error::StaleDelivery, Error::Deadline] {
+            assert!(retry_receive(&error));
+        }
+        assert!(retry_receive(&Error::Background {
+            source: std::sync::Arc::new(Error::StaleDelivery),
+        }));
+        for error in [
+            Error::Closed,
+            Error::Cancelled,
+            Error::TopicReplaced,
+            Error::ResponseMismatch {
+                reason: "Invalid read identity".into(),
+            },
+            Error::SendRecoveryExpired,
+        ] {
+            assert!(!retry_receive(&error));
+        }
+    }
+}

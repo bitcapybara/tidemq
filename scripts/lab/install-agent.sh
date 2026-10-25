@@ -7,7 +7,10 @@ id otelcol >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbi
 install -d -m 0750 -o otelcol -g otelcol /var/lib/otelcol/storage
 install -d -m 0755 /etc/tidemq-lab /etc/systemd/journald.conf.d /var/log/journal
 install -d -m 0750 -o root -g otelcol /etc/tidemq-lab/tls
-install -m 0755 "$bundle/collector" /usr/local/bin/otelcol-contrib
+if ! cmp -s "$bundle/collector" /usr/local/bin/otelcol-contrib; then
+  install -m 0755 "$bundle/collector" /usr/local/bin/otelcol-contrib.next
+  mv -f /usr/local/bin/otelcol-contrib.next /usr/local/bin/otelcol-contrib
+fi
 install -m 0644 "$bundle/ca.pem" /etc/tidemq-lab/tls/ca.pem
 install -m 0640 -o root -g otelcol "$bundle/$name.pem" /etc/tidemq-lab/tls/client.pem
 install -m 0640 -o root -g otelcol "$bundle/$name.key" /etc/tidemq-lab/tls/client.key

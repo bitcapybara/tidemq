@@ -19,10 +19,10 @@ mkdir -m 0700 -p "$private" "$report"
 host_control() { ssh -n -F "$TIDEMQ_LAB_HOME/ssh_config" lab-host "$*"; }
 kube() { kubectl --request-timeout=15s --namespace "$run" "$@"; }
 wait_runtime() {
-  local end=$((SECONDS + 90)) id
+  local end=$((SECONDS + 110)) id
   for id in 11 12 13 21 22 23 31 32 41 42; do
     until kube exec "node-$id-0" -c tidemq -- curl --fail --silent --max-time 1 http://127.0.0.1:9419/readyz >> "$report/readiness.log" 2>&1; do
-      (( SECONDS < end )) || { printf 'Runtime readiness did not recover within 90 seconds\n' >&2; return 1; }
+      (( SECONDS < end )) || { printf 'Runtime readiness did not recover within 110 seconds\n' >&2; return 1; }
       sleep 1
     done
   done
@@ -95,7 +95,7 @@ wait_marker() {
 smoke smoke
 smoke replay --replay-settle-ms 5000
 staged_fault() {
-  local name=$1 action=$2 unavailable=$3 vm
+  local name=$1 action=$2 unavailable=$3 vm restored_at
   shift 3
   local flags=(--stage-fault)
   [[ "$unavailable" != 1 ]] || flags+=(--require-unavailable)
@@ -105,8 +105,12 @@ staged_fault() {
   for vm in "$@"; do host_control "$action" "$vm" 120 >> "$report/$name-inject.txt"; done
   lab_ssh tidemq-loadgen touch "$load_root/results/$name/fault-injected"
   wait_marker "$load_root/results/$name/fault-observed.json" "$validator_pid"
+  restored_at=$(date +%s)
   for vm in "$@"; do host_control restore "$vm" 5 >> "$report/$name-restore.txt"; done
   kubectl wait node "$@" --for=condition=Ready --timeout=2m
+  # A stale Node Ready condition can outlive its containers during a VM reboot.
+  wait_runtime
+  printf '{"restoredAtUnixSeconds":%s,"runtimeReadyAtUnixSeconds":%s,"budgetSeconds":110}\n' "$restored_at" "$(date +%s)" > "$report/$name-infrastructure-recovery.json"
   lab_ssh tidemq-loadgen touch "$load_root/results/$name/recovered"
   wait "$validator_pid"
   validator_pid=

@@ -6,9 +6,9 @@
 
 ## 1. 物理资源与 VM
 
-宿主机：Ubuntu 24.04，Xeon E5-2696 v4，22 核 / 44 线程，约 62 GiB RAM，468 GiB 根文件系统，KVM/QEMU 8.2.2、libvirt 10.0.0。VM 合计 32 vCPU、38 GiB RAM、242 GiB 虚拟磁盘上限；数据盘使用预分配 raw，根盘使用基于锁定 Ubuntu cloud image 的 qcow2。数据盘 `cache=none`，保留正常 flush 语义。VM 不使用内存气球。
+宿主机：Ubuntu 24.04，Xeon E5-2696 v4，22 核 / 44 线程，约 62 GiB RAM，468 GiB 根文件系统，KVM/QEMU 8.2.2、libvirt 10.0.0。VM 合计 32 vCPU、38 GiB RAM、250 GiB 虚拟磁盘上限；数据盘使用预分配 raw，根盘使用基于锁定 Ubuntu cloud image 的 qcow2。数据盘 `cache=none`，保留正常 flush 语义。VM 不使用内存气球。
 
-Worker 系统盘为 16 GiB，其余 VM 为 8 GiB（实际根文件系统约 6.8 GiB）。构建、测试数据和观测数据放到独立数据盘。
+Worker 和 observe 系统盘为 16 GiB，其余 VM 为 8 GiB（实际根文件系统约 6.8 GiB）。构建、测试数据和观测数据放到独立数据盘。
 
 | VM | 管理 IP | 数据 IP | vCPU | RAM | 数据盘 / 挂载点 | 故障域 |
 |---|---|---|---:|---:|---|---|
@@ -46,6 +46,8 @@ Worker 挂载点为 `/var/lib/tidemq/storage` 和 `/var/lib/tidemq/metadata`。�
 MQ 入口采用 `externalTrafficPolicy: Local`，由有本地 gateway 的节点接流，避免入口再转到另一个节点的 UDP backend。[MetalLB 流量策略](https://metallb.io/usage/#traffic-policies)说明了 L2 模式的取舍；此模式的入口流量集中在当前公告节点，不能将两个 gateway 的 CPU 简单相加作为入口容量。
 
 每个 namespace 独立创建 QUIC CA、节点证书、访问 token 和 cluster ID。配置由 [workload.mjs](../../scripts/lab/workload.mjs) 生成，沿用仓库已有的 RF3 配置生成器。私钥及含 Secret 的资源文件只保存在私有目录，禁止作为 GitHub artifact 上传。
+
+节点启动时通过 systemd 将 kubelet 排在 containerd 之后。故障恢复检查最多等待 110 秒，逐个访问 10 个角色的应用 `/readyz`；Node Ready 可能是重启前的旧状态，不能单独证明服务恢复。该基础设施等待耗时单独保存，之后才通知 SDK 开始原请求恢复。SDK 每次请求仍为 10 秒，原 Pending 恢复窗口仍为 60 秒，整个验证实例仍受原有总期限约束；接收暂态错误只重试原 Consumer，不创建替代消费者。
 
 ## 3. 外部设备可访问入口
 
@@ -180,11 +182,15 @@ bash scripts/lab/deploy-workload.sh tidemq-dev PRIVATE_BUILD \
 
 公共服务私密材料在宿主 `/var/lib/tidemq-lab/private/credentials/`：`kubernetes.toml`、`devices.toml`、`grafana-password`、`metrics-password`。TLS 客户端材料在 `private/tls/`；发给外部设备时只提供对应客户端证书、私钥和 CA，不提供 CA 签名私钥。QUIC 客户端只取该 workload 的 `ca.pem` 和 `access.token`，不取节点私钥。
 
-恢复 / 初始化脚本的顺序为：`provision-host.sh` → `prepare-nodes.sh` → `bootstrap-kubernetes.sh` → `install-kubernetes-addons.sh` → `prepare-infra.sh` → `create-certificates.sh` → `deploy-agents.sh` → `deploy-backends.sh` → `prepare-fixture-host.sh` → `install-host-control.sh` → `deploy-runner.sh` → `register-runner.sh`。先阅读各脚本参数；不要为修复单个组件重跑整套初始化。首次准备工具先执行 `download-tools.sh`，恢复 runner 时需要已校验的工具链 bundle 和锁定的 runtime base 镜像。注册 token 是短期凭据，禁止写进仓库。
+恢复 / 初始化脚本的顺序为：`provision-host.sh` → `prepare-nodes.sh` → `bootstrap-kubernetes.sh` → `install-kubernetes-addons.sh` → `prepare-infra.sh` → `create-certificates.sh` → `deploy-agents.sh` → `deploy-backends.sh` → `prepare-fixture-host.sh` → `install-host-control.sh` → `prepare-runner-assets.sh` → `deploy-runner.sh` → `register-runner.sh`。先阅读各脚本参数；不要为修复单个组件重跑整套初始化。首次准备工具先执行 `download-tools.sh`。注册 token 是短期凭据，禁止写进仓库。
+
+`prepare-runner-assets.sh` 使用 inventory 中固定 digest 的官方 Ubuntu / Rust 镜像，复用 `deploy/docker/Dockerfile.builder` 生成工具链 bundle 和 runtime base tar，并记录镜像 ID 和 SHA-256。`deploy-runner.sh runtime` 只更新 runner 工具，`access` 只更新受限访问材料。不要向其他设备分发整个 bundle 或 runner 私有目录。
 
 ## 8. 旧环境清理
 
 用户授权删除旧服务、数据卷、源码、配置和历史测试报告。已删除旧 TDengine / IDMP / Kafka / Explorer 等宿主 Docker 资源和旧测试目录；旧应用的系统级 service/target、enablement symlink、stressctl、kache 用户服务和 TDengine 本机残留也纳入清理。清理脚本使用明确允许名单，不删除 OS、SSH、libvirt、新实验室及其恢复单元。
+
+另已删除 4 个部署前遗留的 bash/rustc core dump，约 3.9 GiB。用户明确确认保留 YuXiangagent 的 3 条 root 定时任务及相关文件；它们是本次清理的保留项。
 
 清理入口分别是 `scripts/lab/cleanup-legacy-host.sh` 和 `cleanup-legacy-units.sh`，均要求 `--delete-authorized-legacy-data`。它们只用于本次旧环境迁移；后续业务数据不能因为这个历史授权再次被自动删除。
 

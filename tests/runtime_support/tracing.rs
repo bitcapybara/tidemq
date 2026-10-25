@@ -148,10 +148,22 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     })
     .await;
     for mode in [collector::SLOW, collector::FAIL, collector::LARGE] {
+        let before = pipeline.health.snapshot();
         collector.set(mode);
         let offset = u64::from(mode);
         roundtrip(&producer, &consumer, offset).await;
-        collector::wait(|| pipeline.health.snapshot().pending_spans == 0).await;
+        collector::wait(|| {
+            let after = pipeline.health.snapshot();
+            let recorded = match mode {
+                collector::SLOW => after.export_timeouts > before.export_timeouts,
+                collector::FAIL => after.export_failures > before.export_failures,
+                collector::LARGE => after.response_rejected > before.response_rejected,
+                _ => false,
+            };
+            // Wait for this fault's diagnostic instead of an earlier empty queue observation.
+            after.pending_spans == 0 && recorded
+        })
+        .await;
     }
     assert!(pipeline.health.snapshot().export_timeouts > 0);
     assert!(pipeline.health.snapshot().export_failures > 0);

@@ -10,7 +10,7 @@ export function collectFailureEvidence(root, output) {
     for (const file of fs.readdirSync(path.join(root, directory.name), {withFileTypes: true})) {
       if (!file.isFile() || files.length >= 40) continue;
       const json = /-(failure|diagnostics|metrics)\.json$/.test(file.name);
-      const log = /^node-[0-9]+(?:-(?:stdout|stderr))?\.(log|stdout|stderr)$/.test(file.name);
+      const log = /^(node|process)-[0-9]+(?:-(?:stdout|stderr))?\.(log|stdout|stderr)$/.test(file.name);
       if (!json && !log) continue;
       const source = path.join(root, directory.name, file.name);
       const size = fs.statSync(source).size;

@@ -31,6 +31,13 @@ package_version=$(apt-cache madison kubeadm | awk -v version="${version#v}-" 'in
 apt-get install -y "kubelet=$package_version" "kubeadm=$package_version" "kubectl=$package_version"
 apt-mark hold kubelet kubeadm kubectl
 printf 'KUBELET_EXTRA_ARGS=--node-ip=%s\n' "$node_ip" > /etc/default/kubelet
+install -d -m 0755 /etc/systemd/system/kubelet.service.d
+cat > /etc/systemd/system/kubelet.service.d/20-tidemq-runtime.conf <<'EOF'
+[Unit]
+Wants=containerd.service
+After=containerd.service
+EOF
+systemctl daemon-reload
 systemctl enable --now containerd kubelet
 systemctl restart containerd
 printf 'Prepared node %s for Kubernetes %s\n' "$node_ip" "$version"

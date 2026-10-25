@@ -7,7 +7,7 @@ const inventory = JSON.parse(fs.readFileSync(new URL('../../deploy/lab/inventory
 
 test('the bounded lab preserves three fault zones and fixed resource headroom', () => {
   validateInventory(inventory);
-  assert.deepEqual(resourceBudget(inventory), { memoryMiB: 38912, vcpus: 32, diskGiB: 242 });
+  assert.deepEqual(resourceBudget(inventory), { memoryMiB: 38912, vcpus: 32, diskGiB: 250 });
   assert.equal(new Set(inventory.nodes.filter(node => node.role === 'worker').map(node => node.zone)).size, 3);
 });
 
