@@ -17,6 +17,7 @@ use crate::transport::{
 };
 
 use super::telemetry::{DispatchMetrics, HandlerGauge};
+use super::tenant_admission::{TenantAdmission, TenantPermit};
 
 pub trait WireService: Send + Sync + 'static {
     type Error: std::error::Error + Send + Sync + 'static;
@@ -36,6 +37,16 @@ pub trait WireService: Send + Sync + 'static {
         transport_purpose: StreamPurpose,
     ) -> StreamPurpose {
         transport_purpose
+    }
+
+    /// The authority supplies the tenant identity; connections and credentials share its window.
+    fn scheduling_key(&self, peer: &Authorization, _request: &Frame) -> Option<[u8; 16]> {
+        match peer {
+            Authorization::Credential { tenant, .. } => {
+                Some(tenant.map_or([0; 16], |id| *id.as_bytes()))
+            }
+            _ => None,
+        }
     }
 
     /// Opt in only for replies that must reach the peer before closing the endpoint.
@@ -92,6 +103,7 @@ struct Job {
     _slot: OwnedSemaphorePermit,
     memory: MemoryPermit,
     order: Option<SubmissionOrder>,
+    tenant: Option<TenantPermit>,
 }
 struct ClassQueue {
     slots: Arc<Semaphore>,
@@ -105,6 +117,7 @@ struct Dispatcher {
     budget: MemoryBudget,
     config: DispatchConfig,
     health: Arc<DispatchMetrics>,
+    tenants: Arc<TenantAdmission>,
 }
 
 impl ClassQueue {
@@ -128,6 +141,7 @@ impl Dispatcher {
         frame: ReceivedFrame,
         reply: mpsc::Sender<Reply>,
         order: Option<SubmissionOrder>,
+        tenant: Option<[u8; 16]>,
     ) -> std::result::Result<(), Box<ReceivedFrame>> {
         let raft_control = purpose == StreamPurpose::Core
             && matches!(&peer, Authorization::Internal(_))
@@ -141,6 +155,23 @@ impl Dispatcher {
             StreamPurpose::Ack => &self.ack,
             StreamPurpose::Request => &self.data,
         };
+        let Ok(class) = TrafficClass::try_from(frame.frame().traffic_class) else {
+            return Err(Box::new(frame));
+        };
+        let Some(bytes) = frame_limit(class, &self.config.protocol).checked_mul(2) else {
+            return Err(Box::new(frame));
+        };
+        let tenant = if purpose == StreamPurpose::Request {
+            match tenant {
+                Some(tenant) => match self.tenants.try_reserve(tenant, bytes as usize) {
+                    Some(permit) => Some(permit),
+                    None => return Err(Box::new(frame)),
+                },
+                None => None,
+            }
+        } else {
+            None
+        };
         let slot = if raft_control {
             // The reader retains one transport-charged frame while existing Raft work completes.
             match timeout_at(frame.deadline(), queue.slots.clone().acquire_owned()).await {
@@ -152,12 +183,6 @@ impl Dispatcher {
                 Ok(slot) => slot,
                 Err(_) => return Err(Box::new(frame)),
             }
-        };
-        let Ok(class) = TrafficClass::try_from(frame.frame().traffic_class) else {
-            return Err(Box::new(frame));
-        };
-        let Some(bytes) = frame_limit(class, &self.config.protocol).checked_mul(2) else {
-            return Err(Box::new(frame));
         };
         let memory = match purpose {
             StreamPurpose::Core => self.budget.try_reserve_core(bytes),
@@ -174,6 +199,7 @@ impl Dispatcher {
             _slot: slot,
             memory,
             order,
+            tenant,
         };
         self.health.admitted.inc();
         queue
@@ -198,6 +224,17 @@ pub async fn run<S: WireService>(
     let (core, mut core_rx) = ClassQueue::new(config.core_handlers);
     let (ack, mut ack_rx) = ClassQueue::new(config.ack_handlers);
     let (data, mut data_rx) = ClassQueue::new(config.data_handlers);
+    let maximum_frame = [
+        TrafficClass::Control,
+        TrafficClass::Produce,
+        TrafficClass::Delivery,
+    ]
+    .into_iter()
+    .map(|class| frame_limit(class, &config.protocol) as usize)
+    .max()
+    .unwrap_or(0)
+    .saturating_mul(2);
+    let tenants = TenantAdmission::new(budget.clone(), config.data_handlers, maximum_frame);
     let dispatcher = Arc::new(Dispatcher {
         raft,
         core,
@@ -206,6 +243,7 @@ pub async fn run<S: WireService>(
         budget,
         config,
         health,
+        tenants,
     });
     let mut sessions = JoinSet::new();
     let mut handlers = JoinSet::new();
@@ -322,6 +360,7 @@ async fn execute<S: WireService>(
         _slot,
         memory,
         order,
+        tenant,
     } = job;
     let deadline = frame.deadline();
     let notification_peer = service
@@ -355,6 +394,7 @@ async fn execute<S: WireService>(
         response.payload = Bytes::from_owner(ReplyMemory {
             bytes: response.payload,
             _permit: memory,
+            _tenant: tenant,
         });
         // Keep the bounded handler slot while the writer catches up; a full queue is not a lost reply.
         let _ = timeout_at(
@@ -416,6 +456,7 @@ fn unknown_reply(frame: &Frame, limits: &ProtocolLimits) -> Option<ErrorReply> {
 struct ReplyMemory {
     bytes: Bytes,
     _permit: MemoryPermit,
+    _tenant: Option<TenantPermit>,
 }
 impl AsRef<[u8]> for ReplyMemory {
     fn as_ref(&self) -> &[u8] {
@@ -516,8 +557,9 @@ async fn serve_stream<S: WireService>(
                 None
             };
             let execution = admission.execution_purpose(&peer, frame.frame(), purpose);
+            let tenant = admission.scheduling_key(&peer, frame.frame());
             let submitted = tokio::select! {
-                submitted = dispatcher.submit(peer.clone(), execution, frame, replies.clone(), order) => submitted,
+                submitted = dispatcher.submit(peer.clone(), execution, frame, replies.clone(), order, tenant) => submitted,
                 _ = shutdown.changed() => { drop(replies); return true },
             };
             if let Err(frame) = submitted

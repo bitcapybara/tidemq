@@ -11,6 +11,7 @@ pub(crate) struct Access {
     pub principal: Arc<str>,
     pub scope: Arc<str>,
     pub session: Option<tidemq_protocol::Id>,
+    pub tenant: Option<tidemq_protocol::Id>,
 }
 
 impl Access {

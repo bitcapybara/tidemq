@@ -27,6 +27,7 @@ pub struct MemoryLimits {
 /// Shared byte admission with capacity reserved for authenticated control work.
 #[derive(Clone)]
 pub struct MemoryBudget {
+    data_capacity: usize,
     total: Arc<Semaphore>,
     data: Arc<Semaphore>,
     normal: Arc<Semaphore>,
@@ -82,6 +83,7 @@ impl MemoryBudget {
             });
         }
         Ok(Self {
+            data_capacity: data,
             total: Arc::new(Semaphore::new(total)),
             data: Arc::new(Semaphore::new(data)),
             normal: Arc::new(Semaphore::new(normal)),
@@ -201,6 +203,11 @@ impl MemoryBudget {
             _data: None,
             _class: permit,
         })
+    }
+
+    /// Configured data capacity, independent of temporary reservations.
+    pub fn data_capacity(&self) -> usize {
+        self.data_capacity
     }
 
     pub fn available_bytes(&self) -> usize {

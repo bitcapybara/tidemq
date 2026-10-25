@@ -113,6 +113,9 @@ fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
 
+#[path = "server_support/tenant_dispatch.rs"]
+mod tenant_dispatch;
+
 struct Fixture {
     client: Client,
     service: Arc<Service>,
@@ -129,6 +132,32 @@ impl Fixture {
     }
 
     async fn start_with_transport(dispatch: DispatchConfig, config: TransportConfig) -> Self {
+        Self::start_with_authorization(
+            dispatch,
+            config,
+            ServerAuthorization::External(vec![
+                TokenGrant::new(
+                    TOKEN,
+                    "dispatch-test".into(),
+                    "dispatch-test".into(),
+                    vec![
+                        FrameKind::Publish,
+                        FrameKind::GroupAck,
+                        FrameKind::CreateLogicalTopic,
+                        FrameKind::Diagnose,
+                    ],
+                )
+                .unwrap(),
+            ]),
+        )
+        .await
+    }
+
+    async fn start_with_authorization(
+        dispatch: DispatchConfig,
+        config: TransportConfig,
+        authorization: ServerAuthorization,
+    ) -> Self {
         let key = KeyPair::generate().unwrap();
         let certificate = CertificateParams::new(vec!["localhost".into()])
             .unwrap()
@@ -145,20 +174,7 @@ impl Fixture {
                 .unwrap(),
                 client_trust_roots: None,
             },
-            ServerAuthorization::External(vec![
-                TokenGrant::new(
-                    TOKEN,
-                    "dispatch-test".into(),
-                    "dispatch-test".into(),
-                    vec![
-                        FrameKind::Publish,
-                        FrameKind::GroupAck,
-                        FrameKind::CreateLogicalTopic,
-                        FrameKind::Diagnose,
-                    ],
-                )
-                .unwrap(),
-            ]),
+            authorization,
             config.clone(),
             budget.clone(),
         )

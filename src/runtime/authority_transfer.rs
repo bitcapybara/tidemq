@@ -153,6 +153,7 @@ impl Service {
             scope: String::new(),
             hops: 0,
             client_session: Bytes::new(),
+            tenant: Bytes::new(),
         };
         let reply = self
             .rpc

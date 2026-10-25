@@ -173,6 +173,7 @@ impl remote::Rpc for RuntimeRpc {
             scope: String::new(),
             hops: 0,
             client_session: Bytes::new(),
+            tenant: Bytes::new(),
         };
         let operation = Id::new_v7().map_err(|source| scaling::Error::Remote {
             source: Box::new(source),

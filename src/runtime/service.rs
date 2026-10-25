@@ -552,6 +552,10 @@ impl Service {
                 .session
                 .map(super::metadata::bytes_id)
                 .unwrap_or_default(),
+            tenant: access
+                .tenant
+                .map(super::metadata::bytes_id)
+                .unwrap_or_default(),
         };
         let pending = self
             .rpc
@@ -932,6 +936,14 @@ impl Service {
                     )
                     .await?;
                 let deadline = super::auth::admit_deadline(deadline, expires)?;
+                if request.tenant
+                    != access
+                        .tenant
+                        .map(super::metadata::bytes_id)
+                        .unwrap_or_default()
+                {
+                    return Err(forbidden());
+                }
                 if request.hops == 2 {
                     let partition = super::data::partition(&inner, &self.config.protocol)?;
                     let mut route = self
@@ -1006,6 +1018,9 @@ impl Service {
 }
 
 impl WireService for Service {
+    fn scheduling_key(&self, peer: &Authorization, request: &Frame) -> Option<[u8; 16]> {
+        super::auth::scheduling_key(peer, request, &self.config.protocol)
+    }
     fn execution_purpose(
         &self,
         peer: &Authorization,

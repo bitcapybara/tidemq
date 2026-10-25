@@ -6,6 +6,7 @@ async fn an_expired_connection_lease_rejects_frames_and_wakes_an_idle_connection
         tokio::sync::watch::channel(Instant::now() + std::time::Duration::from_secs(3600));
     let authorization = Authorization::Credential {
         credential: Id::new_v7().unwrap(),
+        tenant: None,
         session_id: Id::new_v7().unwrap(),
         allowed_kinds: vec![FrameKind::GetTopic],
         lease: Some(receiver),

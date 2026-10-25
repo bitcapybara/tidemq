@@ -270,8 +270,19 @@ async fn logical_topic_split_merge_and_credentials_survive_a_real_runtime_restar
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tenant_namespace_authorization_is_checked_on_each_resource() {
-    let fixture = dynamic_fixture().await;
-    let root = fixture.client(1).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Metadata),
+            (2, Role::Storage),
+            (3, Role::Broker),
+            (4, Role::Gateway),
+        ],
+        &[1],
+        &[2],
+    )
+    .await;
+    fixture.start_all().await;
+    let root = fixture.client(4).await;
     let tenant = root.admin().create_tenant("acme").await.unwrap();
     let namespace = root.admin().create_namespace(tenant, "app").await.unwrap();
     let other = root.admin().create_tenant("other").await.unwrap();
@@ -280,7 +291,14 @@ async fn tenant_namespace_authorization_is_checked_on_each_resource() {
     root.admin().create_topic("other/app/orders").await.unwrap();
     let principal = root
         .admin()
-        .new_principal(tenant, "reader", [tidemq_sdk::Permission::Consume])
+        .new_principal(
+            tenant,
+            "worker",
+            [
+                tidemq_sdk::Permission::Consume,
+                tidemq_sdk::Permission::Produce,
+            ],
+        )
         .namespace(namespace)
         .build()
         .await
@@ -290,9 +308,33 @@ async fn tenant_namespace_authorization_is_checked_on_each_resource() {
         .issue_token(principal, Duration::from_secs(300))
         .await
         .unwrap();
-    let app = token_client(&fixture, token.expose_secret()).await;
+    let app = Client::builder(
+        fixture.configs.get(&4).unwrap().listen.to_string(),
+        tidemq_sdk::TlsTrust::ca_pem(fixture.roots.clone()),
+        tidemq_sdk::Credentials::token(token.expose_secret()),
+    )
+    .build()
+    .await
+    .unwrap();
     assert!(app.admin().topic_info("acme/app/orders").await.is_ok());
     assert!(app.admin().topic_info("other/app/orders").await.is_err());
+    let queue = app
+        .new_queue_consumer("acme/app/orders", "jobs")
+        .build()
+        .await
+        .unwrap();
+    let producer = app.new_producer("acme/app/orders").build().await.unwrap();
+    let sent = producer
+        .send("tenant-bound-forwarding")
+        .await
+        .unwrap()
+        .message_id();
+    let received = queue.receive().await.unwrap();
+    assert_eq!(received.message_id(), sent);
+    assert_eq!(received.payload(), b"tenant-bound-forwarding");
+    queue.ack(&received).await.unwrap();
+    queue.close().await.unwrap();
+    producer.close().await.unwrap();
     root.admin()
         .set_tenant_enabled(tenant, false)
         .await

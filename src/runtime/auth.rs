@@ -121,6 +121,7 @@ struct AuthReply {
     birth: Option<crate::metadata::BirthShard>,
     publisher: Option<crate::producer::PublisherPermit>,
     credential: Option<Id>,
+    tenant: Option<Id>,
     expires_ms: u64,
     now_ms: u64,
 }
@@ -176,6 +177,7 @@ impl TokenAuthenticator for Authenticator {
                 })?;
             Ok(CredentialGrant {
                 credential,
+                tenant: reply.tenant,
                 allowed_kinds: kinds,
                 lease,
             })
@@ -594,6 +596,11 @@ impl Service {
                         .map_err(auth_rejection)?;
                     Ok(AuthReply {
                         credential: Some(credential.id),
+                        tenant: state
+                            .auth()
+                            .credential_scope(credential.id, now)
+                            .map_err(auth_rejection)?
+                            .0,
                         expires_ms: credential.expires_ms,
                         now_ms: now,
                         ..Default::default()
@@ -627,6 +634,11 @@ impl Service {
                         .ok_or_else(super::service::forbidden)?;
                     Ok(AuthReply {
                         credential: Some(credential),
+                        tenant: state
+                            .auth()
+                            .credential_scope(credential, now)
+                            .map_err(auth_rejection)?
+                            .0,
                         expires_ms: record.expires_ms,
                         now_ms: now,
                         ..Default::default()
@@ -685,7 +697,7 @@ impl Service {
             _ => Permission::Consume,
         };
         let resource = self.auth_resource(frame)?;
-        let (_, expires) = self
+        let (reply, expires) = self
             .auth_query(
                 AuthQuery::Authorize {
                     credential,
@@ -700,6 +712,7 @@ impl Service {
                 principal: Arc::from(format!("credential:{credential}")),
                 scope: Arc::from("*"),
                 session: Some(session),
+                tenant: reply.tenant,
             },
             expires,
         ))
@@ -755,4 +768,32 @@ fn decode<M: prost::Message + Default>(service: &Service, frame: &Frame) -> Resu
 
 fn auth_rejection(_: AuthRejection) -> Error {
     super::service::forbidden()
+}
+
+pub(super) fn scheduling_key(
+    peer: &crate::transport::Authorization,
+    frame: &Frame,
+    limits: &tidemq_protocol::ProtocolLimits,
+) -> Option<[u8; 16]> {
+    match peer {
+        crate::transport::Authorization::Credential { tenant, .. } => {
+            Some(tenant.map_or([0; 16], |id| *id.as_bytes()))
+        }
+        crate::transport::Authorization::Internal(peer)
+            if matches!(peer.role.as_str(), "gateway" | "broker" | "combined") =>
+        {
+            let envelope: tidemq_protocol::internal::InternalCommand =
+                decode_payload(frame.payload.clone(), limits).ok()?;
+            let request: Request = decode_payload(envelope.encoded_command, limits).ok()?;
+            if request.kind != wire::FORWARD {
+                return None;
+            }
+            if request.tenant.is_empty() {
+                Some([0; 16])
+            } else {
+                Some(*wire::id(&request.tenant).ok()?.as_bytes())
+            }
+        }
+        _ => None,
+    }
 }

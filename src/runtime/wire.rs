@@ -52,6 +52,8 @@ pub(crate) struct Request {
     pub hops: u32,
     #[prost(bytes = "bytes", tag = "6")]
     pub client_session: Bytes,
+    #[prost(bytes = "bytes", tag = "7")]
+    pub tenant: Bytes,
 }
 
 impl Request {
@@ -63,6 +65,7 @@ impl Request {
             scope: String::new(),
             hops: 0,
             client_session: Bytes::new(),
+            tenant: Bytes::new(),
         })
     }
 }
@@ -108,6 +111,7 @@ impl Request {
             scope: String::new(),
             hops: 0,
             client_session: Bytes::new(),
+            tenant: Bytes::new(),
         })
     }
 }

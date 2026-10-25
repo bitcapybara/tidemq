@@ -172,6 +172,7 @@ pub trait TokenAuthenticator: Send + Sync {
 
 pub struct CredentialGrant {
     pub credential: Id,
+    pub tenant: Option<Id>,
     pub allowed_kinds: Vec<FrameKind>,
     pub lease: Option<tokio::sync::watch::Receiver<Instant>>,
 }
@@ -235,6 +236,7 @@ impl ServerAuthorization {
                     class,
                     Authorization::Credential {
                         credential: grant.credential,
+                        tenant: grant.tenant,
                         session_id,
                         allowed_kinds: grant.allowed_kinds,
                         lease: grant.lease,
@@ -337,6 +339,7 @@ fn bind_external(
 pub enum Authorization {
     Credential {
         credential: Id,
+        tenant: Option<Id>,
         session_id: Id,
         allowed_kinds: Vec<FrameKind>,
         lease: Option<tokio::sync::watch::Receiver<Instant>>,
