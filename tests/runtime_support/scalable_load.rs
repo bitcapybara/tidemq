@@ -113,6 +113,16 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
         sequence += 1;
         tokio::time::sleep_until(started + Duration::from_millis(100)).await;
     }
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        client
+            .admin()
+            .topic_info(RUNTIME_TOPIC)
+            .await
+            .unwrap()
+            .shard_count(),
+        2
+    );
     let mut stream_remaining: std::collections::HashSet<_> = expected.keys().copied().collect();
     let mut queue_remaining = stream_remaining.clone();
     for _ in 0..expected.len() {
@@ -138,16 +148,6 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
         queue.ack(&message).await.unwrap();
     }
     assert!(stream_remaining.is_empty() && queue_remaining.is_empty());
-    tokio::time::sleep(Duration::from_millis(800)).await;
-    assert_eq!(
-        client
-            .admin()
-            .topic_info(RUNTIME_TOPIC)
-            .await
-            .unwrap()
-            .shard_count(),
-        2
-    );
     let until = Instant::now() + Duration::from_secs(20);
     while client
         .admin()
