@@ -98,6 +98,9 @@ bootstrap = $bootstrap
 group_id = 2
 voters = [1,2,3]
 EOF
+  if [[ "$node" == 4 ]]; then
+    printf 'standby = [4]\n' >> "$material/node-$node.toml"
+  fi
   peers='1 2 3'
   [[ "$node" != 4 ]] || peers='1 2 3 4'
   for peer in $peers; do

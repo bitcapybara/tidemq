@@ -51,7 +51,7 @@ ownership 的 Grant、Fence、Recover、Activate 在实际受信提交边界记�
 
 ## 有限 UDP 故障验证
 
-`stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_network_faults` 使用一个稳定 UDP 监听和两个明确后端，原 SDK 不更换地址或业务身份。它对真实报文按固定频率丢包、保留至多两个报文制造短时乱序，并在 Gateway CLI 子进程被 SIGKILL 后制造短期 1199 字节 MTU 黑洞；黑洞期间不能获得成功写回执。恢复到 1200 字节后，原 PendingBatch 按原 epoch/sequence/digest 重试，原 Consumer 继续提交 ACK，且 SDK 实际建立新 QUIC 连接到存活 Gateway。测试只在丢包、乱序和 MTU 丢弃计数均非零时通过。
+`stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_network_faults` 使用一个稳定 UDP 监听和两个明确后端，原 SDK 不更换地址或业务身份。它对真实报文按固定频率丢包、保留至多两个报文制造短时乱序，并在 Gateway CLI 子进程被 SIGKILL 后制造短期 1199 字节 MTU 黑洞；黑洞期间不能获得成功写回执。恢复到 1200 字节后，原 PendingSend 按原发送身份和摘要重试，原 Consumer 继续提交 ACK，且 SDK 实际建立新 QUIC 连接到存活 Gateway。测试只在丢包、乱序和 MTU 丢弃计数均非零时通过。
 
 这是单机有限代理的真实传输回归，不代表生产负载均衡器的 CID 路由、NAT 行为或真实三区网络已经验证。生产多 Gateway 的外部证书须覆盖相同服务 DNS SAN，SDK 使用该服务名；内部 mTLS 仍按独立 node 身份和精确证书 pin 验证。故障恢复期间允许有界暂停，旧 QUIC 连接不承诺保持不变。
 

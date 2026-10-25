@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 启动失败/未 ready | 配置未知字段、身份目录、证书/DER pin、真实 quorum、容量 sample age | [运行时](runtime.zh-CN.md)与[存储](storage-troubleshooting.zh-CN.md)；保留原身份恢复，不删 WAL 或临时降 RF |
 | 连接停顿/重连 | 当前 active connection、TLS、packet loss/PTO、flow blocked、liveness failure | [QUIC](quic-troubleshooting.zh-CN.md)；活性探测验证新原生包 ACK，不能代替业务提交 |
-| Producer Unknown/Blocked | 原 PendingBatch 的 producer/epoch/sequence/digest，owned pending、commit/fsync | [生产](producer-troubleshooting.zh-CN.md)；先恢复原未决结果，再提交后续消息 |
+| Producer Unknown/Blocked | 原 PendingSend、发送操作身份和恢复快照，owned pending、commit/fsync | [生产](producer-troubleshooting.zh-CN.md)；先恢复原未决结果，再提交后续消息 |
 | Fenced 或控制失效 | 元数据有效期、数据 fence、当前 owner/成员，是否正在 joint | [控制权](ownership-troubleshooting.zh-CN.md)；刷新权威和路由，旧 token 不改成新代次 |
 | 消费/ACK 停顿 | 最早未确认 offset、holes、attempt、失败 key、H/连续接收屏障 | [订阅](subscription-troubleshooting.zh-CN.md)；收到正文不代表持久 ACK，业务失败不自动跳过 |
 | QuotaExceeded/采样 Unknown | 逻辑积压、物理空间、共享回收滞后、RSS、cgroup、磁盘余量分别检查 | [保留与配额](../design/retention-quota.zh-CN.md)；恢复低水位和新鲜采样，保留已有 ACK/控制/GC 资源 |

@@ -37,6 +37,8 @@ done
 test "$(grep -c 'publishNotReadyAddresses: true' "$temporary/generated/services.yaml")" = 4
 grep -q 'replicas: 0' "$temporary/generated/node-4.yaml"
 grep -q 'bootstrap = false' "$temporary/generated/material/node-4.toml"
+grep -q 'standby = \[4\]' "$temporary/generated/material/node-4.toml"
+! grep -q '^standby =' "$temporary/generated/material/node-1.toml"
 ! grep -q '^node_id = 4$' "$temporary/generated/material/node-1.toml"
 ! grep -q bootstrap_admin_token_file "$temporary/generated/material/node-4.toml"
 ! grep -q 'ca.key' "$KUBE_CALL_LOG"
