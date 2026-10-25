@@ -27,6 +27,7 @@ use crate::{
 };
 
 pub use tick::TickReport;
+pub(crate) use wire::CapacityReport;
 pub use wire::{
     Query, ReplicaFailure, Reply, decode_query, decode_reply, encode_query, encode_reply,
 };

@@ -204,6 +204,7 @@ impl Service {
     ) -> Result<()> {
         let mut ticks = tokio::time::interval(Duration::from_secs(1));
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut next_balance = Instant::now();
         loop {
             tokio::select! { _ = stopped.changed() => return Ok(()), _ = ticks.tick() => {} }
             let Some(replica) = &self.metadata else {
@@ -213,17 +214,31 @@ impl Service {
                 continue;
             }
             let deadline = Instant::now() + Duration::from_secs(10);
-            let result = tokio::select! { _ = stopped.changed() => return Ok(()), result = self.move_draining_owners(deadline) => result };
+            let result = tokio::select! {
+                _ = stopped.changed() => return Ok(()),
+                result = async {
+                    if !self.move_draining_owners(deadline).await?
+                        && Instant::now() >= next_balance
+                        && self.balance_broker_ownership(deadline).await?
+                    {
+                        next_balance = Instant::now() + crate::scaling::PlacementPolicy::default().cooldown;
+                    }
+                    Ok::<_, Error>(())
+                } => result
+            };
             if let Err(error) = result {
+                let code = error.failure().code;
+                let error = anyhow::Error::new(error);
                 tracing::debug!(
                     event_code = "node_drain_wait",
-                    error_code = error.failure().code,
-                    "Node drain will resume after a surviving broker becomes available"
+                    error_code = code,
+                    error = %format_args!("{error:#}"),
+                    "Broker ownership placement will resume after capacity becomes available"
                 );
             }
         }
     }
-    async fn move_draining_owners(&self, deadline: Instant) -> Result<()> {
+    async fn move_draining_owners(&self, deadline: Instant) -> Result<bool> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         super::wire::within(deadline, replica.raft.ensure_linearizable())
             .await?
@@ -234,6 +249,7 @@ impl Service {
             .await
             .map_err(|source| Error::operation("read persisted node drain ownership", source))?;
         candidates.sort_unstable();
+        let draining = !routes.is_empty();
         for route in routes {
             let mut target = None;
             for (_, node) in candidates.iter().take(32) {
@@ -266,13 +282,13 @@ impl Service {
             }
             candidates.sort_unstable();
         }
-        Ok(())
+        Ok(draining)
     }
 }
 
 type DrainTargets = (Vec<crate::metadata::Route>, Vec<(usize, u64)>);
 
-fn drain_targets(state: &crate::metadata::MetadataState) -> DrainTargets {
+pub(super) fn drain_targets(state: &crate::metadata::MetadataState) -> DrainTargets {
     let draining: std::collections::BTreeSet<_> = state
         .nodes
         .keys()

@@ -133,7 +133,7 @@ impl CapacityReport {
         })
     }
 
-    pub(super) fn from_sample(report: Capacity) -> Result<Self> {
+    pub(crate) fn from_sample(report: Capacity) -> Result<Self> {
         let now = std::time::Instant::now();
         if report.observed_at > now {
             return Err(Error::Placement);

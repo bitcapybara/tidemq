@@ -2,6 +2,7 @@
 
 mod auth;
 mod authority_transfer;
+mod broker_balance;
 mod cluster;
 mod config;
 mod consumer_control;

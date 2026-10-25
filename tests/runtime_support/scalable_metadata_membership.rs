@@ -176,7 +176,7 @@ async fn rf3_metadata_replacement_keeps_three_voters_and_checkpoints_every_targe
     fixture.close().await;
 }
 
-async fn fixture_without_candidate(
+pub(super) async fn fixture_without_candidate(
     nodes: &[(u64, Role)],
     voters: &[u64],
     storage: &[u64],

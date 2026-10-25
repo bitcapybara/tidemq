@@ -3,6 +3,136 @@ use tidemq::metadata::PartitionKey;
 use tidemq_sdk::Message;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_broker_receives_existing_topic_ownership_and_drain_bypasses_balance_cooldown() {
+    let mut fixture = metadata_membership::fixture_without_candidate(
+        &[(1, Role::Combined), (2, Role::Broker)],
+        &[1],
+        &[1],
+        2,
+    )
+    .await;
+    let client = fixture.client(1).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let mut topics = Vec::new();
+    let mut producers = Vec::new();
+    let mut streams = Vec::new();
+    let mut held = Vec::new();
+    for index in 0..2 {
+        let name = format!("acme/app/balance-{index}");
+        let topic = client.admin().create_topic(&name).await.unwrap();
+        let stream = client
+            .new_stream_consumer(&name, "events")
+            .build()
+            .await
+            .unwrap();
+        let producer = client.new_producer(&name).build().await.unwrap();
+        let id = producer
+            .send(Message::new("before").key("one"))
+            .await
+            .unwrap()
+            .message_id();
+        let message = stream.receive().await.unwrap();
+        assert_eq!(message.message_id(), id);
+        topics.push(PartitionKey {
+            topic_id: topic.id().to_string().parse().unwrap(),
+            partition: 0,
+        });
+        producers.push(producer);
+        streams.push(stream);
+        held.push(message);
+    }
+    client
+        .admin()
+        .register_node(registry::registration(&fixture, 2).await)
+        .await
+        .unwrap();
+    fixture.running.insert(
+        2,
+        RunningNode::start(fixture.configs.get(&2).unwrap().clone())
+            .await
+            .unwrap(),
+    );
+    fixture.wait_ready().await;
+    let until = deadline();
+    loop {
+        let mut moved = 0;
+        let mut observed = true;
+        for partition in &topics {
+            let result = fixture
+                .running
+                .get(&1)
+                .unwrap()
+                .route(*partition, until)
+                .await;
+            let route = match result {
+                Ok(route) => route,
+                Err(error) => {
+                    assert!(
+                        error.failure().retryable,
+                        "Ownership observation failed: {error:#}"
+                    );
+                    observed = false;
+                    break;
+                }
+            };
+            moved += usize::from(route.owner_node == 2);
+        }
+        if observed && moved == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "The newly registered broker did not receive existing ownership"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for ((producer, stream), held) in producers.iter().zip(&streams).zip(&held) {
+        let id = producer
+            .send(Message::new("after").key("one"))
+            .await
+            .unwrap()
+            .message_id();
+        stream.ack_cumulative(held).await.unwrap();
+        let message = stream.receive().await.unwrap();
+        assert_eq!(message.message_id(), id);
+        assert_eq!(message.payload(), b"after");
+        stream.ack_cumulative(&message).await.unwrap();
+    }
+    client.admin().begin_node_drain(2).await.unwrap();
+    let until = deadline();
+    loop {
+        if client
+            .admin()
+            .node_drain_status(2)
+            .await
+            .unwrap()
+            .durable_state_drained()
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "Planned drain was delayed by balance cooldown"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    client.admin().retire_node(2).await.unwrap();
+    for stream in streams {
+        stream.close().await.unwrap();
+    }
+    for producer in producers {
+        producer.close().await.unwrap();
+    }
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gateway_drain_proves_local_cleanup_and_retirement_rejects_the_original_identity() {
     let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Gateway)], &[1], &[1]).await;
     fixture.start_all().await;

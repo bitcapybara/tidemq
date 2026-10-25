@@ -4,6 +4,7 @@ use tidemq_protocol::common::{ErrorCode, FrameKind, Outcome, TrafficClass};
 use tokio::time::Instant;
 
 use crate::metadata::{PartitionKey, Route};
+use crate::scaling::remote::CapacitySource;
 use crate::scaling::{DrainActions, Handoff};
 
 use super::service::{Service, forbidden};
@@ -59,6 +60,24 @@ struct Probe {
     node: u64,
     role: crate::config::Role,
     accepting: bool,
+    capacity: Option<crate::scaling::remote::CapacityReport>,
+}
+
+fn broker_capacity_available(
+    report: Option<crate::scaling::remote::CapacityReport>,
+    node: u64,
+    elapsed: std::time::Duration,
+) -> bool {
+    let Some(capacity) = report.and_then(|report| report.measured(node, elapsed).ok()) else {
+        return false;
+    };
+    let policy = crate::scaling::PlacementPolicy::default();
+    let Ok(placement) = crate::scaling::Placement::new(policy) else {
+        return false;
+    };
+    placement
+        .capacity_block(&capacity, policy.reserve_bytes, std::time::Instant::now())
+        .is_none()
 }
 
 pub(super) fn allows_completion(
@@ -123,6 +142,7 @@ impl Service {
                 };
             }
         };
+        let started = Instant::now();
         let result = self
             .drain_rpc(
                 node,
@@ -131,6 +151,7 @@ impl Service {
                 deadline,
             )
             .await;
+        let elapsed = started.elapsed();
         match result {
             Ok(bytes) => match wire::decode_json::<Probe>(&bytes) {
                 Ok(probe)
@@ -140,7 +161,8 @@ impl Service {
                             .registry
                             .has_role(node, crate::metadata::NodeRole::Broker)
                         && probe.role.serves_broker()
-                        && probe.accepting =>
+                        && probe.accepting
+                        && broker_capacity_available(probe.capacity.clone(), node, elapsed) =>
                 {
                     Observation::Eligible
                 }
@@ -408,6 +430,9 @@ impl Service {
                     node: self.config.node_id,
                     role: self.config.role,
                     accepting: !self.draining.load(std::sync::atomic::Ordering::Acquire),
+                    capacity: self.scaling.capacity.snapshot().and_then(|sample| {
+                        crate::scaling::remote::CapacityReport::from_sample(sample).ok()
+                    }),
                 })
             }
             Command::Unschedule { node } => {
@@ -619,6 +644,62 @@ impl DrainActions for Service {
 mod admission_tests {
     use super::*;
     use tidemq_protocol::{ProtocolLimits, common::Frame, framing::encode_payload, public};
+
+    #[test]
+    fn broker_targets_need_fresh_capacity_with_network_time_and_reserve_headroom() {
+        let sample = crate::scaling::Capacity {
+            node_id: 9,
+            observed_at: std::time::Instant::now(),
+            free_bytes: 2 * 1024 * 1024 * 1024,
+            reserved_bytes: 0,
+            bytes_per_second: 0,
+            cpu_per_mille: 0,
+            connections: 0,
+            ack_bytes: 0,
+        };
+        let report =
+            |sample| Some(crate::scaling::remote::CapacityReport::from_sample(sample).unwrap());
+        assert!(broker_capacity_available(
+            report(sample),
+            9,
+            std::time::Duration::ZERO
+        ));
+        assert!(!broker_capacity_available(
+            None,
+            9,
+            std::time::Duration::ZERO
+        ));
+        assert!(!broker_capacity_available(
+            report(sample),
+            8,
+            std::time::Duration::ZERO
+        ));
+        assert!(!broker_capacity_available(
+            report(sample),
+            9,
+            std::time::Duration::from_secs(6)
+        ));
+        for blocked in [
+            crate::scaling::Capacity {
+                cpu_per_mille: 900,
+                ..sample
+            },
+            crate::scaling::Capacity {
+                reserved_bytes: sample.free_bytes,
+                ..sample
+            },
+            crate::scaling::Capacity {
+                bytes_per_second: 256 * 1024 * 1024,
+                ..sample
+            },
+        ] {
+            assert!(!broker_capacity_available(
+                report(blocked),
+                9,
+                std::time::Duration::ZERO
+            ));
+        }
+    }
 
     #[test]
     fn draining_keeps_member_and_publisher_cleanup_live_without_admitting_new_work() {
