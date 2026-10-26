@@ -1,3 +1,4 @@
+use super::read_batches::{finish_original_ack, finish_original_send};
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,13 +46,15 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
         let client = client.clone();
         running.spawn(async move {
             let started = Instant::now();
+            let until = started + phase_budget;
             let context = tidemq_sdk::RequestContext::with_timeout(phase_budget).unwrap();
             let produced = AtomicU64::new(0);
             let acknowledged = AtomicU64::new(0);
             let metadata_reads = AtomicU64::new(0);
             let produce = async {
                 for sequence in 0..64_u64 {
-                    context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await.unwrap();
+                    let result = context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await;
+                    finish_original_send(result, until).await.unwrap();
                     produced.store(sequence + 1, Ordering::Relaxed);
                 }
             };
@@ -62,7 +65,8 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
                     assert_eq!(delivery.key(), Some(b"combined".as_slice()));
                     assert_eq!(delivery.payload(), &sequence.to_le_bytes());
                     assert!(seen.insert(delivery.message_id()), "A healthy Stream repeated an identity");
-                    context.scope(consumer.ack_cumulative(&delivery)).await.unwrap();
+                    let result = context.scope(consumer.ack_cumulative(&delivery)).await;
+                    finish_original_ack(result, until).await.unwrap();
                     acknowledged.store(sequence + 1, Ordering::Relaxed);
                 }
             };

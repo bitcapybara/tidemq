@@ -106,7 +106,7 @@ async fn configured_credit_live_pages_preserve_every_identity_and_durable_ack() 
     fixture.close().await;
 }
 
-async fn finish_original_send(
+pub(super) async fn finish_original_send(
     mut result: tidemq_sdk::Result<tidemq_sdk::SendReceipt>,
     until: Instant,
 ) -> tidemq_sdk::Result<tidemq_sdk::SendReceipt> {
@@ -115,7 +115,7 @@ async fn finish_original_send(
             Err(tidemq_sdk::Error::SendUnresolved { pending, source })
                 if source.outcome_unknown() && Instant::now() < until =>
             {
-                // Saturated live reads may exhaust one RPC; preserve its original send identity.
+                // A live RPC can lose its result; preserve the original send identity.
                 result = tidemq_sdk::RequestContext::with_deadline(until)
                     .scope(pending.retry())
                     .await;
@@ -125,7 +125,7 @@ async fn finish_original_send(
     }
 }
 
-async fn finish_original_ack(
+pub(super) async fn finish_original_ack(
     mut result: tidemq_sdk::Result<tidemq_sdk::AckReceipt>,
     until: Instant,
 ) -> tidemq_sdk::Result<tidemq_sdk::AckReceipt> {
