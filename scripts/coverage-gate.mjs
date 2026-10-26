@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const METRICS = ['lines', 'functions', 'regions'];
+const TEST_STAGES = ['unit', 'sdk-default-unit', 'integration', 'runtime-faults', 'external-services'];
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const git = (directory, args) => execFileSync('git', args, {cwd: directory, encoding: 'utf8'}).trim();
 const save = (file, value) => fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, {mode: 0o600});
@@ -99,6 +100,34 @@ function environment(policy) {
     github_run_id: process.env.GITHUB_RUN_ID ?? null, github_job: process.env.GITHUB_JOB ?? null});
 }
 
+export function validateMeasurement(measured, policy, sourceCommit, raw, runId) {
+  assert.equal(measured.schema_version, 1, 'Unsupported coverage measurement schema');
+  assert.equal(measured.source_commit, sourceCommit, 'Coverage profiles belong to another source commit');
+  assert.equal(measured.llvm_report_sha256, digest(raw), 'Measured LLVM artifact changed');
+  assert.ok(Number.isSafeInteger(measured.profile_count) && measured.profile_count > 0, 'Missing test profiles');
+  assert.deepEqual(Object.keys(measured.test_reports ?? {}).sort(), [...TEST_STAGES].sort(), 'Missing preceding test stages');
+  for (const hash of Object.values(measured.test_reports)) assert.match(hash, /^[0-9a-f]{64}$/, 'Invalid test report digest');
+  validateEnvironment(policy, measured.environment);
+  if (runId) assert.equal(measured.environment.github_run_id, runId, 'Coverage artifact is from another Rust run');
+  return measured.environment;
+}
+
+async function record(settings) {
+  const {policy} = await inputs(ROOT);
+  const raw = await read(path.resolve(settings['--report']));
+  llvmCounts(raw.value, policy.value.llvm_export_version);
+  const testReports = {};
+  for (const stage of TEST_STAGES) {
+    const bytes = await fs.readFile(path.join(ROOT, `target/ci/${stage}-junit.xml`));
+    assert.ok(bytes.length > 0, `Missing ${stage} test results`);
+    testReports[stage] = digest(bytes);
+  }
+  const measured = {schema_version: 1, source_commit: cleanHead(ROOT), llvm_report_sha256: digest(raw.bytes),
+    profile_count: Number(settings['--profile-count']), test_reports: testReports, environment: environment(policy.value)};
+  validateMeasurement(measured, policy.value, measured.source_commit, raw.bytes, process.env.GITHUB_RUN_ID);
+  await save(path.resolve(settings['--output']), measured);
+}
+
 async function comparison(settings) {
   const tools = path.resolve(settings['--tools'] ?? ROOT);
   const candidate = path.resolve(settings['--candidate'] ?? tools);
@@ -115,11 +144,13 @@ async function comparison(settings) {
     git(candidate, ['merge-base', '--is-ancestor', baseline.value.initialization_parent, sourceCommit]);
   }
   const raw = await read(path.resolve(settings['--report']));
+  const measured = (await read(path.resolve(settings['--measurement']))).value;
+  const measuredEnvironment = validateMeasurement(measured, policy.value, sourceCommit, raw.bytes, settings['--run-id']);
   const counts = llvmCounts(raw.value, policy.value.llvm_export_version);
   const result = initializing ? {status: 'passed', metrics: null} : compareCoverage(baseline.value.counts, counts);
   const summary = {schema_version: 1, ...result, initialization: initializing, source_commit: sourceCommit,
     policy_sha256: digest(policy.bytes), previous_baseline_sha256: digest(baseline.bytes),
-    llvm_report_sha256: digest(raw.bytes), counts, environment: environment(policy.value)};
+    llvm_report_sha256: digest(raw.bytes), counts, environment: measuredEnvironment};
   await save(path.resolve(settings['--output']), summary);
   console.log(`Coverage gate: ${summary.status}${initializing ? ' (initial measurement pending promotion)' : ''}`);
   assert.equal(summary.status, 'passed', 'Coverage decreased; add meaningful tests before accepting this source');
@@ -159,12 +190,13 @@ async function main() {
     assert.ok(value && !String(value).startsWith('--'), `Missing ${key} value`);
     settings[key] = value;
   }
-  if (action === 'compare') await comparison(settings);
+  if (action === 'record') await record(settings);
+  else if (action === 'compare') await comparison(settings);
   else if (action === 'promote') {
     const baseline = await validatePromotion(settings);
     await save(baseline.file, baseline.value);
     console.log(`Advanced coverage baseline to ${baseline.value.source_commit}`);
-  } else throw new Error('Usage: coverage-gate.mjs compare|promote [named paths]');
+  } else throw new Error('Usage: coverage-gate.mjs record|compare|promote [named paths]');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

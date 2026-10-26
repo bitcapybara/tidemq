@@ -10,9 +10,11 @@
 
 固定 nextest 0.9.148，ci profile 逐测试隔离、并发为 1、不重试失败项，保留 JUnit；业务测试内部并发不变。doctest 单独由 cargo test 执行。Linux 的固定 RustFS / Collector 版本与哈希由 inventory 和制品记录，不使用用户既有数据。
 
-覆盖率使用 cargo-llvm-cov 0.9.1 和匹配 LLVM tools，生成 LLVM JSON、LCOV、HTML 与 JUnit。[policy.json](../coverage/policy.json) 固定范围；[baseline.json](../coverage/baseline.json) 保留已有覆盖率基线。比较器用 BigInt 对 lines / functions / regions 原始整数比例逐项比较，任何下降失败，不设浮点容差，不额外排除源码来抬高数字。PR 使用 base 的可信工具和策略，不能替换自己的基线。性能联合晋升脚本已删除；当前 CI 只比较覆盖率，不自动写入或推送基线。
+Linux 单元和集成阶段直接使用 cargo-llvm-cov 0.9.1 的 `show-env --sh` 插桩构建；开始时只清理一次历史 profile，单元、SDK 默认 feature、原生集成、故障钩子及真实外部服务测试共用同一构建目录并累计 profile。测试结束后 `scripts/coverage-run.sh` 只读取已有二进制和 profile，生成 LLVM JSON、LCOV、HTML，不重新编译或执行测试。后续 coverage job 只下载报告并比较；measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量和五阶段 JUnit 哈希，拒绝跨提交或跨运行混用。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
 
-VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。完成或失败均恢复故障并清理该次资源。Linux 校验、覆盖率、故障测试与手动运维共享宿主 flock，避免重叠干扰；具体故障范围及共享 worker 的限制见实验室文档。
+[policy.json](../coverage/policy.json) 固定源码范围；[baseline.json](../coverage/baseline.json) 保留已有覆盖率基线。比较器用 BigInt 对 lines / functions / regions 原始整数比例逐项比较，任何下降失败，不设浮点容差，不额外排除源码来抬高数字。PR 使用 base 的可信工具和策略，不能替换自己的基线。当前 CI 只比较覆盖率，不自动写入或推送基线。
+
+VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。完成或失败均恢复故障并清理该次资源。Linux 插桩校验、集成、报告导出及 VM 故障与手动运维共享宿主 flock；只读的覆盖率报告比较不占用故障租约。VM 内的发布镜像以普通 release 构建，VM 故障场景另留独立验收结果，不混入 LLVM 覆盖率。
 
 ## 可复现验证
 
@@ -22,7 +24,8 @@ cargo clippy --workspace --all-targets --no-deps --locked -j2 --features tidemq-
 CARGO_BUILD_JOBS=2 cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen --profile ci
 cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 # Linux only, from committed clean sources.
-bash scripts/coverage-run.sh . /absolute/path/to/new/coverage-result
+TIDEMQ_REQUIRE_EXTERNAL=1 TIDEMQ_COVERAGE=1 bash scripts/ci/validate-and-integrate.sh
+node scripts/coverage-gate.mjs compare --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json --output target/ci/coverage/summary.json
 ```
 
 默认 mimalloc 调整后的 249 项串行测试、显式 System/jemalloc 构建、原始并行失败与 mimalloc-pprof 候选验证见[本次验证记录](evidence/2026-10-20-mimalloc-default.zh-CN.md)。

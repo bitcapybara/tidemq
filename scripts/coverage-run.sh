@@ -1,25 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -lt 2 ]]; then
-  printf 'Usage: coverage-run.sh candidate-directory output-directory [coverage-gate-options]\n' >&2
+if [[ "$#" != 1 || ${CARGO_LLVM_COV_SHOW_ENV:-0} != 1 ]]; then
+  printf 'Usage: run validate-and-integrate.sh with TIDEMQ_COVERAGE=1 to collect and report coverage\n' >&2
   exit 2
 fi
-tools_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-candidate_dir="$(cd -- "$1" && pwd)"
-mkdir -p -- "$2"
-report_dir="$(cd -- "$2" && pwd)"
-shift 2
-features="$(node -e 'console.log(require(process.argv[1]).features.join(","))' "$tools_dir/coverage/policy.json")"
-cd -- "$candidate_dir"
+mkdir -p -- "$1"
+report_dir="$(cd -- "$1" && pwd)"
+profile_count=$(find "$CARGO_LLVM_COV_TARGET_DIR" -maxdepth 1 -type f -name '*.profraw' | wc -l)
+(( profile_count > 0 )) || { printf 'No profiles from the preceding tests\n' >&2; exit 1; }
 
-# Instrumented dependencies stay reusable; only old workspace profiles are cleared.
-export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$candidate_dir/target/llvm-cov-target}"
-cargo llvm-cov clean --workspace
-cargo llvm-cov nextest --workspace --all-targets --locked --features "$features" \
-  --config-file "$tools_dir/.config/nextest.toml" --profile ci --no-report
+# Reporting consumes existing binaries and profiles; it never builds or runs tests.
 cargo llvm-cov report --workspace --include-build-script --locked --json --summary-only --output-path "$report_dir/llvm.json"
 cargo llvm-cov report --workspace --include-build-script --locked --lcov --output-path "$report_dir/lcov.info"
 cargo llvm-cov report --workspace --include-build-script --locked --html --output-dir "$report_dir/html"
-node "$tools_dir/scripts/coverage-gate.mjs" compare --tools "$tools_dir" --candidate "$candidate_dir" \
-  --report "$report_dir/llvm.json" --output "$report_dir/summary.json" "$@"
+node scripts/coverage-gate.mjs record --report "$report_dir/llvm.json" \
+  --output "$report_dir/measurement.json" --profile-count "$profile_count"

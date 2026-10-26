@@ -42,7 +42,10 @@ jobs:
         with: {tool: 'nextest@0.9.148'}
       - run: bash scripts/lab/with-lease.sh bash scripts/ci/validate-and-integrate.sh
         if: runner.os == 'Linux'
-        env: {TIDEMQ_REQUIRE_EXTERNAL: '1'}
+        env:
+          TIDEMQ_REQUIRE_EXTERNAL: '1'
+          TIDEMQ_COVERAGE: '1'
+          TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
       - run: bash scripts/ci/validate-and-integrate.sh
         if: runner.os == 'macOS'
         env:
@@ -53,6 +56,9 @@ jobs:
           name: tests-${{ matrix.os }}
           path: target/ci
           retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: success() && runner.os == 'Linux'
+        with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
 
   lab:
     name: Kubernetes RF3 and VM faults
@@ -72,11 +78,11 @@ jobs:
           retention-days: 30
 
   coverage:
-    name: Coverage baseline (Linux)
+    name: Coverage report gate (no test rerun)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: validate
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
-    timeout-minutes: 90
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -86,14 +92,18 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with: {ref: '${{ github.sha }}', path: candidate, fetch-depth: 0, persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with: {name: coverage-report, path: coverage-result}
       - run: node --test trusted/scripts/coverage/*.test.mjs
-      - run: bash trusted/scripts/lab/with-lease.sh bash trusted/scripts/coverage-run.sh candidate coverage-result $COVERAGE_GATE_MODE
+      - run: >-
+          node trusted/scripts/coverage-gate.mjs compare --tools trusted --candidate candidate
+          --report coverage-result/llvm.json --measurement coverage-result/measurement.json
+          --run-id "$GITHUB_RUN_ID" --output coverage-result/summary.json $COVERAGE_GATE_MODE
         env:
-          CARGO_LLVM_COV_TARGET_DIR: /srv/tidemq/cargo-target/coverage
           COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: coverage-report, path: coverage-result, retention-days: 30}
+        with: {name: coverage-gate, path: coverage-result/summary.json, retention-days: 30}
 
   untrusted:
     name: Fork unit tests

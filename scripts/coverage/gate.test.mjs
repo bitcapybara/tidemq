@@ -5,7 +5,7 @@ import {mkdtemp, mkdir, readFile, rm, symlink, writeFile} from 'node:fs/promises
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import {compareCoverage, llvmCounts, validateCounts, validatePromotion} from '../coverage-gate.mjs';
+import {compareCoverage, llvmCounts, validateCounts, validateMeasurement, validatePromotion} from '../coverage-gate.mjs';
 
 const ROOT = new URL('../../', import.meta.url);
 const policy = JSON.parse(await readFile(new URL('coverage/policy.json', ROOT)));
@@ -73,6 +73,26 @@ async function fixture() {
   const settings = {'--tools': directory, '--report': reportPath, '--summary': summaryPath, '--run-id': '123'};
   return {directory, git, commit, head, original, raw, summary, reportPath, summaryPath, settings};
 }
+
+test('reused coverage binds every preceding test stage to the same source, LLVM artifact and CI run', async () => {
+  const f = await fixture();
+  try {
+    const measurement = {schema_version: 1, source_commit: f.head, llvm_report_sha256: sha(f.raw), profile_count: 12,
+      test_reports: Object.fromEntries(['unit', 'sdk-default-unit', 'integration', 'runtime-faults', 'external-services']
+        .map(stage => [stage, 'a'.repeat(64)])), environment: f.summary.environment};
+    const verify = value => validateMeasurement(value, policy, f.head, f.raw, '123');
+    assert.equal(verify(measurement).github_run_id, '123');
+    for (const [key, value, message] of [
+      ['source_commit', '2'.repeat(40), /another source/],
+      ['llvm_report_sha256', '0'.repeat(64), /artifact changed/],
+      ['profile_count', 0, /Missing test profiles/],
+      ['test_reports', {}, /Missing preceding test stages/],
+      ['test_reports', {...measurement.test_reports, unit: ''}, /Invalid test report/],
+      ['environment', {...measurement.environment, github_run_id: '124'}, /another Rust run/],
+      ['environment', {...measurement.environment, platform: 'darwin'}, /fixed platform/],
+    ]) assert.throws(() => verify({...measurement, [key]: value}), message);
+  } finally { await rm(f.directory, {recursive: true, force: true}); }
+});
 
 test('promotion binds source, policy, previous baseline, raw LLVM counts and successful Rust run', async () => {
   const f = await fixture();
