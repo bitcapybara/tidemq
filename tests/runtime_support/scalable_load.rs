@@ -145,8 +145,10 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
     let mut queue_remaining = stream_remaining.clone();
     let drain_started = Instant::now();
     let mut last_progress = drain_started;
-    let until = drain_started + Duration::from_secs(20);
+    let drain_until = drain_started + Duration::from_secs(120);
     for _ in 0..expected.len() {
+        // Bound stalled delivery while allowing the functional workload to progress on slower CPUs.
+        let until = (last_progress + Duration::from_secs(20)).min(drain_until);
         let received =
             tokio::time::timeout_at(until, receive_during_scaling(|| stream.receive())).await;
         if !matches!(&received, Ok(Ok(_))) {

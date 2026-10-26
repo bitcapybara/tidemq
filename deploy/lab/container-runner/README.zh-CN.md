@@ -18,7 +18,7 @@ runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 run
 | 原生 runner 的 bin / externals、固定 nextest / llvm-cov | 只读工具，不包含原生 runner 的注册状态 |
 | `/srv/tidemq/maintenance/cargo-cache.lock` | 同路径文件挂载，协调 Cargo 流程与缓存回收 |
 
-容器不发布端口，不挂载 Docker socket、libvirt、kubeconfig、SSH key 或原生 runner 的 `.credentials`。根文件系统只读，runner 的工作安装副本位于有界 HOME tmpfs；重启从镜像重建，注册状态从 `/state` 读取。日志、checkout、target 和 tmp 位于持久数据盘，不依赖容器可写层。
+容器不发布端口，不挂载 Docker socket、libvirt、kubeconfig、SSH key 或原生 runner 的 `.credentials`。根文件系统只读，runner 的工作安装副本位于有界 HOME tmpfs；重启从镜像重建，注册状态从 `/state` 读取。日志、checkout、target 和 tmp 位于持久数据盘，不依赖容器可写层。`RUNNER_MANUALLY_TRAP_SIG=1` 使用上游 `run.sh` 自带的信号转发，把停止信号传给 Listener 并释放 GitHub 会话；以 GitHub online 状态和 `Listening for Jobs` 日志确认恢复，不能只看容器 running。
 
 两个 runner 共享下载缓存可避免重复下载；各自 target 仍需编译。独立构建可以同时进行，Cargo 自身的包锁保护下载/解压。[with-cargo-cache.sh](../../../scripts/ci/with-cargo-cache.sh) 在整个流程持有共享 flock，清理取得非阻塞独占锁后才删除 registry/git。手动 Cargo 命令也必须通过该入口；不可绕过锁清理共享目录。
 

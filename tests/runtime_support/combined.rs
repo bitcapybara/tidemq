@@ -51,6 +51,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
             let produced = AtomicU64::new(0);
             let acknowledged = AtomicU64::new(0);
             let metadata_reads = AtomicU64::new(0);
+            let metadata_admission_rejections = AtomicU64::new(0);
             let produce = async {
                 for sequence in 0..64_u64 {
                     let result = context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await;
@@ -72,7 +73,22 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
             };
             let read_metadata = async {
                 for _ in 0..64 {
-                    assert_eq!(context.scope(client.admin().topic_info(&name)).await.unwrap().id(), topic);
+                    // Read-only queries honor explicit admission backpressure within the phase deadline.
+                    let info = loop {
+                        match context.scope(client.admin().topic_info(&name)).await {
+                            Err(tidemq_sdk::Error::Remote {
+                                code: tidemq_protocol::common::ErrorCode::QuotaExceeded,
+                                outcome: tidemq_protocol::common::Outcome::Rejected,
+                                retryable: true,
+                                ..
+                            }) => {
+                                metadata_admission_rejections.fetch_add(1, Ordering::Relaxed);
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }
+                            result => break result.unwrap(),
+                        }
+                    };
+                    assert_eq!(info.id(), topic);
                     metadata_reads.fetch_add(1, Ordering::Relaxed);
                     tokio::task::yield_now().await;
                 }
@@ -81,7 +97,7 @@ async fn combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_
             assert_eq!(produced.load(Ordering::Relaxed), 64);
             assert_eq!(acknowledged.load(Ordering::Relaxed), 64);
             assert_eq!(metadata_reads.load(Ordering::Relaxed), 64);
-            eprintln!("Combined phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads=64", started.elapsed().as_millis());
+            eprintln!("Combined phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads=64, metadata_admission_rejections={}", started.elapsed().as_millis(), metadata_admission_rejections.load(Ordering::Relaxed));
             consumer.close().await.unwrap();
             producer.close().await.unwrap();
         });
