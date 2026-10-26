@@ -20,6 +20,20 @@ bound_cache() {
 
 free_bytes() { df --output=avail -B1 "$1" | tail -n 1 | tr -d ' '; }
 
+clean_checkouts() {
+  local directory=$1 workspace=${2:-$1/tidemq/tidemq} relative repository
+  [[ -d "$directory" && ! -L "$directory" && $(realpath -e "$directory") == "$directory" ]] || return 1
+  [[ "$workspace" == "$directory/"* && $(realpath -m "$workspace") == "$workspace" ]] || return 1
+  relative=${workspace#"$directory/"}
+  repository=${workspace%/*}
+  [[ "$relative" != _* && ${repository%/*} == "$directory" ]] || return 1
+  # Keep these directories present even if a Worker starts between the timer check and its hook.
+  mkdir -p -- "$workspace"
+  find "$directory" -mindepth 1 -maxdepth 1 ! -name '_*' ! -path "$repository" -exec rm -rf --one-file-system -- {} +
+  find "$repository" -mindepth 1 -maxdepth 1 ! -path "$workspace" -exec rm -rf --one-file-system -- {} +
+  empty_cache "$workspace"
+}
+
 sweep() {
   local repo=$1 phase=$2 run runs status=0 directory
   runs=$(kubectl --request-timeout=15s get namespaces -l tidemq.lab/ci=true -o json |
@@ -36,9 +50,9 @@ sweep() {
   done < <(printf '%s\n' "$runs" | sort -u)
 
   # Job hooks run outside the checkout, after artifact uploads and action post steps.
-  find /srv/tidemq/work -mindepth 1 -maxdepth 1 ! -name '_*' -exec rm -rf --one-file-system -- {} +
-  # Actions may already be downloaded before the started hook; preserve them until job completion.
-  if [[ "$phase" != before ]]; then bound_cache /srv/tidemq/work/_actions "$ACTION_CACHE_MAX_BYTES" "$CACHE_MAX_DAYS"; fi
+  clean_checkouts /srv/tidemq/work "${GITHUB_WORKSPACE:-}"
+  # A new Worker can prepare actions before its started hook acquires our lock.
+  if [[ "$phase" == after ]]; then bound_cache /srv/tidemq/work/_actions "$ACTION_CACHE_MAX_BYTES" "$CACHE_MAX_DAYS"; fi
   # Runner file commands may still be open during a hook; only remove old temporary entries.
   if [[ -d /srv/tidemq/work/_temp ]]; then
     find /srv/tidemq/work/_temp -xdev -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf --one-file-system -- {} +

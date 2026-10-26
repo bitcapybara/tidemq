@@ -40,6 +40,24 @@ test('cleanup refuses redirected roots and never follows child symlinks', linux,
   assert.equal(fs.readFileSync(path.join(outside, 'identity.key'), 'utf8'), 'keep');
   assert.deepEqual(fs.readdirSync(cache), []);
 });
+test('checkout cleanup preserves the current action working directory and downloaded actions', linux, t => {
+  const root = fixture(t), work = path.join(root, 'work'), workspace = path.join(work, 'tidemq', 'tidemq');
+  fs.mkdirSync(workspace, {recursive: true});
+  fs.mkdirSync(path.join(work, '_actions'));
+  fs.mkdirSync(path.join(work, 'old-checkout'));
+  fs.writeFileSync(path.join(workspace, 'old-build'), 'discard');
+  fs.writeFileSync(path.join(work, '_actions', 'index.js'), 'keep');
+  const inode = fs.statSync(workspace).ino;
+  assert.equal(shellFunction('clean_checkouts', [work, workspace]).status, 0);
+  assert.deepEqual(fs.readdirSync(workspace), []);
+  assert.ok(fs.existsSync(path.join(work, '_actions', 'index.js')));
+  assert.ok(!fs.existsSync(path.join(work, 'old-checkout')));
+  assert.equal(fs.statSync(workspace).ino, inode);
+  for (const invalid of [root, path.join(work, '_actions'), work + '/tidemq/../tidemq']) {
+    assert.notEqual(shellFunction('clean_checkouts', [work, invalid]).status, 0);
+  }
+  assert.ok(fs.existsSync(workspace));
+});
 
 function fakeCommands(root) {
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);

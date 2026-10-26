@@ -14,8 +14,8 @@
 
 | 物料 | 策略 |
 |---|---|
-| `/srv/tidemq/work/` 的仓库 checkout | 每次任务前后删除；保留 runner 的 `_` 前缀工作目录 |
-| `_actions` 下载缓存 | 最长 7 天，超过 1 GiB 清空；开始钩子保留已下载的当前任务 action |
+| `/srv/tidemq/work/` 的仓库 checkout | 每次任务前后删除内容，始终保留当前工作目录及其父目录供 action/钩子启动；保留 runner 的 `_` 前缀目录 |
+| `_actions` 下载缓存 | 完成钩子清理超过 7 天或 1 GiB 的缓存；开始钩子及定时器保留它，避开新 Worker 在钩子之前下载 action 的竞态 |
 | `_temp` | 删除超过 1 天的入口，不删除当前钩子仍可能打开的 file commands |
 | `/srv/tidemq/cargo-target` | 最长 7 天，总额 18 GiB；超额清空并按需编译 |
 | Cargo registry / git | 各最长 7 天、2 GiB；不删除 `cargo/bin`、rustup 或固定工具 |
