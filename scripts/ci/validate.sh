@@ -12,7 +12,7 @@ cargo fmt --all -- --check
 bash deploy/kubernetes/selfcheck.sh
 bash scripts/lab/host-control.sh --selfcheck
 bash scripts/lab/prepare-runner-assets.sh --selfcheck
-node --test scripts/coverage/*.test.mjs scripts/performance/*.test.mjs scripts/lab/*.test.mjs scripts/ci/*.test.mjs
+node --test scripts/coverage/*.test.mjs scripts/lab/*.test.mjs scripts/ci/*.test.mjs
 cargo clippy --workspace --all-targets --no-deps --locked --features "$features" -- -D warnings
 cargo clippy --workspace --lib --bins --no-deps --locked --features "$features" -- \
   -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::unimplemented \

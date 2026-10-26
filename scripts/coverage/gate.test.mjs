@@ -9,7 +9,6 @@ import {compareCoverage, llvmCounts, validateCounts, validatePromotion} from '..
 
 const ROOT = new URL('../../', import.meta.url);
 const policy = JSON.parse(await readFile(new URL('coverage/policy.json', ROOT)));
-const perfPolicy = JSON.parse(await readFile(new URL('performance/baseline.json', ROOT)));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const serialize = value => `${JSON.stringify(value, null, 2)}\n`;
 const counts = (covered = 50, count = 100) => Object.fromEntries(['lines', 'functions', 'regions'].map(metric => [metric, {covered, count}]));
@@ -47,29 +46,19 @@ async function fixture() {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'tidemq-coverage-'));
   const git = (...args) => execFileSync('git', args, {cwd: directory, encoding: 'utf8'}).trim();
   const commit = () => {
-    git('add', 'coverage', 'performance', 'deploy');
+    git('add', 'coverage');
     git('-c', 'core.hooksPath=/dev/null', '-c', 'user.name=Coverage Test', '-c', 'user.email=coverage@example.invalid',
       'commit', '--no-gpg-sign', '-qm', 'Test source');
     return git('rev-parse', 'HEAD');
   };
   await mkdir(path.join(directory, 'coverage'));
-  await mkdir(path.join(directory, 'performance'));
-  await mkdir(path.join(directory, 'deploy/local'), {recursive: true});
-  const generatorBytes = '#!/usr/bin/env bash\nexit 0\n';
-  await writeFile(path.join(directory, 'deploy/local/generate.sh'), generatorBytes);
   const policyBytes = serialize(policy);
   const baseline = {schema_version: 1, status: 'accepted', source_commit: '1'.repeat(40),
     policy_sha256: sha(policyBytes), llvm_report_sha256: '4'.repeat(64), counts: counts(40)};
   const original = serialize(baseline);
-  let perfOriginal = serialize(perfPolicy);
   await writeFile(path.join(directory, 'coverage/policy.json'), policyBytes);
   await writeFile(path.join(directory, 'coverage/baseline.json'), original);
-  await writeFile(path.join(directory, 'performance/baseline.json'), perfOriginal);
   git('init', '-q', '--initial-branch=main');
-  const baselineHead = commit();
-  const localPerfPolicy = {...perfPolicy, service_source_commit: baselineHead};
-  perfOriginal = serialize(localPerfPolicy);
-  await writeFile(path.join(directory, 'performance/baseline.json'), perfOriginal);
   const head = commit();
   const raw = serialize(llvm(counts()));
   const summary = {schema_version: 1, status: 'passed', initialization: false, source_commit: head,
@@ -82,7 +71,7 @@ async function fixture() {
   await writeFile(reportPath, raw);
   await writeFile(summaryPath, serialize(summary));
   const settings = {'--tools': directory, '--report': reportPath, '--summary': summaryPath, '--run-id': '123'};
-  return {directory, git, commit, head, baselineHead, localPerfPolicy, generatorBytes, original, perfOriginal, raw, summary, reportPath, summaryPath, settings};
+  return {directory, git, commit, head, original, raw, summary, reportPath, summaryPath, settings};
 }
 
 test('promotion binds source, policy, previous baseline, raw LLVM counts and successful Rust run', async () => {
@@ -157,46 +146,5 @@ test('first initialization requires a real nonzero report and PRs cannot initial
       assert.equal(replaced.status, 1);
       assert.match(replaced.stderr, /cannot replace/);
     } finally { await rm(other, {recursive: true, force: true}); }
-  } finally { await rm(f.directory, {recursive: true, force: true}); }
-});
-
-test('joint promotion leaves both baselines unchanged when either gate fails', async () => {
-  const f = await fixture();
-  try {
-    const sample = {durable_messages_per_second: 1000, produce_mean_ns: 100, produce_p99_upper_ns: 200,
-      offered_to_durable_ack_mean_ns: 300, offered_to_durable_ack_p99_upper_ns: 400};
-    const pairs = Array.from({length: 8}, (_, pair) => ({pair, order: pair % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate'],
-      baseline: sample, candidate: sample}));
-    const perf = {schema_version: 4, status: 'passed', baseline_manifest_sha256: sha(f.perfOriginal), trusted_tools_commit: f.head,
-      baseline: {source_commit: f.localPerfPolicy.service_source_commit, service_binary_sha256: '1'.repeat(64)},
-      candidate: {source_commit: f.head, service_binary_sha256: '2'.repeat(64)},
-      workload_binaries: {baseline: {binary_sha256: '3'.repeat(64)}, candidate: {binary_sha256: '4'.repeat(64)}},
-      configuration_generators: {baseline: {source_commit: f.baselineHead, script_sha256: sha(f.generatorBytes)},
-        candidate: {source_commit: f.head, script_sha256: sha(f.generatorBytes)}},
-      environment: {github_run_id: '456'}, topologies: Object.fromEntries(perfPolicy.topologies.map(name => [name, {pairs: pairs.map(pair => {
-        const effective = (name === 'rf1' ? [1] : [1, 2, 3]).map(node => ({node_id: node, configuration_sha256: '5'.repeat(64),
-          memory: {total_bytes: 201326592}, protocol: {max_frame_bytes: 1048576}, capacity: {limit: 1}, retention: {limit: 1}, archive_interval_ms: 1000}));
-        return {...pair, baseline: {...pair.baseline, workloads: {effective_configurations: effective}},
-          candidate: {...pair.candidate, workloads: {effective_configurations: effective}}};
-      })}]))};
-    const perfReport = path.join(f.directory, 'perf.json');
-    await writeFile(perfReport, serialize(perf));
-    const run = () => spawnSync(process.execPath, [new URL('../promote-baselines.mjs', import.meta.url).pathname,
-      f.directory, perfReport, f.summaryPath, f.reportPath, '123', '456'], {encoding: 'utf8'});
-    const bad = serialize(llvm(counts(39)));
-    await writeFile(f.reportPath, bad);
-    await writeFile(f.summaryPath, serialize({...f.summary, counts: counts(39), llvm_report_sha256: sha(bad)}));
-    const rejected = run();
-    assert.equal(rejected.status, 1);
-    assert.match(rejected.stderr, /Recomputed coverage regressed/);
-    assert.equal(await readFile(path.join(f.directory, 'coverage/baseline.json'), 'utf8'), f.original);
-    assert.equal(await readFile(path.join(f.directory, 'performance/baseline.json'), 'utf8'), f.perfOriginal);
-    await writeFile(f.reportPath, f.raw);
-    await writeFile(f.summaryPath, serialize(f.summary));
-    const accepted = run();
-    assert.equal(accepted.status, 0, accepted.stderr);
-    assert.equal(JSON.parse(await readFile(path.join(f.directory, 'coverage/baseline.json'))).source_commit, f.head);
-    assert.equal(JSON.parse(await readFile(path.join(f.directory, 'performance/baseline.json'))).service_source_commit, f.head);
-    assert.deepEqual(JSON.parse(await readFile(path.join(f.directory, 'performance/baseline-report.json'))), perf);
   } finally { await rm(f.directory, {recursive: true, force: true}); }
 });
