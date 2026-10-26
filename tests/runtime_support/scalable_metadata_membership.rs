@@ -159,11 +159,7 @@ async fn rf3_metadata_replacement_keeps_three_voters_and_checkpoints_every_targe
     client.admin().retire_node(1).await.unwrap();
     fixture.stop(1).await;
     queue.ack(&held).await.unwrap();
-    let next = producer
-        .send("after-replacement")
-        .await
-        .unwrap()
-        .message_id();
+    let next = logical_send(&producer, b"after-replacement").await;
     let received = tokio::time::timeout(Duration::from_secs(15), queue.receive())
         .await
         .unwrap()
