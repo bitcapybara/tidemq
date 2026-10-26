@@ -77,6 +77,7 @@ main() {
   mountpoint -q /srv/tidemq
   repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
   export TIDEMQ_LAB_HOME=/home/actions/.config/tidemq-lab
+  export KUBECONFIG="$TIDEMQ_LAB_HOME/kubeconfig"
   export HOME=/home/actions PATH=/usr/local/bin:/usr/bin:/bin:/srv/tidemq/tools
   unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
   source "$repo/deploy/lab/runner-maintenance.env"
