@@ -10,7 +10,7 @@
 | --- | --- |
 | `cargo fmt --all` | 通过 |
 | `cargo clippy --workspace --tests --examples --no-deps --locked -j2 -- -D warnings` | 通过，零警告 |
-| workspace lib/bins 的 unwrap、expect、panic、todo、unimplemented、indexing/slicing 严格 clippy | 通过，命令见[测试方法](../testing-benchmarks.zh-CN.md) |
+| workspace lib/bins 的 unwrap、expect、panic、todo、unimplemented、indexing/slicing 严格 clippy | 通过，命令见[测试方法](../testing.zh-CN.md) |
 | `cargo test --workspace --locked -j2 --no-fail-fast -- --test-threads=2` | **246 passed，9 ignored，34 suites，76.85 s** |
 | 指定真实 RustFS 与官方 Collector，`cargo test --workspace --locked -j2 -- --ignored --test-threads=1` | **9 passed，246 filtered out，34 suites，36.70 s** |
 | `cargo test --workspace --doc --locked -j2` | **3 passed，4 suites，0.28 s** |
@@ -63,4 +63,4 @@
 
 真实三区、生产负载均衡/NAT/CID、Linux/cgroup OOM、掉电、长稳、生产规模和竞品公平对标仍未执行。未 Active 的原 grant 目标同时死亡时保守等待目标恢复或受信处理；对象永久账本等固定容量上限见[实施状态](../implementation-status.zh-CN.md)。这些边界不能由本地正确性通过推导为已验收。
 
-性能使用另行冻结的 `1398353` 源码、锁文件、三种分配器 release 二进制和配置身份，17 项有限 RF1 负载的测量 36032 条、预热 2264 条均完整提交并持久 ACK；官方 Collector 实际接收 53 个 span。原始表、资源与分位口径见[本地性能报告](2026-10-20-local-performance.zh-CN.md)。小消息消费及持久 ACK 约 60 条/秒，不能作为高吞吐、低延迟或生产 allocator 已达标的结论。本记录的测试耗时、恢复单例和成功数量也不替代正式性能分布。
+性能使用另行冻结的 `1398353` 源码、锁文件、三种分配器 release 二进制和配置身份，17 项有限 RF1 负载的测量 36032 条、预热 2264 条均完整提交并持久 ACK；官方 Collector 实际接收 53 个 span。原始表、资源与分位口径见本地性能报告（相关性能资料已移除）。小消息消费及持久 ACK 约 60 条/秒，不能作为高吞吐、低延迟或生产 allocator 已达标的结论。本记录的测试耗时、恢复单例和成功数量也不替代正式性能分布。

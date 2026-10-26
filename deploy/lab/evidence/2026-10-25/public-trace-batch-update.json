@@ -1,0 +1,17 @@
+{
+  "capturedAt": "2026-10-25T17:08:24.266Z",
+  "batchSpans": 16,
+  "namespace": "tidemq-dev",
+  "configSha256": {
+    "node-11": "7d5b67c1ad7693b813810662a51a4dab067318999fb2da37c31c8231767bb329",
+    "node-12": "397e75855d578a5d5362ae10be4485eb04cd9fa389d5a390b0dafaf57dda5fd4",
+    "node-13": "55b2d941200295ba2c304f4109e58a54af5f4a04bdea00469236eb8e19e9771b",
+    "node-21": "ffeb2adf2aded9bcab9bd900aff25d2d6887816f93a093ffb4fca1c460532d95",
+    "node-22": "2ce420be4538fca8963390024c69a946dbe6a91c05464b7e822caa549b67f9cf",
+    "node-23": "5e7e77a299ed1bc0edbf48d12c6fd62f382304d1fca6fc86d6bd3baaa602301c",
+    "node-31": "02ff1cd8f160b0072c7a4f37e28c94449776b3b2fb4c2b212c08832881a71d93",
+    "node-32": "05689f0959f3a17f00111a8fab76bb59d3445feb47bc600d9fb039330d11a5d7",
+    "node-41": "396c076f8609bcc1242301fb18c7e7c6c1405fa51a626e34572d52b49eeddeab",
+    "node-42": "26eb70a3d54a45b1739816e8fbca901a142af676018041d1defbafa64d9f9bf8"
+  }
+}

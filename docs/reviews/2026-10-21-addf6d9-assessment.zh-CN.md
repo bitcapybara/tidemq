@@ -22,7 +22,7 @@
 | 12 Active 前目标死亡 | **已披露限制仍在**。非 Active 阶段仍只恢复原 owner。 | 独立设计更高 epoch 的接管替换，完整保留 fence／recover／activate；不能通过放开 desired_owner 修补。 |
 | 13 覆盖率波动 | **观测问题仍需跟进**。旧版同 Rust 源码的两次 LLVM 计数不同，不能归因于代码回退。新分段版精确门禁通过不解释旧差异。 | 先保留 per-file 差异并对异步分支增加确定性触发。覆盖率门禁本轮不降阈值、不删范围；暂停性能及联合晋升后仍严格比较现有基线。 |
 | 14 超大 HELLO | **已修复主要断言**。当前接受 Err 或 EOF，禁止任何成功数据帧，并验证拒绝计数及零接收帧；已有原生红绿与完整回归。 | 原报告的“EOF 仅静态解释”只适用于旧报告现场，后续原生证据另行保留。不扩大到允许成功 payload。 |
-| 15 性能正文与 key | **下一次性能测量前应补齐**。负载代码未改变，原建议仍适用。 | 校验完整确定性正文及 key，增加头后字节、尾字节、key、头部损坏用例。此项随手动性能策略另行安排，本轮保留原脚本与历史口径。 |
+| 15 性能正文与 key | **下一次性能测量前应补齐**。负载代码未改变，原建议仍适用。 | 校验完整确定性正文及 key，增加头后字节、尾字节、key、头部损坏用例。该性能工具已于 2026-10-26 按用户要求删除。 |
 
 关键源码：[运行时配置／启动](../../src/runtime/node.rs)、[RPC 授权](../../src/replication/rpc/server.rs)、[初始路由](../../src/runtime/metadata.rs)、[生产／读取](../../src/runtime/data.rs)、[逻辑日志上限](../../src/replication/store.rs)、[追加限额检查](../../src/replication/log.rs)、[owned 快照](../../src/replication/state_machine.rs)、[取消回归](../../src/replication/cancellation_tests.rs)、[迁移 Flight](../../src/scaling/remote/data.rs)、[Finish](../../src/scaling/remote/mod.rs)、[自动迁移](../../src/scaling/remote/tick.rs)。
 
@@ -42,4 +42,4 @@ OpenRaft 版本从 Cargo.lock 核对为 0.9.25；本地对应依赖源的 config
 | I 失败 WAL 制品 | 本地已保存的私有原始证据先保留到 worktree 外；未来手动测量需明确大小／文件白名单与 secret 排除。不将 CI artifact 仅有日志误称持久保存了 WAL。 |
 | J principal／session 隔离 | 先明确同 topic 内的隔离契约，再决定是否将 principal 绑定到持久 session；不能仅凭客户端自选 HELLO session 认定实现了隔离。 |
 
-本轮落实 CI 调整、文档准确性和 worktree 审计／清理；上述尚存业务问题未混入 WAL 合并。建议后续按 1／2、4／5／6、7／8 的边界分别设计、回归和提交，再安排批量投递及冷读优化。性能测试与基线接受按[当前暂缓策略](../performance-policy.zh-CN.md)后续手动安排，不作为本次提交前置条件。
+本轮落实 CI 调整、文档准确性和 worktree 审计／清理；上述尚存业务问题未混入 WAL 合并。建议后续按 1／2、4／5／6、7／8 的边界分别设计、回归和提交，再安排批量投递及冷读优化。2026-10-26 已按用户要求删除性能测试工具、配置和基线，本次部署验收不运行性能测试。

@@ -1,0 +1,15 @@
+{
+  "sourceFailureRun": "https://github.com/bitcapybara/tidemq/actions/runs/40215415839",
+  "fixCommit": "14372cd5a053bedf536fd3e91bf569d4bb17339c",
+  "test": "lowering_backlog_below_usage_fences_new_writes_and_preserves_ack_and_original_result_recovery",
+  "red": {
+    "exitCode": 101,
+    "error": "called `Result::unwrap()` on an `Err` value: SendUnresolved { pending: PendingSend { sequence: 4, complete: true }, source: Deadline }"
+  },
+  "green": {
+    "macosPasses": 10,
+    "linuxPasses": 10
+  },
+  "deadlineChanges": false,
+  "originalPayloadChecked": true
+}

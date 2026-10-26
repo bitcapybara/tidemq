@@ -32,4 +32,4 @@ server::run 分别保留 Core、ACK、数据执行额度，接收、业务执行
 
 短 ACK 流发送 FIN 后，服务端继续排空已准入回复，再结束发送方向。关闭先停新准入、有限排空，再关闭连接。分派器记录有限标签的准入、拒绝、执行失败、在途任务及日志抑制指标；同类 handler 警告最多每秒一条，失败计数不采样。所有 Collector 通过单一进程根 Registry 导出，避免重复前缀和多个 OpenMetrics EOF。tests/server_dispatch.rs 验证两个生产 handler 都等待结果时 Core 与独立 ACK 仍能前进、同 P 流准入顺序正确及 ACK 半关闭后可收到回包。
 
-完整服务进程、SDK 真实业务联调和跨节点控制权威已有独立[运行时证据](../testing-benchmarks.zh-CN.md)；长期公平调度、真实 LB/CID、跨可用区与生产压力仍按 T06/T10/T11/T12/T13 单独验收。
+完整服务进程、SDK 真实业务联调和跨节点控制权威已有独立[运行时证据](../testing.zh-CN.md)；长期公平调度、真实 LB/CID、跨可用区与生产压力仍按 T06/T10/T11/T12/T13 单独验收。

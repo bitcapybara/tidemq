@@ -40,7 +40,7 @@
 
 Core Raft 的执行槽等待发生在完整帧接收并授权之后，沿用该 frame 的绝对 deadline。等待由既有 reader 持有 transport-charged ReceivedFrame，不增加任务、工作队列、字节或槽位额度；到期、连接关闭、服务关闭会归还待帧，已 owned handler 继续原有有限 drain。两条 lane 都等待时，同流后续 CANCEL 可能延至前帧到期后才继续处理，不承诺无队头阻塞。完整帧已接收后的等待结束，不等于部分 prefix/body 取消，也不因此 poison 健康共享流。
 
-独立回归 `native_idle_produce_connection_records_lane_read_errors_while_control_progresses` 配置原生 idle 一秒、组帧阈值 120 ms：P 的四条 lane 完成生产后静止，250 ms 时仍开；约 1.22 秒后 P 原生/RPC 关闭，两端 malformed 各增加四，deadline/探活失败/拒绝均为零，C 仍完成 52 次控制请求且没有新增连接。这个实验说明合法原生空闲关闭也能产生这组计数，不能仅由 malformed 推断坏帧或活跃连接误断；[本地性能报告](../evidence/2026-10-20-local-performance.zh-CN.md)中的原场景没有逐帧原因记录，归因仍保留推测边界。
+独立回归 `native_idle_produce_connection_records_lane_read_errors_while_control_progresses` 配置原生 idle 一秒、组帧阈值 120 ms：P 的四条 lane 完成生产后静止，250 ms 时仍开；约 1.22 秒后 P 原生/RPC 关闭，两端 malformed 各增加四，deadline/探活失败/拒绝均为零，C 仍完成 52 次控制请求且没有新增连接。这个实验说明合法原生空闲关闭也能产生这组计数，不能仅由 malformed 推断坏帧或活跃连接误断；本地性能报告（相关性能资料已移除）中的原场景没有逐帧原因记录，归因仍保留推测边界。
 
 ## 本地回归
 

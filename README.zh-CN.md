@@ -6,7 +6,7 @@
 
 TideMQ 面向数据采集与流处理，将消息服务、复制式预写日志（WAL）、对象存储和控制元数据分层，使计算与存储能够独立扩缩容。
 
-> **项目状态：** 本地运行时与同仓库 Rust SDK 已支持持久生产、逐条 ACK、认证 QUIC、独立元数据/数据 Raft、RustFS/S3 归档、冷读、保留策略及安全对象回收。真实本地 RF3、角色分离、独立进程故障、自动接管及成员修复已通过回归；17 项有限 RF1 负载已测量。小消息消费及持久 ACK 约 60 条/秒，高吞吐、低延迟、真实三区与恢复分位目标仍待优化和验收。详见[实施状态](docs/implementation-status.zh-CN.md)和[本地性能报告](docs/evidence/2026-10-20-local-performance.zh-CN.md)。
+> **项目状态：** 运行时与同仓库 Rust SDK 已支持持久生产、逐条 ACK、认证 QUIC、独立元数据/数据 Raft、RustFS/S3 归档、冷读、保留策略及安全对象回收。功能 CI 覆盖 Linux/macOS、真实外部依赖及 RF3 Kubernetes/VM 故障恢复。详见[实施状态](docs/implementation-status.zh-CN.md)和[VM 实验室验收](deploy/lab/README.zh-CN.md)。
 
 ## 设计目标
 
@@ -49,6 +49,8 @@ TideMQ 面向数据采集与流处理，将消息服务、复制式预写日志�
 
 运行时提供 RF1 组合角色，以及独立 Gateway、Broker、Storage 和 Metadata 角色；本地生成器可生成 RF1/RF3 配置。同地域三区部署仍需实际基础设施与独立验收。单节点不具备节点级高可用，也不是生产故障时的自动降级模式。
 
+已实施的 KVM/kubeadm 实验室、公共 RustFS、观测服务和 GitHub self-hosted runner 见[实验室运维清单](deploy/lab/README.zh-CN.md)，包含 VM 分配、网络入口、操作方法及验证证据。
+
 候选恢复目标为：计划迁移通常不超过 1 秒，单 Broker 或 Gateway 故障 P99 不超过 5 秒，单可用区故障 P99 不超过 10 秒。这些是设计与压测目标，不是 SLA。计时覆盖故障检测、选主、fence、状态恢复、路由与 SDK 重连。Gateway 故障可能中断已有连接，SDK 需要重连并恢复会话。
 
 ## 开始使用
@@ -77,11 +79,11 @@ cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metri
 cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 ```
 
-固定的覆盖率工具、JSON／LCOV／HTML 报告及覆盖率、性能基线门禁见[测试指南](docs/testing-benchmarks.zh-CN.md)。
+固定的覆盖率工具、JSON／LCOV／HTML 报告及覆盖率门禁见[测试指南](docs/testing.zh-CN.md)。
 
 SDK 默认使用配置超时，通过 `RequestContext` 与 `CancellationToken` 在多次调用间共享总期限和取消；大块唯一所有权 payload 使用有界分段发送。接口见[SDK 手册](docs/guide/rust-sdk.zh-CN.md)，格式候选见[rkyv / FlatBuffers / FlexBuffers 调研](docs/research/zero-copy-formats.zh-CN.md)。
 
-[性能工作流](.github/workflows/performance.yml) 当前仅保留手动入口；PR／push 自动测量、本地提交前性能测试及自动基线晋升暂停，原负载、脚本、策略和已接受基线保留。功能与覆盖率 CI 继续执行，详见[当前策略](docs/performance-policy.zh-CN.md)和[性能手册](docs/performance.zh-CN.md)。
+已删除性能 workflow、负载工具、比较脚本、配置、基线及专项报告。功能、覆盖率与 VM 故障 CI 继续执行；本次不运行性能测试。
 
 ## 完整文档与实施路线
 
@@ -94,7 +96,7 @@ SDK 默认使用配置超时，通过 `RequestContext` 与 `CancellationToken` �
 5. 实现 Gateway 与受控扩缩容。
 6. 在对齐持久化和交付语义的前提下，完成三可用区性能对标与故障验证。
 
-实现基线使用 OpenRaft、s2n-quic、Protobuf、同仓库 Rust SDK、aws-sdk-s3 和本地 RustFS。服务端通过 `allocator-mimalloc` 默认启用 mimalloc；System、jemalloc 为互斥的构建选项，切换时使用 `--no-default-features`。SDK 的分配器由宿主决定。参见[分配器配置与排障](docs/operations/memory-troubleshooting.zh-CN.md)、[文档导航](docs/README.zh-CN.md)、[当前设计](docs/design/architecture.zh-CN.md)、[要求覆盖](docs/requirements-coverage.zh-CN.md)和[可复现负载工具](docs/performance.zh-CN.md)。分配器性能、负载数值和生产预算仍需验证；历史草案中的 AutoMQ 数据是外部参考，不是 TideMQ 实测。
+实现基线使用 OpenRaft、s2n-quic、Protobuf、同仓库 Rust SDK、aws-sdk-s3 和本地 RustFS。服务端通过 `allocator-mimalloc` 默认启用 mimalloc；System、jemalloc 为互斥的构建选项，切换时使用 `--no-default-features`。SDK 的分配器由宿主决定。参见[分配器配置与排障](docs/operations/memory-troubleshooting.zh-CN.md)、[文档导航](docs/README.zh-CN.md)、[当前设计](docs/design/architecture.zh-CN.md)、[要求覆盖](docs/requirements-coverage.zh-CN.md)。分配器性能、负载数值和生产预算仍需验证；历史草案中的 AutoMQ 数据是外部参考，不是 TideMQ 实测。
 
 ## 许可证
 

@@ -86,7 +86,7 @@ RPC 每个物理连接拥有一项有界存活观察任务，仅在存在未决�
 
 `TransportMetrics` 提供固定、无动态标签的快照，并实现 prometheus-client `Collector`；管理入口用固定服务端/客户端前缀注册同一实例，不能每个请求新建实例。包含认证连接、拒绝、流、帧/字节、期限、读/解码失败、send 等待秒、TLS 失败、native 丢包和 DATA_BLOCKED/STREAM_DATA_BLOCKED/STREAMS_BLOCKED 通知。block frame 计数可以含重复通知，不等于阻塞持续时间。`Connection::recovery_snapshot` 只读查询最近的 min/smoothed/latest RTT、PTO count、cwnd、bytes in flight 和 congestion_limited；没有样本时为 None，不能当作零 RTT。
 
-`tests/quic_transport.rs` 使用逐测试独立的内存证书、随机 UDP 端口和真实 TLS/socket。已覆盖大于 stream window 的帧及同流连续请求、证书/权限拒绝、双 pin 轮换与错目标节点、超大 HELLO 和非法 frame、半帧超时 poison、ACK 满时 Core 前进、慢 B 时 C 前进、并发池复用/分类隔离、空闲期限、payload clone 计费，以及 data 满且 D 保持连接时 C 重新认证、ACK 到达 dispatcher 后释放测试持有的积压额度。normal 被普通 Control 和 data 用尽时 Core 帧仍前进；此测试本身不代表业务持久 ACK，后者由真实 SDK/数据组回归交叉验证。原身份重试、Broker 接管和 RF3 独立进程多数派故障另见[测试索引](../testing-benchmarks.zh-CN.md)。故障网、3AZ、真实 CID/LB、按租户/分区公平调度及完整吞吐/P99/P99.9 矩阵仍待对应环境验收。
+`tests/quic_transport.rs` 使用逐测试独立的内存证书、随机 UDP 端口和真实 TLS/socket。已覆盖大于 stream window 的帧及同流连续请求、证书/权限拒绝、双 pin 轮换与错目标节点、超大 HELLO 和非法 frame、半帧超时 poison、ACK 满时 Core 前进、慢 B 时 C 前进、并发池复用/分类隔离、空闲期限、payload clone 计费，以及 data 满且 D 保持连接时 C 重新认证、ACK 到达 dispatcher 后释放测试持有的积压额度。normal 被普通 Control 和 data 用尽时 Core 帧仍前进；此测试本身不代表业务持久 ACK，后者由真实 SDK/数据组回归交叉验证。原身份重试、Broker 接管和 RF3 独立进程多数派故障另见[测试索引](../testing.zh-CN.md)。故障网、3AZ、真实 CID/LB、按租户/分区公平调度及完整吞吐/P99/P99.9 矩阵仍待对应环境验收。
 
 `tests/server_dispatch.rs` 以四条真实 Request lane、仅一个 affinity lane 持续工作，分别隔离客户端与服务端的 120ms 应用组帧阈值，持续业务超过阈值而保持同一物理连接，且 deadline/malformed 不增长。通用接收回归另覆盖空等取消后继续使用、无效 timeout 立即拒绝、prefix/body 各自超时与取消后 poison，以及首字节之后的延迟消耗 peer 预算；一次性 absolute API 的半帧失败与既有关闭/端口回收测试继续保留。
 

@@ -28,4 +28,4 @@
 
 管理 HTTP 仅 loopback，四项并发连接和有限请求/响应/期限；抓取读取已注册计数/快照，不扫描正文。诊断包括本地 applied/quorum/成员、WAL、容量样本年龄、真实 RSS/cgroup、allocator、transport 与 placement。指标只描述观察，不授权 ACK、写入、发布或 GC。profile 独占 native worker，并有期限/体积/权限约束。
 
-实际采集配置、看板、告警及 Prometheus 抓取证据见[指标手册](../operations/metrics.zh-CN.md)。日志/Collector 故障不能改变持久事实；队列丢失、sink 错误与采集失败单独可见。本地 OTLP 接收器覆盖断开、慢响应、503、超大响应和恢复，并核对 trace parent 与真实生产/持久 ACK；官方 native Collector 证据与适用范围记录在追踪手册。Linux OOM/长稳、真实 3AZ 与三档正式成本仍需对应实验。[性能报告](../performance.zh-CN.md)必须保留真实 allocator/构建、开关与完整失败样本，不以占位 histogram 或一次 CPU/RSS 差值证明定位精度和开销。
+实际采集配置、看板、告警及 Prometheus 抓取证据见[指标手册](../operations/metrics.zh-CN.md)。日志/Collector 故障不能改变持久事实；队列丢失、sink 错误与采集失败单独可见。本地 OTLP 接收器覆盖断开、慢响应、503、超大响应和恢复，并核对 trace parent 与真实生产/持久 ACK；官方 native Collector 证据与适用范围记录在追踪手册。Linux OOM/长稳、真实 3AZ 与三档正式成本仍需对应实验。不以占位 histogram 或一次 CPU/RSS 差值证明定位精度和开销。

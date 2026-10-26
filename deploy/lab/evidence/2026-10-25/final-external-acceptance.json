@@ -1,0 +1,335 @@
+{
+  "capturedAt": "2026-10-26T01:29:55.034Z",
+  "sourceCommit": "14372cd5a053bedf536fd3e91bf569d4bb17339c",
+  "instance": "mac-final-1792978191523",
+  "traceId": "4e4eebef06c71466436c4cf548d98c60",
+  "metrics": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        {
+          "metric": {
+            "__name__": "tidemq_external_check_total",
+            "instance": "mac-final-1792978191523",
+            "job": "tidemq-external-check",
+            "service_instance_id": "mac-final-1792978191523",
+            "service_name": "tidemq-external-check"
+          },
+          "value": [
+            1792978193.925,
+            "1"
+          ]
+        }
+      ]
+    }
+  },
+  "logEntries": 1,
+  "traceSpans": 1,
+  "up": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        {
+          "metric": {
+            "job": "lab-backends"
+          },
+          "value": [
+            1792978194.183,
+            "5"
+          ]
+        },
+        {
+          "metric": {
+            "job": "tidemq-collector"
+          },
+          "value": [
+            1792978194.183,
+            "1"
+          ]
+        },
+        {
+          "metric": {
+            "job": "kubernetes-state"
+          },
+          "value": [
+            1792978194.183,
+            "1"
+          ]
+        },
+        {
+          "metric": {
+            "job": "lab-agents"
+          },
+          "value": [
+            1792978194.183,
+            "12"
+          ]
+        },
+        {
+          "metric": {
+            "job": "cilium"
+          },
+          "value": [
+            1792978194.183,
+            "6"
+          ]
+        },
+        {
+          "metric": {
+            "job": "tidemq-lab/tidemq"
+          },
+          "value": [
+            1792978194.183,
+            "10"
+          ]
+        }
+      ]
+    }
+  },
+  "application": {
+    "healthyInstances": 10,
+    "logEntries": 100,
+    "traceIDs": [
+      "234997a23b6d55ef6a02f99d8a57eb1",
+      "578e3d490fbdae19f2108ac8c6e42d6",
+      "1e7e48fc8595e5c2fdcf18cf3a584ca",
+      "56748fe0c7a024f4fd19f5a2d9b84a7",
+      "4ad54856c195c0f19c008498ead9c6e",
+      "d4685267a2d9d0fd87f51deb441d1c",
+      "13bf8652a319ea5bc9e5ba874a00473",
+      "39c1f6918eda625ca4ae8d29baf0549",
+      "1f4911a961b34fa35bb139def8371f5",
+      "2647ffac03975c02a3599183390813d",
+      "63385006cc958cdebab11fda9462c77",
+      "4dec466d99ec655c462da95cd9283b5",
+      "2648fc2a784e744c59a49187f1e9c04",
+      "2bf0479b1e233cc3db5e9a80784cc29",
+      "48d554e0c3ca9096c5a229839bf1507",
+      "507de48478d94c369193682a6b4fdc",
+      "651f76fc0907027dedba7e7b8852f98",
+      "9d636991d42e5b3b8ae423bbc50718",
+      "25b8fc8a0b31bf347809a4608c6dfe",
+      "129d276184276b1a39e8299a5c238df"
+    ]
+  },
+  "targets": [
+    {
+      "labels": {
+        "instance": "192.168.240.13:9962",
+        "job": "cilium"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.21:9962",
+        "job": "cilium"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.22:9962",
+        "job": "cilium"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.23:9962",
+        "job": "cilium"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.11:9962",
+        "job": "cilium"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.12:9962",
+        "job": "cilium"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.11:30080",
+        "job": "kubernetes-state"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.31:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.32:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.34:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.1:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.11:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.13:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.21:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.33:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.35:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.12:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.22:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "192.168.240.23:8888",
+        "job": "lab-agents"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "127.0.0.1:3200",
+        "job": "lab-backends"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "127.0.0.1:9093",
+        "job": "lab-backends"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "127.0.0.1:3000",
+        "job": "lab-backends"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "127.0.0.1:9090",
+        "job": "lab-backends"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "127.0.0.1:3100",
+        "job": "lab-backends"
+      },
+      "health": "up",
+      "lastError": ""
+    },
+    {
+      "labels": {
+        "instance": "127.0.0.1:8889",
+        "job": "tidemq-collector"
+      },
+      "health": "up",
+      "lastError": ""
+    }
+  ],
+  "activeAlerts": [],
+  "pages": {
+    "rustfsRedirect": 302,
+    "rustfsHtml": 200,
+    "grafana": 302,
+    "metricsWithoutAuthentication": 401,
+    "otlpWithoutCertificate": 400,
+    "alertmanager": 200
+  },
+  "objectStorage": {
+    "put": 200,
+    "roundTrip": true,
+    "crossBucketDenied": 403,
+    "delete": 204
+  },
+  "tlsVerification": true
+}

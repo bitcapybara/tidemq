@@ -100,7 +100,7 @@ docker run --rm --user 10001:10001 --cpus 4 --memory 8g --memory-swap 8g \
    cargo test -p tidemq --lib runtime::data::reclaim_tests --release --locked -j2 -- --include-ignored --test-threads=1'
 ```
 
-先设置下面说明的 `RUSTFS_BINARY`。新测试输出没有 Cargo 缓存，首次执行需要下载依赖；已有专用缓存可以单独挂载并设置 `CARGO_HOME`，但不能把宿主的其他项目缓存或凭据整体带入容器。上面的普通测试不自动运行 ignored，末三条显式覆盖既有八项和新增两项真实 RustFS 测试；最后一条还重复验证逻辑过期与 Unknown 两个普通边界，计数不能与 workspace 相加。需要官方 Collector 的 ignored 另按[测试方法](../../docs/testing-benchmarks.zh-CN.md)执行。每条命令须保存真实退出码和日志；fixture 准备失败或临时目录执行失败不能算业务验证通过。
+先设置下面说明的 `RUSTFS_BINARY`。新测试输出没有 Cargo 缓存，首次执行需要下载依赖；已有专用缓存可以单独挂载并设置 `CARGO_HOME`，但不能把宿主的其他项目缓存或凭据整体带入容器。上面的普通测试不自动运行 ignored，末三条显式覆盖既有八项和新增两项真实 RustFS 测试；最后一条还重复验证逻辑过期与 Unknown 两个普通边界，计数不能与 workspace 相加。需要官方 Collector 的 ignored 另按[测试方法](../../docs/testing.zh-CN.md)执行。每条命令须保存真实退出码和日志；fixture 准备失败或临时目录执行失败不能算业务验证通过。
 
 RustFS 使用官方 1.0.3 的 Linux x86_64 musl 可执行文件，只读 bind 到同一个 runtime 镜像，不依赖未经核实的 RustFS 镜像。此次操作者已验证的发布物为：
 

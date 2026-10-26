@@ -68,7 +68,7 @@ System 两个失败分别为 combined RF3 阶段到期与换主 helper 到期。
 - [过期 Control 回复](2026-10-20-expired-control-replies.zh-CN.md)：真实 TLS／QUIC 中，已过期结果会让共享回复 writer 退出，使无关 RPC 返回 Closed。修改前 4／4 red，修改后 30／30 green；生产改动仅为发送前跳过过期回复，未改 deadline、lease、重试或准入配额。
 - [Metadata 权威 helper](2026-10-20-scaling-metadata-authority.zh-CN.md)：真实 Metadata leader 已变更时，旧 helper 仍固定查询 node 1。权威探针确认旧节点返回 ForwardToLeader，而新 Metadata 与 Data leader 都能完成线性读；强化测试修改前 13.324 秒 red，修正 helper 后在原 12 秒期限内 green，合流后 System suite 3／3、强化回归 20／20。原计划、失 quorum、退役与持久完成断言保留。
 
-Performance 构建完成后，候选 `validate-config` 拒绝新 `authorization` 段，尚未产生候选性能数据。取回准确的四个产物，服务两侧哈希均为 `d5ac0fd46f875fc667b0286792b876d3e5800b2f74c425e7bd2924e6974559a8`，负载两侧哈希均为 `9de1047974984679aa20bcc7feac87713aad7917320f1b7059021248786a86d1`；候选构建仅为 0.26／0.19 秒。原始失败汇总逐字节保存在 [calibrations](../../performance/calibrations/20261020-401c7c9-build-cache-failed.json)。
+Performance 构建完成后，候选 `validate-config` 拒绝新 `authorization` 段，尚未产生候选性能数据。取回准确的四个产物，服务两侧哈希均为 `d5ac0fd46f875fc667b0286792b876d3e5800b2f74c425e7bd2924e6974559a8`，负载两侧哈希均为 `9de1047974984679aa20bcc7feac87713aad7917320f1b7059021248786a86d1`；候选构建仅为 0.26／0.19 秒。原始失败汇总逐字节保存在 calibrations（相关性能资料已移除）。
 
 主流程用两个相同 package 名称、不同内容和旧文件时间戳的真实 Cargo workspace，复现第二次构建被判 fresh 却执行第一个版本的错误。修复后每次构建先 `cargo clean --workspace --release --locked`，四次交替构建均执行正确版本，外部依赖 rlib 的 mtime 不变；该 red／green 直接调用正式构建函数，约 1.4／3.3 秒。构建 job 允许真正重建四个 workspace 产物，上界从 30 改为 45 分钟；测量 55 分钟上界、负载、全部试次及统计门槛不变。失败摘要另保留有界错误原因，artifact 收录配置校验日志。
 

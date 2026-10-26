@@ -79,7 +79,7 @@ rtk cargo test -p tidemq --test wal_journal --test replication_storage --test re
 - `replication_crash`：单独 test 子进程在持久边界停住，父进程 SIGKILL 后重开，验证未执行 Drop/close 时仍恢复已持久结果。子进程只由测试持有句柄管理；具体分段边界与实际运行结果以实施证据为准。
 - `raft_cluster`：真正 OpenRaft 的 RF1/RF3、同身份响应丢失重试、leader 隔离、剩余多数派选举、磁盘重开、成员变更、新副本分块 snapshot，以及控制心跳先到/缺失 prev_log/旧 term 因果。
 
-上述底层证据与真实 QUIC 的 `raft_quic`、独立 OS RF3 的 `runtime_queue` 交叉验证，见[测试索引](../testing-benchmarks.zh-CN.md)。磁盘控制器掉电、跨区丢包/抖动或持续容量负载仍需独立验证。更改内核、文件系统、设备、codec、snapshot 或网络适配器后重新跑相应关卡；当前结果不是生产 SLA。
+上述底层证据与真实 QUIC 的 `raft_quic`、独立 OS RF3 的 `runtime_queue` 交叉验证，见[测试索引](../testing.zh-CN.md)。磁盘控制器掉电、跨区丢包/抖动或持续容量负载仍需独立验证。更改内核、文件系统、设备、codec、snapshot 或网络适配器后重新跑相应关卡；当前结果不是生产 SLA。
 
 ## 正常停止与恢复约束
 

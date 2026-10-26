@@ -1,0 +1,218 @@
+{
+  "capturedAt": "2026-10-25T17:14:59.104Z",
+  "beforeUnixSeconds": 1792948270.69,
+  "afterUnixSeconds": 1792948464.876,
+  "rows": [
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-11",
+      "before": 16,
+      "after": 16,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-12",
+      "before": 6,
+      "after": 6,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-13",
+      "before": 16,
+      "after": 16,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-21",
+      "before": 7,
+      "after": 7,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-22",
+      "before": 9,
+      "after": 9,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-23",
+      "before": 6,
+      "after": 6,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-31",
+      "before": 5,
+      "after": 5,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-32",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-41",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_discarded_spans_total",
+      "instance": "tidemq-dev-node-42",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-11",
+      "before": 2,
+      "after": 2,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-12",
+      "before": 1,
+      "after": 1,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-13",
+      "before": 2,
+      "after": 2,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-21",
+      "before": 3,
+      "after": 3,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-22",
+      "before": 4,
+      "after": 4,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-23",
+      "before": 5,
+      "after": 5,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-31",
+      "before": 3,
+      "after": 3,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-32",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-41",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_export_failures_total",
+      "instance": "tidemq-dev-node-42",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-11",
+      "before": 471,
+      "after": 1105,
+      "delta": 634
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-12",
+      "before": 439,
+      "after": 1048,
+      "delta": 609
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-13",
+      "before": 449,
+      "after": 1031,
+      "delta": 582
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-21",
+      "before": 11,
+      "after": 11,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-22",
+      "before": 931,
+      "after": 2480,
+      "delta": 1549
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-23",
+      "before": 841,
+      "after": 2387,
+      "delta": 1546
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-31",
+      "before": 446,
+      "after": 1226,
+      "delta": 780
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-32",
+      "before": 397,
+      "after": 1177,
+      "delta": 780
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-41",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    },
+    {
+      "metric": "tidemq_runtime_trace_exports_total",
+      "instance": "tidemq-dev-node-42",
+      "before": 0,
+      "after": 0,
+      "delta": 0
+    }
+  ],
+  "status": "passed"
+}

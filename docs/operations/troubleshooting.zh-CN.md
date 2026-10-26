@@ -18,4 +18,4 @@
 
 短时详细关联使用启动参数 `--trace-seconds`，最多 300 秒后恢复过滤。受控服务 profile 使用同构建的 `--profile-output` 私有目录；native dump 超时后仍可能运行，原 owned 槽位释放前不得叠加新 dump。不要把消息正文、令牌、私钥、S3 凭据或投递签名根放进诊断包。
 
-复现时明确区分网络接收、Producer 持久成功、消费接收屏障、业务持久 ACK、对象 Uploaded/Published/本地 Reclaimed。指标定位到某段后再启用对应模块的短日志和故障实验；最终以原业务身份恢复且全部已 ACK 数据仍可验证作为闭环。完整命令见[测试方法](../testing-benchmarks.zh-CN.md)，候选性能与恢复目标见[性能口径](../performance.zh-CN.md)。
+复现时明确区分网络接收、Producer 持久成功、消费接收屏障、业务持久 ACK、对象 Uploaded/Published/本地 Reclaimed。指标定位到某段后再启用对应模块的短日志和故障实验；最终以原业务身份恢复且全部已 ACK 数据仍可验证作为闭环。完整命令见[测试方法](../testing.zh-CN.md)；本次未进行性能验收。

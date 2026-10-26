@@ -4,7 +4,7 @@
 
 ## 原失败与诊断边界
 
-原 `80c7659` 完整 cohort 的 RF3 第二个候选 trial 在延迟阶段结束时完成 1024 次 commit、1000 次 ACK，Read 返回 deadline / Unknown。此前吞吐四分区均已完成 256 次 commit/ACK。原失败与更早 `4f79` 的吞吐 Unavailable 不是同一个现场，全部保留。[原 80c 记录](2026-10-21-wal-segments-performance-80c7659.zh-CN.md)
+原 `80c7659` 完整 cohort 的 RF3 第二个候选 trial 在延迟阶段结束时完成 1024 次 commit、1000 次 ACK，Read 返回 deadline / Unknown。此前吞吐四分区均已完成 256 次 commit/ACK。原失败与更早 `4f79` 的吞吐 Unavailable 不是同一个现场，全部保留。原 80c 记录（相关性能资料已移除）
 
 原现场检查没有证明快照与 append/apply 存在锁环。快照后应用与提交位置仍继续推进，checkpoint 本身约 65 ms；同相位成功基线也接近原 60 秒边界。这里修正的是实际 Read 路径上的重复工作，不能把时间相邻的快照日志改写成已经证实的根因。
 

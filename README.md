@@ -6,7 +6,7 @@ A cloud-native message queue built on object storage, designed for high throughp
 
 TideMQ targets data ingestion and stream processing. Its architecture separates message serving, replicated write-ahead logs (WALs), object storage, and control metadata so that compute and storage can scale independently.
 
-> **Status:** The local runtime and in-repository Rust SDK support durable production, per-message acknowledgements, authenticated QUIC, separate metadata/data Raft groups, RustFS/S3 archival, cold reads, retention, and safe object reclamation. Local RF3, separate roles, process failures, automatic takeover, and membership repair pass regression tests; 17 finite RF1 workloads have been measured. Small-message consumption with durable ACKs is about 60 messages/s. High-throughput, low-latency, three-zone, and recovery-percentile goals still require optimization and validation. See the [implementation status](docs/implementation-status.zh-CN.md) and [local performance report](docs/evidence/2026-10-20-local-performance.zh-CN.md).
+> **Status:** The runtime and in-repository Rust SDK support durable production, per-message acknowledgements, authenticated QUIC, separate metadata/data Raft groups, RustFS/S3 archival, cold reads, retention, and safe object reclamation. Functional CI covers Linux/macOS, real external dependencies, and RF3 Kubernetes/VM recovery. See the [implementation status](docs/implementation-status.zh-CN.md) and [VM lab acceptance](deploy/lab/README.zh-CN.md).
 
 ## Design goals
 
@@ -49,6 +49,8 @@ The design keeps four completion points distinct: producer acknowledgement, dura
 
 The runtime provides combined RF1 and separate Gateway, Broker, storage, and metadata roles. The local generator supports RF1 and RF3 configurations. Production deployment across three cloud availability zones needs separate infrastructure and validation. Single-node mode has no node-level high availability and is not an automatic production fallback.
 
+See the [VM lab operations inventory](deploy/lab/README.zh-CN.md) for the deployed KVM/kubeadm cluster, public RustFS, observability services, GitHub self-hosted runner, VM allocations, network endpoints, commands, and validation evidence.
+
 Candidate recovery targets are typically within 1 second for planned migration, P99 at most 5 seconds for a Broker or Gateway failure, and P99 at most 10 seconds for a single-zone failure. These are design and benchmark targets, not an SLA. Measurements include failure detection, leader election, fencing, state recovery, routing, and SDK reconnection. Gateway failure can break existing connections; the SDK must reconnect and restore sessions.
 
 ## Getting started
@@ -77,11 +79,11 @@ cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metri
 cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 ```
 
-See the [testing guide](docs/testing-benchmarks.zh-CN.md) for the pinned coverage tools, JSON/LCOV/HTML reports, and coverage and performance baseline gates.
+See the [testing guide](docs/testing.zh-CN.md) for the pinned coverage tools, JSON/LCOV/HTML reports, and the coverage baseline gate.
 
 The SDK uses configured timeouts by default; `RequestContext` and `CancellationToken` share cancellation and a total deadline across calls. Large uniquely owned frame payloads can use bounded vectored sending. See the [SDK guide](docs/guide/rust-sdk.zh-CN.md) and [zero-copy format evaluation](docs/research/zero-copy-formats.zh-CN.md).
 
-The [performance workflow](.github/workflows/performance.yml) is available for manual runs. Automatic PR/push measurements, pre-commit performance testing, and baseline promotion are paused; the existing workload, comparison scripts, policies, and accepted baselines are retained. Functional and coverage CI remain enabled. See the [current policy](docs/performance-policy.zh-CN.md) and [performance guide](docs/performance.zh-CN.md).
+Performance testing workflows, workload tools, comparison scripts, configurations, baselines, and dedicated reports have been removed. Functional, coverage, and VM fault CI remain enabled.
 
 ## Documentation and implementation roadmap
 
@@ -94,7 +96,7 @@ The [complete architecture draft in Chinese](docs/architecture.zh-CN.md) preserv
 5. Add Gateways and controlled scaling.
 6. Benchmark and validate failures across three availability zones with matched durability and delivery semantics.
 
-The implemented baseline uses OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The service binary defaults to mimalloc through `allocator-mimalloc`; System and jemalloc are mutually exclusive build alternatives selected with `--no-default-features`. The SDK leaves allocator ownership to its host. See the [allocator configuration and diagnostics](docs/operations/memory-troubleshooting.zh-CN.md), [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), [requirement coverage](docs/requirements-coverage.zh-CN.md), and [reproducible workload tools](docs/performance.zh-CN.md). Allocator performance, workload values, and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
+The implemented baseline uses OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The service binary defaults to mimalloc through `allocator-mimalloc`; System and jemalloc are mutually exclusive build alternatives selected with `--no-default-features`. The SDK leaves allocator ownership to its host. See the [allocator configuration and diagnostics](docs/operations/memory-troubleshooting.zh-CN.md), [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), [requirement coverage](docs/requirements-coverage.zh-CN.md). Allocator performance, workload values, and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
 
 ## License
 

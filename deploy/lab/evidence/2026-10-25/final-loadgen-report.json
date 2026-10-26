@@ -1,0 +1,277 @@
+{
+  "schema_version": 2,
+  "status": "passed",
+  "configuration": {
+    "allocator": "system",
+    "batch_messages": 8,
+    "consumer_credit_bytes": 4194304,
+    "consumer_credit_messages": 256,
+    "consumer_instances": 1,
+    "endpoint": "192.168.241.200:7443",
+    "host_wait_timeout_seconds": 120,
+    "message_bytes": 1024,
+    "messages": 64,
+    "producer_workers": 1,
+    "recovery_attempt_bound": 300,
+    "recovery_timeout_seconds": 60,
+    "replay_settle_ms": 0,
+    "request_timeout_ms": 10000,
+    "require_unavailable": false,
+    "retry_delay_ms": 200,
+    "stage_fault": false,
+    "total_timeout_seconds": 180
+  },
+  "ledger": {
+    "expected": 64,
+    "committed": 64,
+    "received": 64,
+    "acknowledged": 64,
+    "frontier": 64
+  },
+  "topic_id": "01a175d0-14ce-7aaf-9d06-29bea34c4082",
+  "subscription_id": "01a175d0-1597-7705-8fb7-421ea273a499",
+  "replay_started_after_publish": false,
+  "original_consumer_reused": true,
+  "batches": [
+    {
+      "first_sequence": 0,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:2",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:0",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:5",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:7",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:6",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:3",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:4",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:1"
+      ]
+    },
+    {
+      "first_sequence": 8,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:10",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:9",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:8",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:12",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:13",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:14",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:11",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:15"
+      ]
+    },
+    {
+      "first_sequence": 16,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:17",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:16",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:19",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:20",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:18",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:23",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:21",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:22"
+      ]
+    },
+    {
+      "first_sequence": 24,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:24",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:26",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:28",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:25",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:27",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:29",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:31",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:30"
+      ]
+    },
+    {
+      "first_sequence": 32,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:32",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:33",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:38",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:37",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:34",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:35",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:36",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:39"
+      ]
+    },
+    {
+      "first_sequence": 40,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:40",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:44",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:41",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:42",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:45",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:46",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:43",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:47"
+      ]
+    },
+    {
+      "first_sequence": 48,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:49",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:52",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:48",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:53",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:55",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:54",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:50",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:51"
+      ]
+    },
+    {
+      "first_sequence": 56,
+      "message_count": 8,
+      "original_pending": 0,
+      "initial_error": null,
+      "last_retry_error": null,
+      "retry_attempts": 0,
+      "receipt_seen": true,
+      "message_ids": [
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:56",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:57",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:58",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:59",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:61",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:63",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:62",
+        "01a175d0-14ce-7aaf-9d06-29bea34c4082:5a401147-10dc-fbf2-5ca8-72ae10a0489f:60"
+      ]
+    }
+  ],
+  "phases": [
+    {
+      "phase": "connecting",
+      "unix_ms": 1792977933419,
+      "elapsed_ms": 0
+    },
+    {
+      "phase": "creating_queue",
+      "unix_ms": 1792977933518,
+      "elapsed_ms": 99
+    },
+    {
+      "phase": "initial_production",
+      "unix_ms": 1792977934727,
+      "elapsed_ms": 1309
+    },
+    {
+      "phase": "initial_consumption",
+      "unix_ms": 1792977935715,
+      "elapsed_ms": 2297
+    },
+    {
+      "phase": "initial_complete",
+      "unix_ms": 1792977939066,
+      "elapsed_ms": 5647
+    },
+    {
+      "phase": "ledger_complete",
+      "unix_ms": 1792977939672,
+      "elapsed_ms": 6254
+    },
+    {
+      "phase": "validation_finished",
+      "unix_ms": 1792977939675,
+      "elapsed_ms": 6256
+    }
+  ],
+  "last_phase": "validation_finished",
+  "failure_phase": null,
+  "failure_sdk_error": null,
+  "ack_unknown_retries": 0,
+  "receive_retries": 0,
+  "last_receive_error": null,
+  "sdk_before": {
+    "acknowledged": 0,
+    "active_deliveries": 0,
+    "admission_wait_ns": 0,
+    "admitted_bytes": 0,
+    "deliveries": 0,
+    "pending_sends": 0,
+    "request_duration_ns": 0,
+    "requests": 0,
+    "retries": 0,
+    "unknown": 0
+  },
+  "sdk_after": {
+    "acknowledged": 64,
+    "active_deliveries": 0,
+    "admission_wait_ns": 59088,
+    "admitted_bytes": 0,
+    "deliveries": 64,
+    "pending_sends": 0,
+    "request_duration_ns": 14693117308,
+    "requests": 259,
+    "retries": 6,
+    "unknown": 0
+  },
+  "transport_after": {
+    "active_connections": 3,
+    "bytes_received_total": 90412,
+    "bytes_sent_total": 101673,
+    "connections_total": 3,
+    "data_blocked_frames_total": 0,
+    "deadlines_total": 0,
+    "frames_received_total": 262,
+    "frames_sent_total": 259,
+    "liveness_failures_total": 0,
+    "liveness_probes_total": 9,
+    "malformed_total": 0,
+    "packets_lost_total": 0,
+    "rejected_total": 0,
+    "send_wait_ns_total": 4794887,
+    "stream_data_blocked_frames_total": 0,
+    "streams_blocked_frames_total": 0,
+    "streams_total": 12,
+    "tls_failed_total": 0
+  },
+  "client_close_completed": true
+}

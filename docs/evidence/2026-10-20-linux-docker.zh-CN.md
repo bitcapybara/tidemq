@@ -236,6 +236,6 @@ RustFS 测试 fixture 将临时文件写入 `current_dir/target`，初始容器�
 
 最终 Linux 门禁归档 `fixed-linux-gates-results.tgz` 的实际 SHA256 为 `59f2e185b26eb5823075170d2b7985a5b686841011961c89553c0b491884889b`，已本地复核。`build/linux-a3f8f4e/` 保留完整九项日志和退出码，`evidence/fixed-linux-gates.*` 保留总命令与 builder 终态，另有专用 builder 运行清单为空及门禁后十七个业务容器再次前后相同的记录。所有测试数量均按这些终态日志分段复核，不按中间进度或含 compile-fail 预期编译错误的单行日志判断成功与失败。
 
-本轮是有限消息数、单 Producer 与单 Consumer、System allocator 的部署和故障正确性验证。没有重复统计、并发饱和实验或延迟直方图，不能用这些秒级流程时间推断 P99 / P99.9、高吞吐低延迟目标或生产 allocator 选择。此前独立冻结的 17 项 macOS RF1 基线见[本地性能报告](2026-10-20-local-performance.zh-CN.md)，其源码、主机和二进制身份与本轮不同，不合并数值排名。
+本轮是有限消息数、单 Producer 与单 Consumer、System allocator 的部署和故障正确性验证。没有重复统计、并发饱和实验或延迟直方图，不能用这些秒级流程时间推断 P99 / P99.9、高吞吐低延迟目标或生产 allocator 选择。此前独立冻结的 17 项 macOS RF1 基线见本地性能报告（相关性能资料已移除），其源码、主机和二进制身份与本轮不同，不合并数值排名。
 
 真实三区、独立网络分区与交换机故障、生产 LB/NAT/CID、宿主掉电、长期稳定性、容量极限及竞争产品公平对照仍不在本轮已验收范围。

@@ -1,0 +1,10 @@
+{
+  "sourceCommit": "3e52ed7c79e4fec727c33faea15c79a8a486ffff",
+  "sourceRustPatchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "macValidationBinarySha256": "56af378e25e04877029e635d8b5a5e7987b9c7b3411567687ce7905512f0b2f5",
+  "loadgenImageCommit": "14372cd5a053bedf536fd3e91bf569d4bb17339c",
+  "loadgenBinaries": {
+    "tidemq": "a5265addc1a24092840416ad734d8da21d90c7681b9fce1198348e7b2b0430d7",
+    "deploy_validation": "12a26285c118cf0e7d32c2c296be191ec2ad9dd1f60433338db18bb67c3c2987"
+  }
+}
