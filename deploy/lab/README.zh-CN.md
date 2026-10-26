@@ -8,7 +8,7 @@
 
 ## 1. 物理资源与 VM
 
-宿主机：Ubuntu 24.04，Xeon E5-2696 v4，22 核 / 44 线程，约 62 GiB RAM，468 GiB 根文件系统，KVM/QEMU 8.2.2、libvirt 10.0.0。VM 合计 32 vCPU、38 GiB RAM、250 GiB 虚拟磁盘上限；数据盘使用预分配 raw，根盘使用基于锁定 Ubuntu cloud image 的 qcow2。数据盘 `cache=none`，保留正常 flush 语义。VM 不使用内存气球。
+宿主机：Ubuntu 24.04，Xeon E5-2696 v4，22 核 / 44 线程，约 62 GiB RAM，468 GiB 根文件系统，KVM/QEMU 8.2.2、libvirt 10.0.0。VM 合计 36 vCPU、46 GiB RAM、250 GiB 虚拟磁盘上限；数据盘使用预分配 raw，根盘使用基于锁定 Ubuntu cloud image 的 qcow2。数据盘 `cache=none`，保留正常 flush 语义。VM 不使用内存气球。
 
 Worker 和 observe 系统盘为 16 GiB，其余 VM 为 8 GiB（实际根文件系统约 6.8 GiB）。构建、测试数据和观测数据放到独立数据盘。
 
@@ -22,7 +22,7 @@ Worker 和 observe 系统盘为 16 GiB，其余 VM 为 8 GiB（实际根文件�
 | tidemq-worker-c | 192.168.240.23 | 192.168.241.23 | 4 | 4 GiB | WAL 8 GiB + metadata 2 GiB | zone-0 |
 | tidemq-storage | 192.168.240.31 | 192.168.241.31 | 2 | 2 GiB | 8 GiB，`/srv/tidemq` | infra |
 | tidemq-observe | 192.168.240.32 | 192.168.241.32 | 4 | 6 GiB | 16 GiB，`/srv/tidemq` | infra |
-| tidemq-runner | 192.168.240.33 | 192.168.241.33 | 4 | 8 GiB | 64 GiB，`/srv/tidemq` | infra |
+| tidemq-runner | 192.168.240.33 | 192.168.241.33 | 8 | 16 GiB | 64 GiB，`/srv/tidemq` | infra |
 | tidemq-fixtures | 192.168.240.34 | 192.168.241.34 | 2 | 2 GiB | 8 GiB，`/srv/tidemq` | infra |
 | tidemq-loadgen | 192.168.240.35 | 192.168.241.35 | 2 | 2 GiB | 4 GiB，`/srv/tidemq` | infra |
 
@@ -138,6 +138,8 @@ Kubernetes 节点通过最小只读 ACL 允许 `otelcol` 访问 CRI 日志，新
 
 GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 21，标签 `self-hosted, Linux, X64, tidemq-dev`，运行在独立 runner VM 的 actions 用户下。CI 的 Docker 位于 runner VM，不挂载宿主 Docker / libvirt socket。observe VM 用 Docker Compose 运行观测后端，宿主 Docker 仅用于准备固定工具链 bundle。
 
+新增且只新增一个容器 runner：`tidemq-ci-container-u126-8`，专用标签 `tidemq-ci-container`，容器名 `tidemq-ci-runner`。它运行在同一 runner VM 中，复用同一 Linux 内核的 Cargo 下载缓存和文件锁。VM 扩为 8 vCPU / 16 GiB；原生服务限制 4 CPU / 6 GiB，容器限制 4 CPU / 8 GiB，预留 2 GiB 给 OS。容器只执行普通检查/测试，未挂载 Docker socket、kubeconfig、实验室 SSH key 或原生注册凭据，也不发布端口。配置、注册、重建及共享缓存约束见 [容器 runner 运维](container-runner/README.zh-CN.md)。
+
 | 路径 | 内容 |
 |---|---|
 | `/srv/tidemq/actions-runner` | Actions runner 2.338.1 与 systemd 服务 |
@@ -147,6 +149,7 @@ GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 2
 | `/srv/tidemq/maintenance` | 自动清理的本地互斥锁；已安装脚本在 `/usr/local/lib/tidemq-lab` |
 | `/srv/tidemq/cargo-target` | 可重建的 debug / coverage 编译缓存 |
 | `/srv/tidemq/tmp` | 测试临时目录 |
+| `/srv/tidemq/container-runner/{state,diag,work,target,tmp}` | 容器独立注册状态、诊断、checkout、编译缓存、临时目录；内部 work/target/tmp 映射为与原生相同的绝对路径 |
 | `/home/actions/.config/tidemq-lab` | 私有 kubeconfig、受限 CI SSH key、telemetry 客户端证书与运行材料 |
 
 Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepare-runner-image-store.sh` 在无运行中构建容器时迁移并通过 bind mount 持久化，避免根盘被镜像解包填满。
@@ -155,7 +158,7 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
-Linux 的单元、默认 SDK、集成、故障钩子、真实外部服务及 K8s 黑盒/VM 故障测试在同一 LLVM 插桩环境中顺序执行，只在开始时清理一次旧 profile。K8s 的 10 个角色实例和 loadgen 客户端均使用插桩二进制；受控退出后通过 SSH 回传各实例 profile，与原生测试一起导出 LLVM JSON、LCOV、HTML 及原始 profile 归档。measurement 绑定源码、镜像、二进制哈希、角色/Pod/worker 和行为断言；缺少任一实例则失败。覆盖率 job 下载制品比较受保护基线，不重新编译或重跑测试。公共常驻服务与手动普通验收仍使用 release 构建。详细流程及崩溃前未写出计数的限制见[测试指南](../../docs/testing.zh-CN.md)。
+Linux 的单元、默认 SDK 和普通集成在容器执行；故障钩子、真实外部服务及 K8s 黑盒/VM 故障在原生 runner 执行，两条 job 并行。两边从开始即使用 LLVM 插桩，各自保留二进制/profile，上传后才清理。coverage job 校验同一源码/CI run/工具/工作区路径及每个输入的 SHA256，再合并五阶段 JUnit、两边原生 profile 和全部远程实例 profile，导出 LLVM JSON、LCOV、HTML、原始 profile 归档并比较基线，不重新编译或重跑 Rust 测试。K8s 的 10 个角色实例和 loadgen 客户端均使用插桩二进制；measurement 绑定源码、镜像、二进制哈希、角色/Pod/worker 和行为断言；缺少任一实例则失败。公共常驻服务与手动普通验收仍使用 release 构建。详细流程及崩溃前未写出计数的限制见[测试指南](../../docs/testing.zh-CN.md)。
 
 单元测试运行 `--lib --bins --examples`，主动移除外部服务环境变量。外部进程 / 网络依赖测试放在 `tests/`，由独立 integration 阶段运行；内建本地 mock 不要求预装外部服务。ignored 的真实 RustFS / Collector 测试在 Linux 上显式执行，缺少固定二进制会失败。
 
@@ -163,7 +166,7 @@ RF3 集群测试由 loadgen VM 运行真实 SDK，runner 仅控制和收集证�
 
 按用户要求，性能 workflow、负载工具、比较器、配置、基线和专项报告已删除。GitHub 上默认分支残留的 Performance 工作流已设为 disabled_manually，防止旧入口误触发。本次只以有限 SDK 流量验收部署与持久正确性，不执行性能测试。
 
-Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。Linux 插桩校验、集成、报告导出和 VM 故障步骤取得同一宿主 flock 租约；只读报告比较不占用故障租约。runner 上的手动测试和部署也必须通过 `scripts/lab/with-lease.sh`；root 运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`，避免同时运行时争用测试资源。租约忙时明确失败，不会并发执行。故障指令白名单只允许 cp、worker、fixtures、loadgen，禁止操作 storage、observe、runner；持续时间 5–300 秒，宿主先注册 systemd 恢复计时器再执行故障。
+Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。故障/部署流程取得宿主 flock 租约；容器普通测试与只读报告合并不占用故障租约。所有手动 Cargo 命令须经 `scripts/ci/with-cargo-cache.sh` 持有共享缓存锁；涉及共享实验室服务的手动测试和部署还必须经 `scripts/lab/with-lease.sh`。root 运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`。故障指令白名单只允许 cp、worker、fixtures、loadgen，禁止操作 storage、observe、runner；持续时间 5–300 秒，宿主先注册 systemd 恢复计时器再执行故障。
 
 此仓库为公共仓库：fork PR 的单元测试走 GitHub-hosted runner；self-hosted jobs 不接受 fork 代码。GitHub outside contributor 审批策略设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
 

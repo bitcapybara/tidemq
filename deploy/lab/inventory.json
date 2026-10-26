@@ -258,8 +258,8 @@
       "id": 33,
       "role": "runner",
       "zone": "infra",
-      "vcpus": 4,
-      "memoryMiB": 8192,
+      "vcpus": 8,
+      "memoryMiB": 16384,
       "rootGiB": 8,
       "managementIP": "192.168.240.33",
       "dataIP": "192.168.241.33",
@@ -313,5 +313,14 @@
         }
       ]
     }
-  ]
+  ],
+  "containerRunner": {
+    "vm": "tidemq-runner",
+    "name": "tidemq-ci-container-u126-8",
+    "label": "tidemq-ci-container",
+    "vcpus": 4,
+    "memoryMiB": 8192,
+    "stateDirectory": "/srv/tidemq/container-runner",
+    "sharedCargoHome": "/srv/tidemq/rust/cargo"
+  }
 }

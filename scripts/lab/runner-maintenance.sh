@@ -20,6 +20,17 @@ bound_cache() {
 
 free_bytes() { df --output=avail -B1 "$1" | tail -n 1 | tr -d ' '; }
 
+clean_cargo_downloads() (
+  local lock=$1 home=$2
+  exec 8>"$lock"
+  if ! flock --exclusive --nonblock 8; then
+    printf 'Shared Cargo cache is busy; cache cleanup deferred\n'
+    return
+  fi
+  bound_cache "$home/registry" "$CARGO_CACHE_MAX_BYTES" "$CACHE_MAX_DAYS"
+  bound_cache "$home/git" "$CARGO_CACHE_MAX_BYTES" "$CACHE_MAX_DAYS"
+)
+
 clean_checkouts() {
   local directory=$1 workspace=${2:-$1/tidemq/tidemq} relative repository
   [[ -d "$directory" && ! -L "$directory" && $(realpath -e "$directory") == "$directory" ]] || return 1
@@ -61,9 +72,7 @@ sweep() {
     find /srv/tidemq/work/_temp -xdev -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf --one-file-system -- {} +
   fi
   bound_cache /srv/tidemq/cargo-target "$TARGET_MAX_BYTES" "$CACHE_MAX_DAYS"
-  for directory in /srv/tidemq/rust/cargo/registry /srv/tidemq/rust/cargo/git; do
-    bound_cache "$directory" "$CARGO_CACHE_MAX_BYTES" "$CACHE_MAX_DAYS"
-  done
+  clean_cargo_downloads /srv/tidemq/maintenance/cargo-cache.lock /srv/tidemq/rust/cargo
   bound_cache /srv/tidemq/tmp "$TMP_MAX_BYTES" 1
   bound_cache "$TIDEMQ_LAB_HOME/logs" "$DIAGNOSTIC_MAX_BYTES" "$CACHE_MAX_DAYS"
   find /srv/tidemq/actions-runner/_diag -type f -mtime +7 -delete
@@ -71,14 +80,18 @@ sweep() {
     find /srv/tidemq/actions-runner/_diag -type f -mtime +1 -delete
   fi
   [[ $(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') == /srv/tidemq/docker ]] || return 1
-  [[ -z $(docker --host unix:///var/run/docker.sock ps -q) ]] || {
+  [[ -z $(docker --host unix:///var/run/docker.sock ps --format '{{.Names}} {{.Label "tidemq.lab/runner"}}' |
+    sed '/^tidemq-ci-runner ci-container$/d') ]] || {
     printf 'Refusing Docker cleanup while a runner container is active\n' >&2; return 1;
   }
-  docker --host unix:///var/run/docker.sock container prune --force
+  if [[ "$phase" == idle ]] && docker --host unix:///var/run/docker.sock ps --format '{{.Names}}' | grep -qx tidemq-ci-runner; then
+    docker --host unix:///var/run/docker.sock exec tidemq-ci-runner /opt/tidemq-runner/idle
+  fi
+  docker --host unix:///var/run/docker.sock container prune --filter 'label!=tidemq.lab/runner=ci-container' --force
   docker --host unix:///var/run/docker.sock image prune --all --force
   docker --host unix:///var/run/docker.sock builder prune --all --force
   if (( $(free_bytes /) < ROOT_MIN_FREE_BYTES || $(free_bytes /srv/tidemq) < DATA_MIN_FREE_BYTES )); then
-    for directory in /srv/tidemq/cargo-target /srv/tidemq/rust/cargo/registry /srv/tidemq/rust/cargo/git /srv/tidemq/tmp; do
+    for directory in /srv/tidemq/cargo-target /srv/tidemq/tmp; do
       [[ ! -d "$directory" ]] || empty_cache "$directory"
     done
   fi

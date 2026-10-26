@@ -26,7 +26,7 @@ jobs:
       matrix:
         include:
           - os: Linux
-            runner: [self-hosted, Linux, X64, tidemq-dev]
+            runner: [self-hosted, Linux, X64, tidemq-ci-container]
           - os: macOS
             runner: macos-latest
     runs-on: ${{ matrix.runner }}
@@ -40,11 +40,9 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: runner.os == 'macOS'
         with: {tool: 'nextest@0.9.148'}
-      - run: bash scripts/lab/with-lease.sh bash scripts/ci/validate-and-integrate.sh
+      - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/native.sh
         if: runner.os == 'Linux'
         env:
-          TIDEMQ_REQUIRE_EXTERNAL: '1'
-          TIDEMQ_COVERAGE: '1'
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
       - run: bash scripts/ci/validate-and-integrate.sh
         if: runner.os == 'macOS'
@@ -57,14 +55,39 @@ jobs:
           path: |
             target/ci
             !target/ci/coverage
+            !target/ci/coverage-inputs
             !target/ci/lab-report
           retention-days: 14
       - uses: actions/upload-artifact@v4
         if: success() && runner.os == 'Linux'
-        with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
+        with: {name: coverage-inputs-native, path: target/ci/coverage-inputs, compression-level: 1, retention-days: 3}
 
+  faults:
+    name: Faults and deployed API (Linux)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - run: bash scripts/ci/with-cargo-cache.sh bash scripts/lab/with-lease.sh bash scripts/ci/faults.sh
+        env:
+          TIDEMQ_REQUIRE_EXTERNAL: '1'
+          TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
       - uses: actions/upload-artifact@v4
-        if: always() && runner.os == 'Linux'
+        if: always()
+        with:
+          name: tests-Linux-faults
+          path: |
+            target/ci
+            !target/ci/coverage-inputs
+            !target/ci/lab-report
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with: {name: coverage-inputs-lab, path: target/ci/coverage-inputs, compression-level: 1, retention-days: 3}
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: kubernetes-lab
           path: target/ci/lab-report
@@ -73,30 +96,31 @@ jobs:
   coverage:
     name: Coverage report gate (no test rerun)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: validate
+    needs: [validate, faults]
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0, persist-credentials: false}
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: trusted
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with: {ref: '${{ github.sha }}', path: candidate, fetch-depth: 0, persist-credentials: false}
       - uses: actions/download-artifact@v4
-        with: {name: coverage-report, path: coverage-result}
+        with: {pattern: coverage-inputs-*, path: coverage-inputs}
+      - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/coverage-report.sh
       - run: node --test trusted/scripts/coverage/*.test.mjs
       - run: >-
-          node trusted/scripts/coverage-gate.mjs compare --tools trusted --candidate candidate
-          --report coverage-result/llvm.json --measurement coverage-result/measurement.json
-          --run-id "$GITHUB_RUN_ID" --output coverage-result/summary.json $COVERAGE_GATE_MODE
+          node trusted/scripts/coverage-gate.mjs compare --tools trusted --candidate .
+          --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json
+          --run-id "$GITHUB_RUN_ID" --output target/ci/coverage/summary.json $COVERAGE_GATE_MODE
         env:
           COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}
       - uses: actions/upload-artifact@v4
         if: always()
-        with: {name: coverage-gate, path: coverage-result/summary.json, retention-days: 30}
+        with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
 
   untrusted:
     name: Fork unit tests
@@ -115,12 +139,12 @@ jobs:
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, coverage, untrusted]
+    needs: [validate, faults, coverage, untrusted]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - run: >-
-          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; if(fork ? r.untrusted.result!=="success" : ["validate","coverage"].some(k=>r[k].result!=="success")) process.exit(1)'
+          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; if(fork ? r.untrusted.result!=="success" : ["validate","faults","coverage"].some(k=>r[k].result!=="success")) process.exit(1)'
         env:
           RESULTS: ${{ toJSON(needs) }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

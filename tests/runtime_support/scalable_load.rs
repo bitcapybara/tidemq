@@ -143,12 +143,16 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
     );
     let mut stream_remaining: std::collections::HashSet<_> = expected.keys().copied().collect();
     let mut queue_remaining = stream_remaining.clone();
-    let until = Instant::now() + Duration::from_secs(20);
+    let drain_started = Instant::now();
+    let mut last_progress = drain_started;
+    let until = drain_started + Duration::from_secs(20);
     for _ in 0..expected.len() {
         let received =
             tokio::time::timeout_at(until, receive_during_scaling(|| stream.receive())).await;
         if !matches!(&received, Ok(Ok(_))) {
             let remaining_ms = until.saturating_duration_since(Instant::now()).as_millis();
+            let elapsed_ms = drain_started.elapsed().as_millis();
+            let last_progress_age_ms = last_progress.elapsed().as_millis();
             let mut diagnostics = BTreeMap::new();
             for (id, node) in &fixture.running {
                 diagnostics.insert(*id, http(node.management_address, "/diagnostics").await);
@@ -159,6 +163,8 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
                 "stream_remaining": stream_remaining.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "queue_remaining": queue_remaining.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "remaining_ms": remaining_ms,
+                "elapsed_ms": elapsed_ms,
+                "last_progress_age_ms": last_progress_age_ms,
                 "diagnostics": diagnostics,
             });
             tokio::fs::write(
@@ -185,6 +191,7 @@ async fn automatic_split_and_merge_preserve_original_sdk_and_require_an_independ
             expected.get(&message.message_id()).unwrap().as_bytes()
         );
         queue.ack(&message).await.unwrap();
+        last_progress = Instant::now();
     }
     assert!(stream_remaining.is_empty() && queue_remaining.is_empty());
     let until = Instant::now() + Duration::from_secs(20);

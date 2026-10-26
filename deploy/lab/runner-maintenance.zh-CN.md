@@ -8,6 +8,8 @@
 
 `tidemq-runner-maintenance.timer` 每小时运行一次，并在启动后补查。检测到 `Runner.Worker` 时跳过；任务开始钩子与定时器取得同一个本地 flock，所以即使定时检查与新任务同时发生，任务步骤也会等待清理完成。清理还取得现有宿主全局租约，避开手动部署和故障测试。手动运行仍必须使用该租约。
 
+容器使用镜像内 root 管理的钩子，独立清理自身 work/target/tmp/diag。原生空闲定时器还调用容器的 `idle` 入口，回收取消任务留下的副本；容器的空闲检查与前后钩子共用自己的 flock。两边共享的 Cargo registry/git 由 `/srv/tidemq/maintenance/cargo-cache.lock` 保护：所有 Cargo 流程经 `scripts/ci/with-cargo-cache.sh` 取得共享锁，清理只有取得非阻塞独占锁才运行；忙时延后，不中断编译。
+
 每次执行限制 10 分钟，钩子和 systemd 外层限制 12 分钟；超时或磁盘预算不足会明确失败。任务取消或异常退出留下的资源由后续钩子/定时器重试。定时服务失败可通过 journal 和现有磁盘水位告警排查。
 
 ## 范围与额度
@@ -17,17 +19,17 @@
 | `/srv/tidemq/work/` 的仓库 checkout | 每次任务前后删除内容，始终保留当前工作目录及其父目录供 action/钩子启动；保留 runner 的 `_` 前缀目录 |
 | `_actions` 下载缓存 | 完成钩子清理超过 7 天或 1 GiB 的缓存；开始钩子及定时器保留它，避开新 Worker 在钩子之前下载 action 的竞态 |
 | `_temp` | 删除超过 1 天的入口，不删除当前钩子仍可能打开的 file commands |
-| `/srv/tidemq/cargo-target` | 最长 7 天，总额 18 GiB；超额清空并按需编译 |
+| 原生 `/srv/tidemq/cargo-target`、容器 `/srv/tidemq/container-runner/target` | 各最长 7 天、12 GiB；超额清空并按需编译；目录不共用 |
 | Cargo registry / git | 各最长 7 天、2 GiB；不删除 `cargo/bin`、rustup 或固定工具 |
 | `/srv/tidemq/tmp` | 最长 1 天，2 GiB；在全局租约保护下清理 |
 | Runner `_diag` | 删除超过 7 天的文件；超过 128 MiB 时删除超过 1 天的文件，保留近期及当前日志 |
 | 私有 lab `logs` 镜像导入日志 | 最长 7 天，128 MiB；超额清空，下次导入重新生成 |
-| Runner Docker | 清理停止的容器、未使用镜像和构建缓存；检查 VM role、挂载点和 Docker data-root，固定连接本机 socket；有运行中容器时拒绝清理 |
+| Runner Docker | 清理停止的构建容器、未使用镜像和构建缓存；检查 VM role、挂载点和 Docker data-root，固定连接本机 socket；只允许常驻 `tidemq-ci-runner`（标签 `tidemq.lab/runner=ci-container`）存活，保留其容器和所引用镜像；其他运行中容器阻止清理 |
 | 临时 Kubernetes / fixture / loadgen 数据 | 使用下述所有权检查与共用回收脚本 |
 
 数据盘可用量低于 12 GiB 或根盘低于 2 GiB 时，再清理可重建的 Cargo / 临时缓存。仍未达到额度则拒绝继续任务，保留运行数据供排查。额度是空闲时的保留限制；单个运行中任务仍受 64 GiB 数据盘及 CI 超时约束，不能把它当成无限临时空间。近期 runner 日志和 file commands 可能暂时超过软额度，磁盘检查不会为腾空间删除它们。
 
-LLVM profile 与编译产物在单元、集成、故障钩子、外部依赖、K8s 黑盒测试和最终报告导出之间一直保留；10 个服务实例受控退出、profile 回传合并后，才删除 worker 上该 CI run 的 coverage 目录。完成钩子在制品上传后运行。独立 coverage job 仍只下载、比较报告，没有重编译或重跑 Rust 测试。
+LLVM profile 与编译产物在各自任务内保留到 `coverage-inputs-native` / `coverage-inputs-lab` 上传之后；10 个服务实例受控退出、profile 回传后，才删除 worker 上该 CI run 的 coverage 目录。完成钩子可以清理超额本地 target；独立 coverage job 从制品恢复二进制/profile，合并导出并比较报告，没有重编译或重跑 Rust 测试。报告 job 的 disposable `report` 目录每次先删除再重建。
 
 Docker 删除包括 runtime base 的本地副本。[ensure-runtime-base.sh](../../scripts/lab/ensure-runtime-base.sh) 按 inventory 的官方完整 digest 拉取并核验；已有镜像身份错误会失败，不静默接受。冷重建需要访问固定镜像及依赖的下载源。
 
@@ -56,6 +58,8 @@ lab_ssh tidemq-runner sudo systemctl start tidemq-runner-maintenance.service
 
 安装时 runner 必须空闲；`all` / `runtime` 部署也自动安装同一机制。修改额度或脚本后重新执行 `maintenance`，不能只修改 Git 而遗漏已安装副本。安装程序不会注册新的 runner，也不更换现有凭据。
 
+容器钩子或额度变化还需按 [容器运维](container-runner/README.zh-CN.md) 重新 build/start；其独立注册状态继续保留。更新共用工具链或原生 runner 的 bin/externals 前须让两个 runner 均空闲并停止容器，更新后重建容器镜像，不在任务运行中替换只读挂载的工具。
+
 ## 重建及保留资料
 
 当前项目保留完整资源 inventory、固定二进制 URL/SHA、镜像 digest、工具构建 Dockerfile、部署脚本、CI 脚本及验收归档索引。根盘/数据盘里的以下副本可删：旧 checkout、Cargo target、下载缓存、runner/runtime 构建 bundle、镜像 tar、公共镜像构建副本及历史升级目录中的二进制。旧迁移删除脚本已移除，避免历史授权被再次应用于其他项目。
@@ -75,6 +79,6 @@ bash scripts/lab/deploy-runner.sh runtime
 
 必须备份并保留 `/var/lib/tidemq-lab/private/{tls,credentials,workloads}`、受限 SSH 密钥、kubeconfig、VM 定义和磁盘，以及各服务的持久数据。公用 workload 的完整身份在 `private/workloads/tidemq-dev/workload`；runner 的 `public/tidemq-dev/workload` 及 loadgen `/srv/tidemq/public-dev` 也保留。它们不能由重新生成 CA、cluster ID 或 token 代替。宿主其他项目、OS 工具和用户明确保留的 YuXiangagent 任务不参与自动清理。
 
-历史一次性证据的完整原件仍在[固定 Git 归档](../../docs/evidence/README.zh-CN.md)，当前只保留[合并验收](evidence/2026-10-25/README.zh-CN.md)及最新清理验收。GitHub 测试制品保留 14 天、覆盖率/VM 制品 30 天；长期证据不依赖这些制品永远在线。
+历史一次性证据的完整原件仍在[固定 Git 归档](../../docs/evidence/README.zh-CN.md)，当前只保留[合并验收](evidence/2026-10-25/README.zh-CN.md)及最新清理验收。GitHub 测试制品保留 14 天、覆盖率输入 3 天、最终覆盖率/VM 制品 30 天；长期证据不依赖这些制品永远在线。
 
 本机开发工作树还删除了 `target/lab-tools/collector.archive.part` 与旧 `source.bundle`。本轮验证和 IDE 使用中的 `target/debug`、`target/flycheck0` 及 CodeGraph 索引保留；runner 的清理额度不应用于本机 IDE 缓存。

@@ -4,19 +4,19 @@
 
 ## CI 与覆盖率
 
-[Rust 工作流](../.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 使用 ssh dev 的独立 runner VM，macOS 使用 GitHub-hosted runner。workflow 负责调度与制品，执行步骤位于 [scripts/ci](../scripts/ci/)。详细环境、入口与验收见[VM 实验室](../deploy/lab/README.zh-CN.md)。
+[Rust 工作流](../.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 使用 ssh dev 的 runner VM 及其中新增的一个容器 runner，macOS 使用 GitHub-hosted runner。workflow 负责调度与制品，执行步骤位于 [scripts/ci](../scripts/ci/)。详细环境、入口与验收见[VM 实验室](../deploy/lab/README.zh-CN.md)。
 
 先运行 fmt、workspace 全目标 Clippy、生产 panic / 索引审计、脚本自检、协议生成检查，再运行单元与集成。单元阶段只运行 lib / bin / example，移除外部服务环境变量；需要 RustFS、Collector 或网络服务的场景位于 tests/，Linux 显式运行真实依赖测试，缺少固定工具则失败。SDK 默认与 instrumentation 两条路径均覆盖。
 
 固定 nextest 0.9.148，ci profile 逐测试隔离、并发为 1、不重试失败项，保留 JUnit；业务测试内部并发不变。doctest 单独由 cargo test 执行。Linux 的固定 RustFS / Collector 版本与哈希由 inventory 和制品记录，不使用用户既有数据。
 
-Linux 单元、集成和远程 API 阶段直接使用 cargo-llvm-cov 0.9.1 的 `show-env --sh` 插桩环境；开始时只清理一次历史 profile，共用一个构建目录。执行顺序为单元 → 默认 SDK → 原生集成 → 故障钩子 → 真实外部服务 → K8s 黑盒/VM 故障 → 合并导出。K8s 阶段把同一插桩环境生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
+Linux 分为两条并行流程：容器执行静态检查、单元、默认 SDK 和普通集成；原生 runner 执行故障钩子、真实外部服务和 K8s 黑盒/VM 故障。两边均使用 cargo-llvm-cov 0.9.1 的 `show-env --sh`，各自开始时清理一次历史 profile，使用独立 target 和带流程前缀的 profile 文件名。Cargo registry/git 下载缓存共用，任务持有共享缓存锁，清理必须取得独占锁；编译和覆盖率目录不共用。K8s 阶段把插桩生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
 
-所有阶段结束后 [coverage-run.sh](../scripts/coverage-run.sh) 只读取已有二进制和 profile，统一生成 LLVM JSON、LCOV、HTML 和原始 `profiles.tar.gz`，不重新编译或执行测试。coverage job 只下载报告并比较；measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量、五阶段 JUnit 哈希，以及 [API 采集清单](../scripts/coverage/api.mjs)。清单记录两种部署二进制的 SHA256、镜像、10 个 Pod 的 UID/角色/worker/imageID、各个 profile 的大小/哈希、9 个远程用例的报告哈希及行为断言。缺少任一角色、客户端、行为结果或跨提交/跨运行混用均失败。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
+两条流程分别上传已有 ELF 二进制、profile、JUnit 和清单，短期制品为 `coverage-inputs-native` / `coverage-inputs-lab`。[bundle.mjs](../scripts/coverage/bundle.mjs) 校验相同源码提交、CI run、工作区绝对路径、工具版本及每个文件的大小/SHA256；拒绝路径穿越、符号链接、缺失流程和篡改输入。相同文件去重，不同 feature 的二进制均保留。coverage job 下载两份输入并调用 [coverage-run.sh](../scripts/coverage-run.sh)，统一导出 LLVM JSON、LCOV、HTML、原始 `profiles.tar.gz` 和 `inputs.json`，随后比较基线，全程不重编译或重跑 Rust 测试。measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量、五阶段 JUnit 哈希，以及 [API 采集清单](../scripts/coverage/api.mjs)。清单记录两种部署二进制的 SHA256、镜像、10 个 Pod 的 UID/角色/worker/imageID、各个 profile 的大小/哈希、9 个远程用例的报告哈希及行为断言。缺少任一角色、客户端、行为结果或跨提交/跨运行混用均失败。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
 
 [policy.json](../coverage/policy.json) 固定源码范围；[baseline.json](../coverage/baseline.json) 保留已有覆盖率基线。比较器用 BigInt 对 lines / functions / regions 原始整数比例逐项比较，任何下降失败，不设浮点容差，不额外排除源码来抬高数字。PR 使用 base 的可信工具和策略，不能替换自己的基线。当前 CI 只比较覆盖率，不自动写入或推送基线。
 
-VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。Linux 全流程与手动运维共享宿主 flock，保持插桩二进制和 profile 不被中途清理；只读 coverage job 不占用故障租约。常驻公共 workload 和手动普通验收仍使用 release 构建。
+VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。只有故障/部署流程与手动运维共享宿主 flock；容器普通测试无需该租约。两边的 profile 和二进制上传后才执行完成清理；coverage job 从制品重建报告目录，不占用故障租约。常驻公共 workload 和手动普通验收仍使用 release 构建。
 
 服务端 `LLVM_PROFILE_FILE=/coverage/node-ID-%h-%p-%m.profraw` 写入该 run 独享的 worker 目录；loadgen 的 CLI/SDK 使用独享 `profiles/client-%h-%p-%m.profraw`。收集业务结果和日志后，将该 CI namespace 的 10 个 StatefulSet 受控缩容为 0，等待进程正常处理 SIGTERM 并退出，然后逐实例通过 SSH 回收非空 profile，校验并复制到原生覆盖率构建目录。最后才删除 namespace、PV、worker profile、RustFS fixture 和私有构建；取消留下的资源由 runner 维护机制重试。最终覆盖率导出及制品上传完成后，才运行任务完成清理钩子。
 
@@ -36,6 +36,20 @@ LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://d
 
 独立 watchdog 另验证 VM 暂停后自动恢复；Loki/Tempo/Prometheus 另验证同一 run 的日志、trace、metrics 可查询。以上是有限正确性矩阵，未声称穷尽所有管理 API、部署形态或故障组合。本轮选用现有多角色 K8s 环境，未另加单机插桩部署。
 
+`tests/` 目录包含不同层次的集成测试，不能把目录位置或总用例数直接当成完整端到端覆盖。状态机/受控网络测试检查局部契约；`RunningNode` fixture 在同一测试进程启动真实角色与 QUIC；CLI fixture 再检查独立 OS 进程的启动、崩溃与恢复；上述 K8s driver 才从外部客户端访问已部署的服务二进制。各层互补，K8s 用例没有自动继承原生集成测试的全部覆盖。
+
+| 端到端范围 | 当前自动校验与缺口 |
+|---|---|
+| 消息、身份与权限 | K8s 已有表中的主链路；尚未对每个 SDK/管理 API、错误分类及边界参数建立远程用例 |
+| 扩缩容、成员替换、Shard 迁移、节点排空 | 原生集成测试有功能和故障回归；本轮 K8s 黑盒矩阵尚未包含这些管理操作 |
+| 对象存储中断 | K8s 检查 fixture a 故障窗口的业务和独立 b 的可用性；尚未显式强制冷读命中故障 S3，再断言恢复后归档积压清空及数据闭合 |
+| 观测与告警 | K8s 检查本次 namespace 的 10 个指标目标以及可查询日志、trace；不等于逐条校验三类信号关联，也未覆盖真实告警触发、通知送达和恢复闭环 |
+| 部署形态 | 本轮为 Linux RF3 多角色 K8s；单机插桩部署、真实跨可用区和宿主/整盘故障不在该矩阵内 |
+
+CI 执行时间也应按层记录。完整尝试 [40285381115](https://github.com/bitcapybara/tidemq/actions/runs/40285381115) 的 Linux 原生阶段通过：284 个单元测试约 41 秒、29 个默认 feature SDK 单元测试约 0.64 秒、267 个普通集成测试约 663 秒、75 个故障注入测试约 637 秒、16 个真实外部依赖测试约 106 秒；这些是 JUnit 测试执行时间，不包含编译、镜像和 VM 部署。该次工作流随后在插桩镜像构建前置检查失败，不能作为整条 CI 通过的证据。
+
+其中 62 个故障注入用例与普通集成测试同名；成员迁移和 Shard 转移等同名用例具有条件编译的额外故障断言，不能直接按重名删除。目前 `ci` profile 的 `test-threads = 1` 保持不变；拆分的是两条独立 job，同时保留原断言、五份 JUnit、插桩二进制和 profile。VM/网络故障仍持有实验室独占租约。测试层次的缺口不因增加 runner 自动消失。
+
 ## 可复现验证
 
 ```sh
@@ -47,7 +61,7 @@ cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/o
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol \
 TIDEMQ_REQUIRE_EXTERNAL=1 TIDEMQ_COVERAGE=1 \
-bash scripts/lab/with-lease.sh bash scripts/ci/validate-and-integrate.sh
+bash scripts/ci/with-cargo-cache.sh bash scripts/lab/with-lease.sh bash scripts/ci/validate-and-integrate.sh
 node scripts/coverage-gate.mjs compare --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json --output target/ci/coverage/summary.json
 ```
 

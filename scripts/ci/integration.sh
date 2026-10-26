@@ -2,6 +2,8 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 features=tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
+mode=${1:-all}
+[[ "$mode" =~ ^(all|normal|faults)$ ]] || exit 2
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 mkdir -p target/ci
 export TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/tidemq-ci-integration.XXXXXX")
@@ -17,9 +19,12 @@ cleanup() {
 }
 trap cleanup EXIT
 target_dir=${CARGO_TARGET_DIR:-$PWD/target}
+if [[ "$mode" != faults ]]; then
 node --test tests/lab/*.test.mjs
 cargo nextest run --workspace --all-targets --locked --features "$features" --profile ci -E 'kind(test)'
 cp target/nextest/ci/junit.xml target/ci/integration-junit.xml
+fi
+if [[ "$mode" != normal ]]; then
 cargo nextest run -p tidemq --test runtime_queue --test runtime_consumer_reads --test runtime_reclamation \
   --locked --features "$features,test-hooks" --profile ci
 cp target/nextest/ci/junit.xml target/ci/runtime-faults-junit.xml
@@ -34,4 +39,5 @@ if [[ ${TIDEMQ_REQUIRE_EXTERNAL:-0} == 1 ]]; then
   cargo nextest run -p tidemq --all-targets --locked --features "$features,test-hooks" \
     --profile ci --run-ignored only -E 'kind(test)'
   cp target/nextest/ci/junit.xml target/ci/external-services-junit.xml
+fi
 fi

@@ -72,6 +72,7 @@ find() { :; }
 du() { printf '0\\tignored\\n'; }
 df() { :; }
 free_bytes() { printf 100000000000; }
+clean_cargo_downloads() { bound_cache /srv/tidemq/rust/cargo/registry 1 7; }
 docker() {
   if [[ "$*" == *' info '* ]]; then printf /srv/tidemq/docker;
   elif [[ "$*" != *' ps '* ]]; then printf '%s\\n' "$*" >> "$TRACE"; fi
@@ -84,6 +85,25 @@ sweep unused after
   assert.match(calls, /checkouts/);
   assert.match(calls, /cargo-target/);
   assert.match(calls, /image prune --all --force/);
+});
+
+test('shared download cache cleanup waits for both runners to release their read locks', linux, t => {
+  const root = fixture(t), home = path.join(root, 'cargo'), lock = path.join(root, 'cache.lock');
+  fs.mkdirSync(path.join(home, 'registry'), {recursive: true});
+  fs.writeFileSync(path.join(home, 'registry', 'package'), Buffer.alloc(8192));
+  const result = spawnSync('bash', ['-c', `
+source "$1"
+CARGO_CACHE_MAX_BYTES=4096 CACHE_MAX_DAYS=7
+exec 7>"$2"
+flock --shared 7
+clean_cargo_downloads "$2" "$3"
+test -f "$3/registry/package"
+exec 7>&-
+clean_cargo_downloads "$2" "$3"
+test ! -e "$3/registry/package"
+`, 'test', path.join(scripts, 'runner-maintenance.sh'), lock, home], {encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cache cleanup deferred/);
 });
 
 function fakeCommands(root) {

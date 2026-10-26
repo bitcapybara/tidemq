@@ -1,0 +1,36 @@
+name: tidemq-ci-runner
+services:
+  runner:
+    image: localhost/tidemq-ci-runner:2.338.1-rust1.99.1
+    container_name: tidemq-ci-runner
+    labels: {tidemq.lab/runner: ci-container}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    user: '1001:1001'
+    cpus: 4
+    mem_limit: 8g
+    memswap_limit: 8g
+    pids_limit: 1024
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    tmpfs:
+      - /home/actions:rw,exec,uid=1001,gid=1001,mode=0700,size=1536m
+      - /tmp:rw,noexec,uid=1001,gid=1001,mode=0700,size=64m
+    volumes:
+      - /srv/tidemq/container-runner/state:/state:${TIDEMQ_RUNNER_STATE_MODE:-ro}
+      - /srv/tidemq/container-runner/diag:/diag
+      - /srv/tidemq/container-runner/work:/srv/tidemq/work
+      - /srv/tidemq/container-runner/target:/srv/tidemq/cargo-target
+      - /srv/tidemq/container-runner/tmp:/srv/tidemq/tmp
+      - /srv/tidemq/maintenance/cargo-cache.lock:/srv/tidemq/maintenance/cargo-cache.lock
+      - /srv/tidemq/rust/cargo:/opt/tidemq-rust/cargo
+      - /srv/tidemq/rust/cargo/bin:/opt/tidemq-rust/cargo/bin:ro
+      - /srv/tidemq/rust/rustup:/opt/tidemq-rust/rustup:ro
+      - /srv/tidemq/tools/cargo-nextest:/srv/tidemq/tools/cargo-nextest:ro
+      - /srv/tidemq/tools/cargo-llvm-cov:/srv/tidemq/tools/cargo-llvm-cov:ro
+      - /srv/tidemq/actions-runner/bin:/opt/actions-runner/bin:ro
+      - /srv/tidemq/actions-runner/externals:/opt/actions-runner/externals:ro
+    logging:
+      driver: local
+      options: {max-size: 10m, max-file: '3'}
