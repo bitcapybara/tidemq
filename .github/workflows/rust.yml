@@ -60,7 +60,7 @@ jobs:
           retention-days: 14
       - uses: actions/upload-artifact@v4
         if: success() && runner.os == 'Linux'
-        with: {name: coverage-inputs-native, path: target/ci/coverage-inputs, compression-level: 1, retention-days: 3}
+        with: {name: coverage-inputs-native, path: target/ci/coverage-inputs, compression-level: 6, retention-days: 3}
 
   faults:
     name: Faults and deployed API (Linux)
@@ -85,7 +85,7 @@ jobs:
           retention-days: 14
       - uses: actions/upload-artifact@v4
         if: success()
-        with: {name: coverage-inputs-lab, path: target/ci/coverage-inputs, compression-level: 1, retention-days: 3}
+        with: {name: coverage-inputs-lab, path: target/ci/coverage-inputs, compression-level: 6, retention-days: 3}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -98,7 +98,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [validate, faults]
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0, persist-credentials: false}

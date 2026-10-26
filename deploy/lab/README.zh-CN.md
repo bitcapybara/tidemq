@@ -2,7 +2,7 @@
 
 本目录是已经选择的方案 A（KVM/libvirt + Ubuntu VM + kubeadm）的实施配置。机器为 `ssh dev`，物理地址 `192.168.126.8`。资源真值在 [inventory.json](inventory.json)，下载来源和校验值在 [binaries.json](binaries.json)。原来的开发计划不承担部署清单职责。
 
-实际部署快照与脱敏验收记录在 [evidence/2026-10-25/](evidence/2026-10-25/README.zh-CN.md)，记录中的时间使用 UTC。常驻 `tidemq-dev` 已部署；CI 使用独立的临时 namespace 和 RustFS 实例。
+常驻部署身份与首次完整验收在 [evidence/2026-10-25/](evidence/2026-10-25/README.zh-CN.md)，新增容器 runner、并行 CI、API 覆盖率与最新清理验收在 [runner-maintenance.json](evidence/runner-maintenance.json)，时间使用 UTC。常驻 `tidemq-dev` 已部署；CI 使用独立的临时 namespace 和 RustFS 实例。
 
 实验室模拟独立 Linux 内核、节点磁盘、网络、Raft 副本和依赖故障。11 台 VM 共享一台物理机和一块 NVMe；软件拓扑测试不能证明物理可用区隔离、真实跨区延迟、宿主机断电或整块 NVMe 损坏时的行为。
 
@@ -138,7 +138,7 @@ Kubernetes 节点通过最小只读 ACL 允许 `otelcol` 访问 CRI 日志，新
 
 GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 21，标签 `self-hosted, Linux, X64, tidemq-dev`，运行在独立 runner VM 的 actions 用户下。CI 的 Docker 位于 runner VM，不挂载宿主 Docker / libvirt socket。observe VM 用 Docker Compose 运行观测后端，宿主 Docker 仅用于准备固定工具链 bundle。
 
-新增且只新增一个容器 runner：`tidemq-ci-container-u126-8`，专用标签 `tidemq-ci-container`，容器名 `tidemq-ci-runner`。它运行在同一 runner VM 中，复用同一 Linux 内核的 Cargo 下载缓存和文件锁。VM 扩为 8 vCPU / 16 GiB；原生服务限制 4 CPU / 6 GiB，容器限制 4 CPU / 8 GiB，预留 2 GiB 给 OS。容器只执行普通检查/测试，未挂载 Docker socket、kubeconfig、实验室 SSH key 或原生注册凭据，也不发布端口。配置、注册、重建及共享缓存约束见 [容器 runner 运维](container-runner/README.zh-CN.md)。
+新增且只新增一个容器 runner：`tidemq-ci-container-u126-8`，ID 23，专用标签 `tidemq-ci-container`，容器名 `tidemq-ci-runner`。它运行在同一 runner VM 中，复用同一 Linux 内核的 Cargo 下载缓存和文件锁。VM 扩为 8 vCPU / 16 GiB；原生服务限制 4 CPU / 6 GiB，容器限制 4 CPU / 8 GiB，预留 2 GiB 给 OS。容器只执行普通检查/测试，未挂载 Docker socket、kubeconfig、实验室 SSH key 或原生注册凭据，也不发布端口。配置、注册、重建及共享缓存约束见 [容器 runner 运维](container-runner/README.zh-CN.md)。
 
 | 路径 | 内容 |
 |---|---|
@@ -225,7 +225,7 @@ target/debug/examples/deploy_validation --endpoint 192.168.126.8:17443 \
   --messages 64 --output-dir NEW_PRIVATE_RESULT_DIRECTORY
 ```
 
-结果目录必须尚不存在，父目录由使用者创建。升级修复版本后，loadgen VM 与这台 Mac 的局域网/VPN 入口均重新完成 64 条消息的发送、接收、持久 ACK 和客户端关闭；结果见验收目录中的 final-loadgen-report.json 与 final-external-sdk-report.json。
+结果目录必须尚不存在，父目录由使用者创建。升级修复版本后，loadgen VM 与这台 Mac 的局域网/VPN 入口均完成 64 条消息的发送、接收、持久 ACK 和客户端关闭，记录已并入 [部署验收](evidence/2026-10-25/acceptance.json)。最新 Mac 客户端按 `87b3442` 构建，又完成 16 条消息及 9 类 API 契约验证；公共 10 个实例的指标、日志和 trace 可经外部入口查询，详见 [最新验收](evidence/runner-maintenance.json)。公共镜像仍为 `c386434`；它与 `87b3442` 的生产源码 `src/`、`crates/`、`sdk/rust/src/` 无差异。
 
 服务入口 TLS 叶证书有效期 365 天，本批 storage 证书在 2027-10-25 UTC 到期。工作负载 QUIC 节点叶证书有效期 30 天，本批常驻实例在 **2026-11-24 16:01:30 UTC** 到期；CI 每次新建独立证书。当前未部署证书自动续期，常驻实例持续使用前需安排证书轮换；不得通过重新生成 cluster ID、token 或删除数据来代替轮换。可在宿主用 `openssl x509 -in /var/lib/tidemq-lab/private/workloads/tidemq-dev/workload/material/node-11.pem -noout -enddate` 检查日期。
 

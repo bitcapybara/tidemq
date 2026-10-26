@@ -1,0 +1,2481 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-10-26T14:52:15.328Z",
+  "status": "passed",
+  "purpose": "Container runner, shared Cargo cache, parallel CI, deployed API coverage, external access, and bounded cleanup acceptance",
+  "tested_source_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+  "runner_deployment": {
+    "native": {
+      "id": 21,
+      "name": "tidemq-dev-u126-8",
+      "label": "tidemq-dev",
+      "cpu_limit": 4,
+      "memory_bytes": 6442450944
+    },
+    "container": {
+      "id": 23,
+      "name": "tidemq-ci-container-u126-8",
+      "label": "tidemq-ci-container",
+      "cpu_limit": 4,
+      "memory_bytes": 8589934592,
+      "image_id": "sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b"
+    },
+    "vm": {
+      "name": "tidemq-runner",
+      "uuid": "80182a00-dfbb-4890-9947-36670268f03a",
+      "vcpus": 8,
+      "memory_mib": 16384,
+      "data_disk_gib": 64
+    },
+    "lab_totals": {
+      "vms": 11,
+      "vcpus": 36,
+      "memory_mib": 47104,
+      "virtual_disks_gib": 250
+    },
+    "shared_cargo_cache": {
+      "native_home": "/srv/tidemq/rust/cargo",
+      "container_home": "/opt/tidemq-rust/cargo",
+      "same_device_and_inode": "64784:1311125",
+      "lock": "/srv/tidemq/maintenance/cargo-cache.lock",
+      "same_lock_device_and_inode": "64784:3145731",
+      "read_lock_defers_cleanup": true
+    },
+    "independent_build_and_workspace_mounts": true,
+    "idle_cleanup_preserved_registered_container_and_image": true,
+    "busy_cleanup_skipped_during_parallel_ci_at": "2026-10-26T11:30:32Z",
+    "actual_container_preflight": {
+      "node_tests": 36,
+      "passed": 36,
+      "skipped": 0,
+      "kubernetes_configuration": "passed",
+      "host_control_boundary": "passed",
+      "asset_source_boundary": "passed",
+      "before_and_after_hooks": "passed"
+    },
+    "local_preflight": {
+      "node_tests": 36,
+      "passed": 32,
+      "linux_only_skips": 4,
+      "markdown_files": 58,
+      "broken_relative_links": 0,
+      "rust_fmt": "passed",
+      "rust_clippy_tests": "passed"
+    },
+    "removed_obsolete_runner_bytes": {
+      "mixed_coverage_target": 12639588352,
+      "old_debug_target": 9019785216,
+      "private_reproduction_sources_and_outputs": 22573056
+    }
+  },
+  "ci": {
+    "run_id": "40322221174",
+    "url": "https://github.com/bitcapybara/tidemq/actions/runs/40322221174",
+    "conclusion": "success",
+    "test_attempt": 1,
+    "final_attempt": 2,
+    "attempt_1_jobs": [
+      {
+        "completed_at": "2026-10-26T13:04:55Z",
+        "conclusion": "success",
+        "id": 121569748459,
+        "name": "Faults and deployed API (Linux)",
+        "runner_id": 21,
+        "runner_name": "tidemq-dev-u126-8",
+        "started_at": "2026-10-26T12:23:59Z"
+      },
+      {
+        "completed_at": "2026-10-26T12:52:56Z",
+        "conclusion": "success",
+        "id": 121569748751,
+        "name": "Validate (macOS)",
+        "runner_id": 1000001725,
+        "runner_name": "GitHub Actions 1000001725",
+        "started_at": "2026-10-26T12:23:58Z"
+      },
+      {
+        "completed_at": "2026-10-26T12:51:05Z",
+        "conclusion": "success",
+        "id": 121569748857,
+        "name": "Validate (Linux)",
+        "runner_id": 23,
+        "runner_name": "tidemq-ci-container-u126-8",
+        "started_at": "2026-10-26T12:23:59Z"
+      },
+      {
+        "completed_at": "2026-10-26T12:23:56Z",
+        "conclusion": "skipped",
+        "id": 121569750602,
+        "name": "Fork unit tests",
+        "runner_id": null,
+        "runner_name": null,
+        "started_at": "2026-10-26T12:23:56Z"
+      },
+      {
+        "completed_at": "2026-10-26T13:25:47Z",
+        "conclusion": "cancelled",
+        "id": 121588046341,
+        "name": "Coverage report gate (no test rerun)",
+        "runner_id": 21,
+        "runner_name": "tidemq-dev-u126-8",
+        "started_at": "2026-10-26T13:04:58Z"
+      },
+      {
+        "completed_at": "2026-10-26T13:25:51Z",
+        "conclusion": "failure",
+        "id": 121598274679,
+        "name": "Rust gate",
+        "runner_id": 1000001726,
+        "runner_name": "GitHub Actions 1000001726",
+        "started_at": "2026-10-26T13:25:48Z"
+      }
+    ],
+    "report_retry": {
+      "failed_job_id": 121588046341,
+      "reason": "Artifact download stalled until the 20-minute job timeout",
+      "rerun_command": "gh run rerun 40322221174 --job 121588046341",
+      "successful_job_id": 121612379852,
+      "report_started_at": "2026-10-26T13:53:07Z",
+      "report_completed_at": "2026-10-26T14:06:10Z",
+      "download_seconds": 615,
+      "restore_and_export_seconds": 80,
+      "rust_tests_rerun": false,
+      "rust_gate_completed_at": "2026-10-26T14:06:19Z"
+    },
+    "script_seconds": {
+      "linux_validate": 1180,
+      "linux_faults_and_deployed_api": 2048,
+      "macos": 1719
+    },
+    "junit_results": [
+      {
+        "platform": "tests-Linux",
+        "stage": "unit",
+        "tests": 284,
+        "seconds": 46.522
+      },
+      {
+        "platform": "tests-Linux",
+        "stage": "sdk-default-unit",
+        "tests": 29,
+        "seconds": 0.599
+      },
+      {
+        "platform": "tests-Linux",
+        "stage": "integration",
+        "tests": 267,
+        "seconds": 693.922
+      },
+      {
+        "platform": "tests-Linux-faults",
+        "stage": "runtime-faults",
+        "tests": 75,
+        "seconds": 647.158
+      },
+      {
+        "platform": "tests-Linux-faults",
+        "stage": "external-services",
+        "tests": 16,
+        "seconds": 109.238
+      },
+      {
+        "platform": "tests-macOS",
+        "stage": "unit",
+        "tests": 284,
+        "seconds": 31.697
+      },
+      {
+        "platform": "tests-macOS",
+        "stage": "sdk-default-unit",
+        "tests": 29,
+        "seconds": 1.078
+      },
+      {
+        "platform": "tests-macOS",
+        "stage": "integration",
+        "tests": 267,
+        "seconds": 491.376
+      },
+      {
+        "platform": "tests-macOS",
+        "stage": "runtime-faults",
+        "tests": 75,
+        "seconds": 477.719
+      }
+    ],
+    "linux_test_total": 671,
+    "macos_test_total": 655,
+    "deployed_cases": [
+      {
+        "name": "api-contract",
+        "sha256": "52436e37ccc7b471af1f152ac44661e9f6fe09c94a08aa74f936f202e6b2b395",
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "smoke",
+        "sha256": "5c6e7919567f4bd114a458ae110bba860d81d8ff06d9912356e1b6d8246cfd4c",
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "replay",
+        "sha256": "234ad40eb5d695936864e504b96c7318e960f83881b869ea6508b5286a0ad514",
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "worker-poweroff",
+        "sha256": "91583d8bf7d1e2baa62ac81677ee459b09b9bc9cdff9102d7c3dfe566c7cafcd",
+        "status": "passed",
+        "ledger": {
+          "expected": 80,
+          "committed": 80,
+          "received": 80,
+          "acknowledged": 80,
+          "frontier": 80
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "data-isolation",
+        "sha256": "523dd302ac0e0b9b83383c27dbc367f4fd76a589b3d1b41978e110b27c137888",
+        "status": "passed",
+        "ledger": {
+          "expected": 80,
+          "committed": 80,
+          "received": 80,
+          "acknowledged": 80,
+          "frontier": 80
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "quorum-loss",
+        "sha256": "59eaec9561d3688e59ccf0d5c64dc35684489e575f6c5c589e04d6c5d1e3a86d",
+        "status": "passed",
+        "ledger": {
+          "expected": 80,
+          "committed": 80,
+          "received": 80,
+          "acknowledged": 80,
+          "frontier": 80
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "control-plane-fault",
+        "sha256": "5490896000090c6fa22a277aa817300f9c2d34a0a569bae5d779011c1191c147",
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "object-store-fault",
+        "sha256": "e2d66acdef00cb616d5610134a2cb49e95178acfa6fc0cd3753256c307492d1e",
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      },
+      {
+        "name": "recovered",
+        "sha256": "306ae8b9a7dd8bdc97b26bf9f6fa06fc620cd5cd360546318d8a6c170aa9376e",
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "original_consumer_reused": true,
+        "client_close_completed": true
+      }
+    ],
+    "cleanup": {
+      "exitCode": 0,
+      "cleanupExitCode": 0
+    },
+    "watchdog": "passed",
+    "stored_telemetry": {
+      "metric_targets": 10,
+      "log_streams": 100,
+      "traces": 20
+    },
+    "artifact_retention_days": {
+      "tests": 14,
+      "coverage_inputs": 3,
+      "coverage_report": 30,
+      "kubernetes_lab": 30
+    }
+  },
+  "coverage": {
+    "summary": {
+      "schema_version": 1,
+      "status": "passed",
+      "metrics": {
+        "lines": {
+          "status": "passed",
+          "baseline": {
+            "count": 35176,
+            "covered": 27907
+          },
+          "candidate": {
+            "count": 63145,
+            "covered": 56429
+          }
+        },
+        "functions": {
+          "status": "passed",
+          "baseline": {
+            "count": 3637,
+            "covered": 2576
+          },
+          "candidate": {
+            "count": 6652,
+            "covered": 5387
+          }
+        },
+        "regions": {
+          "status": "passed",
+          "baseline": {
+            "count": 49848,
+            "covered": 38365
+          },
+          "candidate": {
+            "count": 90040,
+            "covered": 77573
+          }
+        }
+      },
+      "initialization": false,
+      "source_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+      "policy_sha256": "ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57",
+      "previous_baseline_sha256": "638b8e963abe9e8936c7df0f2571093c0244b83946a4a173d5df7c7bf15fb2ee",
+      "llvm_report_sha256": "883ab2dbe7aa18b510bf5b99240dd9f0ac8fda4945fb05f4310c5dfcdaeb00b4",
+      "counts": {
+        "lines": {
+          "count": 63145,
+          "covered": 56429
+        },
+        "functions": {
+          "count": 6652,
+          "covered": 5387
+        },
+        "regions": {
+          "count": 90040,
+          "covered": 77573
+        }
+      },
+      "environment": {
+        "platform": "linux",
+        "arch": "x64",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+        "nextest": "cargo-nextest 0.9.148 (cd1d6d546 2026-10-07)\nrelease: 0.9.148\ncommit-hash: cd1d6d5467322dbc0d39a80cb671d000ac302798\ncommit-date: 2026-10-07\nhost: x86_64-unknown-linux-gnu",
+        "llvm_cov": "cargo-llvm-cov 0.9.1",
+        "github_run_id": "40322221174",
+        "github_job": "coverage"
+      },
+      "api_profile_count": 21,
+      "api_server_count": 10,
+      "api_checks": [
+        "identity_catalog_pagination",
+        "namespace_topic_quota",
+        "scoped_authorization",
+        "token_revocation",
+        "queue_nack_redelivery_ack",
+        "stream_cumulative_ack_resume",
+        "subscription_inspection_deletion",
+        "cluster_catalog",
+        "resource_deletion"
+      ]
+    },
+    "measurement": {
+      "schema_version": 1,
+      "source_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+      "llvm_report_sha256": "883ab2dbe7aa18b510bf5b99240dd9f0ac8fda4945fb05f4310c5dfcdaeb00b4",
+      "profile_count": 922,
+      "merge_inputs_sha256": "d91613a8d5c0ff75061255d4050993fd14945e96943ccc3c26a2a0977ed9d371",
+      "test_reports": {
+        "unit": "1a9788fcb41afaf11a14e3e6173214e9da7892e27cabba1c666d9320af42ad7a",
+        "sdk-default-unit": "0812858a49ba0fc7ff393522e06f26596f1d29970d6dc432cd07eb378a8c8e27",
+        "integration": "7a4de42cba9f86975766bda5b5494d38a7961aee4b72036f0d0be71b13e9a446",
+        "runtime-faults": "35bcd5d799da80f852804b4eb01b602e74dbead273376408256e5c01db42d7e2",
+        "external-services": "46515c345cd3ae094fd61c1d4e8ded9f4fa5dbd709a5d45ad7a12950d31790c8"
+      },
+      "api_coverage": {
+        "schema_version": 1,
+        "mode": "kubernetes",
+        "namespace": "ci-40322221174-1",
+        "source_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+        "build_profile": "debug",
+        "instrumented": true,
+        "image": "localhost/tidemq-lab:a4e094da45bf664ea6ccbaa3",
+        "image_id": "sha256:d2d36276c436006e9253c5beb14cb5d7062874de660a053a65563c258244d080",
+        "binary_sha256": {
+          "tidemq": "476f50adae95094ef69f0d66e5cfcdc229ad3ac54c2f59f09b51897dbf0f9da3",
+          "deploy_validation": "df7e16a5728fa3353142a04103edf497bbc8ea71fbadfe6ead29a8075462db12"
+        },
+        "nodes": [
+          {
+            "id": 11,
+            "role": "metadata",
+            "worker": "tidemq-worker-a",
+            "pod_uid": "8747ee28-fe4d-4bec-a2cf-9de92b95c515",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-11-node-11-node-11-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "eb5dadf7d9885320f532d69bd54e40c860cadcbcca375c6167e01731669b9c35"
+              }
+            ]
+          },
+          {
+            "id": 12,
+            "role": "metadata",
+            "worker": "tidemq-worker-b",
+            "pod_uid": "8eb4af1e-9d1e-435f-8427-96d665650d1b",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-12-node-12-node-12-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "239de84398c2812473c7e54f8983115b7ce5dd774426652de35a73f81c8c7bbb"
+              }
+            ]
+          },
+          {
+            "id": 13,
+            "role": "metadata",
+            "worker": "tidemq-worker-c",
+            "pod_uid": "71056fc2-5cb5-4c6a-8893-d0717f3c6ef5",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-13-node-13-node-13-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "65711e281b613bc398774a8778324dfa4fc9da676d3994342d8085d570cb5f88"
+              }
+            ]
+          },
+          {
+            "id": 21,
+            "role": "storage",
+            "worker": "tidemq-worker-a",
+            "pod_uid": "2de5f612-eb1a-4c35-b410-d2d544cc4b21",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-21-node-21-node-21-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "fc571133429358af1356a2156a1fc269c633c2a5ed63c7dc3b66eec946b8c5e3"
+              }
+            ]
+          },
+          {
+            "id": 22,
+            "role": "storage",
+            "worker": "tidemq-worker-b",
+            "pod_uid": "2116d9d2-fa65-4b8c-bdc4-4af4bb1d8205",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-22-node-22-node-22-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "53766b02c28fa9470cfe9dc64d7d26caa401a720517622f0d3e73a33a32bbbdc"
+              }
+            ]
+          },
+          {
+            "id": 23,
+            "role": "storage",
+            "worker": "tidemq-worker-c",
+            "pod_uid": "a1136e84-b378-4f2d-89d0-4953073f98f0",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-23-node-23-node-23-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "2a4028cade242f1223fd77a86aa6710bf101aa4b182d4230c024274dd8e5d580"
+              }
+            ]
+          },
+          {
+            "id": 31,
+            "role": "broker",
+            "worker": "tidemq-worker-a",
+            "pod_uid": "22431646-2c0b-47f8-983e-f2a0eeae5970",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-31-node-31-node-31-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "d463eb3ab4d2b2323175de9487df293ca817ff9836f4170e93e60607ae76c64c"
+              }
+            ]
+          },
+          {
+            "id": 32,
+            "role": "broker",
+            "worker": "tidemq-worker-b",
+            "pod_uid": "ee8f144f-af71-4e0c-b1e5-ea4d84e890dd",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-32-node-32-node-32-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "5c1e5dd2d235dceff57df3913711412ca33703d2105a9824fe33d37c348c412b"
+              }
+            ]
+          },
+          {
+            "id": 41,
+            "role": "gateway",
+            "worker": "tidemq-worker-a",
+            "pod_uid": "2cb456ee-0ca3-4c21-adaf-e1ced423f10a",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-41-node-41-node-41-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "5c147f81f04d86b522bfb165a2bb7a0b07a4726ce47a50e205349182c299efc0"
+              }
+            ]
+          },
+          {
+            "id": 42,
+            "role": "gateway",
+            "worker": "tidemq-worker-b",
+            "pod_uid": "3514ff6a-2cb3-4e18-9b28-7171fdde54cc",
+            "image_id": "sha256:3d1adb16c1c14e2c986b51c6638e9aea68cfdef90cbd0c79487f7a77f52235fa",
+            "profiles": [
+              {
+                "file": "tidemq-api-server-42-node-42-node-42-0-1-10032202001248045892_0.profraw",
+                "bytes": 830336,
+                "sha256": "b064bc86099dc0d81da24921258a39bb069446b2fa808264fd3496c8a21d473b"
+              }
+            ]
+          }
+        ],
+        "client_profiles": [
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-67195-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "e8c223848cef54320b4309ccb77f6606d323230429c5902097948efb3e7d6492"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-66959-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "9ecf98136fa453fe288a0efd37d1dca755f2665da4b7767ca575a095256a658e"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-65875-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "89698ad8fb6e41b6566c41031b325dbb17067091d79c0697346be53e7c25f966"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-63466-10032202001248045892_0.profraw",
+            "bytes": 830336,
+            "sha256": "19b7af7dfbfcb8eb0cc8d596ff52bae6f49f3bb69e26c2a5ad8daa7ba864281b"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-64766-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "7c3c80b4a604d4bca997dfafc72dc7059a262994392dac8e553557227cac48ce"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-63679-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "f0c37b5386c271bd4c442115059d000715f4d3613248b8fdbf12f23c48e75899"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-67065-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "68d1a96ba8ac0ec16a48df9b86e1332c95d4508e6b408e50ead20e902ece9ea3"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-63950-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "814645899fa62492dbbe2def962fc8a17f75f6776d9771fd83828bc4c7bb504f"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-63785-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "37e5dc41e168db901b223d0501e558edf90499f403cb41f735fd690bd82d5400"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-63519-10032202001248045892_0.profraw",
+            "bytes": 830336,
+            "sha256": "4ad58e0814776260738ac2df7c783be4f19dff79a2565695cd5ccac354ab03dc"
+          },
+          {
+            "file": "tidemq-api-client-client-tidemq-loadgen-63572-6974098234987272235_0.profraw",
+            "bytes": 203032,
+            "sha256": "568b43d9fe2e092db7a1255ff38855473e26c69e0a714285853f4cf050e4fd73"
+          }
+        ],
+        "test_reports": {
+          "api-contract": "52436e37ccc7b471af1f152ac44661e9f6fe09c94a08aa74f936f202e6b2b395",
+          "smoke": "5c6e7919567f4bd114a458ae110bba860d81d8ff06d9912356e1b6d8246cfd4c",
+          "replay": "234ad40eb5d695936864e504b96c7318e960f83881b869ea6508b5286a0ad514",
+          "worker-poweroff": "91583d8bf7d1e2baa62ac81677ee459b09b9bc9cdff9102d7c3dfe566c7cafcd",
+          "data-isolation": "523dd302ac0e0b9b83383c27dbc367f4fd76a589b3d1b41978e110b27c137888",
+          "quorum-loss": "59eaec9561d3688e59ccf0d5c64dc35684489e575f6c5c589e04d6c5d1e3a86d",
+          "control-plane-fault": "5490896000090c6fa22a277aa817300f9c2d34a0a569bae5d779011c1191c147",
+          "object-store-fault": "e2d66acdef00cb616d5610134a2cb49e95178acfa6fc0cd3753256c307492d1e",
+          "recovered": "306ae8b9a7dd8bdc97b26bf9f6fa06fc620cd5cd360546318d8a6c170aa9376e"
+        },
+        "api_checks": [
+          "identity_catalog_pagination",
+          "namespace_topic_quota",
+          "scoped_authorization",
+          "token_revocation",
+          "queue_nack_redelivery_ack",
+          "stream_cumulative_ack_resume",
+          "subscription_inspection_deletion",
+          "cluster_catalog",
+          "resource_deletion"
+        ],
+        "graceful_shutdown": true
+      },
+      "environment": {
+        "platform": "linux",
+        "arch": "x64",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+        "nextest": "cargo-nextest 0.9.148 (cd1d6d546 2026-10-07)\nrelease: 0.9.148\ncommit-hash: cd1d6d5467322dbc0d39a80cb671d000ac302798\ncommit-date: 2026-10-07\nhost: x86_64-unknown-linux-gnu",
+        "llvm_cov": "cargo-llvm-cov 0.9.1",
+        "github_run_id": "40322221174",
+        "github_job": "coverage"
+      }
+    },
+    "independent_verification": {
+      "source_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+      "run_id": "40322221174",
+      "status": "passed",
+      "tests": [
+        {
+          "platform": "tests-Linux",
+          "stage": "unit",
+          "tests": 284,
+          "seconds": 46.522
+        },
+        {
+          "platform": "tests-Linux",
+          "stage": "sdk-default-unit",
+          "tests": 29,
+          "seconds": 0.599
+        },
+        {
+          "platform": "tests-Linux",
+          "stage": "integration",
+          "tests": 267,
+          "seconds": 693.922
+        },
+        {
+          "platform": "tests-Linux-faults",
+          "stage": "runtime-faults",
+          "tests": 75,
+          "seconds": 647.158
+        },
+        {
+          "platform": "tests-Linux-faults",
+          "stage": "external-services",
+          "tests": 16,
+          "seconds": 109.238
+        },
+        {
+          "platform": "tests-macOS",
+          "stage": "unit",
+          "tests": 284,
+          "seconds": 31.697
+        },
+        {
+          "platform": "tests-macOS",
+          "stage": "sdk-default-unit",
+          "tests": 29,
+          "seconds": 1.078
+        },
+        {
+          "platform": "tests-macOS",
+          "stage": "integration",
+          "tests": 267,
+          "seconds": 491.376
+        },
+        {
+          "platform": "tests-macOS",
+          "stage": "runtime-faults",
+          "tests": 75,
+          "seconds": 477.719
+        }
+      ],
+      "profile_count": 922,
+      "api_profile_count": 21,
+      "api_server_count": 10,
+      "llvm_report_sha256": "883ab2dbe7aa18b510bf5b99240dd9f0ac8fda4945fb05f4310c5dfcdaeb00b4",
+      "merge_inputs_sha256": "d91613a8d5c0ff75061255d4050993fd14945e96943ccc3c26a2a0977ed9d371",
+      "profiles_archive_sha256": "ca67b8e49ff32bdb5cff8c4e7124bcd3f53cf452e0545ca81dfd6c2e6e75f649",
+      "all_profile_archive_bytes_verified": true,
+      "deployed_binary_mappings_verified": true,
+      "build_scripts": [
+        {
+          "file": "/srv/tidemq/work/tidemq/tidemq/crates/tidemq-protocol/build.rs",
+          "lines": {
+            "count": 25,
+            "covered": 24,
+            "percent": 96
+          },
+          "functions": {
+            "count": 2,
+            "covered": 2,
+            "percent": 100
+          }
+        }
+      ],
+      "counts": {
+        "lines": {
+          "count": 63145,
+          "covered": 56429
+        },
+        "functions": {
+          "count": 6652,
+          "covered": 5387
+        },
+        "regions": {
+          "count": 90040,
+          "covered": 77573
+        }
+      },
+      "bundles": [
+        {
+          "lane": "native",
+          "files": 840,
+          "bytes": 2153080328
+        },
+        {
+          "lane": "lab",
+          "files": 328,
+          "bytes": 2126129341
+        }
+      ]
+    },
+    "final_archive_files_verified": 922,
+    "all_profiles_present_in_actual_llvm_merge_inputs": true,
+    "source_policy_changed": false,
+    "baseline_changed": false,
+    "displayed_percentages": {
+      "lines": "89.36",
+      "functions": "80.98",
+      "regions": "86.15"
+    }
+  },
+  "post_ci_configuration": {
+    "compared_to_tested_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+    "files": [
+      ".github/workflows/rust.yml",
+      "scripts/coverage/bundle.mjs"
+    ],
+    "changes": {
+      "input_compression_level": 6,
+      "coverage_timeout_minutes": 45,
+      "restored_input_budget_bytes": 8589934592
+    },
+    "reason": "Reduce artifact transfer size, allow observed download latency, and keep headroom above the verified 4279209669-byte input set",
+    "validation": {
+      "node_linux": {
+        "total": 36,
+        "passed": 36,
+        "skipped": 0
+      },
+      "node_macos": {
+        "total": 36,
+        "passed": 32,
+        "skipped": 4
+      },
+      "workflow_yaml_parse": "passed",
+      "linux_bash_syntax": "passed",
+      "markdown_relative_links": "passed"
+    },
+    "complete_workflow_rerun_after_these_changes": false
+  },
+  "earlier_attempts": [
+    {
+      "run_id": "40285381115",
+      "source_commit": "8eb38a8fca5351fe20f5c6dc16484c2a5dfd31dd",
+      "result": "failed",
+      "linux_native_tests_passed": 671,
+      "reason": "API image instrumentation preflight incorrectly required RUSTFLAGS instead of accepting the llvm-cov rustc wrapper",
+      "fix_commit": "6defa424a7ee3750e88d519cca4ea1020df8f087"
+    },
+    {
+      "run_id": "40295506591",
+      "source_commit": "a0fec08a19f4c97a8eb685e29899d5815a6b4bbf",
+      "result": "failed",
+      "ordinary_integration_passed": 266,
+      "ordinary_integration_total": 267,
+      "failed_test": "scalable::load::automatic_split_and_merge_preserve_original_sdk_and_require_an_independent_live_leader",
+      "remaining_stream_messages": 2,
+      "remaining_queue_messages": 2,
+      "macos_test_result": "passed"
+    },
+    {
+      "run_id": "40311020592",
+      "source_commit": "1a2aeac417a1fffa6f36b768d38e9722d3e69148",
+      "result": "cancelled after container setup failure",
+      "reason": "GitHub requires lifecycle hook filenames to end in .sh, .ps1 or .js",
+      "fix_commit": "32d9afa00b51d4e3bb7f9007c5661e62d1f8c87e"
+    },
+    {
+      "run_id": "40313522417",
+      "source_commit": "32d9afa00b51d4e3bb7f9007c5661e62d1f8c87e",
+      "result": "failed",
+      "ordinary_integration_total": 267,
+      "ordinary_integration_passed": 265,
+      "failures": [
+        "combined::combined_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks",
+        "scalable::load::automatic_split_and_merge_preserve_original_sdk_and_require_an_independent_live_leader"
+      ],
+      "macos_test_result": "passed",
+      "fault_and_api_job": "passed",
+      "kubernetes_cases": 9,
+      "server_profiles": 10,
+      "client_profiles": 11,
+      "cleanup_exit_code": 0,
+      "coverage_report_job": "skipped because ordinary integration failed",
+      "fix_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57"
+    }
+  ],
+  "functional_test_followup": {
+    "root_cause": "The entire functional drain shared a 20-second deadline even while acknowledgements continued to make progress",
+    "decisive_failure": {
+      "run_id": "40313522417",
+      "total_messages": 142,
+      "elapsed_ms": 26993,
+      "last_progress_age_ms": 0,
+      "stream_remaining": 1,
+      "queue_remaining": 1,
+      "remaining_identities_differ": true
+    },
+    "original_instrumented_binary_reruns": {
+      "passed": 3,
+      "durations_seconds": [
+        14.35,
+        13.2,
+        32.94
+      ]
+    },
+    "minimum_valid_merge_window_probe": {
+      "merge_window_ms": 2000,
+      "passed": 3,
+      "durations_seconds": [
+        18.152,
+        33.214,
+        17.048
+      ]
+    },
+    "invalid_probe": {
+      "merge_window_ms": 1000,
+      "result": "fixture policy validation rejected it; not a reproduction"
+    },
+    "committed_merge_window_ms": 4000,
+    "committed_no_progress_timeout_seconds": 20,
+    "committed_total_drain_limit_seconds": 120,
+    "delivery_ack_and_merge_assertions_changed": false,
+    "nextest_retries": 0,
+    "failure_diagnostics_added": [
+      "elapsed_ms",
+      "last_progress_age_ms"
+    ],
+    "fixed_source_container_repetitions": {
+      "source_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+      "scaling_passed": 3,
+      "combined_passed": 3,
+      "linux_clippy_seconds": 46.31
+    },
+    "combined_read_backpressure": {
+      "eligible_code": "QuotaExceeded",
+      "eligible_outcome": "Rejected",
+      "eligible_retryable": true,
+      "phase_budget_seconds": 40,
+      "successful_reads_per_topic": 64,
+      "topics": 4,
+      "default_admission_capacity_changed": false
+    }
+  },
+  "external_access": {
+    "captured_at": "2026-10-26T13:32:56.583Z",
+    "pages": {
+      "s3": 200,
+      "rustfs_console": 200,
+      "grafana_login": 200,
+      "unauthenticated_metrics": 401
+    },
+    "mtls": {
+      "without_certificate": 400,
+      "authenticated_empty_otlp": {
+        "traces": 200,
+        "metrics": 200,
+        "logs": 200
+      }
+    },
+    "stored_telemetry": {
+      "public_instances": 10,
+      "log_streams": 100,
+      "traces": 20
+    },
+    "sdk": {
+      "source_commit": "87b3442ce1c26a3c646284bcff96c5e511aded57",
+      "endpoint": "192.168.126.8:17443",
+      "status": "passed",
+      "ledger": {
+        "expected": 16,
+        "committed": 16,
+        "received": 16,
+        "acknowledged": 16,
+        "frontier": 16
+      },
+      "api_checks": [
+        "identity_catalog_pagination",
+        "namespace_topic_quota",
+        "scoped_authorization",
+        "token_revocation",
+        "queue_nack_redelivery_ack",
+        "stream_cumulative_ack_resume",
+        "subscription_inspection_deletion",
+        "cluster_catalog",
+        "resource_deletion"
+      ],
+      "original_consumer_reused": true,
+      "client_close_completed": true
+    },
+    "client_private_files_removed_after_validation": true,
+    "pages_rechecked_at": "2026-10-26T14:55:33.870Z",
+    "pages_recheck": {
+      "s3_health": 200,
+      "rustfs_console": 200,
+      "grafana_login": 200,
+      "unauthenticated_metrics": 401,
+      "otlp_without_certificate": 400
+    }
+  },
+  "cleanup": {
+    "historical_archive_commit": "e0be78cfc00c81f7d36caaf3f7835b9c45e963b6",
+    "before": {
+      "capturedAt": "2026-10-26T05:50:51.196Z",
+      "host": {
+        "disks": [
+          {
+            "mount": "/",
+            "size": 501809635328,
+            "used": 266001289216,
+            "available": 210242543616
+          }
+        ],
+        "bytes": {
+          "/var/lib/tidemq-lab/images": 214616530944,
+          "/var/lib/tidemq-lab/private": 4661370880,
+          "/var/lib/tidemq-lab/tools": 1699643392,
+          "/var/lib/tidemq-lab/logs": 622256128
+        }
+      },
+      "runner": {
+        "disks": [
+          {
+            "mount": "/",
+            "size": 7203201024,
+            "used": 4844388352,
+            "available": 2342035456
+          },
+          {
+            "mount": "/srv/tidemq",
+            "size": 67318312960,
+            "used": 27461603328,
+            "available": 36747591680
+          }
+        ],
+        "bytes": {
+          "/srv/tidemq/cargo-target": 15721390080,
+          "/srv/tidemq/containerd": 6250778624,
+          "/srv/tidemq/docker": 245760,
+          "/srv/tidemq/public-builds": 1144672256,
+          "/srv/tidemq/work": 133439488,
+          "/srv/tidemq/tmp": 1613824,
+          "/home/actions/.config/tidemq-lab/manual-build": 729387008,
+          "/home/actions/.config/tidemq-lab/manual-build-ubuntu": 729395200
+        },
+        "docker": [
+          {
+            "Active": "0",
+            "Reclaimable": "-1.877e+06B (0%)",
+            "Size": "6.249GB",
+            "TotalCount": "10",
+            "Type": "Images"
+          },
+          {
+            "Active": "0",
+            "Reclaimable": "419.2MB (100%)",
+            "Size": "419.2MB",
+            "TotalCount": "1",
+            "Type": "Containers"
+          },
+          {
+            "Active": "0",
+            "Reclaimable": "0B",
+            "Size": "0B",
+            "TotalCount": "0",
+            "Type": "Local Volumes"
+          },
+          {
+            "Active": "0",
+            "Reclaimable": "0B",
+            "Size": "0B",
+            "TotalCount": "0",
+            "Type": "Build Cache"
+          }
+        ]
+      }
+    },
+    "intermediate_snapshots": {
+      "after_initial_cleanup": {
+        "capturedAt": "2026-10-26T05:54:42.825Z",
+        "host": {
+          "disks": [
+            {
+              "mount": "/",
+              "size": 501809635328,
+              "used": 261728563200,
+              "available": 214515269632
+            }
+          ],
+          "bytes": {
+            "/var/lib/tidemq-lab/images": 214618832896,
+            "/var/lib/tidemq-lab/private": 4661370880,
+            "/var/lib/tidemq-lab/tools": 1699643392,
+            "/var/lib/tidemq-lab/logs": 622264320
+          }
+        },
+        "runner": {
+          "disks": [
+            {
+              "mount": "/",
+              "size": 7203201024,
+              "used": 3385696256,
+              "available": 3800727552
+            },
+            {
+              "mount": "/srv/tidemq",
+              "size": 67318312960,
+              "used": 19955412992,
+              "available": 44253782016
+            }
+          ],
+          "bytes": {
+            "/srv/tidemq/cargo-target": 15721390080,
+            "/srv/tidemq/containerd": 1441792,
+            "/srv/tidemq/docker": 208896,
+            "/srv/tidemq/public-builds": 0,
+            "/srv/tidemq/work": 21262336,
+            "/srv/tidemq/tmp": 1613824,
+            "/home/actions/.config/tidemq-lab/manual-build": 0,
+            "/home/actions/.config/tidemq-lab/manual-build-ubuntu": 0
+          },
+          "docker": [
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Images"
+            },
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Containers"
+            },
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Local Volumes"
+            },
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Build Cache"
+            }
+          ]
+        }
+      },
+      "after_host_cleanup_during_native_ci": {
+        "capturedAt": "2026-10-26T06:13:43.322Z",
+        "host": {
+          "disks": [
+            {
+              "mount": "/",
+              "size": 501809635328,
+              "used": 256382078976,
+              "available": 219861753856
+            }
+          ],
+          "bytes": {
+            "/var/lib/tidemq-lab/images": 214176878592,
+            "/var/lib/tidemq-lab/private": 1089536,
+            "/var/lib/tidemq-lab/tools": 0,
+            "/var/lib/tidemq-lab/logs": 1515520
+          }
+        },
+        "runner": {
+          "disks": [
+            {
+              "mount": "/",
+              "size": 7203201024,
+              "used": 3399593984,
+              "available": 3786829824
+            },
+            {
+              "mount": "/srv/tidemq",
+              "size": 67318312960,
+              "used": 16039047168,
+              "available": 48170147840
+            }
+          ],
+          "bytes": {
+            "/srv/tidemq/cargo-target": 11808350208,
+            "/srv/tidemq/containerd": 1441792,
+            "/srv/tidemq/docker": 208896,
+            "/srv/tidemq/public-builds": 0,
+            "/srv/tidemq/work": 28860416,
+            "/srv/tidemq/tmp": 1847296,
+            "/home/actions/.config/tidemq-lab/manual-build": 0,
+            "/home/actions/.config/tidemq-lab/manual-build-ubuntu": 0
+          },
+          "docker": [
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Images"
+            },
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Containers"
+            },
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Local Volumes"
+            },
+            {
+              "Active": "0",
+              "Reclaimable": "0B",
+              "Size": "0B",
+              "TotalCount": "0",
+              "Type": "Build Cache"
+            }
+          ]
+        }
+      }
+    },
+    "removed_host_copies": {
+      "capturedAt": "2026-10-26T06:04:22.267Z",
+      "removed": [
+        {
+          "path": "/var/lib/tidemq-lab/tools",
+          "bytes": 1699643392,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/host-agent-bundle",
+          "bytes": 419188736,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/storage-bundle",
+          "bytes": 355110912,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/observe-bundle",
+          "bytes": 419311616,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/runner-bundle",
+          "bytes": 1112887296,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/agent-bundle",
+          "bytes": 419180544,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/runner-access",
+          "bytes": 57344,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/account-check",
+          "bytes": 12288,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/observe-bundle.tar.gz",
+          "bytes": 113401856,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/runner-bundle.tar.gz",
+          "bytes": 845291520,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/agent-bundle.tar.gz",
+          "bytes": 113385472,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/storage-bundle.tar.gz",
+          "bytes": 113283072,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/runner-access.tar.gz",
+          "bytes": 8192,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/cargo-registry.tar.gz",
+          "bytes": 491208704,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/cargo-crate-cache.tar.gz",
+          "bytes": 254013440,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/ci-scripts.tar.gz",
+          "bytes": 4096,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/current-source.tar.gz",
+          "bytes": 1490944,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/source.bundle",
+          "bytes": 2433024,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/download-tools.sh",
+          "bytes": 4096,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/binaries.json",
+          "bytes": 4096,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/private/cleanup-legacy-host.sh",
+          "bytes": 4096,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/public-upgrade-c386434bbf6d",
+          "bytes": 310370304,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/public-upgrade-14372cd",
+          "bytes": 310386688,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/images/runtime-base.tar",
+          "bytes": 31727616,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/images/runtime-base.sha256",
+          "bytes": 4096,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/images/public-c386434bbf6d.tar",
+          "bytes": 415145984,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/images/kubernetes-bootstrap.tar",
+          "bytes": 146001920,
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/images/kube-vip.tar",
+          "bytes": 19693568,
+          "absent": true
+        }
+      ]
+    },
+    "removed_initial_host_temporary_paths": [
+      "/tmp/tidemq-restart-observe.sh",
+      "/tmp/tidemq-dashboard-final.json",
+      "/tmp/tidemq-next-code.tar.gz",
+      "/tmp/tidemq-ack-admission-evidence.tgz",
+      "/tmp/tidemq-next-update",
+      "/tmp/tidemq-final-rules.yaml",
+      "/tmp/tidemq-public-telemetry-update.sh",
+      "/tmp/tidemq-repro-split.sh",
+      "/tmp/tidemq-ack-admission-loop.mjs",
+      "/tmp/tidemq-agent-rotation.yaml",
+      "/tmp/tidemq-final-cleanup-previous.json",
+      "/tmp/tidemq-agent-final",
+      "/tmp/tidemq-metadata-replacement-loop.mjs",
+      "/tmp/tidemq-source-final",
+      "/tmp/tidemq-refresh-public-backup.sh",
+      "/tmp/tidemq-current-update",
+      "/tmp/tidemq-prepare-public-image.sh",
+      "/tmp/tidemq-server-dispatch-fixed.rs",
+      "/tmp/tidemq-upgrade-public.sh",
+      "/tmp/tidemq-final-public-14372cd.tgz",
+      "/tmp/tidemq-combined-loop.mjs",
+      "/tmp/tidemq-observe-final",
+      "/tmp/tidemq-rustfs-observe",
+      "/tmp/tidemq-server-dispatch-probe.rs",
+      "/tmp/tidemq-current-code.tar.gz",
+      "/tmp/tidemq-resume-observe.sh",
+      "/tmp/tidemq-resume-tested-public.sh",
+      "/tmp/tidemq-rollout-tested-public.sh",
+      "/tmp/tidemq-capture-cleanup.mjs",
+      "/tmp/tidemq-public-c386-evidence.tgz",
+      "/tmp/tidemq-capture-final-state.mjs",
+      "/tmp/tidemq-sync-operator-source.sh",
+      "/tmp/tidemq-repro-original-send.sh",
+      "/tmp/tidemq-public-telemetry-update.mjs"
+    ],
+    "removed_local_files": [
+      {
+        "file": "target/lab-tools/collector.archive.part",
+        "bytes": 3306595
+      },
+      {
+        "file": "target/lab-tools/source.bundle",
+        "bytes": 2429366
+      }
+    ],
+    "removed_runner_caches_bytes": {
+      "mixed_coverage_target": 12639588352,
+      "old_debug_target": 9019785216,
+      "private_reproduction_sources_and_outputs": 22573056
+    },
+    "removed_post_validation_runner_copies": [
+      {
+        "path": "/srv/tidemq/cargo-target/report",
+        "bytes": 4267323392
+      },
+      {
+        "path": "/srv/tidemq/container-runner/validation",
+        "bytes": 7155712
+      },
+      {
+        "path": "/srv/tidemq/container-runner/tmp/tidemq-focused.8IHvRI",
+        "bytes": 6021120
+      }
+    ],
+    "removed_final_host_temporaries": {
+      "capturedAt": "2026-10-26T14:50:27.252Z",
+      "removed": [
+        {
+          "path": "/root/tidemq-lab-cleanup-20261025",
+          "bytes": 204800,
+          "sha256": null,
+          "absent": true
+        },
+        {
+          "path": "/root/tidemq-maintenance-staging",
+          "bytes": 925696,
+          "sha256": null,
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-focused-k8s.tar.gz",
+          "bytes": 3473408,
+          "sha256": "a3ca0d1832148d14298ccf2111501bc23524ca3b7eb4978423c5ee25a6b08bc1",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-container-committed-source.tar.gz",
+          "bytes": 1220608,
+          "sha256": "d25cb1b625ec14c76a2d38c7892952cb5e28a2868cccd84df88bac99e3ab378f",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-ubuntu-manifest.json",
+          "bytes": 20480,
+          "sha256": "3f801e84ab5248e353d0bbe5b4c6897c9919a80e1f1f1826c952b12748df953e",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-original-rust-manifest.json",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-remove-rebuild-copies.mjs",
+          "bytes": 4096,
+          "sha256": "33e16316f23fe95028d2c6cc327693d9ef58ae681788439dddf5a0414f0b7e70",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-rust-manifest.json",
+          "bytes": 36864,
+          "sha256": "14470f95e890b7c9a1ac072ae2f57c35a0dcd472a4afa2e0e4e6654af741f0d9",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-pinned-rust-registry.json",
+          "bytes": 8192,
+          "sha256": "e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-container-source.tar.gz",
+          "bytes": 1216512,
+          "sha256": "f4eb075685d080dc11bf0114eed461f7caa4fda89934d9788c06ddc9eaf953e0",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-committed.tar.gz",
+          "bytes": 1200128,
+          "sha256": "6a7a4eafb1b1cb11951fce81315804f39852677082cde82738dc2c81489c7b37",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-source.tar",
+          "bytes": 5910528,
+          "sha256": "fb6ed14954b8beda8c6cded0263f83965f64b477bdc8d07267294cf1cf722940",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-pv.json",
+          "bytes": 4096,
+          "sha256": "3caddfed741a0bc6e34ae9f2a18341ee88df505f31cd615aecc6e3bc1bf8aafd",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-final-bundle.mjs",
+          "bytes": 12288,
+          "sha256": "8bdcbeae67c85ad97e9a137cc2460816cffe0e2ecebf66683722b3c8374270d9",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-runner-focused.sh",
+          "bytes": 4096,
+          "sha256": "9ef18c8fb9b1d3cfc0cd40a4728fba0fab71e0f2a292842bee89562d8cd7e127",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-source.tar.gz",
+          "bytes": 98304,
+          "sha256": "cd4e14f86713b1acbe46ddbe33ba34dc008ae207b259ba96208907848f9a950a",
+          "absent": true
+        },
+        {
+          "path": "/tmp/tidemq-maintenance-original-base-manifest.json",
+          "bytes": 4096,
+          "sha256": "a3e801c5dbdcfeb1ec5bf30aa5a45bf33f76e710b449f408e2db802b0b234703",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-registration.log",
+          "bytes": 4096,
+          "sha256": "8ef283e0c47dbc963c79faa59d6fc204ba5fdaaf3ecc1b2dc7dc89e0e02912c7",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-graceful-restart.log",
+          "bytes": 4096,
+          "sha256": "08c2ce30be3198beb5476a64aacf72126440902657bd2a4396e052979a594cbc",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-final-node-tests.log",
+          "bytes": 4096,
+          "sha256": "f7a4e1e4a320852c9f6000a5dd8438f2f4f5d7cddba1d426c27a0b7f59d9bdea",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-focused-tests.log",
+          "bytes": 4096,
+          "sha256": "8b42bb4d37de7a84ebfd77808b1efabf4c951dd4761b5ecd43052b8203c3dd0d",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-build.log",
+          "bytes": 61440,
+          "sha256": "2dc94dbe7d80f208c29f9eedc344f38240804f911bf57c4ab433ba5b7d897610",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-preflight.log",
+          "bytes": 4096,
+          "sha256": "4d09dbbb1b519e9993e2dfab42fc894048bfbe1237a04a74c9b8ebba69655267",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-old-cache-cleanup.log",
+          "bytes": 4096,
+          "sha256": "3dd90674470855199e3d60884fde804f28fd8a57995bb274bb9fd0af4bbcdef8",
+          "absent": true
+        },
+        {
+          "path": "/var/lib/tidemq-lab/logs/container-runner-node-tests.log",
+          "bytes": 4096,
+          "sha256": "ef43e39e1f30ad6d670c1dd6c57d112d13e75cef7b2d48a46df4b01f14ea8a60",
+          "absent": true
+        }
+      ]
+    },
+    "worker_gc": {
+      "imageGCHighThresholdPercent": 85,
+      "imageGCLowThresholdPercent": 80,
+      "imageMinimumGCAge": "2m0s",
+      "imageMaximumGCAge": "0s",
+      "containerLogMaxSize": "10Mi",
+      "containerLogMaxFiles": 3
+    },
+    "live_validation": {
+      "orphan_run": "ci-1792993920-9",
+      "orphan_resources": [
+        "namespace",
+        "metadata PV and directory",
+        "RustFS a/b",
+        "loadgen directory",
+        "private lease marker",
+        "stale checkout",
+        "expired target entry"
+      ],
+      "orphan_removal_passed": true,
+      "busy_worker_skip_passed": true,
+      "working_directory_inode_preserved": true,
+      "control_plane_outage_local_gc_test_passed": true
+    },
+    "public_before": {
+      "pods": [
+        {
+          "name": "node-11-0",
+          "uid": "a66237fb-8600-4e0b-9095-671b50b270d6",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-12-0",
+          "uid": "f673ce6f-236a-4c0c-bedf-d171277e2b94",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-13-0",
+          "uid": "c340286a-cebc-4313-bc68-d56c748672e9",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-21-0",
+          "uid": "9cd55864-44db-4c6a-aa3e-1232721034dc",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-22-0",
+          "uid": "64907818-2bd7-41b8-a97b-61ecc84bff02",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-23-0",
+          "uid": "b006d41c-7088-45b6-946d-5f2ff80b4fd3",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-31-0",
+          "uid": "78aea10b-931a-4564-886c-8c5a6439e2f7",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-32-0",
+          "uid": "e7c04089-8c4f-4103-bebb-380ed0729c9f",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-41-0",
+          "uid": "6c61b750-79dd-469a-b087-111ac9040af6",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-42-0",
+          "uid": "77475b6d-0f86-4a59-a9ab-8b06e43b64ef",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ],
+      "resources": [
+        {
+          "kind": "Secret",
+          "name": "node-11",
+          "uid": "c405a3d7-d623-4f38-87d9-a109aca7fac3",
+          "resourceVersion": "82063"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-12",
+          "uid": "b4cd4e51-8aca-4dd4-ad25-2ba09224793d",
+          "resourceVersion": "82069"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-13",
+          "uid": "f57e3d94-ef79-4899-b776-6e363906e51d",
+          "resourceVersion": "82093"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-21",
+          "uid": "3b11e2dc-ba69-4fcb-882d-2e096e6a57cc",
+          "resourceVersion": "82117"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-22",
+          "uid": "55d07445-defe-4be6-b0d0-f13649caabc5",
+          "resourceVersion": "82139"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-23",
+          "uid": "ecd03501-0720-4220-8fea-a600754a5ac9",
+          "resourceVersion": "82163"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-31",
+          "uid": "fe2f72b0-120c-4de7-b741-239492c045fc",
+          "resourceVersion": "82188"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-32",
+          "uid": "20953ae3-8bc2-4f62-b46d-590905517208",
+          "resourceVersion": "82213"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-41",
+          "uid": "27ff4e1f-fc8c-4ab6-b02b-65fe741fb3ec",
+          "resourceVersion": "82231"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-42",
+          "uid": "7feed077-4462-4b01-8684-ba59f946e430",
+          "resourceVersion": "82252"
+        },
+        {
+          "kind": "Secret",
+          "name": "telemetry",
+          "uid": "c60ebb26-2705-41e3-a7d9-adcff03c3a98",
+          "resourceVersion": "82062"
+        },
+        {
+          "kind": "Service",
+          "name": "mq",
+          "uid": "5267962f-ed0a-4e07-9910-032ee72d4d49",
+          "resourceVersion": "82039"
+        },
+        {
+          "kind": "Service",
+          "name": "node-11",
+          "uid": "7fdfb463-879b-4e61-ab5b-0dc89fe57ce8",
+          "resourceVersion": "81991"
+        },
+        {
+          "kind": "Service",
+          "name": "node-12",
+          "uid": "acc90bfb-4fb1-4b5b-87e6-38615e67ca0c",
+          "resourceVersion": "81995"
+        },
+        {
+          "kind": "Service",
+          "name": "node-13",
+          "uid": "9667a0e8-9f1a-4762-8af3-6652ceedcbb7",
+          "resourceVersion": "81999"
+        },
+        {
+          "kind": "Service",
+          "name": "node-21",
+          "uid": "3d16ba35-2553-48bc-a9ad-52daef7e061a",
+          "resourceVersion": "82004"
+        },
+        {
+          "kind": "Service",
+          "name": "node-22",
+          "uid": "3949f1b0-ae21-4649-91ec-f143e6fd359b",
+          "resourceVersion": "82008"
+        },
+        {
+          "kind": "Service",
+          "name": "node-23",
+          "uid": "ce884484-257b-4201-8748-76f2a25080c4",
+          "resourceVersion": "82013"
+        },
+        {
+          "kind": "Service",
+          "name": "node-31",
+          "uid": "08d3bcfa-cef4-4d6f-a242-4c9a0f499104",
+          "resourceVersion": "82017"
+        },
+        {
+          "kind": "Service",
+          "name": "node-32",
+          "uid": "9f755af4-df75-46dc-8154-aedbf1f810ab",
+          "resourceVersion": "82021"
+        },
+        {
+          "kind": "Service",
+          "name": "node-41",
+          "uid": "71b02b7d-2fc0-4de7-9cb8-2cd568def115",
+          "resourceVersion": "82026"
+        },
+        {
+          "kind": "Service",
+          "name": "node-42",
+          "uid": "c4f0453b-15d0-4deb-9a54-11340e8c93c1",
+          "resourceVersion": "82030"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-11-0",
+          "uid": "283f63d1-7173-42e7-a7cb-da7e92f68cfb",
+          "resourceVersion": "82084"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-12-0",
+          "uid": "5e84e32c-84a5-4bd3-9f92-46036bd5ee25",
+          "resourceVersion": "82106"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-13-0",
+          "uid": "e70cb71f-4b08-43cc-9cc9-11ea3a766ea2",
+          "resourceVersion": "82131"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-21-0",
+          "uid": "304c0b57-60cc-4125-a37d-567d5e437d29",
+          "resourceVersion": "82151"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-22-0",
+          "uid": "04ed6e85-8609-4b4c-b607-756060b0122b",
+          "resourceVersion": "82181"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-23-0",
+          "uid": "bdc792bb-a652-4d14-841d-4c918f2c85eb",
+          "resourceVersion": "82202"
+        }
+      ]
+    },
+    "public_identity_comparison": {
+      "pod_uids_and_images_unchanged": 10,
+      "resource_uids_unchanged": 28,
+      "secret_resource_versions_unchanged": 11
+    },
+    "final_snapshot": {
+      "capturedAt": "2026-10-26T14:52:15.328Z",
+      "host": {
+        "disks": [
+          {
+            "mount": "/",
+            "size": 501809635328,
+            "used": 260543295488,
+            "available": 215700537344
+          }
+        ],
+        "bytes": {
+          "/var/lib/tidemq-lab/images": 218275950592,
+          "/var/lib/tidemq-lab/private": 1089536,
+          "/var/lib/tidemq-lab/tools": 0,
+          "/var/lib/tidemq-lab/logs": 1515520
+        }
+      },
+      "runner": {
+        "disks": [
+          {
+            "mount": "/",
+            "size": 7203201024,
+            "used": 3401134080,
+            "available": 3785289728
+          },
+          {
+            "mount": "/srv/tidemq",
+            "size": 67318312960,
+            "used": 13473234944,
+            "available": 50735960064
+          }
+        ],
+        "bytes": {
+          "/srv/tidemq/cargo-target": 3626000384,
+          "/srv/tidemq/containerd": 1041985536,
+          "/srv/tidemq/docker": 278528,
+          "/srv/tidemq/public-builds": 0,
+          "/srv/tidemq/work": 21270528,
+          "/srv/tidemq/tmp": 1814528,
+          "/home/actions/.config/tidemq-lab/manual-build": 0,
+          "/home/actions/.config/tidemq-lab/manual-build-ubuntu": 0,
+          "/srv/tidemq/container-runner/state": 16384,
+          "/srv/tidemq/container-runner/diag": 1187840,
+          "/srv/tidemq/container-runner/work": 20004864,
+          "/srv/tidemq/container-runner/target": 4548485120,
+          "/srv/tidemq/container-runner/tmp": 4096,
+          "/srv/tidemq/container-runner/source": 98304,
+          "/srv/tidemq/container-runner/validation": 0,
+          "/srv/tidemq/container-runner/build": 0
+        },
+        "docker": [
+          {
+            "Active": "1",
+            "Reclaimable": "1.04GB (100%)",
+            "Size": "1.04GB",
+            "TotalCount": "1",
+            "Type": "Images"
+          },
+          {
+            "Active": "1",
+            "Reclaimable": "0B (0%)",
+            "Size": "86.02kB",
+            "TotalCount": "1",
+            "Type": "Containers"
+          },
+          {
+            "Active": "0",
+            "Reclaimable": "0B",
+            "Size": "0B",
+            "TotalCount": "0",
+            "Type": "Local Volumes"
+          },
+          {
+            "Active": "0",
+            "Reclaimable": "0B",
+            "Size": "0B",
+            "TotalCount": "0",
+            "Type": "Build Cache"
+          }
+        ],
+        "container": {
+          "id": "adbed5db44233cf698bde1ea4c79020c31ee13fcc6e96021e1c71c1808e4a844",
+          "image": "sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b",
+          "status": "running",
+          "restarts": 0,
+          "cpu": 4000000000,
+          "memory": 8589934592,
+          "memorySwap": 8589934592,
+          "pids": 1024,
+          "readOnly": true,
+          "capDrop": [
+            "ALL"
+          ],
+          "security": [
+            "no-new-privileges:true"
+          ],
+          "ports": {},
+          "mounts": [
+            {
+              "Destination": "/opt/tidemq-rust/cargo/bin",
+              "Mode": "ro",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/srv/tidemq/rust/cargo/bin",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/srv/tidemq/tools/cargo-llvm-cov",
+              "Mode": "ro",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/srv/tidemq/tools/cargo-llvm-cov",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/opt/actions-runner/externals",
+              "Mode": "ro",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/srv/tidemq/actions-runner/externals",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/diag",
+              "Mode": "rw",
+              "Propagation": "rprivate",
+              "RW": true,
+              "Source": "/srv/tidemq/container-runner/diag",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/srv/tidemq/maintenance/cargo-cache.lock",
+              "Mode": "rw",
+              "Propagation": "rprivate",
+              "RW": true,
+              "Source": "/srv/tidemq/maintenance/cargo-cache.lock",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/opt/tidemq-rust/rustup",
+              "Mode": "ro",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/srv/tidemq/rust/rustup",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/srv/tidemq/tools/cargo-nextest",
+              "Mode": "ro",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/srv/tidemq/tools/cargo-nextest",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/srv/tidemq/tmp",
+              "Mode": "rw",
+              "Propagation": "rprivate",
+              "RW": true,
+              "Source": "/srv/tidemq/container-runner/tmp",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/srv/tidemq/work",
+              "Mode": "rw",
+              "Propagation": "rprivate",
+              "RW": true,
+              "Source": "/srv/tidemq/container-runner/work",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/srv/tidemq/cargo-target",
+              "Mode": "rw",
+              "Propagation": "rprivate",
+              "RW": true,
+              "Source": "/srv/tidemq/container-runner/target",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/opt/tidemq-rust/cargo",
+              "Mode": "rw",
+              "Propagation": "rprivate",
+              "RW": true,
+              "Source": "/srv/tidemq/rust/cargo",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/opt/actions-runner/bin",
+              "Mode": "ro",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/srv/tidemq/actions-runner/bin",
+              "Type": "bind"
+            },
+            {
+              "Destination": "/state",
+              "Mode": "ro",
+              "Propagation": "rprivate",
+              "RW": false,
+              "Source": "/srv/tidemq/container-runner/state",
+              "Type": "bind"
+            }
+          ]
+        },
+        "nativeLimits": "CPUQuotaPerSecUSec=4s\nMemoryMax=6442450944",
+        "sharedCacheInodes": {
+          "native": "64784:1311125\n64784:3145731",
+          "container": "64784:1311125\n64784:3145731"
+        },
+        "timer": "ActiveState=active\nUnitFileState=enabled",
+        "cleanup": "Result=success\nExecMainStatus=0"
+      },
+      "pods": [
+        {
+          "name": "node-11-0",
+          "uid": "a66237fb-8600-4e0b-9095-671b50b270d6",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-12-0",
+          "uid": "f673ce6f-236a-4c0c-bedf-d171277e2b94",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-13-0",
+          "uid": "c340286a-cebc-4313-bc68-d56c748672e9",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-21-0",
+          "uid": "9cd55864-44db-4c6a-aa3e-1232721034dc",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-22-0",
+          "uid": "64907818-2bd7-41b8-a97b-61ecc84bff02",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-23-0",
+          "uid": "b006d41c-7088-45b6-946d-5f2ff80b4fd3",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-31-0",
+          "uid": "78aea10b-931a-4564-886c-8c5a6439e2f7",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-32-0",
+          "uid": "e7c04089-8c4f-4103-bebb-380ed0729c9f",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-41-0",
+          "uid": "6c61b750-79dd-469a-b087-111ac9040af6",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "node-42-0",
+          "uid": "77475b6d-0f86-4a59-a9ab-8b06e43b64ef",
+          "ready": true,
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ],
+      "identities": [
+        {
+          "kind": "Secret",
+          "name": "node-11",
+          "uid": "c405a3d7-d623-4f38-87d9-a109aca7fac3",
+          "resourceVersion": "82063"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-12",
+          "uid": "b4cd4e51-8aca-4dd4-ad25-2ba09224793d",
+          "resourceVersion": "82069"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-13",
+          "uid": "f57e3d94-ef79-4899-b776-6e363906e51d",
+          "resourceVersion": "82093"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-21",
+          "uid": "3b11e2dc-ba69-4fcb-882d-2e096e6a57cc",
+          "resourceVersion": "82117"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-22",
+          "uid": "55d07445-defe-4be6-b0d0-f13649caabc5",
+          "resourceVersion": "82139"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-23",
+          "uid": "ecd03501-0720-4220-8fea-a600754a5ac9",
+          "resourceVersion": "82163"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-31",
+          "uid": "fe2f72b0-120c-4de7-b741-239492c045fc",
+          "resourceVersion": "82188"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-32",
+          "uid": "20953ae3-8bc2-4f62-b46d-590905517208",
+          "resourceVersion": "82213"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-41",
+          "uid": "27ff4e1f-fc8c-4ab6-b02b-65fe741fb3ec",
+          "resourceVersion": "82231"
+        },
+        {
+          "kind": "Secret",
+          "name": "node-42",
+          "uid": "7feed077-4462-4b01-8684-ba59f946e430",
+          "resourceVersion": "82252"
+        },
+        {
+          "kind": "Secret",
+          "name": "telemetry",
+          "uid": "c60ebb26-2705-41e3-a7d9-adcff03c3a98",
+          "resourceVersion": "82062"
+        },
+        {
+          "kind": "Service",
+          "name": "mq",
+          "uid": "5267962f-ed0a-4e07-9910-032ee72d4d49",
+          "resourceVersion": "82039"
+        },
+        {
+          "kind": "Service",
+          "name": "node-11",
+          "uid": "7fdfb463-879b-4e61-ab5b-0dc89fe57ce8",
+          "resourceVersion": "81991"
+        },
+        {
+          "kind": "Service",
+          "name": "node-12",
+          "uid": "acc90bfb-4fb1-4b5b-87e6-38615e67ca0c",
+          "resourceVersion": "81995"
+        },
+        {
+          "kind": "Service",
+          "name": "node-13",
+          "uid": "9667a0e8-9f1a-4762-8af3-6652ceedcbb7",
+          "resourceVersion": "81999"
+        },
+        {
+          "kind": "Service",
+          "name": "node-21",
+          "uid": "3d16ba35-2553-48bc-a9ad-52daef7e061a",
+          "resourceVersion": "82004"
+        },
+        {
+          "kind": "Service",
+          "name": "node-22",
+          "uid": "3949f1b0-ae21-4649-91ec-f143e6fd359b",
+          "resourceVersion": "82008"
+        },
+        {
+          "kind": "Service",
+          "name": "node-23",
+          "uid": "ce884484-257b-4201-8748-76f2a25080c4",
+          "resourceVersion": "82013"
+        },
+        {
+          "kind": "Service",
+          "name": "node-31",
+          "uid": "08d3bcfa-cef4-4d6f-a242-4c9a0f499104",
+          "resourceVersion": "82017"
+        },
+        {
+          "kind": "Service",
+          "name": "node-32",
+          "uid": "9f755af4-df75-46dc-8154-aedbf1f810ab",
+          "resourceVersion": "82021"
+        },
+        {
+          "kind": "Service",
+          "name": "node-41",
+          "uid": "71b02b7d-2fc0-4de7-9cb8-2cd568def115",
+          "resourceVersion": "82026"
+        },
+        {
+          "kind": "Service",
+          "name": "node-42",
+          "uid": "c4f0453b-15d0-4deb-9a54-11340e8c93c1",
+          "resourceVersion": "82030"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-11-0",
+          "uid": "283f63d1-7173-42e7-a7cb-da7e92f68cfb",
+          "resourceVersion": "82084"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-12-0",
+          "uid": "5e84e32c-84a5-4bd3-9f92-46036bd5ee25",
+          "resourceVersion": "82106"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-13-0",
+          "uid": "e70cb71f-4b08-43cc-9cc9-11ea3a766ea2",
+          "resourceVersion": "82131"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-21-0",
+          "uid": "304c0b57-60cc-4125-a37d-567d5e437d29",
+          "resourceVersion": "82151"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-22-0",
+          "uid": "04ed6e85-8609-4b4c-b607-756060b0122b",
+          "resourceVersion": "82181"
+        },
+        {
+          "kind": "PersistentVolumeClaim",
+          "name": "data-node-23-0",
+          "uid": "bdc792bb-a652-4d14-841d-4c918f2c85eb",
+          "resourceVersion": "82202"
+        }
+      ],
+      "kubernetesNodes": [
+        {
+          "name": "tidemq-cp-a",
+          "ready": true
+        },
+        {
+          "name": "tidemq-cp-b",
+          "ready": true
+        },
+        {
+          "name": "tidemq-cp-c",
+          "ready": true
+        },
+        {
+          "name": "tidemq-worker-a",
+          "ready": true
+        },
+        {
+          "name": "tidemq-worker-b",
+          "ready": true
+        },
+        {
+          "name": "tidemq-worker-c",
+          "ready": true
+        }
+      ],
+      "namespaces": [
+        "cilium-secrets",
+        "default",
+        "kube-node-lease",
+        "kube-public",
+        "kube-system",
+        "metallb-system",
+        "tidemq-dev"
+      ],
+      "ciVolumes": [],
+      "ciResidue": {
+        "runnerPrivate": "",
+        "fixtures": "",
+        "loadgen": "",
+        "workers": {
+          "a": "",
+          "b": "",
+          "c": ""
+        }
+      },
+      "vmStates": [
+        {
+          "name": "tidemq-cp-b",
+          "state": "running",
+          "vcpus": 2,
+          "memoryKiB": 2097152
+        },
+        {
+          "name": "tidemq-cp-c",
+          "state": "running",
+          "vcpus": 2,
+          "memoryKiB": 2097152
+        },
+        {
+          "name": "tidemq-worker-a",
+          "state": "running",
+          "vcpus": 4,
+          "memoryKiB": 4194304
+        },
+        {
+          "name": "tidemq-storage",
+          "state": "running",
+          "vcpus": 2,
+          "memoryKiB": 2097152
+        },
+        {
+          "name": "tidemq-observe",
+          "state": "running",
+          "vcpus": 4,
+          "memoryKiB": 6291456
+        },
+        {
+          "name": "tidemq-fixtures",
+          "state": "running",
+          "vcpus": 2,
+          "memoryKiB": 2097152
+        },
+        {
+          "name": "tidemq-loadgen",
+          "state": "running",
+          "vcpus": 2,
+          "memoryKiB": 2097152
+        },
+        {
+          "name": "tidemq-runner",
+          "state": "running",
+          "vcpus": 8,
+          "memoryKiB": 16777216
+        },
+        {
+          "name": "tidemq-worker-b",
+          "state": "running",
+          "vcpus": 4,
+          "memoryKiB": 4194304
+        },
+        {
+          "name": "tidemq-worker-c",
+          "state": "running",
+          "vcpus": 4,
+          "memoryKiB": 4194304
+        },
+        {
+          "name": "tidemq-cp-a",
+          "state": "running",
+          "vcpus": 2,
+          "memoryKiB": 2097152
+        }
+      ],
+      "preservedAgentCronCount": "3"
+    },
+    "preserved": {
+      "agent_cron_count": 3,
+      "public_source_commit": "c386434bbf6d478e96d68a53d7040323396b1648",
+      "other_project": "/root/taosx-test-env",
+      "vm_disks": true,
+      "private_identities": true,
+      "local_ide_cache": {
+        "path": "target/debug",
+        "observed_size": "24 GiB",
+        "active_macro_server_pids": [
+          29995,
+          29996
+        ]
+      }
+    }
+  },
+  "reproducible_entrypoints": [
+    "deploy/lab/inventory.json",
+    "deploy/lab/binaries.json",
+    "deploy/lab/README.zh-CN.md",
+    "deploy/lab/container-runner/README.zh-CN.md",
+    "deploy/lab/runner-maintenance.zh-CN.md",
+    "scripts/ci/native.sh",
+    "scripts/ci/faults.sh",
+    "scripts/ci/coverage-report.sh",
+    "scripts/ci/with-cargo-cache.sh",
+    "scripts/lab/runner-maintenance.sh",
+    "scripts/lab/cleanup-ci.sh",
+    "scripts/coverage/bundle.test.mjs",
+    "scripts/coverage/gate.test.mjs",
+    "scripts/lab/runner-maintenance.test.mjs",
+    "tests/deployment/driver.rs"
+  ],
+  "limitations": [
+    "Performance tests were not run; performance assets are removed",
+    "One physical host does not reproduce independent availability zones or host/disk loss",
+    "Remote Kubernetes tests do not cover every API/error boundary, scaling/membership/drain operation, forced cold-S3 recovery, or alert notification loop",
+    "Crashes may lose counters before LLVM flushes; all recovered role instances must subsequently exit normally",
+    "Both runners share one trusted UID, kernel and writable Cargo cache; they are not a malicious-code isolation boundary",
+    "The complete green workflow tested 87b3442; subsequent compression, download timeout and input-budget changes received focused checks only"
+  ]
+}

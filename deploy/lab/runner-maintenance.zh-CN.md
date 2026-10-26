@@ -10,7 +10,7 @@
 
 容器使用镜像内 root 管理的钩子，独立清理自身 work/target/tmp/diag。原生空闲定时器还调用容器的 `idle` 入口，回收取消任务留下的副本；容器的空闲检查与前后钩子共用自己的 flock。两边共享的 Cargo registry/git 由 `/srv/tidemq/maintenance/cargo-cache.lock` 保护：所有 Cargo 流程经 `scripts/ci/with-cargo-cache.sh` 取得共享锁，清理只有取得非阻塞独占锁才运行；忙时延后，不中断编译。
 
-每次执行限制 10 分钟，钩子和 systemd 外层限制 12 分钟；超时或磁盘预算不足会明确失败。任务取消或异常退出留下的资源由后续钩子/定时器重试。定时服务失败可通过 journal 和现有磁盘水位告警排查。
+原生清理限制 10 分钟，原生钩子和 systemd 外层限制 12 分钟；容器钩子的互斥等待上限为 10 分钟，小时回收的容器调用也受原生外层限时保护。超时或磁盘预算不足会明确失败。任务取消或异常退出留下的资源由后续钩子/定时器重试。定时服务失败可通过 journal 和现有磁盘水位告警排查。
 
 ## 范围与额度
 
@@ -21,7 +21,7 @@
 | `_temp` | 删除超过 1 天的入口，不删除当前钩子仍可能打开的 file commands |
 | 原生 `/srv/tidemq/cargo-target`、容器 `/srv/tidemq/container-runner/target` | 各最长 7 天、12 GiB；超额清空并按需编译；目录不共用 |
 | Cargo registry / git | 各最长 7 天、2 GiB；不删除 `cargo/bin`、rustup 或固定工具 |
-| `/srv/tidemq/tmp` | 最长 1 天，2 GiB；在全局租约保护下清理 |
+| 原生及容器各自的 tmp | 最长 1 天，各 2 GiB；原生使用全局租约，容器使用自身清理锁 |
 | Runner `_diag` | 删除超过 7 天的文件；超过 128 MiB 时删除超过 1 天的文件，保留近期及当前日志 |
 | 私有 lab `logs` 镜像导入日志 | 最长 7 天，128 MiB；超额清空，下次导入重新生成 |
 | Runner Docker | 清理停止的构建容器、未使用镜像和构建缓存；检查 VM role、挂载点和 Docker data-root，固定连接本机 socket；只允许常驻 `tidemq-ci-runner`（标签 `tidemq.lab/runner=ci-container`）存活，保留其容器和所引用镜像；其他运行中容器阻止清理 |
@@ -79,6 +79,8 @@ bash scripts/lab/deploy-runner.sh runtime
 
 必须备份并保留 `/var/lib/tidemq-lab/private/{tls,credentials,workloads}`、受限 SSH 密钥、kubeconfig、VM 定义和磁盘，以及各服务的持久数据。公用 workload 的完整身份在 `private/workloads/tidemq-dev/workload`；runner 的 `public/tidemq-dev/workload` 及 loadgen `/srv/tidemq/public-dev` 也保留。它们不能由重新生成 CA、cluster ID 或 token 代替。宿主其他项目、OS 工具和用户明确保留的 YuXiangagent 任务不参与自动清理。
 
-历史一次性证据的完整原件仍在[固定 Git 归档](../../docs/evidence/README.zh-CN.md)，当前只保留[合并验收](evidence/2026-10-25/README.zh-CN.md)及最新清理验收。GitHub 测试制品保留 14 天、覆盖率输入 3 天、最终覆盖率/VM 制品 30 天；长期证据不依赖这些制品永远在线。
+历史一次性证据的完整原件仍在[固定 Git 归档](../../docs/evidence/README.zh-CN.md)，当前只保留[合并部署验收](evidence/2026-10-25/README.zh-CN.md)及 [runner 清理验收](evidence/runner-maintenance.json)。后者记录真实孤立 CI 资源回收、忙时跳过、控制面不可用时继续清理本机缓存、共享 Cargo 锁，以及常驻资源 UID/Secret 版本的前后核对。GitHub 测试制品保留 14 天、覆盖率输入 3 天、最终覆盖率/VM 制品 30 天；长期证据不依赖这些制品永远在线。
+
+`2026-10-26T14:52Z` 的验收快照中，runner 根盘可用约 3.53 GiB、数据盘约 47.25 GiB，小时定时器 active/enabled、最近一次清理退出码 0。旧镜像 tar、工具 bundle、升级目录、一次性脚本和下载半成品已移除；另删除旧混合覆盖率/调试 target 及本轮报告恢复副本。11 台 VM 运行，6 个 K8s 节点与公共 10 个角色 Ready，CI namespace/PV 和各 worker profile、fixture、loadgen 临时目录均已清空。
 
 本机开发工作树还删除了 `target/lab-tools/collector.archive.part` 与旧 `source.bundle`。本轮验证和 IDE 使用中的 `target/debug`、`target/flycheck0` 及 CodeGraph 索引保留；runner 的清理额度不应用于本机 IDE 缓存。

@@ -4,6 +4,8 @@
 
 [acceptance.json](acceptance.json) 合并最终部署身份、11 台 VM / 6 个 Kubernetes 节点 / 10 个常驻角色、完整 CI、覆盖率复用、8 个 VM 业务场景、watchdog、外部 SDK、三类观测、S3 权限和后端重启后的历史数据查询结果。它记录提交 `c386434bbf6d478e96d68a53d7040323396b1648` 的验收，不代表之后任何提交自动通过。完整 [GitHub CI 40266082534](https://github.com/bitcapybara/tidemq/actions/runs/40266082534) 已通过。
 
+后续新增容器 runner、共享 Cargo 缓存、并行 CI、9 个 K8s/API 场景和服务端覆盖率采集，以及清理复查见 [runner-maintenance.json](../runner-maintenance.json)。该记录对应测试提交 `87b3442` 和完整通过的 [CI 40322221174](https://github.com/bitcapybara/tidemq/actions/runs/40322221174)。
+
 本次整理将 70 份中间/重复文件合并为一份结果，初始快照、失败现场、复现修正、原始 JUnit/LLVM 哈希和每步证据可从 [Git 历史原目录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/deploy/lab/evidence/2026-10-25/) 读取。Git 历史没有重写；该链接固定到整理前已推送的提交。恢复单个文件：
 
 ```bash

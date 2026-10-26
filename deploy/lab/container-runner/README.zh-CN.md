@@ -1,6 +1,6 @@
 # 第二个 Linux runner
 
-只新增一个仓库级 runner，名称 `tidemq-ci-container-u126-8`、标签 `tidemq-ci-container`。原生 `tidemq-dev-u126-8` 保留，专门运行故障/部署和报告合并。容器由同一 `tidemq-runner` VM 的 Docker Compose 管理，配置见 [compose.yaml](compose.yaml)，镜像构建见 [Dockerfile](Dockerfile)。不增加 Kubernetes runner controller 或额外 VM。
+只新增一个仓库级 runner，名称 `tidemq-ci-container-u126-8`、ID 23、标签 `tidemq-ci-container`。原生 `tidemq-dev-u126-8`（ID 21）运行故障/部署和报告合并。容器由同一 `tidemq-runner` VM 的 Docker Compose 管理，配置见 [compose.yaml](compose.yaml)，镜像构建见 [Dockerfile](Dockerfile)。不增加 Kubernetes runner controller 或额外 VM。
 
 ## 资源和路径
 
@@ -59,5 +59,7 @@ lab_ssh tidemq-runner sudo systemctl start tidemq-runner-maintenance.service
 ```
 
 GitHub 的 Linux Validate 指定容器标签，Faults 指定 `tidemq-dev`，两者没有依赖关系；macOS 继续使用 hosted runner。Coverage 等待两边完成，下载 `coverage-inputs-native` / `coverage-inputs-lab`，校验同一提交、run、工具和工作区路径，合并已有二进制/profile，再导出报告及比较受保护基线，不重跑 Rust 测试。输入制品保留 3 天，最终覆盖率/VM 报告 30 天。完整流程和当前端到端缺口见 [测试指南](../../../docs/testing.zh-CN.md)。
+
+部署验收见 [runner-maintenance.json](../evidence/runner-maintenance.json)。两个 runner 均在线；实际 CI 的两条 Linux job 同秒启动，671 项 Linux 测试、655 项 macOS 测试及 9 个 K8s/API 场景通过。原生与容器内 Cargo home 的设备号/inode 均为 `64784:1311125`，共用锁也为同一文件；已验证共享读锁会延后清理，空闲回收保留常驻容器及其镜像。最终覆盖率来自本次已有的 922 份 profile，未为生成报告重跑 Rust 测试。
 
 两个执行器属于同一可信仓库、同一 actions UID 和同一 VM，共享可写依赖缓存，不构成恶意代码隔离边界。fork PR 保持 GitHub-hosted 路径；容器只接受仓库内可信任务。

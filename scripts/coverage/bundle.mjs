@@ -88,7 +88,7 @@ export function restoreBundles(bundles, target, reports, expected) {
       assert.equal(bytes.length, entry.bytes, 'Bundle file size changed');
       assert.equal(hash(bytes), entry.sha256, 'Bundle file digest changed');
       total += bytes.length;
-      assert.ok(total <= 4 * 1024 * 1024 * 1024, 'Coverage bundles exceed their byte budget');
+      assert.ok(total <= 8 * 1024 * 1024 * 1024, 'Coverage bundles exceed their byte budget');
     }
   }
   assert.ok(!fs.existsSync(target) || fs.readdirSync(target).length === 0, 'Coverage merge target must be empty');
