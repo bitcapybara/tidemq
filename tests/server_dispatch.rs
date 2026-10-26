@@ -899,7 +899,17 @@ async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturat
             i32::from(FrameKind::GroupAckResult)
         );
         assert_eq!(rpc.lane_count(), 4);
+        // A reply can wake its caller before the transport tasks drop their permits.
+        let until = deadline();
+        while rpc.snapshot().admitted_requests > normal_requests {
+            assert!(
+                Instant::now() < until,
+                "Completed priority RPCs did not release their admission budget"
+            );
+            tokio::task::yield_now().await;
+        }
         assert_eq!(rpc.snapshot().admitted_requests, normal_requests);
+        assert_eq!(rpc.snapshot().pending_responses, Some(normal_requests));
         drop(held_normal);
         service.replies.add_permits(normal_requests);
         for request in pending {
