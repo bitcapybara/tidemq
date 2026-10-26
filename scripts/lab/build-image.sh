@@ -7,8 +7,7 @@ cd "$repo"
 lab_home=${TIDEMQ_LAB_HOME:?Set TIDEMQ_LAB_HOME}
 tools=${TIDEMQ_LAB_TOOLS:-/srv/tidemq/tools}
 base=$(jq -er .docker.runtimeBaseImage deploy/lab/inventory.json)
-expected=$(jq -er .docker.runtimeBaseImageID deploy/lab/inventory.json)
-[[ $(docker image inspect "$base" --format '{{.Id}}') == "$expected" ]] || { printf 'The runtime base image identity differs from inventory\n' >&2; exit 1; }
+bash scripts/lab/ensure-runtime-base.sh
 mkdir -m 0700 -p "$1/bin"
 output=$(cd "$1" && pwd -P)
 target=${CARGO_TARGET_DIR:-$repo/target}

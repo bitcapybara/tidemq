@@ -1,9 +1,0 @@
-{
-  "source_sha": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
-  "started_at": "2026-10-21T02:11:39.209154+00:00",
-  "ended_at": "2026-10-21T02:24:01.727398+00:00",
-  "exit": 0,
-  "driver_sha256_before": "2e1924b92dab1a79997202579ad07e7510d2007b5ca8a4eb47f2194c6fe3672b",
-  "driver_sha256_after": "2e1924b92dab1a79997202579ad07e7510d2007b5ca8a4eb47f2194c6fe3672b",
-  "driver_unchanged": true
-}

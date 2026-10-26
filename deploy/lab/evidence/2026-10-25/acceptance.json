@@ -1,0 +1,2315 @@
+{
+  "archiveCommit": "e0be78cfc00c81f7d36caaf3f7835b9c45e963b6",
+  "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+  "deployment": {
+    "capturedAt": "2026-10-26T04:56:17.411Z",
+    "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+    "host": {
+      "hostname": "u126-8",
+      "kernel": "7.0.0-38-generic",
+      "logicalCPUs": 44,
+      "memoryBytes": 67239825408,
+      "filesystem": {
+        "sizeBytes": 501809635328,
+        "usedBytes": 271822389248,
+        "availableBytes": 204421443584,
+        "usedPercent": "58%"
+      }
+    },
+    "vms": [
+      {
+        "name": "tidemq-cp-a",
+        "uuid": "732fb886-0ba4-4fc1-8e1a-eee6323c0bf5",
+        "state": "running",
+        "vcpus": 2,
+        "memoryKiB": 2097152,
+        "managementIP": "192.168.240.11",
+        "dataIP": "192.168.241.11"
+      },
+      {
+        "name": "tidemq-cp-b",
+        "uuid": "dfa3b7e5-95ab-403a-8d50-bdd5ac3bbdf9",
+        "state": "running",
+        "vcpus": 2,
+        "memoryKiB": 2097152,
+        "managementIP": "192.168.240.12",
+        "dataIP": "192.168.241.12"
+      },
+      {
+        "name": "tidemq-cp-c",
+        "uuid": "ece70563-b852-4c2d-879c-ae24d031e2bb",
+        "state": "running",
+        "vcpus": 2,
+        "memoryKiB": 2097152,
+        "managementIP": "192.168.240.13",
+        "dataIP": "192.168.241.13"
+      },
+      {
+        "name": "tidemq-worker-a",
+        "uuid": "3bb94b98-a7a1-4d6a-a2fc-b6229b983a89",
+        "state": "running",
+        "vcpus": 4,
+        "memoryKiB": 4194304,
+        "managementIP": "192.168.240.21",
+        "dataIP": "192.168.241.21"
+      },
+      {
+        "name": "tidemq-worker-b",
+        "uuid": "41ad6c4d-2317-49ef-9723-6a576e9f6d49",
+        "state": "running",
+        "vcpus": 4,
+        "memoryKiB": 4194304,
+        "managementIP": "192.168.240.22",
+        "dataIP": "192.168.241.22"
+      },
+      {
+        "name": "tidemq-worker-c",
+        "uuid": "27f5900d-05d6-44ed-99f8-a84e4c27a244",
+        "state": "running",
+        "vcpus": 4,
+        "memoryKiB": 4194304,
+        "managementIP": "192.168.240.23",
+        "dataIP": "192.168.241.23"
+      },
+      {
+        "name": "tidemq-storage",
+        "uuid": "4d75c6e7-4398-43dd-92b5-78c584b7a9ef",
+        "state": "running",
+        "vcpus": 2,
+        "memoryKiB": 2097152,
+        "managementIP": "192.168.240.31",
+        "dataIP": "192.168.241.31"
+      },
+      {
+        "name": "tidemq-observe",
+        "uuid": "d523e8bd-9d77-475d-86c9-30170c7d9a83",
+        "state": "running",
+        "vcpus": 4,
+        "memoryKiB": 6291456,
+        "managementIP": "192.168.240.32",
+        "dataIP": "192.168.241.32"
+      },
+      {
+        "name": "tidemq-runner",
+        "uuid": "80182a00-dfbb-4890-9947-36670268f03a",
+        "state": "running",
+        "vcpus": 4,
+        "memoryKiB": 8388608,
+        "managementIP": "192.168.240.33",
+        "dataIP": "192.168.241.33"
+      },
+      {
+        "name": "tidemq-fixtures",
+        "uuid": "bb2e577c-14f3-48af-9ef5-dd7eb9acdf0c",
+        "state": "running",
+        "vcpus": 2,
+        "memoryKiB": 2097152,
+        "managementIP": "192.168.240.34",
+        "dataIP": "192.168.241.34"
+      },
+      {
+        "name": "tidemq-loadgen",
+        "uuid": "d8bdbbab-f2a7-425b-b60f-1517bdf0889c",
+        "state": "running",
+        "vcpus": 2,
+        "memoryKiB": 2097152,
+        "managementIP": "192.168.240.35",
+        "dataIP": "192.168.241.35"
+      }
+    ],
+    "nodes": [
+      {
+        "name": "tidemq-cp-a",
+        "ready": true,
+        "kernel": "6.8.0-147-generic",
+        "kubelet": "v1.36.5",
+        "runtime": "containerd://2.2.1"
+      },
+      {
+        "name": "tidemq-cp-b",
+        "ready": true,
+        "kernel": "6.8.0-147-generic",
+        "kubelet": "v1.36.5",
+        "runtime": "containerd://2.2.1"
+      },
+      {
+        "name": "tidemq-cp-c",
+        "ready": true,
+        "kernel": "6.8.0-147-generic",
+        "kubelet": "v1.36.5",
+        "runtime": "containerd://2.2.1"
+      },
+      {
+        "name": "tidemq-worker-a",
+        "ready": true,
+        "kernel": "6.8.0-147-generic",
+        "kubelet": "v1.36.5",
+        "runtime": "containerd://2.2.1"
+      },
+      {
+        "name": "tidemq-worker-b",
+        "ready": true,
+        "kernel": "6.8.0-147-generic",
+        "kubelet": "v1.36.5",
+        "runtime": "containerd://2.2.1"
+      },
+      {
+        "name": "tidemq-worker-c",
+        "ready": true,
+        "kernel": "6.8.0-147-generic",
+        "kubelet": "v1.36.5",
+        "runtime": "containerd://2.2.1"
+      }
+    ],
+    "pods": [
+      {
+        "name": "node-11-0",
+        "uid": "a66237fb-8600-4e0b-9095-671b50b270d6",
+        "node": "tidemq-worker-a",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-12-0",
+        "uid": "f673ce6f-236a-4c0c-bedf-d171277e2b94",
+        "node": "tidemq-worker-b",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-13-0",
+        "uid": "c340286a-cebc-4313-bc68-d56c748672e9",
+        "node": "tidemq-worker-c",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-21-0",
+        "uid": "9cd55864-44db-4c6a-aa3e-1232721034dc",
+        "node": "tidemq-worker-a",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-22-0",
+        "uid": "64907818-2bd7-41b8-a97b-61ecc84bff02",
+        "node": "tidemq-worker-b",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-23-0",
+        "uid": "b006d41c-7088-45b6-946d-5f2ff80b4fd3",
+        "node": "tidemq-worker-c",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-31-0",
+        "uid": "78aea10b-931a-4564-886c-8c5a6439e2f7",
+        "node": "tidemq-worker-a",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-32-0",
+        "uid": "e7c04089-8c4f-4103-bebb-380ed0729c9f",
+        "node": "tidemq-worker-b",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-41-0",
+        "uid": "6c61b750-79dd-469a-b087-111ac9040af6",
+        "node": "tidemq-worker-a",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      },
+      {
+        "name": "node-42-0",
+        "uid": "77475b6d-0f86-4a59-a9ab-8b06e43b64ef",
+        "node": "tidemq-worker-b",
+        "phase": "Running",
+        "containers": [
+          {
+            "name": "otelcol",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          },
+          {
+            "name": "tidemq",
+            "ready": true,
+            "restarts": 0,
+            "image": "localhost/tidemq-lab:public-c386434bbf6d",
+            "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+            "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+          }
+        ]
+      }
+    ],
+    "namespaces": [
+      "cilium-secrets",
+      "default",
+      "kube-node-lease",
+      "kube-public",
+      "kube-system",
+      "metallb-system",
+      "tidemq-dev"
+    ],
+    "legacyUnits": {
+      "explorer-demo-scenarios.service": "not-found",
+      "taos-explorer-demo.service": "not-found",
+      "taos-explorer.service": "not-found",
+      "taosadapter.service": "not-found",
+      "taosd.service": "not-found",
+      "taoskeeper.service": "not-found",
+      "taosx.service": "not-found",
+      "stressctl-cpu.service": "not-found",
+      "stressctl-io.service": "not-found",
+      "stressctl-memory.service": "not-found",
+      "stressctl.target": "not-found"
+    },
+    "preservedAgentCronEntries": 3,
+    "publicIdentityPreserved": true,
+    "publicClusterId": "27a911c1-6db8-4289-8c19-7a76f7ebbfa9",
+    "publicCAFingerprint": "sha256 Fingerprint=46:FA:26:A3:82:61:E7:2C:A2:9A:0F:FE:93:19:B0:D3:B7:A9:41:C9:37:3D:9C:34:DD:A8:17:88:D5:1C:5E:83"
+  },
+  "image": {
+    "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+    "ciImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+    "image": "localhost/tidemq-lab:public-c386434bbf6d",
+    "imageID": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+    "manifestDigest": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+    "runtimeImageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841",
+    "hostArchive": "/var/lib/tidemq-lab/images/public-c386434bbf6d.tar",
+    "separatePublicTag": true
+  },
+  "nativeCI": {
+    "capturedAt": "2026-10-26T04:35:11.601Z",
+    "run": 40266082534,
+    "url": "https://github.com/bitcapybara/tidemq/actions/runs/40266082534",
+    "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+    "platforms": {
+      "Linux": {
+        "instrumented": true,
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+        "stages": {
+          "unit": {
+            "tests": 284,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T03:58:03.894+00:00",
+            "seconds": 39.904,
+            "sha256": "534b1f73423a7c433f0ec2dfc014358ef75219f678792233ba6863593f4f298f"
+          },
+          "sdk-default-unit": {
+            "tests": 29,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T03:59:53.150+00:00",
+            "seconds": 0.642,
+            "sha256": "b9ab36bc96296c7833191726f81d3f1071ddab4f8107e5dde147341eb05fdda9"
+          },
+          "integration": {
+            "tests": 267,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T04:04:29.822+00:00",
+            "seconds": 662.28,
+            "sha256": "50eb19139d91f124bbd36b385e34c18340dab0a24b71690dae085cfd65d35c23"
+          },
+          "runtime-faults": {
+            "tests": 75,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T04:17:21.764+00:00",
+            "seconds": 651.771,
+            "sha256": "d8b7108d986ed8b76246fa3cb17a65b89c15f9b71ce5907430f572565567741c"
+          },
+          "external-services": {
+            "tests": 16,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T04:31:29.961+00:00",
+            "seconds": 107.248,
+            "sha256": "ded8da63ca31bc3ea7a3e6b444d40b3a279be8c8beb2a58d1557b49213eee779"
+          }
+        }
+      },
+      "macOS": {
+        "instrumented": false,
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1",
+        "stages": {
+          "unit": {
+            "tests": 284,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T03:58:35.740+00:00",
+            "seconds": 30.767,
+            "sha256": "cdb6be059e567c9e1920fd7ff3f76b2787bd04c8e68d0a52307618d5ce2d5c61"
+          },
+          "sdk-default-unit": {
+            "tests": 29,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T03:59:54.220+00:00",
+            "seconds": 0.462,
+            "sha256": "faf8491cabd1e82c7f58021d212ad2d6ae66232cb2e6c6a416c545b0917a62cc"
+          },
+          "integration": {
+            "tests": 267,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T04:02:35.394+00:00",
+            "seconds": 490.314,
+            "sha256": "7c91d02bc23a94fd6d10ab5767c11588fb7436a73f05c0fa3861208b1ae7ba3a"
+          },
+          "runtime-faults": {
+            "tests": 75,
+            "skipped": 0,
+            "failures": 0,
+            "errors": 0,
+            "timestamp": "2026-10-26T04:11:50.383+00:00",
+            "seconds": 472.269,
+            "sha256": "f7dd66c75f905c450b0d611c8a2a8d54cf5abad461186d62a514a2aa3270c9fe"
+          }
+        }
+      }
+    },
+    "coverageReuse": {
+      "profileCount": 908,
+      "llvmReportSha256": "85b0bdfa0a19c3e212ab099bc0e73f442e81729975a69ec993180a3a5c466ee6",
+      "allFiveJunitDigestsMatched": true,
+      "coverageJobRunsRustTests": false
+    }
+  },
+  "vmCI": {
+    "run": 40266082534,
+    "url": "https://github.com/bitcapybara/tidemq/actions/runs/40266082534",
+    "capturedAt": "2026-10-26T04:44:51.134Z",
+    "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+    "sourceRustPatchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "imageID": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+    "artifactSha256": {
+      "source-commit.txt": "78ef6046a08e85851742ee69e6213c88a6cf54eb5932b6dbaaecee5c9ffd6ac2",
+      "source-patch-sha256.txt": "abcfa6a9d4df344d1781bc2560b5e4cdcae08b39ed303063535e7e1e926a304a",
+      "image-id.txt": "48cdb1e331285d3ef25753df15eac682c2ec5628a3ec89f1a460e823ebf9a34b",
+      "sha256.txt": "f28f5f4fa34122086621a8e9d81bb495e9a46a0e4dc09d68424e1950863391af",
+      "result.json": "048cef42aeb2980644f67da4e5201d967db7c145a8225fed11dfdb237fd73292",
+      "smoke/report.json": "18f33ff321d11e93fdccf2d06d862d470a7d54ce924c5f4fd2943b38e8fe2359",
+      "replay/report.json": "d0fb689826b355c7090ff190d85180f5648ff019aa459e2fb4a9e2abef147326",
+      "worker-poweroff/report.json": "dad30454f6cf6dbb3f6528c5f1da5db5082074395232ee446f6392f4361963c6",
+      "data-isolation/report.json": "08857e03614bbe2b18f64c1ec029926b3d5b0d0485f712173a81e66a0004e6be",
+      "quorum-loss/report.json": "a85caa084660ef006417733610c6e3c865aa5a12e9dc992878aa244ac29bf359",
+      "control-plane-fault/report.json": "13be79a6ad0e6825ad93ae774f0843b421d8f7d722c409322685587da93e4f4e",
+      "object-store-fault/report.json": "7358578e22b4c8829d6a57de6bf48ef6578116f6e9bbefe67c0729f87af3fc50",
+      "recovered/report.json": "61f38676ec05467f673f27d9c5a9fcd21946733a7e282e55fba7bdf33593c286",
+      "worker-poweroff-infrastructure-recovery.json": "3ad7fd95fbbe46df241c836335981c5d5854b11ea51f5be7ea851371f35105f8",
+      "data-isolation-infrastructure-recovery.json": "b5e3e6796f3ca7121eb222f010f76f3aa49a017b6a337a2e4698eac29c4d597e",
+      "quorum-loss-infrastructure-recovery.json": "cbcaa450ff058e4615ff77ece6a6e212a2694312bbd4f277efc41aa7016bdc71",
+      "recovery-timer-during.txt": "1ee076faa4c405278caa4aca626ed44fa5e7efa125c95e436d4a821f8918aa5f",
+      "recovery-timer-after.txt": "0df8a1a2c2db6ce4e49947a533b0e084ed3612101332ca1346d00ff2ba0dd526",
+      "observability/metrics.json": "06bb725480e4998b6192b8babb378fabdb4708d415b2bd182c8ea9490508546f",
+      "observability/logs.json": "9ac0b414b8f6ecb11775783b47817ce9e3aa0ecd9b9e071d30f73394c95e74c1",
+      "observability/traces.json": "8036c5c1f1e6ce08dc047d718045bdb63c6c2486f392775d739dd5fefac103b9"
+    },
+    "result": {
+      "exitCode": 0,
+      "cleanupExitCode": 0
+    },
+    "cases": {
+      "smoke": {
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "uniqueMessages": 64,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 0,
+        "ackUnknownRetries": 0,
+        "originalPending": [],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989386156,
+            "elapsed_ms": 1
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989386276,
+            "elapsed_ms": 120
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989387374,
+            "elapsed_ms": 1219
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989388231,
+            "elapsed_ms": 2075
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989394648,
+            "elapsed_ms": 8493
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989394889,
+            "elapsed_ms": 8733
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989394892,
+            "elapsed_ms": 8736
+          }
+        ]
+      },
+      "replay": {
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "uniqueMessages": 64,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 0,
+        "ackUnknownRetries": 0,
+        "originalPending": [],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989396020,
+            "elapsed_ms": 0
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989396141,
+            "elapsed_ms": 121
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989397221,
+            "elapsed_ms": 1201
+          },
+          {
+            "phase": "replay_settle",
+            "unix_ms": 1792989397961,
+            "elapsed_ms": 1941
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989403185,
+            "elapsed_ms": 7165
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989406608,
+            "elapsed_ms": 10588
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989406869,
+            "elapsed_ms": 10849
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989406873,
+            "elapsed_ms": 10853
+          }
+        ]
+      },
+      "worker-poweroff": {
+        "status": "passed",
+        "ledger": {
+          "expected": 80,
+          "committed": 80,
+          "received": 80,
+          "acknowledged": 80,
+          "frontier": 80
+        },
+        "uniqueMessages": 80,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 0,
+        "ackUnknownRetries": 0,
+        "originalPending": [],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989407940,
+            "elapsed_ms": 0
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989408039,
+            "elapsed_ms": 99
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989409088,
+            "elapsed_ms": 1148
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989409917,
+            "elapsed_ms": 1977
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989412956,
+            "elapsed_ms": 5016
+          },
+          {
+            "phase": "waiting_fault",
+            "unix_ms": 1792989412956,
+            "elapsed_ms": 5016
+          },
+          {
+            "phase": "fault_injected",
+            "unix_ms": 1792989415503,
+            "elapsed_ms": 7563
+          },
+          {
+            "phase": "fault_production",
+            "unix_ms": 1792989415503,
+            "elapsed_ms": 7563
+          },
+          {
+            "phase": "fault_consumption",
+            "unix_ms": 1792989415664,
+            "elapsed_ms": 7725
+          },
+          {
+            "phase": "fault_observed",
+            "unix_ms": 1792989417498,
+            "elapsed_ms": 9559
+          },
+          {
+            "phase": "host_recovered",
+            "unix_ms": 1792989495260,
+            "elapsed_ms": 87320
+          },
+          {
+            "phase": "final_production",
+            "unix_ms": 1792989495260,
+            "elapsed_ms": 87320
+          },
+          {
+            "phase": "final_consumption",
+            "unix_ms": 1792989495473,
+            "elapsed_ms": 87533
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989497429,
+            "elapsed_ms": 89489
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989497431,
+            "elapsed_ms": 89492
+          }
+        ]
+      },
+      "data-isolation": {
+        "status": "passed",
+        "ledger": {
+          "expected": 80,
+          "committed": 80,
+          "received": 80,
+          "acknowledged": 80,
+          "frontier": 80
+        },
+        "uniqueMessages": 80,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 0,
+        "ackUnknownRetries": 0,
+        "originalPending": [],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989501552,
+            "elapsed_ms": 0
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989501654,
+            "elapsed_ms": 103
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989502997,
+            "elapsed_ms": 1445
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989503808,
+            "elapsed_ms": 2256
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989506898,
+            "elapsed_ms": 5346
+          },
+          {
+            "phase": "waiting_fault",
+            "unix_ms": 1792989506898,
+            "elapsed_ms": 5346
+          },
+          {
+            "phase": "fault_injected",
+            "unix_ms": 1792989508636,
+            "elapsed_ms": 7085
+          },
+          {
+            "phase": "fault_production",
+            "unix_ms": 1792989508636,
+            "elapsed_ms": 7085
+          },
+          {
+            "phase": "fault_consumption",
+            "unix_ms": 1792989515249,
+            "elapsed_ms": 13698
+          },
+          {
+            "phase": "fault_observed",
+            "unix_ms": 1792989517374,
+            "elapsed_ms": 15823
+          },
+          {
+            "phase": "host_recovered",
+            "unix_ms": 1792989523662,
+            "elapsed_ms": 22110
+          },
+          {
+            "phase": "final_production",
+            "unix_ms": 1792989523662,
+            "elapsed_ms": 22110
+          },
+          {
+            "phase": "final_consumption",
+            "unix_ms": 1792989525356,
+            "elapsed_ms": 23805
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989527020,
+            "elapsed_ms": 25469
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989527022,
+            "elapsed_ms": 25471
+          }
+        ]
+      },
+      "quorum-loss": {
+        "status": "passed",
+        "ledger": {
+          "expected": 80,
+          "committed": 80,
+          "received": 80,
+          "acknowledged": 80,
+          "frontier": 80
+        },
+        "uniqueMessages": 80,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 1,
+        "ackUnknownRetries": 0,
+        "originalPending": [
+          {
+            "firstSequence": 64,
+            "messages": 8,
+            "originalPending": 8,
+            "retryAttempts": 8,
+            "receiptSeen": true,
+            "messageIDs": [
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:64",
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:65",
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:66",
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:67",
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:68",
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:69",
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:70",
+              "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:71"
+            ]
+          }
+        ],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989531108,
+            "elapsed_ms": 0
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989531207,
+            "elapsed_ms": 100
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989532292,
+            "elapsed_ms": 1185
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989533210,
+            "elapsed_ms": 2103
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989536955,
+            "elapsed_ms": 5848
+          },
+          {
+            "phase": "waiting_fault",
+            "unix_ms": 1792989536955,
+            "elapsed_ms": 5848
+          },
+          {
+            "phase": "fault_injected",
+            "unix_ms": 1792989539704,
+            "elapsed_ms": 8597
+          },
+          {
+            "phase": "fault_production",
+            "unix_ms": 1792989539704,
+            "elapsed_ms": 8597
+          },
+          {
+            "phase": "fault_observed",
+            "unix_ms": 1792989549706,
+            "elapsed_ms": 18599
+          },
+          {
+            "phase": "host_recovered",
+            "unix_ms": 1792989632414,
+            "elapsed_ms": 101306
+          },
+          {
+            "phase": "original_pending_retry",
+            "unix_ms": 1792989632414,
+            "elapsed_ms": 101306
+          },
+          {
+            "phase": "recovered_consumption",
+            "unix_ms": 1792989632693,
+            "elapsed_ms": 101586
+          },
+          {
+            "phase": "final_production",
+            "unix_ms": 1792989634563,
+            "elapsed_ms": 103456
+          },
+          {
+            "phase": "final_consumption",
+            "unix_ms": 1792989634665,
+            "elapsed_ms": 103558
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989635729,
+            "elapsed_ms": 104621
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989635732,
+            "elapsed_ms": 104624
+          }
+        ]
+      },
+      "control-plane-fault": {
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "uniqueMessages": 64,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 0,
+        "ackUnknownRetries": 0,
+        "originalPending": [],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989640766,
+            "elapsed_ms": 0
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989640877,
+            "elapsed_ms": 112
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989641934,
+            "elapsed_ms": 1169
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989642827,
+            "elapsed_ms": 2062
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989645948,
+            "elapsed_ms": 5182
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989646220,
+            "elapsed_ms": 5454
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989646223,
+            "elapsed_ms": 5458
+          }
+        ]
+      },
+      "object-store-fault": {
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "uniqueMessages": 64,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 0,
+        "ackUnknownRetries": 0,
+        "originalPending": [],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989650791,
+            "elapsed_ms": 1
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989650904,
+            "elapsed_ms": 114
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989651983,
+            "elapsed_ms": 1193
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989652804,
+            "elapsed_ms": 2014
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989655884,
+            "elapsed_ms": 5094
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989656139,
+            "elapsed_ms": 5349
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989656142,
+            "elapsed_ms": 5352
+          }
+        ]
+      },
+      "recovered": {
+        "status": "passed",
+        "ledger": {
+          "expected": 64,
+          "committed": 64,
+          "received": 64,
+          "acknowledged": 64,
+          "frontier": 64
+        },
+        "uniqueMessages": 64,
+        "originalConsumerReused": true,
+        "clientCloseCompleted": true,
+        "receiveRetries": 0,
+        "ackUnknownRetries": 0,
+        "originalPending": [],
+        "phases": [
+          {
+            "phase": "connecting",
+            "unix_ms": 1792989674963,
+            "elapsed_ms": 0
+          },
+          {
+            "phase": "creating_queue",
+            "unix_ms": 1792989675070,
+            "elapsed_ms": 107
+          },
+          {
+            "phase": "initial_production",
+            "unix_ms": 1792989676163,
+            "elapsed_ms": 1201
+          },
+          {
+            "phase": "initial_consumption",
+            "unix_ms": 1792989677151,
+            "elapsed_ms": 2188
+          },
+          {
+            "phase": "initial_complete",
+            "unix_ms": 1792989680287,
+            "elapsed_ms": 5325
+          },
+          {
+            "phase": "ledger_complete",
+            "unix_ms": 1792989680573,
+            "elapsed_ms": 5611
+          },
+          {
+            "phase": "validation_finished",
+            "unix_ms": 1792989680575,
+            "elapsed_ms": 5613
+          }
+        ]
+      }
+    },
+    "infrastructureRecovery": {
+      "worker-poweroff": {
+        "restoredAtUnixSeconds": 1792989417,
+        "runtimeReadyAtUnixSeconds": 1792989494,
+        "budgetSeconds": 110
+      },
+      "data-isolation": {
+        "restoredAtUnixSeconds": 1792989518,
+        "runtimeReadyAtUnixSeconds": 1792989523,
+        "budgetSeconds": 110
+      },
+      "quorum-loss": {
+        "restoredAtUnixSeconds": 1792989550,
+        "runtimeReadyAtUnixSeconds": 1792989631,
+        "budgetSeconds": 110
+      }
+    },
+    "independentTimer": {
+      "during": "tidemq-loadgen: paused",
+      "after": "tidemq-loadgen: running"
+    },
+    "signals": {
+      "instances": 10,
+      "logEntries": 100,
+      "traceIDs": [
+        "6683b8f1e9979fa850c0d0328802591",
+        "b764dcfcad555cce2db939e07c12faf",
+        "c940eb1428cd71a9f0fe3f3162274e2",
+        "3497619d2fdcedc3916278523ec8731",
+        "43ee333568b39de13d38fec58a2cc08",
+        "6333beb601f0f4e1923eda823bd2e",
+        "9bf65bed44b373cece293464b097b1e",
+        "c90add375d4065659c35737a0692d7d",
+        "1f31acd5df1cbb47f000ac7657c62a3",
+        "7e1503f1ef2999ace78daf3f5976257",
+        "a6bd0b4392f63aa258adf3c729aba05",
+        "90f4033aa97d65643786a7f24390acf",
+        "1c5f6958725117762aa17aefa3c271f",
+        "9796b6d3303f26b91fd5dc9df39b6ca",
+        "3a72553eab527e7c3707bda9eba1833",
+        "1ae15252e9f662118ed844e0be68ad4",
+        "8cf2cf32abe79d6e068af0892c1f9a1",
+        "212d74f9dfb375b303b7337911fedaa",
+        "68fe98a6877ec8e33a8a830787c891c",
+        "236e185af7b25fe0735eea366b3c1bf"
+      ]
+    }
+  },
+  "coverage": {
+    "summary": {
+      "schema_version": 1,
+      "status": "passed",
+      "metrics": {
+        "lines": {
+          "status": "passed",
+          "baseline": {
+            "count": 35176,
+            "covered": 27907
+          },
+          "candidate": {
+            "count": 63145,
+            "covered": 56246
+          }
+        },
+        "functions": {
+          "status": "passed",
+          "baseline": {
+            "count": 3637,
+            "covered": 2576
+          },
+          "candidate": {
+            "count": 6652,
+            "covered": 5357
+          }
+        },
+        "regions": {
+          "status": "passed",
+          "baseline": {
+            "count": 49848,
+            "covered": 38365
+          },
+          "candidate": {
+            "count": 90040,
+            "covered": 77289
+          }
+        }
+      },
+      "initialization": false,
+      "source_commit": "c386434bbf6d478e96d68a53d7040323396b1648",
+      "policy_sha256": "ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57",
+      "previous_baseline_sha256": "638b8e963abe9e8936c7df0f2571093c0244b83946a4a173d5df7c7bf15fb2ee",
+      "llvm_report_sha256": "85b0bdfa0a19c3e212ab099bc0e73f442e81729975a69ec993180a3a5c466ee6",
+      "counts": {
+        "lines": {
+          "count": 63145,
+          "covered": 56246
+        },
+        "functions": {
+          "count": 6652,
+          "covered": 5357
+        },
+        "regions": {
+          "count": 90040,
+          "covered": 77289
+        }
+      },
+      "environment": {
+        "platform": "linux",
+        "arch": "x64",
+        "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+        "nextest": "cargo-nextest 0.9.148 (cd1d6d546 2026-10-07)\nrelease: 0.9.148\ncommit-hash: cd1d6d5467322dbc0d39a80cb671d000ac302798\ncommit-date: 2026-10-07\nhost: x86_64-unknown-linux-gnu",
+        "llvm_cov": "cargo-llvm-cov 0.9.1",
+        "github_run_id": "40266082534",
+        "github_job": "validate"
+      }
+    },
+    "reuse": {
+      "run": 40266082534,
+      "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+      "profileCount": 908,
+      "sourceFiles": 213,
+      "allReportFilesTrackedAtSource": true,
+      "coverageJob": {
+        "name": "Coverage report gate (no test rerun)",
+        "conclusion": "success",
+        "startedAt": "2026-10-26T04:42:30Z",
+        "completedAt": "2026-10-26T04:44:51Z",
+        "steps": [
+          "Run actions/checkout@v4",
+          "Run actions/checkout@v4",
+          "Run actions/download-artifact@v4",
+          "Run node --test trusted/scripts/coverage/*.test.mjs",
+          "Run node trusted/scripts/coverage-gate.mjs compare --tools trusted --candidate candidate --report coverage-result/llvm.json --measurement coverage-result/measurement.json --run-id \"$GITHUB_RUN_ID\" --output coverage-result/summary.json $COVERAGE_GATE_MODE",
+          "Run actions/upload-artifact@v4"
+        ],
+        "rustBuildOrTestCommands": 0,
+        "logSha256": "5c26c18e0c55879e2e70a0b310de088472303ae14bc658698b0918b0ac37dee3"
+      }
+    }
+  },
+  "external": {
+    "capturedAt": "2026-10-26T04:57:03.754Z",
+    "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+    "instance": "mac-final-1792990620522",
+    "traceId": "13166e855eda56f59a89ee06670ef6f8",
+    "metrics": {
+      "status": "success",
+      "data": {
+        "resultType": "vector",
+        "result": [
+          {
+            "metric": {
+              "__name__": "tidemq_external_check_total",
+              "instance": "mac-final-1792990620522",
+              "job": "tidemq-external-check",
+              "service_instance_id": "mac-final-1792990620522",
+              "service_name": "tidemq-external-check"
+            },
+            "value": [
+              1792990622.848,
+              "1"
+            ]
+          }
+        ]
+      }
+    },
+    "logEntries": 1,
+    "traceSpans": 1,
+    "up": {
+      "status": "success",
+      "data": {
+        "resultType": "vector",
+        "result": [
+          {
+            "metric": {
+              "job": "lab-agents"
+            },
+            "value": [
+              1792990623.137,
+              "12"
+            ]
+          },
+          {
+            "metric": {
+              "job": "lab-backends"
+            },
+            "value": [
+              1792990623.137,
+              "5"
+            ]
+          },
+          {
+            "metric": {
+              "job": "kubernetes-state"
+            },
+            "value": [
+              1792990623.137,
+              "1"
+            ]
+          },
+          {
+            "metric": {
+              "job": "cilium"
+            },
+            "value": [
+              1792990623.137,
+              "6"
+            ]
+          },
+          {
+            "metric": {
+              "job": "tidemq-collector"
+            },
+            "value": [
+              1792990623.137,
+              "1"
+            ]
+          },
+          {
+            "metric": {
+              "job": "tidemq-lab/tidemq"
+            },
+            "value": [
+              1792990623.137,
+              "10"
+            ]
+          }
+        ]
+      }
+    },
+    "targets": [
+      {
+        "labels": {
+          "instance": "192.168.240.21:9962",
+          "job": "cilium"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.22:9962",
+          "job": "cilium"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.23:9962",
+          "job": "cilium"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.11:9962",
+          "job": "cilium"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.12:9962",
+          "job": "cilium"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.13:9962",
+          "job": "cilium"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.11:30080",
+          "job": "kubernetes-state"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.34:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.35:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.11:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.12:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.13:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.22:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.1:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.21:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.23:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.31:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.32:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "192.168.240.33:8888",
+          "job": "lab-agents"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "127.0.0.1:9090",
+          "job": "lab-backends"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "127.0.0.1:3100",
+          "job": "lab-backends"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "127.0.0.1:3200",
+          "job": "lab-backends"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "127.0.0.1:9093",
+          "job": "lab-backends"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "127.0.0.1:3000",
+          "job": "lab-backends"
+        },
+        "health": "up",
+        "lastError": ""
+      },
+      {
+        "labels": {
+          "instance": "127.0.0.1:8889",
+          "job": "tidemq-collector"
+        },
+        "health": "up",
+        "lastError": ""
+      }
+    ],
+    "activeAlerts": [],
+    "pages": {
+      "rustfsRedirect": 302,
+      "rustfsHtml": 200,
+      "grafana": 302,
+      "metricsWithoutAuthentication": 401,
+      "otlpWithoutCertificate": 400,
+      "alertmanager": 200
+    },
+    "objectStorage": {
+      "put": 200,
+      "roundTrip": true,
+      "crossBucketDenied": 403,
+      "delete": 204
+    },
+    "tlsVerification": true
+  },
+  "clients": {
+    "identity": {
+      "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+      "sourceRustPatchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "macValidationBinarySha256": "56af378e25e04877029e635d8b5a5e7987b9c7b3411567687ce7905512f0b2f5",
+      "loadgenImageCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+      "loadgenImage": "localhost/tidemq-lab:public-c386434bbf6d",
+      "loadgenRuntimeImageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841",
+      "loadgenBinaries": {
+        "tidemq": "a5265addc1a24092840416ad734d8da21d90c7681b9fce1198348e7b2b0430d7",
+        "deploy_validation": "12a26285c118cf0e7d32c2c296be191ec2ad9dd1f60433338db18bb67c3c2987"
+      }
+    },
+    "loadgen": {
+      "schema_version": 2,
+      "status": "passed",
+      "configuration": {
+        "allocator": "system",
+        "batch_messages": 8,
+        "consumer_credit_bytes": 4194304,
+        "consumer_credit_messages": 256,
+        "consumer_instances": 1,
+        "endpoint": "192.168.241.200:7443",
+        "host_wait_timeout_seconds": 120,
+        "message_bytes": 1024,
+        "messages": 64,
+        "producer_workers": 1,
+        "recovery_attempt_bound": 300,
+        "recovery_timeout_seconds": 60,
+        "replay_settle_ms": 0,
+        "request_timeout_ms": 10000,
+        "require_unavailable": false,
+        "retry_delay_ms": 200,
+        "stage_fault": false,
+        "total_timeout_seconds": 180
+      },
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "topic_id": "01a1768c-a9b8-749f-a70a-1ef3e4515842",
+      "subscription_id": "01a1768c-aaaf-7eb7-8e1c-c8e0904ccbda",
+      "replay_started_after_publish": false,
+      "original_consumer_reused": true,
+      "batches": [
+        {
+          "first_sequence": 0,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:2",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:4",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:0",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:7",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:5",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:6",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:1",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:3"
+          ]
+        },
+        {
+          "first_sequence": 8,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:8",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:9",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:11",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:10",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:12",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:14",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:13",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:15"
+          ]
+        },
+        {
+          "first_sequence": 16,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:19",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:20",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:22",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:23",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:16",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:21",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:17",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:18"
+          ]
+        },
+        {
+          "first_sequence": 24,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:29",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:30",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:26",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:27",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:24",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:25",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:31",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:28"
+          ]
+        },
+        {
+          "first_sequence": 32,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:32",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:33",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:34",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:38",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:36",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:37",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:39",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:35"
+          ]
+        },
+        {
+          "first_sequence": 40,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:40",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:42",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:43",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:41",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:46",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:47",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:45",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:44"
+          ]
+        },
+        {
+          "first_sequence": 48,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:51",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:53",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:48",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:55",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:49",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:50",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:52",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:54"
+          ]
+        },
+        {
+          "first_sequence": 56,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:56",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:57",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:62",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:60",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:59",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:61",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:58",
+            "01a1768c-a9b8-749f-a70a-1ef3e4515842:34c40937-49b5-4d00-5c33-bad1d12b0839:63"
+          ]
+        }
+      ],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792990292133,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792990292408,
+          "elapsed_ms": 274
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792990298183,
+          "elapsed_ms": 6050
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792990299359,
+          "elapsed_ms": 7226
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792990302622,
+          "elapsed_ms": 10489
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792990303578,
+          "elapsed_ms": 11445
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792990303581,
+          "elapsed_ms": 11448
+        }
+      ],
+      "last_phase": "validation_finished",
+      "failure_phase": null,
+      "failure_sdk_error": null,
+      "ack_unknown_retries": 0,
+      "receive_retries": 0,
+      "last_receive_error": null,
+      "sdk_before": {
+        "acknowledged": 0,
+        "active_deliveries": 0,
+        "admission_wait_ns": 0,
+        "admitted_bytes": 0,
+        "deliveries": 0,
+        "pending_sends": 0,
+        "request_duration_ns": 0,
+        "requests": 0,
+        "retries": 0,
+        "unknown": 0
+      },
+      "sdk_after": {
+        "acknowledged": 64,
+        "active_deliveries": 0,
+        "admission_wait_ns": 98292,
+        "admitted_bytes": 0,
+        "deliveries": 64,
+        "pending_sends": 0,
+        "request_duration_ns": 21118246157,
+        "requests": 296,
+        "retries": 31,
+        "unknown": 0
+      },
+      "transport_after": {
+        "active_connections": 3,
+        "bytes_received_total": 94913,
+        "bytes_sent_total": 103928,
+        "connections_total": 3,
+        "data_blocked_frames_total": 0,
+        "deadlines_total": 0,
+        "frames_received_total": 299,
+        "frames_sent_total": 296,
+        "liveness_failures_total": 0,
+        "liveness_probes_total": 11,
+        "malformed_total": 0,
+        "packets_lost_total": 0,
+        "rejected_total": 0,
+        "send_wait_ns_total": 5702120,
+        "stream_data_blocked_frames_total": 0,
+        "streams_blocked_frames_total": 0,
+        "streams_total": 12,
+        "tls_failed_total": 0
+      },
+      "client_close_completed": true
+    },
+    "external": {
+      "schema_version": 2,
+      "status": "passed",
+      "configuration": {
+        "allocator": "system",
+        "batch_messages": 8,
+        "consumer_credit_bytes": 4194304,
+        "consumer_credit_messages": 256,
+        "consumer_instances": 1,
+        "endpoint": "192.168.126.8:17443",
+        "host_wait_timeout_seconds": 120,
+        "message_bytes": 1024,
+        "messages": 64,
+        "producer_workers": 1,
+        "recovery_attempt_bound": 300,
+        "recovery_timeout_seconds": 60,
+        "replay_settle_ms": 0,
+        "request_timeout_ms": 10000,
+        "require_unavailable": false,
+        "retry_delay_ms": 200,
+        "stage_fault": false,
+        "total_timeout_seconds": 180
+      },
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "topic_id": "01a1768c-621c-732f-bcde-de2d95ea427e",
+      "subscription_id": "01a1768c-63db-73ce-b20c-5b585d01fe04",
+      "replay_started_after_publish": false,
+      "original_consumer_reused": true,
+      "batches": [
+        {
+          "first_sequence": 0,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:5",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:3",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:0",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:7",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:4",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:1",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:2",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:6"
+          ]
+        },
+        {
+          "first_sequence": 8,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:11",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:9",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:12",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:8",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:10",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:13",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:14",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:15"
+          ]
+        },
+        {
+          "first_sequence": 16,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:17",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:21",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:20",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:16",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:22",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:23",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:19",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:18"
+          ]
+        },
+        {
+          "first_sequence": 24,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:25",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:24",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:29",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:31",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:26",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:28",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:27",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:30"
+          ]
+        },
+        {
+          "first_sequence": 32,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:34",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:32",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:33",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:35",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:36",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:38",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:39",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:37"
+          ]
+        },
+        {
+          "first_sequence": 40,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:41",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:44",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:47",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:42",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:40",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:45",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:43",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:46"
+          ]
+        },
+        {
+          "first_sequence": 48,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:48",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:51",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:49",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:52",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:53",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:55",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:50",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:54"
+          ]
+        },
+        {
+          "first_sequence": 56,
+          "message_count": 8,
+          "original_pending": 0,
+          "initial_error": null,
+          "last_retry_error": null,
+          "retry_attempts": 0,
+          "receipt_seen": true,
+          "message_ids": [
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:56",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:57",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:58",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:59",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:62",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:61",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:63",
+            "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:60"
+          ]
+        }
+      ],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792990273891,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792990274076,
+          "elapsed_ms": 185
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792990277147,
+          "elapsed_ms": 3256
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792990278238,
+          "elapsed_ms": 4346
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792990282891,
+          "elapsed_ms": 8999
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792990283493,
+          "elapsed_ms": 9602
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792990283498,
+          "elapsed_ms": 9607
+        }
+      ],
+      "last_phase": "validation_finished",
+      "failure_phase": null,
+      "failure_sdk_error": null,
+      "ack_unknown_retries": 0,
+      "receive_retries": 0,
+      "last_receive_error": null,
+      "sdk_before": {
+        "acknowledged": 0,
+        "active_deliveries": 0,
+        "admission_wait_ns": 0,
+        "admitted_bytes": 0,
+        "deliveries": 0,
+        "pending_sends": 0,
+        "request_duration_ns": 0,
+        "requests": 0,
+        "retries": 0,
+        "unknown": 0
+      },
+      "sdk_after": {
+        "acknowledged": 64,
+        "active_deliveries": 0,
+        "admission_wait_ns": 231501,
+        "admitted_bytes": 0,
+        "deliveries": 64,
+        "pending_sends": 0,
+        "request_duration_ns": 19028347620,
+        "requests": 279,
+        "retries": 17,
+        "unknown": 1
+      },
+      "transport_after": {
+        "active_connections": 3,
+        "bytes_received_total": 92721,
+        "bytes_sent_total": 103887,
+        "connections_total": 3,
+        "data_blocked_frames_total": 0,
+        "deadlines_total": 0,
+        "frames_received_total": 282,
+        "frames_sent_total": 279,
+        "liveness_failures_total": 0,
+        "liveness_probes_total": 12,
+        "malformed_total": 0,
+        "packets_lost_total": 0,
+        "rejected_total": 0,
+        "send_wait_ns_total": 18811758,
+        "stream_data_blocked_frames_total": 0,
+        "streams_blocked_frames_total": 0,
+        "streams_total": 12,
+        "tls_failed_total": 0
+      },
+      "client_close_completed": true
+    }
+  },
+  "historicalTelemetryAfterBackendRestarts": {
+    "capturedAt": "2026-10-26T04:56:10.836Z",
+    "originalInstance": "mac-1792934750620",
+    "originalTraceId": "11627366d2f35fc349fe52f094f0f187",
+    "signalTimestamp": "2026-10-25T13:25:50.620Z",
+    "ageHours": 15.505615833333334,
+    "metrics": {
+      "status": "success",
+      "data": {
+        "resultType": "vector",
+        "result": [
+          {
+            "metric": {
+              "__name__": "tidemq_external_check_total",
+              "instance": "mac-1792934750620",
+              "job": "tidemq-external-check",
+              "service_instance_id": "mac-1792934750620",
+              "service_name": "tidemq-external-check"
+            },
+            "value": [
+              1792934810.62,
+              "1"
+            ]
+          }
+        ]
+      }
+    },
+    "logEntries": 1,
+    "traceSpans": 1,
+    "tlsVerification": true,
+    "backendRestartTested": true,
+    "restartedServices": [
+      {
+        "image": "prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a",
+        "startedAt": "2026-10-26T04:55:28.774829124Z"
+      },
+      {
+        "image": "grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f",
+        "startedAt": "2026-10-26T04:52:49.98963851Z"
+      },
+      {
+        "image": "grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28",
+        "startedAt": "2026-10-26T04:51:57.584443985Z"
+      },
+      {
+        "image": "prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2",
+        "startedAt": "2026-10-26T04:51:48.967163545Z"
+      },
+      {
+        "image": "grafana/tempo:3.1.1@sha256:64e2fbd56d9c2b3412a4b430a58ea59e91a670b1e75f920a0c702213ad145044",
+        "startedAt": "2026-10-26T04:52:46.579232931Z"
+      }
+    ]
+  },
+  "cleanup": {
+    "capturedAt": "2026-10-26T04:58:13.511Z",
+    "legacyDirectoriesAbsent": [
+      "/root/explorer-dashboard-1008",
+      "/root/taosdata",
+      "/root/taosx-ab",
+      "/root/taosx-agent-ha-validation",
+      "/root/taosx-ci733953-20261022",
+      "/root/taosx-log-generation-7130692710",
+      "/root/tidemq-codequality-repro-20261020-401c7c9",
+      "/root/tidemq-performance",
+      "/root/tidemq-scalable-20261023",
+      "/root/tidemq-validation",
+      "/root/tsdb-docker-stack",
+      "/root/tsdb-nightly",
+      "/root/yyx-free-license-20261012",
+      "/root/stressctl",
+      "/root/cache",
+      "/root/.apex",
+      "/root/.kube",
+      "/opt/explorer-review-2455",
+      "/opt/idmp-exam-20261010",
+      "/opt/taos-explorer-demo"
+    ],
+    "hostServices": {
+      "libvirtd.service": "active",
+      "ssh.service": "active",
+      "tidemq-agent.service": "active",
+      "tidemq-lab-ingress.service": "active"
+    },
+    "hostDockerRunningContainers": 0,
+    "remainingHistoricalCoreDumps": [],
+    "activeHostRecoveryTimers": [],
+    "activeFixtureTimers": [],
+    "ciCleanup": {
+      "tidemq-fixtures": {
+        "directories": [
+          "/srv/tidemq/fixtures"
+        ],
+        "remainingCiDirectories": []
+      },
+      "tidemq-loadgen": {
+        "directories": [
+          "/srv/tidemq/validation"
+        ],
+        "remainingCiDirectories": []
+      },
+      "tidemq-runner": {
+        "directories": [
+          "/home/actions/.config/tidemq-lab/runs"
+        ],
+        "remainingCiDirectories": []
+      },
+      "tidemq-worker-a": {
+        "directories": [
+          "/var/lib/tidemq/storage",
+          "/var/lib/tidemq/metadata"
+        ],
+        "remainingCiDirectories": []
+      },
+      "tidemq-worker-b": {
+        "directories": [
+          "/var/lib/tidemq/storage",
+          "/var/lib/tidemq/metadata"
+        ],
+        "remainingCiDirectories": []
+      },
+      "tidemq-worker-c": {
+        "directories": [
+          "/var/lib/tidemq/storage",
+          "/var/lib/tidemq/metadata"
+        ],
+        "remainingCiDirectories": []
+      }
+    },
+    "removedEmptyCiDirectories": [
+      "/srv/tidemq/validation/ci-1792929522-1"
+    ],
+    "remainingCiPersistentVolumes": [],
+    "runner": {
+      "id": 21,
+      "name": "tidemq-dev-u126-8",
+      "status": "online",
+      "busy": false
+    }
+  }
+}

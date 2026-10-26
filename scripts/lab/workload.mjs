@@ -124,6 +124,11 @@ function run(command, args, input) {
   return result.stdout;
 }
 
+export function workloadNamespace(namespace) {
+  const labels = /^ci-[0-9]+-[0-9]+$/.test(namespace) ? {'tidemq.lab/ci': 'true'} : {};
+  return {apiVersion: 'v1', kind: 'Namespace', metadata: {name: namespace, labels}};
+}
+
 function main() {
   const [context, namespace, image, endpoint, credentials, output] = process.argv.slice(2);
   if (!context || !/^[a-z][a-z0-9-]{0,48}[a-z0-9]$/.test(namespace ?? '') || !/^localhost\/tidemq-lab:[a-f0-9]{12,64}$/.test(image ?? '') ||
@@ -136,7 +141,7 @@ function main() {
   const material = path.resolve(output, 'material');
   const kube = args => run('kubectl', ['--context', context, '--namespace', namespace, ...args]);
   const apply = items => run('kubectl', ['--context', context, 'apply', '-f', '-'], JSON.stringify({apiVersion: 'v1', kind: 'List', items}));
-  kube(['create', 'namespace', namespace]);
+  run('kubectl', ['--context', context, 'create', '-f', '-'], JSON.stringify(workloadNamespace(namespace)));
   const services = roles.map(node => resource('v1', 'Service', `node-${node.id}`, {publishNotReadyAddresses: true,
     selector: {'tidemq-node': `node-${node.id}`}, ports: [{name: 'peer', port: 7444, protocol: 'UDP'}]}));
   const publicVIP = namespace === 'tidemq-dev' ? '192.168.241.200' : '192.168.241.201';

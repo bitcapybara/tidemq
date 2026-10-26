@@ -41,7 +41,7 @@
 
 生产、控制注册和热读分别有操作数及字节准入，叠加进程 `MemoryBudget`。批次限制条数、单条 key/body 合计字节和批次字节；分区及数据组限制热消息条数和逻辑字节。热读通过 checked `get` 只访问请求页，不扫描或克隆完整历史。返回页持有准入许可，实际读取工作结束并释放页面后归还；调用方取消不能提前归还 owned 工作仍持有的许可。
 
-热页共享既有 `Bytes` 正文；准入取 `max(max_bytes, max(max_messages, 4) × size_of::<MessageData>()) + 512`，所有计算检查溢出。这个逻辑计费下限覆盖消息引用数组，也保留原字节下限；不能只按返回正文长度计费，因为少量正文仍可能对应完整预留的消息槽位。默认四个请求页保持在原 4 MiB 热读配额内，超额拒绝后释放操作数和字节许可。该口径不等于分配器、编码缓冲和进程 RSS 的精确上界；真实槽位容量与释放回归见[热读准入证据](../evidence/2026-10-21-hot-read-admission.zh-CN.md)。
+热页共享既有 `Bytes` 正文；准入取 `max(max_bytes, max(max_messages, 4) × size_of::<MessageData>()) + 512`，所有计算检查溢出。这个逻辑计费下限覆盖消息引用数组，也保留原字节下限；不能只按返回正文长度计费，因为少量正文仍可能对应完整预留的消息槽位。默认四个请求页保持在原 4 MiB 热读配额内，超额拒绝后释放操作数和字节许可。该口径不等于分配器、编码缓冲和进程 RSS 的精确上界；真实槽位容量与释放回归见[热读准入证据](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-hot-read-admission.zh-CN.md)。
 
 有界 FIFO worker 按已准入顺序调用 `client_write_ff`，随后独立 owned waiter 持有准入许可，等待真实 Raft 回执终态；不会逐批等待 durable ACK 才提交下一批。`submit_produce` 仅等待准入与入队，调用方释放同 P 通道的顺序 guard 后再对 `ProducerSubmission::receive` 等待结果。入 Raft 前，取消与 handoff 通过单个原子状态竞争；取消胜出则任务不会提交，返回确定的期限/取消拒绝。worker 在实际 handoff 前再次检查请求期限和原控制 lease 到期时间的较早者，不能通过排队续权。已经 handoff 后，timeout、取消或丢弃 future 只结束等待，不撤销提交，也不提前释放尚由 Raft 持有的命令预算。失 quorum 后未决量达到上限即拒绝新准入；恢复或关闭 Raft 后释放。排空先关闭新准入，再等待已拥有的任务完成，受调用方总期限限制。
 

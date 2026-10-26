@@ -3,11 +3,18 @@ set -euo pipefail
 umask 077
 source "$(dirname -- "${BASH_SOURCE[0]}")/guest.sh"
 mode=${1:-all}
-[[ "$mode" == all || "$mode" == runtime || "$mode" == access ]] || exit 2
-if [[ "$mode" != access ]]; then
+[[ "$mode" == all || "$mode" == runtime || "$mode" == access || "$mode" == maintenance ]] || exit 2
+lab_ssh tidemq-runner bash -c 'if pgrep -u actions -f "[R]unner.Worker" >/dev/null; then printf "Wait for the runner job before deployment\n" >&2; exit 1; fi'
+if [[ "$mode" == all || "$mode" == runtime ]]; then
 lab_copy tidemq-runner "$lab_repo/scripts/lab/prepare-runner-image-store.sh" /tmp/tidemq-runner-image-store.sh
 lab_ssh tidemq-runner sudo bash /tmp/tidemq-runner-image-store.sh
 bundle="$lab_state/private/runner-bundle"
+missing_tools=0
+for name in runner.archive rustfs collector collectorTest helm nextest llvmCov; do
+  [[ -f "$lab_state/tools/$name" ]] || missing_tools=1
+done
+(( missing_tools == 0 )) || bash "$lab_repo/scripts/lab/download-tools.sh"
+[[ -f "$bundle/rust-toolchain.tar.gz" ]] || bash "$lab_repo/scripts/lab/prepare-runner-assets.sh"
 for name in runner.archive rustfs collector collectorTest helm nextest llvmCov; do cp "$lab_state/tools/$name" "$bundle/$name"; done
 lab_fetch tidemq-cp-a /usr/bin/kubectl "$bundle/kubectl"
 tar -czf "$lab_state/private/runner-bundle.tar.gz" -C "$bundle" .
@@ -17,6 +24,17 @@ lab_ssh tidemq-runner bash -c 'install -d -m 0700 /tmp/tidemq-runner; tar -xzf /
 lab_ssh tidemq-runner sudo bash /tmp/tidemq-bootstrap-runner.sh /tmp/tidemq-runner > "$lab_state/logs/runner-bootstrap.log" 2>&1
 lab_ssh tidemq-runner bash -c 'rm -rf /tmp/tidemq-runner /tmp/tidemq-runner.tar.gz'
 fi
+if [[ "$mode" != access ]]; then
+  maintenance_bundle="$lab_state/private/runner-maintenance.tar.gz"
+  tar -czf "$maintenance_bundle" -C "$lab_repo" deploy/lab/inventory.json deploy/lab/runner-maintenance.env \
+    scripts/lab/runner-maintenance.sh scripts/lab/install-runner-maintenance.sh scripts/lab/with-lease.sh scripts/lab/cleanup-ci.sh scripts/lab/guest.sh
+  lab_copy tidemq-runner "$maintenance_bundle" /tmp/tidemq-runner-maintenance.tar.gz
+  lab_ssh tidemq-runner bash -c 'install -d -m 0700 /tmp/tidemq-runner-maintenance; tar -xzf /tmp/tidemq-runner-maintenance.tar.gz -C /tmp/tidemq-runner-maintenance'
+  lab_ssh tidemq-runner sudo bash /tmp/tidemq-runner-maintenance/scripts/lab/install-runner-maintenance.sh /tmp/tidemq-runner-maintenance
+  lab_ssh tidemq-runner rm -rf /tmp/tidemq-runner-maintenance /tmp/tidemq-runner-maintenance.tar.gz
+  rm -f "$maintenance_bundle"
+fi
+if [[ "$mode" == maintenance ]]; then exit; fi
 if [[ "$mode" == runtime ]]; then printf 'Runner runtime is prepared.\n'; exit; fi
 private_bundle="$lab_state/private/runner-access"
 install -d -m 0700 "$private_bundle/logs" "$private_bundle/telemetry"

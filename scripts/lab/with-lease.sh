@@ -13,4 +13,5 @@ cleanup() {
 trap cleanup EXIT
 read -r -t 15 acknowledgement <&"$lease_read"
 [[ "$acknowledgement" == LOCKED ]] || { printf 'The lab is already leased or unavailable\n' >&2; exit 1; }
+export TIDEMQ_LAB_LEASE_HELD=1
 "$@"

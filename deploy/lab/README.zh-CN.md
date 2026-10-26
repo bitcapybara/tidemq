@@ -2,7 +2,7 @@
 
 本目录是已经选择的方案 A（KVM/libvirt + Ubuntu VM + kubeadm）的实施配置。机器为 `ssh dev`，物理地址 `192.168.126.8`。资源真值在 [inventory.json](inventory.json)，下载来源和校验值在 [binaries.json](binaries.json)。原来的开发计划不承担部署清单职责。
 
-实际部署快照与脱敏验收记录在 [evidence/2026-10-25/](evidence/2026-10-25/README.zh-CN.md)，记录中的时间使用 UTC。常驻 `tidemq-dev` 已部署；CI 使用独立的临时 namespace 和 RustFS 实例。
+实际部署快照与脱敏验收记录在 [evidence/2026-10-25/](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/deploy/lab/evidence/2026-10-25/README.zh-CN.md)，记录中的时间使用 UTC。常驻 `tidemq-dev` 已部署；CI 使用独立的临时 namespace 和 RustFS 实例。
 
 实验室模拟独立 Linux 内核、节点磁盘、网络、Raft 副本和依赖故障。11 台 VM 共享一台物理机和一块 NVMe；软件拓扑测试不能证明物理可用区隔离、真实跨区延迟、宿主机断电或整块 NVMe 损坏时的行为。
 
@@ -47,9 +47,9 @@ Worker 挂载点为 `/var/lib/tidemq/storage` 和 `/var/lib/tidemq/metadata`。�
 
 MQ 入口采用 `externalTrafficPolicy: Local`，由有本地 gateway 的节点接流，避免入口再转到另一个节点的 UDP backend。[MetalLB 流量策略](https://metallb.io/usage/#traffic-policies)说明了 L2 模式的取舍；此模式的入口流量集中在当前公告节点，不能将两个 gateway 的 CPU 简单相加作为入口容量。
 
-常驻实例来自完整 CI 通过的干净提交 `c386434bbf6d478e96d68a53d7040323396b1648`，镜像 `localhost/tidemq-lab:public-c386434bbf6d`，manifest digest `sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c`。已创建 `validation` tenant 及其 `default` namespace，供 SDK 验收使用。初次部署清单见 [public-cluster-resources.json](evidence/2026-10-25/public-cluster-resources.json)，升级后的实际镜像与节点见 [final-state.json](evidence/2026-10-25/final-state.json)。本次保留原有 cluster ID、CA、token、Service IP 和卷绑定，10 个角色逐个重建并等待 Ready。公网关的 Service IP 为 `10.96.1.178`，UDP NodePort `31226`，健康检查 TCP NodePort `32278`；这些 NodePort 没有作为外部入口发布。
+常驻实例来自完整 CI 通过的干净提交 `c386434bbf6d478e96d68a53d7040323396b1648`，镜像 `localhost/tidemq-lab:public-c386434bbf6d`，manifest digest `sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c`。已创建 `validation` tenant 及其 `default` namespace，供 SDK 验收使用。初次部署清单见 [public-cluster-resources.json](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/deploy/lab/evidence/2026-10-25/public-cluster-resources.json)，升级后的实际镜像与节点见 [final-state.json](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/deploy/lab/evidence/2026-10-25/final-state.json)。本次保留原有 cluster ID、CA、token、Service IP 和卷绑定，10 个角色逐个重建并等待 Ready。公网关的 Service IP 为 `10.96.1.178`，UDP NodePort `31226`，健康检查 TCP NodePort `32278`；这些 NodePort 没有作为外部入口发布。
 
-公共镜像使用绑定提交的独立 `public-COMMIT` 标签，CI 的内容哈希标签可以复用，不再改写公共引用。[public-image-identity.json](evidence/2026-10-25/public-image-identity.json) 分别记录 Docker/manifest 身份与运行时 config digest；后者为 `sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841`。CRI 状态可能返回同一 digest 已有的标签名，因此升级检查 Pod spec 的公共标签、实际 imageID 和 Ready 状态，不以状态中的标签字符串代替镜像身份。
+公共镜像使用绑定提交的独立 `public-COMMIT` 标签，CI 的内容哈希标签可以复用，不再改写公共引用。[public-image-identity.json](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/deploy/lab/evidence/2026-10-25/public-image-identity.json) 分别记录 Docker/manifest 身份与运行时 config digest；后者为 `sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841`。CRI 状态可能返回同一 digest 已有的标签名，因此升级检查 Pod spec 的公共标签、实际 imageID 和 Ready 状态，不以状态中的标签字符串代替镜像身份。
 
 每个 namespace 独立创建 QUIC CA、节点证书、访问 token 和 cluster ID。配置由 [workload.mjs](../../scripts/lab/workload.mjs) 生成，沿用仓库已有的 RF3 配置生成器。私钥及含 Secret 的资源文件只保存在私有目录，禁止作为 GitHub artifact 上传。
 
@@ -144,12 +144,14 @@ GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 2
 | `/srv/tidemq/work` | checkout、有限测试结果 |
 | `/srv/tidemq/tools` | 验证 SHA 的 RustFS、Collector 测试二进制、kubectl、Helm、nextest、llvm-cov |
 | `/srv/tidemq/rust` | Rust 1.99.1 工具链与 Cargo cache，`/opt/tidemq-rust` 软链接 |
-| `/srv/tidemq/public-builds/tidemq-dev` | 公共镜像构建副本；私有目录原 build 路径保留软链接，避免占用 runner 根盘 |
+| `/srv/tidemq/maintenance` | 自动清理的本地互斥锁；已安装脚本在 `/usr/local/lib/tidemq-lab` |
 | `/srv/tidemq/cargo-target` | 可重建的 debug / coverage 编译缓存 |
 | `/srv/tidemq/tmp` | 测试临时目录 |
 | `/home/actions/.config/tidemq-lab` | 私有 kubeconfig、受限 CI SSH key、telemetry 客户端证书与运行材料 |
 
 Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepare-runner-image-store.sh` 在无运行中构建容器时迁移并通过 bind mount 持久化，避免根盘被镜像解包填满。
+
+任务开始/完成钩子和每小时空闲定时器自动回收 checkout、超额缓存、停止的容器、未使用镜像和取消任务遗留资源。保留额度、所有权检查、互斥、安装与冷重建方法见 [Runner 资源清理](runner-maintenance.zh-CN.md)。原公共构建副本不再长期保存，服务身份和持久数据独立保留。
 
 Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
@@ -206,7 +208,7 @@ bash scripts/lab/deploy-workload.sh tidemq-dev PRIVATE_BUILD \
 
 角色 StatefulSet 使用 `OnDelete`。变更配置后，须在独占租约下逐个删除对应 Pod，再等待新 Pod 创建且 Ready 后处理下一个；同一 metadata/storage quorum 同时最多停一个副本。`kubectl rollout restart/status` 不能代替该策略下的实际 Pod 重建。
 
-公共恢复镜像归档在宿主 `/var/lib/tidemq-lab/images/public-c386434bbf6d.tar`；runner 的 `build/image.tar`、三个二进制、源码和工具链元数据同步保存在上表的数据盘目录，资源引用备份使用相同公共标签。仅采用 CI 通过且 Rust 补丁为空的构建；先将固定归档导入全部 worker 并验证 digest，再逐个更新角色。资源身份、卷绑定与私有材料必须沿用已有备份。
+公共镜像的源码、manifest/config digest、二进制身份和验收结果保存在 [合并验收](evidence/2026-10-25/README.zh-CN.md) 中；镜像 tar 和旧构建目录可清理，由固定源码及工具重建。当前三个 worker 的运行镜像与独立公共标签保留。升级时仅采用 CI 通过且 Rust 补丁为空的构建，先导入全部 worker 并验证 digest，再逐个更新角色；资源身份、卷绑定与私有材料必须沿用已有备份。
 
 公共服务私密材料在宿主 `/var/lib/tidemq-lab/private/credentials/`：`kubernetes.toml`、`devices.toml`、`grafana-password`、`metrics-password`。TLS 客户端材料在 `private/tls/`；发给外部设备时只提供对应客户端证书、私钥和 CA，不提供 CA 签名私钥。QUIC 客户端只取该 workload 的 `ca.pem` 和 `access.token`，不取节点私钥。
 
@@ -226,7 +228,7 @@ target/debug/examples/deploy_validation --endpoint 192.168.126.8:17443 \
 
 恢复 / 初始化脚本的顺序为：`provision-host.sh` → `prepare-nodes.sh` → `bootstrap-kubernetes.sh` → `install-kubernetes-addons.sh` → `prepare-infra.sh` → `create-certificates.sh` → `deploy-agents.sh` → `deploy-backends.sh` → `prepare-fixture-host.sh` → `install-host-control.sh` → `prepare-runner-assets.sh` → `deploy-runner.sh` → `register-runner.sh`。先阅读各脚本参数；不要为修复单个组件重跑整套初始化。首次准备工具先执行 `download-tools.sh`。注册 token 是短期凭据，禁止写进仓库。
 
-`prepare-runner-assets.sh` 使用 inventory 中固定 digest 的官方 Ubuntu / Rust 镜像，复用 `deploy/docker/Dockerfile.builder` 生成工具链 bundle 和 runtime base tar，并记录镜像 ID 和 SHA-256。`deploy-runner.sh runtime` 只更新 runner 工具，`access` 只更新受限访问材料。不要向其他设备分发整个 bundle 或 runner 私有目录。
+`prepare-runner-assets.sh` 使用 inventory 中固定 digest 的官方 Ubuntu / Rust 镜像，复用 `deploy/docker/Dockerfile.builder` 生成工具链 bundle 和 runtime base tar，并记录镜像 ID 和 SHA-256。`deploy-runner.sh runtime` 更新 runner 工具及清理机制，`maintenance` 只安装清理机制，`access` 只更新受限访问材料。不要向其他设备分发整个 bundle 或 runner 私有目录。
 
 ## 8. 旧环境清理
 
@@ -234,6 +236,6 @@ target/debug/examples/deploy_validation --endpoint 192.168.126.8:17443 \
 
 另已删除 4 个部署前遗留的 bash/rustc core dump，约 3.9 GiB。用户明确确认保留 YuXiangagent 的 3 条 root 定时任务及相关文件；它们是本次清理的保留项。
 
-清理入口分别是 `scripts/lab/cleanup-legacy-host.sh` 和 `cleanup-legacy-units.sh`，均要求 `--delete-authorized-legacy-data`。它们只用于本次旧环境迁移；后续业务数据不能因为这个历史授权再次被自动删除。
+一次性的 `cleanup-legacy-host.sh` 和 `cleanup-legacy-units.sh` 已从当前目录删除，实现和原始执行证据仍在 [固定 Git 归档](../../docs/evidence/README.zh-CN.md) 中；历史授权不适用于后来创建的其他项目。日常 CI 只调用上述范围明确的资源回收机制。
 
 Git 只跟踪非敏感资源配置、公开 CA、脚本和脱敏验证证据。VM 磁盘、Docker tar、kubeconfig、Secret YAML/JSON、token、客户端私钥、CA 私钥、bucket 密钥、runner 配置凭据及其 bundle 不得提交。

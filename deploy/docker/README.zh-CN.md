@@ -46,7 +46,7 @@ docker build -f "$REPO/deploy/docker/Dockerfile.builder" \
   --build-arg RUST_IMAGE="$RUST_IMAGE" -t "$BUILDER_IMAGE" "$REPO/deploy/docker"
 ```
 
-在受限 builder 容器中编译。只读挂载确定的源码快照，输出写入独立 staging 目录；服务二进制跟随仓库默认启用 mimalloc。System 或 jemalloc 对照构建须显式传入 `--no-default-features --features allocator-system` 或 `allocator-jemalloc`，详见[分配器构建与诊断](../../docs/operations/memory-troubleshooting.zh-CN.md)。实际验证应记录源码 SHA、Cargo.lock SHA、镜像 ID 和二进制 SHA，不能把不同快照的结果混用。`24471ce` 已用默认 mimalloc 完成新的 Linux 完整门禁、release/镜像核验与全新 RF1/RF3 十项功能验证（736 持久 ACK），见[本轮 Linux 证据](../../docs/evidence/2026-10-21-wal-segments-linux-24471ce.zh-CN.md)。[80c 历史结果及独立性能失败](../../docs/evidence/2026-10-21-wal-segments-linux-80c7659.zh-CN.md)继续保留；早期 Linux 验证使用 System。后续提交必须使用自己的验证结果。
+在受限 builder 容器中编译。只读挂载确定的源码快照，输出写入独立 staging 目录；服务二进制跟随仓库默认启用 mimalloc。System 或 jemalloc 对照构建须显式传入 `--no-default-features --features allocator-system` 或 `allocator-jemalloc`，详见[分配器构建与诊断](../../docs/operations/memory-troubleshooting.zh-CN.md)。实际验证应记录源码 SHA、Cargo.lock SHA、镜像 ID 和二进制 SHA，不能把不同快照的结果混用。`24471ce` 已用默认 mimalloc 完成新的 Linux 完整门禁、release/镜像核验与全新 RF1/RF3 十项功能验证（736 持久 ACK），见[本轮 Linux 证据](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-wal-segments-linux-24471ce.zh-CN.md)。[80c 历史结果及独立性能失败](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-wal-segments-linux-80c7659.zh-CN.md)继续保留；早期 Linux 验证使用 System。后续提交必须使用自己的验证结果。
 
 ```bash
 docker run --rm --cpus 4 --memory 8g --memory-swap 8g --pids-limit 512 \
@@ -264,7 +264,7 @@ dc --profile tools down --timeout 6 --volumes --remove-orphans
 
 ## Linux 实测与保留状态
 
-2026-10-20 在 `ssh dev` 实际构建并冻结 `a3f8f4e` 后，RF1 三项、RF3 七项全部通过，十个独立 case 合计 736 条完整唯一交付和持久 ACK。镜像/二进制身份、故障目标、原 Pending、真实 OOM、回收竞态红绿、Linux Rust 门禁及历史失败见[实测记录](../../docs/evidence/2026-10-20-linux-docker.zh-CN.md)。
+2026-10-20 在 `ssh dev` 实际构建并冻结 `a3f8f4e` 后，RF1 三项、RF3 七项全部通过，十个独立 case 合计 736 条完整唯一交付和持久 ACK。镜像/二进制身份、故障目标、原 Pending、真实 OOM、回收竞态红绿、Linux Rust 门禁及历史失败见[实测记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-linux-docker.zh-CN.md)。
 
 RF1 已停，RF3 十角色、RustFS 和 holder 保留运行；数据卷、私有状态目录和证据保留，没有自动清理任务。所有构建容器已退出，部署及门禁前后既有 17 个业务容器的 ID、运行状态、启动时间和重启次数一致。继续使用原 `STATE`、新镜像身份和原凭据，结束时按上面的精确项目清理命令操作。该验证未放行真实三区、生产 LB、长稳、生产 allocator 或吞吐/延迟目标。
 

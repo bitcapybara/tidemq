@@ -1,9 +1,0 @@
-{
-  "source_sha": "80c7659c39b3429b185c4e6bfc3436c8e892917e",
-  "tree": "0c8073e9372202e5206d0b74f1340c965219e655",
-  "archive_sha256": "fd298a2bd674bc183a6fd4bb4ade0d70b2d5c6931aef43896666874dc28512a5",
-  "bundle_sha256": "d72bb0af64f94d362f164c17c728c69df1ae3670d03cb6e3a2a5ec8ec29e9aa7",
-  "lock_sha256": "d4c609c32697a3d04f3b9b235bb746943804a7fac9fc63c51da4db6f2e90d63e",
-  "path": "/root/tidemq-validation/wal-segments-20261020.xnfbxhby/source-80c7659",
-  "tracked_clean": true
-}

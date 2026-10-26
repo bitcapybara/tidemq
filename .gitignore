@@ -4,3 +4,6 @@
 /data/
 *.prof
 *.heap
+*.profraw
+*.profdata
+/artifacts/

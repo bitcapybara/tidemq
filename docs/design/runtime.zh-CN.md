@@ -29,7 +29,7 @@ Read 的消息数和字节数都是上限。首条正文和冷页准备完成、
 
 已有明确持久交付前缀时，超过工作片或需要另一冷页便停止新投递，并经原 session、代次、ACK ranges 和冷页检查后返回部分批次。每个 token 仍须等待对应 `RecordDelivery` 持久成功；已开始写入的 Unknown 或错误仍使整个 Read 返回错误，不能伪装成部分成功。首条准备阶段受原期限约束；没有可用预算时返回不可用或期限错误，不反复返回空批。冷页正常返回后显式释放 pin，异常路径仍由既有 TTL/reaper 回收；接收屏障与 ACK 前沿语义保持一致。
 
-一次 Read 至多持有一个计费热页，在页内通过 checked offset/get 共享消息正文，减少重复 quorum 热读。页耗尽时先释放旧页，再按原消息数和字节上限取得下一页，持续生产下仍可刷新已提交边界。每条消息继续独立持久化 `RecordDelivery` 并校验当前 fence、代次和保留边界；热正文回收冲突会清除缓存页，再进入原有冷读证明流程。页面许可跟随实际 owned 读取工作释放，取消调用方不会提前归还；新投递工作片仍只缩短。真实页复用、回收冲突和取消回归见[实施证据](../evidence/2026-10-21-live-read-hot-pages.zh-CN.md)。
+一次 Read 至多持有一个计费热页，在页内通过 checked offset/get 共享消息正文，减少重复 quorum 热读。页耗尽时先释放旧页，再按原消息数和字节上限取得下一页，持续生产下仍可刷新已提交边界。每条消息继续独立持久化 `RecordDelivery` 并校验当前 fence、代次和保留边界；热正文回收冲突会清除缓存页，再进入原有冷读证明流程。页面许可跟随实际 owned 读取工作释放，取消调用方不会提前归还；新投递工作片仍只缩短。真实页复用、回收冲突和取消回归见[实施证据](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-live-read-hot-pages.zh-CN.md)。
 
 热正文取得后，本地副本可能在 `RecordDelivery` 校验前被后台回收。状态机仍严格拒绝没有正文证据的签发；运行时只识别这一发生在投递状态变更前的 typed Producer `OffsetExpired`，并重新核对逻辑 `retained_floor`。消息仍在保留范围内时，已有持久前缀可经原尾部检查返回；首条则沿用同一 offset、attempt、operation、原 deadline 和只缩短的工作片，至多重取一次，通过既有 S3 冷页证明完成签发。真正的逻辑过期仍为终态 `OffsetExpired`，Unknown 仍使整个 Read 失败。该冲突用固定无标签的 `tidemq_runtime_read_hot_reclaim_conflicts_total` 记录，不逐条输出正文或 token。
 

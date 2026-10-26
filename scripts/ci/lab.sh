@@ -16,6 +16,7 @@ load_root="/srv/tidemq/validation/$run"
 validator_pid=
 [[ ! -e "$private" ]] || { printf 'Use a new CI run identity\n' >&2; exit 1; }
 mkdir -m 0700 -p "$private" "$report"
+touch "$private/.tidemq-ci"
 host_control() { ssh -n -F "$TIDEMQ_LAB_HOME/ssh_config" lab-host "$*"; }
 kube() { kubectl --request-timeout=15s --namespace "$run" "$@"; }
 wait_runtime() {
@@ -39,16 +40,8 @@ cleanup() {
   kube get pods -o json > "$report/pods-after.json" 2>/dev/null || true
   kube get events -o json > "$report/events.json" 2>/dev/null || true
   for id in 11 12 13 21 22 23 31 32 41 42; do kube logs "node-$id-0" -c tidemq --tail=200 > "$report/node-$id.log" 2>&1 || true; done
-  if kubectl delete namespace "$run" --ignore-not-found --wait=true --timeout=2m >> "$report/cleanup.log" 2>&1; then
-    for id in 11 12 13 21 22 23; do kubectl delete pv "$run-node-$id" --ignore-not-found >> "$report/cleanup.log" 2>&1 || cleanup_result=1; done
-    for suffix in a b c; do
-      lab_ssh "tidemq-worker-$suffix" sudo rm -rf -- "/var/lib/tidemq/storage/$run" "/var/lib/tidemq/metadata/$run" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
-    done
-  else cleanup_result=1; fi
-  lab_ssh tidemq-fixtures sudo /usr/local/sbin/tidemq-fixtures remove "$run" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
   scp -q -r -i "$TIDEMQ_LAB_KEY" -o "UserKnownHostsFile=$TIDEMQ_LAB_KNOWN_HOSTS" "lab@192.168.240.35:$load_root/results/." "$report/" >> "$report/cleanup.log" 2>&1 || true
-  lab_ssh tidemq-loadgen sudo rm -rf -- "$load_root" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
-  rm -rf -- "$private"
+  bash scripts/lab/cleanup-ci.sh "$run" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
   (( cleanup_result == 0 )) || result=1
   printf '{"exitCode":%s,"cleanupExitCode":%s}\n' "$result" "$cleanup_result" > "$report/result.json"
   exit "$result"

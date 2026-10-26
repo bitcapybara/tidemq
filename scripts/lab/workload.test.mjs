@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {roles, runtimeConfig, workload, persistentVolume, sidecarConfig, queueService} from './workload.mjs';
+import {roles, runtimeConfig, workload, persistentVolume, sidecarConfig, queueService, workloadNamespace} from './workload.mjs';
 
 const addresses = Object.fromEntries(roles.map((node, index) => [node.id, `10.96.1.${index + 1}`]));
+test('only numbered CI namespaces opt into automatic deletion', () => {
+  assert.deepEqual(workloadNamespace('ci-123-1').metadata.labels, {'tidemq.lab/ci': 'true'});
+  for (const name of ['tidemq-dev', 'ci-manual', 'default']) {
+    assert.deepEqual(workloadNamespace(name).metadata.labels, {});
+  }
+});
 test('RF3 storage and metadata quorums span separate guest kernels and failure zones', () => {
   for (const role of ['metadata', 'storage']) {
     const voters = roles.filter(node => node.role === role);

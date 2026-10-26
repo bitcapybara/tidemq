@@ -17,7 +17,7 @@ MemoryBudget 统一计算总量，数据还受单独额度限制。普通控制/
 
 默认选择与生产诊断验收分别记录：mimalloc 已作为默认，同 allocator 的可符号化调用栈/存活增长诊断仍须验证。静态 mimalloc 不保证普通 heaptrack/LD_PRELOAD 能拦截；其汇总统计不能代替 profiler。诊断构建变更版本/feature/unwinder/布局必须标注，不能据其推断原生产碎片或时延。具体构建命令与诊断工具覆盖见[内存排障](../operations/memory-troubleshooting.zh-CN.md)。
 
-jemalloc 探针在 macOS arm64 上已通过：原生版本 5.3.1-0-g81034ce1f1373e37dc865038e1bc8eeecf559ce8，汇总统计可读；启用 libunwind 后，heap_v2 栈可用匹配二进制与 atos 解析到 known_live_profile_allocation，8MiB 持有记录在跨线程释放后消失。对应 release 的源码、构建命令与产物摘要见[实测记录](../evidence/2026-10-19-allocator-release.zh-CN.md)。此证据属于开启 profiling 的构建；不等于普通 jemalloc 构建默认具备历史栈，也不证明 Linux、生产负载停顿或 mimalloc 栈采集已经通过。
+jemalloc 探针在 macOS arm64 上已通过：原生版本 5.3.1-0-g81034ce1f1373e37dc865038e1bc8eeecf559ce8，汇总统计可读；启用 libunwind 后，heap_v2 栈可用匹配二进制与 atos 解析到 known_live_profile_allocation，8MiB 持有记录在跨线程释放后消失。对应 release 的源码、构建命令与产物摘要见[实测记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-19-allocator-release.zh-CN.md)。此证据属于开启 profiling 的构建；不等于普通 jemalloc 构建默认具备历史栈，也不证明 Linux、生产负载停顿或 mimalloc 栈采集已经通过。
 
 原生 dump 写到私有 FIFO，由固定 8KiB 缓冲持续排空并限制实际落盘字节；超限/写失败仍排空，最后报错并删除未完成产物。每次最多 8MiB，目录最多 8 个产物，启动前验证私有目录及磁盘余量。全进程只允许一个采样/dump；外层超时不释放仍在运行的原生操作许可。原生采集本身仍可能争用 allocator 锁，业务停顿须在真实负载下测量。
 

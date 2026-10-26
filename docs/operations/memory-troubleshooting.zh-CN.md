@@ -69,7 +69,7 @@ Linux 原生栈捕获使用 frame-pointer walk，接入时须让 Rust 与 C 调�
 
 容器中 RSS 较低仍可能因文件缓存触发配额。将 `/diagnostics` 的 `quota.container`、实际采样年龄、`memory.current`、`memory.stat` 的 `file`／`inactive_file`、`memory.events` 与进程 RSS 同时保留；Docker stats 的工作集会扣除部分缓存，不能替代 raw current。仅查看逻辑积压、物理文件、共享滞后和 RSS 四个 blocked 标记，也不能排除独立的 container headroom 背压。
 
-`4f79a5` 的 Linux 插桩构建在同一 8 GiB cgroup 中留下约 7.75 GiB 文件缓存，之后多个真实运行时测试返回 QuotaExceeded。对相同二进制与配置的[因果对照](../evidence/2026-10-21-wal-segments-coverage.zh-CN.md#私有构建缓存的因果对照与阶段隔离)表明，仅读取 private build 文件即可重现，定向释放其 clean cache 后原测试通过；原 90／80 水位、期限、容器限制均未改变。这个结果解释该次隔离验证，不把后续其他 Unknown 或 deadline 一并归因于缓存。
+`4f79a5` 的 Linux 插桩构建在同一 8 GiB cgroup 中留下约 7.75 GiB 文件缓存，之后多个真实运行时测试返回 QuotaExceeded。对相同二进制与配置的[因果对照](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-wal-segments-coverage.zh-CN.md#私有构建缓存的因果对照与阶段隔离)表明，仅读取 private build 文件即可重现，定向释放其 clean cache 后原测试通过；原 90／80 水位、期限、容器限制均未改变。这个结果解释该次隔离验证，不把后续其他 Unknown 或 deadline 一并归因于缓存。
 
 复现验证分为构建完成和测试开始两个阶段。只对该轮自有 private target 的普通、单硬链接文件执行定向 cache hint，保留文件及 profile 的内容和摘要；随后按原参数运行测试，并连续采集原 cgroup 字段。该阶段处理用于隔离编译器缓存对应用测试的影响，不是生产进程绕过真实内存压力的准入机制。
 

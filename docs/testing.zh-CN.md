@@ -30,7 +30,7 @@ TIDEMQ_REQUIRE_EXTERNAL=1 TIDEMQ_COVERAGE=1 bash scripts/ci/validate-and-integra
 node scripts/coverage-gate.mjs compare --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json --output target/ci/coverage/summary.json
 ```
 
-默认 mimalloc 调整后的 249 项串行测试、显式 System/jemalloc 构建、原始并行失败与 mimalloc-pprof 候选验证见[本次验证记录](evidence/2026-10-20-mimalloc-default.zh-CN.md)。
+默认 mimalloc 调整后的 249 项串行测试、显式 System/jemalloc 构建、原始并行失败与 mimalloc-pprof 候选验证见[本次验证记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-mimalloc-default.zh-CN.md)。
 
 运行时集成测试共用进程级 tracing subscriber，并启动多个受限 Raft 子进程，历史 cargo test 使用 `--test-threads=1`；当前 nextest `ci` profile 保留逐项隔离。`CARGO_BUILD_JOBS=2` 限制构建并行度；nextest 的 `-j` 是测试线程数，不能混为构建限制。跨进程 exporter 可乱序到达，链路测试等待完整 SDK → Gateway → Broker 父子关系后再断言。测试隔离不构成业务并发吞吐或长稳证明。
 
@@ -71,7 +71,7 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 | S09 [成员迁移](../tests/scaling_raft.rs)、[远程闭合迁移](../tests/scaling_remote.rs) | learner/joint/stable、隔离后保留原计划、joint 中换主、完成证明私有、容量新鲜度与预算、真实 native RF3 自动替换、缺样不创建计划 | 部分远程 fixture 为语义 codec loopback；S08 另验证实际 CLI/mTLS 修复，跨区与高压力组合仍待验 |
 | S10 [观测边界](../tests/observability_boundaries.rs)、[分配器](../tests/allocator_diagnostics.rs)、[堆采样](../tests/heap_profile.rs)、quota/retention 单元测试 | 字节许可、控制保留、有限指标、日志丢弃/失败/脱敏、临时过滤、真实 RSS、cgroup 解析、迟滞、同 allocator profile；原生 Prometheus/Grafana 实际 RF1 查询、29 面板和匿名只读权限，见[部署证据](../deploy/observability/README.zh-CN.md)；Linux 容器限额与 RF1 受控真 OOM 见 S12 | Linux 同 allocator 分配栈、长期趋势与浏览器画面待验；Collector 与正式开销单独记录 |
 | S11 [追踪导出](../tests/tracing_export.rs)、[四角色链路](../tests/runtime_support/tracing.rs) | 官方 OTLP HTTP/protobuf、TLS 拒绝、宿主设施共存、外部 sampled 仍受本地预算限制、慢/503/超大响应/关闭与恢复；真实 SDK→Gateway→Broker 父关系、owned 提交及持久 ACK、原期限清理；Linux 普通回归覆盖内置采集器边界；官方 native Collector 在 macOS 实际 accepted 与退出端口释放 | native Collector 用例需显式 ignored，当前 Linux CI 已执行；默认 nop 不持久化 trace。域名/私有 CA/mTLS 由本地 Collector 代理；公网与正式 Linux Collector 部署待验，Docker 集群默认未开 OTLP |
-| S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../examples/deploy_validation.rs)、[读取回收集成测试](../tests/runtime_reclamation.rs)、[最新 Docker 记录](evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
+| S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../examples/deploy_validation.rs)、[读取回收集成测试](../tests/runtime_reclamation.rs)、[最新 Docker 记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
 | M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
 
 ## 构建、生成与 allocator
@@ -88,7 +88,7 @@ cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --featur
 cargo test -p tidemq --locked --no-default-features --features allocator-jemalloc --test allocator_diagnostics
 ```
 
-CI 覆盖 Linux/macOS；allocator 专项按需手动执行，不能使用互斥 feature 的 all-features。CI 文件存在不表示远端已运行。同 allocator 的 release 栈、持有/释放、跨线程释放和符号化已在本机验证，见[原始采样记录](evidence/2026-10-19-allocator-release.zh-CN.md)；mimalloc 汇总统计不提供同等分配栈证据。
+CI 覆盖 Linux/macOS；allocator 专项按需手动执行，不能使用互斥 feature 的 all-features。CI 文件存在不表示远端已运行。同 allocator 的 release 栈、持有/释放、跨线程释放和符号化已在本机验证，见[原始采样记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-19-allocator-release.zh-CN.md)；mimalloc 汇总统计不提供同等分配栈证据。
 
 
 ## 验收边界
