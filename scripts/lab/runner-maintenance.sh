@@ -85,7 +85,7 @@ sweep() {
     printf 'Refusing Docker cleanup while a runner container is active\n' >&2; return 1;
   }
   if [[ "$phase" == idle ]] && docker --host unix:///var/run/docker.sock ps --format '{{.Names}}' | grep -qx tidemq-ci-runner; then
-    docker --host unix:///var/run/docker.sock exec tidemq-ci-runner /opt/tidemq-runner/idle
+    docker --host unix:///var/run/docker.sock exec tidemq-ci-runner /opt/tidemq-runner/idle.sh
   fi
   docker --host unix:///var/run/docker.sock container prune --filter 'label!=tidemq.lab/runner=ci-container' --force
   docker --host unix:///var/run/docker.sock image prune --all --force

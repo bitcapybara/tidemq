@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-phase=$(basename "$0")
+phase=$(basename "$0" .sh)
 [[ "$phase" =~ ^(before|after|idle)$ ]] || exit 2
 source /opt/tidemq-runner/runner-maintenance.sh
 source /opt/tidemq-runner/runner-maintenance.env
