@@ -21,6 +21,7 @@
 | Cargo registry / git | 各最长 7 天、2 GiB；不删除 `cargo/bin`、rustup 或固定工具 |
 | `/srv/tidemq/tmp` | 最长 1 天，2 GiB；在全局租约保护下清理 |
 | Runner `_diag` | 删除超过 7 天的文件；超过 128 MiB 时删除超过 1 天的文件，保留近期及当前日志 |
+| 私有 lab `logs` 镜像导入日志 | 最长 7 天，128 MiB；超额清空，下次导入重新生成 |
 | Runner Docker | 清理停止的容器、未使用镜像和构建缓存；检查 VM role、挂载点和 Docker data-root，固定连接本机 socket；有运行中容器时拒绝清理 |
 | 临时 Kubernetes / fixture / loadgen 数据 | 使用下述所有权检查与共用回收脚本 |
 
@@ -29,6 +30,8 @@
 LLVM profile 与编译产物在单元、集成、故障钩子、外部依赖、K8s 黑盒测试和最终报告导出之间一直保留；10 个服务实例受控退出、profile 回传合并后，才删除 worker 上该 CI run 的 coverage 目录。完成钩子在制品上传后运行。独立 coverage job 仍只下载、比较报告，没有重编译或重跑 Rust 测试。
 
 Docker 删除包括 runtime base 的本地副本。[ensure-runtime-base.sh](../../scripts/lab/ensure-runtime-base.sh) 按 inventory 的官方完整 digest 拉取并核验；已有镜像身份错误会失败，不静默接受。冷重建需要访问固定镜像及依赖的下载源。
+
+Worker 上的 CI 镜像由 kubelet 自带镜像回收管理。已从运行中的 `configz` 核对 high 85%、low 80%、最小闲置 2 分钟，CRI 日志限制 10 MiB × 3；正在运行的公共 Pod 保留镜像引用。此机制在节点镜像文件系统达到水位后回收闲置镜像，根盘自身受 16 GiB VM 配置约束。Guest 删除缓存不会使已分配的宿主虚拟磁盘文件立即缩小，宿主空间以单独的 `df` 监控为准。
 
 ## CI 遗留资源回收
 
@@ -73,3 +76,5 @@ bash scripts/lab/deploy-runner.sh runtime
 必须备份并保留 `/var/lib/tidemq-lab/private/{tls,credentials,workloads}`、受限 SSH 密钥、kubeconfig、VM 定义和磁盘，以及各服务的持久数据。公用 workload 的完整身份在 `private/workloads/tidemq-dev/workload`；runner 的 `public/tidemq-dev/workload` 及 loadgen `/srv/tidemq/public-dev` 也保留。它们不能由重新生成 CA、cluster ID 或 token 代替。宿主其他项目、OS 工具和用户明确保留的 YuXiangagent 任务不参与自动清理。
 
 历史一次性证据的完整原件仍在[固定 Git 归档](../../docs/evidence/README.zh-CN.md)，当前只保留[合并验收](evidence/2026-10-25/README.zh-CN.md)及最新清理验收。GitHub 测试制品保留 14 天、覆盖率/VM 制品 30 天；长期证据不依赖这些制品永远在线。
+
+本机开发工作树还删除了 `target/lab-tools/collector.archive.part` 与旧 `source.bundle`。本轮验证和 IDE 使用中的 `target/debug`、`target/flycheck0` 及 CodeGraph 索引保留；runner 的清理额度不应用于本机 IDE 缓存。

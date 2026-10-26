@@ -2,7 +2,7 @@
 
 本目录是已经选择的方案 A（KVM/libvirt + Ubuntu VM + kubeadm）的实施配置。机器为 `ssh dev`，物理地址 `192.168.126.8`。资源真值在 [inventory.json](inventory.json)，下载来源和校验值在 [binaries.json](binaries.json)。原来的开发计划不承担部署清单职责。
 
-实际部署快照与脱敏验收记录在 [evidence/2026-10-25/](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/deploy/lab/evidence/2026-10-25/README.zh-CN.md)，记录中的时间使用 UTC。常驻 `tidemq-dev` 已部署；CI 使用独立的临时 namespace 和 RustFS 实例。
+实际部署快照与脱敏验收记录在 [evidence/2026-10-25/](evidence/2026-10-25/README.zh-CN.md)，记录中的时间使用 UTC。常驻 `tidemq-dev` 已部署；CI 使用独立的临时 namespace 和 RustFS 实例。
 
 实验室模拟独立 Linux 内核、节点磁盘、网络、Raft 副本和依赖故障。11 台 VM 共享一台物理机和一块 NVMe；软件拓扑测试不能证明物理可用区隔离、真实跨区延迟、宿主机断电或整块 NVMe 损坏时的行为。
 

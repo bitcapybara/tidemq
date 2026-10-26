@@ -65,6 +65,7 @@ sweep() {
     bound_cache "$directory" "$CARGO_CACHE_MAX_BYTES" "$CACHE_MAX_DAYS"
   done
   bound_cache /srv/tidemq/tmp "$TMP_MAX_BYTES" 1
+  bound_cache "$TIDEMQ_LAB_HOME/logs" "$DIAGNOSTIC_MAX_BYTES" "$CACHE_MAX_DAYS"
   find /srv/tidemq/actions-runner/_diag -type f -mtime +7 -delete
   if (( $(du -sx -B1 /srv/tidemq/actions-runner/_diag | cut -f 1) > DIAGNOSTIC_MAX_BYTES )); then
     find /srv/tidemq/actions-runner/_diag -type f -mtime +1 -delete

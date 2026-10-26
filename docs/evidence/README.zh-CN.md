@@ -42,3 +42,5 @@ git ls-tree -r --name-only e0be78cfc00c81f7d36caaf3f7835b9c45e963b6 -- docs/evid
 ```
 
 旧环境迁移脚本 `cleanup-legacy-host.sh` / `cleanup-legacy-units.sh` 也已从当前目录删除，其授权仅覆盖当时那批旧环境，完整实现及执行结果仍在上述历史提交中。
+
+针对旧提交的一次性[评审核对表](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/reviews/2026-10-21-addf6d9-assessment.zh-CN.md)也归入历史；它不再作为当前版本的问题清单或验收结论。
