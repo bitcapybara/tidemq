@@ -15,7 +15,8 @@ cargo llvm-cov report --workspace --include-build-script --locked --json --summa
 cargo llvm-cov report --workspace --include-build-script --locked --lcov --output-path "$report_dir/lcov.info"
 cargo llvm-cov report --workspace --include-build-script --locked --html --output-dir "$report_dir/html"
 node scripts/coverage-gate.mjs record --report "$report_dir/llvm.json" \
-  --output "$report_dir/measurement.json" --profile-count "$profile_count"
+  --output "$report_dir/measurement.json" --profile-count "$profile_count" \
+  --merge-inputs "$CARGO_LLVM_COV_TARGET_DIR/$(basename "$PWD")-profraw-list"
 list=$(mktemp)
 trap 'rm -f -- "$list"' EXIT
 find "$CARGO_LLVM_COV_TARGET_DIR" -maxdepth 1 -type f -name '*.profraw' -printf '%f\0' > "$list"

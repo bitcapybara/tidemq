@@ -108,6 +108,7 @@ export function validateMeasurement(measured, policy, sourceCommit, raw, runId) 
   assert.ok(Number.isSafeInteger(measured.profile_count) && measured.profile_count > 0, 'Missing test profiles');
   assert.deepEqual(Object.keys(measured.test_reports ?? {}).sort(), [...TEST_STAGES].sort(), 'Missing preceding test stages');
   for (const hash of Object.values(measured.test_reports)) assert.match(hash, /^[0-9a-f]{64}$/, 'Invalid test report digest');
+  assert.match(measured.merge_inputs_sha256 ?? '', /^[0-9a-f]{64}$/, 'Missing LLVM merge input digest');
   const apiCount = validateApiCoverage(measured.api_coverage, sourceCommit, runId);
   assert.ok(measured.profile_count > apiCount, 'Missing native profiles alongside deployed API profiles');
   validateEnvironment(policy, measured.environment);
@@ -128,16 +129,22 @@ async function record(settings) {
   const api = (await read(path.join(ROOT, 'target/ci/api-coverage.json'))).value;
   const sourceCommit = cleanHead(ROOT);
   validateApiCoverage(api, sourceCommit, process.env.GITHUB_RUN_ID);
+  const mergeInputs = await fs.readFile(path.resolve(settings['--merge-inputs']));
+  const merged = new Set(mergeInputs.toString('utf8').trim().split('\n'));
+  assert.equal(merged.size, Number(settings['--profile-count']), 'LLVM did not merge every collected profile');
   for (const profile of [...api.nodes.flatMap(node => node.profiles), ...api.client_profiles]) {
     const file = path.join(process.env.CARGO_LLVM_COV_TARGET_DIR, profile.file);
+    assert.ok(merged.has(file), 'LLVM omitted a deployed API profile');
     const stat = await fs.lstat(file);
     assert.ok(stat.isFile() && stat.size === profile.bytes, 'API profile was lost before final export');
     assert.equal(digest(await fs.readFile(file)), profile.sha256, 'API profile changed before final export');
   }
   const measured = {schema_version: 1, source_commit: sourceCommit, llvm_report_sha256: digest(raw.bytes),
-    profile_count: Number(settings['--profile-count']), test_reports: testReports, api_coverage: api, environment: environment(policy.value)};
+    profile_count: Number(settings['--profile-count']), merge_inputs_sha256: digest(mergeInputs),
+    test_reports: testReports, api_coverage: api, environment: environment(policy.value)};
   validateMeasurement(measured, policy.value, measured.source_commit, raw.bytes, process.env.GITHUB_RUN_ID);
   await save(path.resolve(settings['--output']), measured);
+  await fs.writeFile(path.join(path.dirname(path.resolve(settings['--output'])), 'profile-inputs.txt'), mergeInputs, {mode: 0o600});
 }
 
 async function comparison(settings) {
@@ -158,6 +165,8 @@ async function comparison(settings) {
   const raw = await read(path.resolve(settings['--report']));
   const measured = (await read(path.resolve(settings['--measurement']))).value;
   const measuredEnvironment = validateMeasurement(measured, policy.value, sourceCommit, raw.bytes, settings['--run-id']);
+  const mergeInputs = await fs.readFile(path.join(path.dirname(path.resolve(settings['--measurement'])), 'profile-inputs.txt'));
+  assert.equal(digest(mergeInputs), measured.merge_inputs_sha256, 'LLVM merge inputs changed after export');
   const counts = llvmCounts(raw.value, policy.value.llvm_export_version);
   const result = initializing ? {status: 'passed', metrics: null} : compareCoverage(baseline.value.counts, counts);
   const summary = {schema_version: 1, ...result, initialization: initializing, source_commit: sourceCommit,

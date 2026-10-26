@@ -80,6 +80,7 @@ test('reused coverage binds every preceding test stage to the same source, LLVM 
   const f = await fixture();
   try {
     const measurement = {schema_version: 1, source_commit: f.head, llvm_report_sha256: sha(f.raw), profile_count: 12,
+      merge_inputs_sha256: 'b'.repeat(64),
       test_reports: Object.fromEntries(['unit', 'sdk-default-unit', 'integration', 'runtime-faults', 'external-services']
         .map(stage => [stage, 'a'.repeat(64)])), api_coverage: apiFixture(f.head), environment: f.summary.environment};
     const verify = value => validateMeasurement(value, policy, f.head, f.raw, '123');
@@ -92,6 +93,7 @@ test('reused coverage binds every preceding test stage to the same source, LLVM 
       ['test_reports', {...measurement.test_reports, unit: ''}, /Invalid test report/],
       ['api_coverage', null, /Missing API coverage/],
       ['profile_count', 11, /Missing native profiles/],
+      ['merge_inputs_sha256', '', /Missing LLVM merge input/],
       ['environment', {...measurement.environment, github_run_id: '124'}, /another Rust run/],
       ['environment', {...measurement.environment, platform: 'darwin'}, /fixed platform/],
     ]) assert.throws(() => verify({...measurement, [key]: value}), message);
