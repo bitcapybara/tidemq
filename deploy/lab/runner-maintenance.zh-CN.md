@@ -34,7 +34,7 @@ Docker 删除包括 runtime base 的本地副本。[ensure-runtime-base.sh](../.
 
 [cleanup-ci.sh](../../scripts/lab/cleanup-ci.sh) 同时用于 CI 的 EXIT trap 和空闲回收，必须持有宿主租约。只接受 `ci-数字-数字` 身份；namespace 必须带 `tidemq.lab/ci=true` 标签。CI 开始即写私有 `.tidemq-ci` 标记，即使部署尚未创建 namespace，也能在下次回收时发现。
 
-先恢复允许故障的 VM，再检查 namespace 和所有 PV 的 claim namespace、固定名字及精确本地路径。确认 namespace 删除完成后，才删除该 run 的 6 个 PV、worker 数据、fixture 进程/单元、loadgen 目录和私有构建。任何不匹配或 API 故障都会保留重试材料并返回失败。`tidemq-dev`、无标签的手工 namespace 和公共服务不在允许范围内。
+先恢复允许故障的 VM，再检查 namespace 和所有 PV 的 claim namespace、固定名字及精确本地路径。确认 namespace 删除完成后，才删除该 run 的 6 个 PV、worker 数据、fixture 进程/单元、loadgen 目录和私有构建。任何不匹配或 API 故障都会保留重试材料并返回失败；控制面不可用时，本机缓存清理仍继续执行。`tidemq-dev`、无标签的手工 namespace 和公共服务不在允许范围内。
 
 正常 CI 会先收集业务报告和故障日志，再调用清理。GitHub 上传失败时应及时从任务日志排查；本地 checkout 会按上述规则回收，不作为长期证据库。长期需要保留的结果应合并为脱敏验收记录，原始过程通过固定 Git 提交和 GitHub 制品定位。
 

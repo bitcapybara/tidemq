@@ -58,6 +58,33 @@ test('checkout cleanup preserves the current action working directory and downlo
   }
   assert.ok(fs.existsSync(workspace));
 });
+test('a control-plane outage still cleans local caches and reports failure for retry', t => {
+  const root = fixture(t), trace = path.join(root, 'trace');
+  const result = spawnSync('bash', ['-c', `
+source "$1"
+export TIDEMQ_LAB_HOME="$2/private" TRACE="$2/trace"
+TARGET_MAX_BYTES=1 CARGO_CACHE_MAX_BYTES=1 ACTION_CACHE_MAX_BYTES=1 TMP_MAX_BYTES=1
+CACHE_MAX_DAYS=7 DIAGNOSTIC_MAX_BYTES=1 ROOT_MIN_FREE_BYTES=1 DATA_MIN_FREE_BYTES=1
+kubectl() { return 1; }
+clean_checkouts() { printf 'checkouts\\n' >> "$TRACE"; }
+bound_cache() { printf '%s\\n' "$1" >> "$TRACE"; }
+find() { :; }
+du() { printf '0\\tignored\\n'; }
+df() { :; }
+free_bytes() { printf 100000000000; }
+docker() {
+  if [[ "$*" == *' info '* ]]; then printf /srv/tidemq/docker;
+  elif [[ "$*" != *' ps '* ]]; then printf '%s\\n' "$*" >> "$TRACE"; fi
+}
+sweep unused after
+`, 'test', path.join(scripts, 'runner-maintenance.sh'), root], {encoding: 'utf8'});
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /continuing local cache cleanup/);
+  const calls = fs.readFileSync(trace, 'utf8');
+  assert.match(calls, /checkouts/);
+  assert.match(calls, /cargo-target/);
+  assert.match(calls, /image prune --all --force/);
+});
 
 function fakeCommands(root) {
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);

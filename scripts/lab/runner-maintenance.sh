@@ -36,8 +36,11 @@ clean_checkouts() {
 
 sweep() {
   local repo=$1 phase=$2 run runs status=0 directory
-  runs=$(kubectl --request-timeout=15s get namespaces -l tidemq.lab/ci=true -o json |
-    jq -er '[.items[].metadata.name] | join("\n")') || return 1
+  if ! runs=$(kubectl --request-timeout=15s get namespaces -l tidemq.lab/ci=true -o json |
+    jq -er '[.items[].metadata.name] | join("\n")'); then
+    printf 'CI resource discovery failed; continuing local cache cleanup\n' >&2
+    runs= status=1
+  fi
   if [[ -d "$TIDEMQ_LAB_HOME/runs" ]]; then
     while IFS= read -r -d '' directory; do
       [[ ! -f "$directory/.tidemq-ci" ]] || runs+=$'\n'"${directory##*/}"
@@ -92,6 +95,7 @@ main() {
   repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
   export TIDEMQ_LAB_HOME=/home/actions/.config/tidemq-lab
   export KUBECONFIG="$TIDEMQ_LAB_HOME/kubeconfig"
+  export TIDEMQ_LAB_INVENTORY="$repo/deploy/lab/inventory.json"
   export HOME=/home/actions PATH=/usr/local/bin:/usr/bin:/bin:/srv/tidemq/tools
   unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
   source "$repo/deploy/lab/runner-maintenance.env"
