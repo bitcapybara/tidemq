@@ -1,0 +1,39 @@
+{
+  "capturedAt": "2026-10-26T02:18:23.172Z",
+  "runId": 40254563550,
+  "jobId": 121353525178,
+  "test": "rf3_metadata_replacement_keeps_three_voters_and_checkpoints_every_target_before_source_drain",
+  "sourceCommit": "3e52ed7c79e4fec727c33faea15c79a8a486ffff",
+  "phase": "send after retiring and stopping the former metadata voter",
+  "lines": [
+    "2026-10-26T01:57:35.1442300Z     thread 'scalable::metadata_membership::rf3_metadata_replacement_keeps_three_voters_and_checkpoints_every_target_before_source_drain' (127696) panicked at tests/runtime_support/scalable_metadata_membership.rs:165:10:",
+    "2026-10-26T01:57:35.1445960Z     called `Result::unwrap()` on an `Err` value: SendUnresolved { pending: PendingSend { sequence: 2, complete: false }, source: Remote { code: Unavailable, message: \"Failed to receive internal semantic result; outcome is unknown; query or retry with the original operation identity\", outcome: Unknown, retryable: true, expected_sequence: None, expected_registration_epoch: None, retry_after_ms: None, original_outcome_known: false } }"
+  ],
+  "originalLocalRepetitions": {
+    "passed": 20,
+    "failed": 0,
+    "ciFailureReproduced": false
+  },
+  "fixedCommit": "48eba8d83b906b235bfbeb2673797a3b3e0ea8a9",
+  "change": "Reuse logical_send to recover only the original PendingSend across retirement of the former metadata voter. Keep membership, durable checkpoint, message identity and ACK assertions.",
+  "productionCodeChanged": false,
+  "linux": {
+    "platform": "linux",
+    "sourceCommit": "0c9194ab7c4d5bfe265e48732e3f42b6682f3221",
+    "patchSha256": "99ba0abc3bbc2ebf2d16ec75c7e256ec1b787af7b614f23765ea1ede19d9ecb9",
+    "binarySha256": "5bbf69739b54cb4049a216cfe8903d14313dc806455e5f0732c9a11e9b88f4cc",
+    "repetitions": 20,
+    "passed": 20,
+    "failed": 0
+  },
+  "macOS": {
+    "platform": "darwin",
+    "sourceCommit": "0c9194ab7c4d5bfe265e48732e3f42b6682f3221",
+    "patchSha256": "99ba0abc3bbc2ebf2d16ec75c7e256ec1b787af7b614f23765ea1ede19d9ecb9",
+    "binarySha256": "1407bdc587ceebe4252aeda2d6ac6d8a0cbfdd81a328f16264949437087951bb",
+    "repetitions": 20,
+    "passed": 20,
+    "failed": 0
+  },
+  "rawCILogSha256": "ac02ec8296da0ebd490e90c7c8505916488fbb411c69b3b9fba1c2afaf7517d3"
+}

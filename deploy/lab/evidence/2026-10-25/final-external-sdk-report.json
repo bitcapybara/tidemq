@@ -28,8 +28,8 @@
     "acknowledged": 64,
     "frontier": 64
   },
-  "topic_id": "01a175d0-67b4-7128-a3da-f7aed4486d7e",
-  "subscription_id": "01a175d0-689d-7b10-9f18-71b15a63cdaf",
+  "topic_id": "01a1768c-621c-732f-bcde-de2d95ea427e",
+  "subscription_id": "01a1768c-63db-73ce-b20c-5b585d01fe04",
   "replay_started_after_publish": false,
   "original_consumer_reused": true,
   "batches": [
@@ -42,14 +42,14 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:0",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:6",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:2",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:1",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:7",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:3",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:4",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:5"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:5",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:3",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:0",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:7",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:4",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:1",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:2",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:6"
       ]
     },
     {
@@ -61,14 +61,14 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:13",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:8",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:14",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:9",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:10",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:11",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:15",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:12"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:11",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:9",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:12",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:8",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:10",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:13",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:14",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:15"
       ]
     },
     {
@@ -80,14 +80,14 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:16",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:20",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:18",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:17",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:22",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:19",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:21",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:23"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:17",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:21",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:20",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:16",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:22",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:23",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:19",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:18"
       ]
     },
     {
@@ -99,14 +99,14 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:30",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:24",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:31",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:25",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:27",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:26",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:28",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:29"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:25",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:24",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:29",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:31",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:26",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:28",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:27",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:30"
       ]
     },
     {
@@ -118,14 +118,14 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:32",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:34",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:33",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:35",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:37",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:38",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:39",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:36"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:34",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:32",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:33",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:35",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:36",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:38",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:39",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:37"
       ]
     },
     {
@@ -137,14 +137,14 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:41",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:40",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:44",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:45",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:42",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:43",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:46",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:47"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:41",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:44",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:47",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:42",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:40",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:45",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:43",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:46"
       ]
     },
     {
@@ -156,14 +156,14 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:48",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:50",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:51",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:49",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:52",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:53",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:54",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:55"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:48",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:51",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:49",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:52",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:53",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:55",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:50",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:54"
       ]
     },
     {
@@ -175,52 +175,52 @@
       "retry_attempts": 0,
       "receipt_seen": true,
       "message_ids": [
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:56",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:57",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:61",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:62",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:59",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:63",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:60",
-        "01a175d0-67b4-7128-a3da-f7aed4486d7e:a0c19478-239d-8a93-d6ed-f90e6ea8fbd1:58"
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:56",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:57",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:58",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:59",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:62",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:61",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:63",
+        "01a1768c-621c-732f-bcde-de2d95ea427e:0a943360-109f-ca90-419c-51d1acb16df8:60"
       ]
     }
   ],
   "phases": [
     {
       "phase": "connecting",
-      "unix_ms": 1792977954628,
+      "unix_ms": 1792990273891,
       "elapsed_ms": 0
     },
     {
       "phase": "creating_queue",
-      "unix_ms": 1792977954740,
-      "elapsed_ms": 112
+      "unix_ms": 1792990274076,
+      "elapsed_ms": 185
     },
     {
       "phase": "initial_production",
-      "unix_ms": 1792977956544,
-      "elapsed_ms": 1916
+      "unix_ms": 1792990277147,
+      "elapsed_ms": 3256
     },
     {
       "phase": "initial_consumption",
-      "unix_ms": 1792977957527,
-      "elapsed_ms": 2899
+      "unix_ms": 1792990278238,
+      "elapsed_ms": 4346
     },
     {
       "phase": "initial_complete",
-      "unix_ms": 1792977962347,
-      "elapsed_ms": 7719
+      "unix_ms": 1792990282891,
+      "elapsed_ms": 8999
     },
     {
       "phase": "ledger_complete",
-      "unix_ms": 1792977962656,
-      "elapsed_ms": 8028
+      "unix_ms": 1792990283493,
+      "elapsed_ms": 9602
     },
     {
       "phase": "validation_finished",
-      "unix_ms": 1792977962659,
-      "elapsed_ms": 8030
+      "unix_ms": 1792990283498,
+      "elapsed_ms": 9607
     }
   ],
   "last_phase": "validation_finished",
@@ -244,30 +244,30 @@
   "sdk_after": {
     "acknowledged": 64,
     "active_deliveries": 0,
-    "admission_wait_ns": 147332,
+    "admission_wait_ns": 231501,
     "admitted_bytes": 0,
     "deliveries": 64,
     "pending_sends": 0,
-    "request_duration_ns": 16732512789,
-    "requests": 265,
-    "retries": 5,
+    "request_duration_ns": 19028347620,
+    "requests": 279,
+    "retries": 17,
     "unknown": 1
   },
   "transport_after": {
     "active_connections": 3,
-    "bytes_received_total": 90823,
-    "bytes_sent_total": 102329,
+    "bytes_received_total": 92721,
+    "bytes_sent_total": 103887,
     "connections_total": 3,
     "data_blocked_frames_total": 0,
     "deadlines_total": 0,
-    "frames_received_total": 268,
-    "frames_sent_total": 265,
+    "frames_received_total": 282,
+    "frames_sent_total": 279,
     "liveness_failures_total": 0,
-    "liveness_probes_total": 11,
+    "liveness_probes_total": 12,
     "malformed_total": 0,
-    "packets_lost_total": 1,
+    "packets_lost_total": 0,
     "rejected_total": 0,
-    "send_wait_ns_total": 17133878,
+    "send_wait_ns_total": 18811758,
     "stream_data_blocked_frames_total": 0,
     "streams_blocked_frames_total": 0,
     "streams_total": 12,

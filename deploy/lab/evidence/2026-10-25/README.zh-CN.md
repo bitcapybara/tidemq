@@ -6,9 +6,14 @@
 
 | 证据 | 内容 |
 |---|---|
+| [combined-rf3-regression.json](combined-rf3-regression.json) | 并发 RF3 原 Pending 发送/ACK 恢复；阶段仍为 40 秒，Linux/macOS 各 20 次通过 |
+| [metadata-retirement-regression.json](metadata-retirement-regression.json) | 原 macOS 现场 Unknown 与测试修正；本机原场景 20 次未复现，修正后 Linux/macOS 各 20 次通过 |
+| [ack-admission-regression.json](ack-admission-regression.json) | 删除性能工具后复现 ACK 配额采样竞态，固定探针显示异步释放，修正后 Linux/macOS 各 100 次通过 |
+| [github-workflows.json](github-workflows.json) | Rust 工作流保持 active，默认分支的旧 Performance 入口已手动停用 |
 | [final-cleanup.json](final-cleanup.json) | 20 个旧环境目录均不存在、宿主 SSH/libvirt/agent/入口服务健康、无宿主 Docker 应用或历史 core dump |
 | [final-state.json](final-state.json) | 升级后 11 台 VM running、6 节点 Ready、10 角色的实际镜像、身份保留及旧单元清理状态 |
 | [public-upgrade.json](public-upgrade.json) | 固定修复镜像与二进制 SHA、10 个 Pod 逐个替换前后身份，以及未变更的 Secret/Service/PVC 元数据 |
+| [public-image-identity.json](public-image-identity.json)、[public-backup-sync.json](public-backup-sync.json) | 常驻专用标签、manifest/config 身份、三个 worker 导入与数据盘恢复镜像/二进制同步 |
 | [final-loadgen-report.json](final-loadgen-report.json)、[final-external-sdk-report.json](final-external-sdk-report.json) | 修复版本在 loadgen 与 Mac LAN/VPN 入口分别完成 64 条持久消息及客户端关闭 |
 | [final-client-identity.json](final-client-identity.json) | loadgen 与 Mac 验证二进制的源码、镜像和 SHA-256 |
 | [final-external-acceptance.json](final-external-acceptance.json) | 升级后外部 S3 PUT/GET/DELETE、跨 bucket 拒绝、TLS/mTLS、页面、35 个健康实例、应用与设备三类观测、无活动告警 |
@@ -28,8 +33,11 @@
 | [rustfs-observability-evidence.json](rustfs-observability-evidence.json) | 公共及 a/b fixture 的历史 readiness、fixture namespace/实例标签与公共 RustFS traces |
 | [cri-rotation-replay.json](cri-rotation-replay.json) | 停止节点 agent、写入并轮转 CRI 文件、重启 agent 后，两条未压缩日志均可查询 |
 | [alert-routing-acceptance.json](alert-routing-acceptance.json) | Alertmanager 至本机审计 webhook 的 firing/resolved 事件；未向人员发送通知 |
-| [coverage-summary.json](coverage-summary.json) | 修复提交 `14372cd` 的覆盖率门槛结果、564 项插桩测试环境和报告 SHA；行覆盖率 83.64% |
-| [github-rust-run.json](github-rust-run.json)、[github-vm-validation-passed.json](github-vm-validation-passed.json) | 修复提交完整 GitHub Rust CI 全绿及 8 个 VM 业务场景、watchdog、三类入库信号 |
+| [observe-restart.json](observe-restart.json)、[historical-telemetry-retention.json](historical-telemetry-retention.json) | 五个后端逐个重启且持久挂载保持不变，重启后查询早前外部设备的 metrics/logs/traces |
+| [coverage-summary.json](coverage-summary.json) | 提交 `c386434` 的覆盖率门槛与报告 SHA；行/函数/区域覆盖率 89.07% / 80.53% / 85.84% |
+| [coverage-measurement.json](coverage-measurement.json)、[coverage-reuse-validation.json](coverage-reuse-validation.json) | 五阶段测试累计的 908 个 profile、JUnit/LLVM 哈希、213 个源码文件的提交归属，以及 coverage job 未重新构建或执行 Rust 测试的验证 |
+| [github-native-validation.json](github-native-validation.json) | 本轮 Linux 五阶段及 macOS 四阶段 JUnit；Linux 哈希与 measurement 逐项相符 |
+| [github-rust-run.json](github-rust-run.json)、[github-vm-validation-passed.json](github-vm-validation-passed.json) | 提交 `c386434` 的完整 GitHub Rust CI 全绿及 8 个 VM 业务场景、watchdog、三类入库信号 |
 
 首次常驻部署来自 [public-source-commit.txt](public-source-commit.txt) 中的干净提交，源码补丁 SHA-256 为 [public-source-patch-sha256.txt](public-source-patch-sha256.txt) 中的空补丁哈希，镜像 ID 在 [public-image-id.txt](public-image-id.txt)。[public-initial-report.json](public-initial-report.json) 是独立 loadgen VM 的首次 64 条验收。上述 initial / public-source 文件保留初次部署身份；当前运行版本以 public-upgrade.json、final-state.json 及 final 两份 SDK 报告为准。客户端 CA、token、服务密钥、含 Secret 的 Kubernetes 资源和磁盘镜像均未纳入本目录。
 
@@ -69,7 +77,11 @@ RustFS 1.0.3 的嵌入式管理页面位于 `/rustfs/console/index.html`，LAN �
 | [40210315888](https://github.com/bitcapybara/tidemq/actions/runs/40210315888) | 提交 `1ab8c171`；macOS 完整通过，Linux 单元 297/297、SDK default 29/29、原生集成 266/267；自动分片接收超时仍在定位，因此 lab/coverage 未执行 |
 | [40215415839](https://github.com/bitcapybara/tidemq/actions/runs/40215415839) | 提交 `8a1bb94`；Linux/macOS 校验通过，Linux 原生 267/267、故障钩子 75/75、真实依赖 16/16；覆盖率 564/564、行覆盖率 83.62%；VM 仲裁恢复失败，清理成功，整条 pipeline 未通过 |
 | [40221753920](https://github.com/bitcapybara/tidemq/actions/runs/40221753920) | 修复提交 `14372cd`，完整通过：Linux/macOS 单元 297/297、SDK default 29/29、原生集成 267/267、故障钩子 75/75；Linux 真实依赖 16/16、覆盖率 564/564；VM 8 个业务场景、独立恢复 watchdog 和三类信号通过，业务及清理退出码均为 0 |
-| [40254563550](https://github.com/bitcapybara/tidemq/actions/runs/40254563550) | 删除性能工具后的提交 `3e52ed7` 完整复验，等待最终结果；不以先前修复版通过代替本次结果 |
+| [40266082534](https://github.com/bitcapybara/tidemq/actions/runs/40266082534) | 提交 `c386434`，完整通过：Linux 284/29/267/75/16，macOS 284/29/267/75；Linux 各阶段直接使用 LLVM 插桩并累计 profile，覆盖率 job 仅比较报告；VM 8 场景、watchdog、三类观测与清理均通过 |
+| [40261250080](https://github.com/bitcapybara/tidemq/actions/runs/40261250080) | 提交 `d90bf6e`：Linux/macOS 校验及 VM 8 场景、watchdog、三类观测均通过；按用户新要求主动取消剩余重复执行测试的覆盖率 job，整条 pipeline 记录为 cancelled |
+| [40258446796](https://github.com/bitcapybara/tidemq/actions/runs/40258446796) | 提交 `48eba8d`：macOS 完整校验通过；Linux 原生集成 266/267，并发 RF3 的发送返回 Unknown 后直接 unwrap；覆盖率及 VM 阶段跳过，整体失败 |
+| [40256657928](https://github.com/bitcapybara/tidemq/actions/runs/40256657928) | 提交 `0c9194a`，包含异步配额回收断言修正；在校验阶段主动取消，以合并上一轮 macOS 暴露的 metadata 测试恢复契约修正，未执行 VM 故障 |
+| [40254563550](https://github.com/bitcapybara/tidemq/actions/runs/40254563550) | 删除性能工具后的提交 `3e52ed7`：Linux 单元 284/284、SDK default 29/29；集成 266/267，ACK 回归的配额即时快照断言失败，已独立复现并修正；macOS 普通集成 267/267、故障钩子 74/75；metadata 旧节点停止后的发送返回 Unknown，被测试直接 unwrap，整体失败 |
 
 专项复现另有：Linux scaling membership 用例修复后连续 20 次通过；同一个 PendingAck 恢复用例连续 5 次通过；原 5 秒 close 时限的显式扩缩容用例在正确 TMPDIR 和独占资源下连续 20 次通过。后者未修改生产关闭语义，不能据此宣称根因已修复。macOS tracing 拒绝计数用例连续 10 次通过。Rust 修改执行 fmt 与 Clippy；脚本执行 Node 测试、Linux Bash 语法检查及 actionlint。
 
@@ -81,11 +93,21 @@ GitHub VM 仲裁恢复发现了 SDK 进一步缺陷：[失败报告](ci-40215415
 
 修复提交 `14372cd5a053bedf536fd3e91bf569d4bb17339c` 保留原操作和 payload，直到取得原回执或已记录的最终拒绝；请求与恢复时限均未修改。配额集成测试现在要求同一 Pending 恢复原消息，删除了发送替代消息的兜底。完整复验 [Rust 40221753920](https://github.com/bitcapybara/tidemq/actions/runs/40221753920) 全部通过：双 worker 恢复后 80 个唯一消息与 80 次持久 ACK 完整，故障中的 8 个原 Pending 各重试一次，原 Consumer 与客户端关闭检查均通过。
 
-按用户最新要求，不兼容旧 SDK，不继续性能测量。性能 workflow、perf_load 及其模块、构建/执行/比较脚本、性能基线/校准配置、联合晋升脚本和专项报告共 39 个文件已删除；覆盖率自身的比较器、基线与边界测试保留。测试指南更名为 docs/testing.zh-CN.md，并清理当前入口中的旧操作说明。
+本轮最终源码 `c386434` 已在 [40266082534](https://github.com/bitcapybara/tidemq/actions/runs/40266082534) 完整通过。单元、默认 SDK、集成、故障钩子和真实外部依赖在同一 Linux 插桩环境累计 908 个 profile，五份 JUnit 的哈希逐项匹配 measurement；213 个报告源码均属于该提交。coverage job 的日志与步骤核对没有 Rust build/test 命令，只执行可信工具自检及原始报告比较。原 `14372cd` 的 [运行状态](github-rust-run-14372cd.json)、[覆盖率](coverage-summary-14372cd.json) 和 [VM 结果](github-vm-validation-14372cd.json)，以及 `d90bf6e` 的 [运行状态](github-rust-run-d90bf6e.json)、[原生结果](github-native-validation-d90bf6e.json) 和 [VM 结果](github-vm-validation-d90bf6e.json) 保留为对应版本的历史证据。
+
+常驻实例最终使用 `public-c386434bbf6d` 标签，与 CI 内容标签分开；源码和 Rust 补丁均与该次 CI 相符。升级检查曾因 CRI 返回已有别名而在首个已就绪 Pod 停止；修正为 Pod 声明标签与运行时 config digest 联合校验后继续，全部 10 个 Pod 均替换并就绪，持久资源元数据未改变。loadgen 和私有恢复副本同步为该镜像，Mac 与 loadgen 均重新完成 64 条验收。
+
+最终顺序重启 Prometheus、Loki、Tempo、Grafana、Alertmanager，逐项确认同一容器、启动时间变化、readiness 和完整持久挂载不变；Docker 返回的挂载列表按目标路径归一化顺序后比较全部字段。重启后仍可查询约 15 小时前的设备 metric/log/trace。外部新数据三类入库、S3 读写删除及跨 bucket 拒绝、TLS/mTLS 和页面复查均通过；25 个 pull target 加 10 个应用实例健康，无活动告警。
+
+Mac 的 metadata RF3 替换用例在旧源节点停止后收到结果未知的原 Pending，测试直接 unwrap 造成失败。复用既有 logical_send / logical_retry，只恢复原逻辑发送，不创建替代消息；成员、检查点、消息身份和 ACK 断言不变。原场景在本机连续 20 次没有复现，CI 现场仍单独保留；修正后 Linux/macOS 各 20 次通过。
+
+并发 RF3 读取/ACK 用例也观察到发送结果未知。复用已有发送和 ACK 恢复 helper，只重试原 Pending，40 秒阶段预算、4 个 Topic、每 Topic 64 条顺序且唯一的消息、64 次 ACK 与 64 次 metadata read 断言保持不变。原例独立 Linux 5 次未复现，现场仍保留；修正后 Linux/macOS 各 20 次通过。
+
+按用户最新要求，不兼容旧 SDK，不继续性能测量。性能 workflow、perf_load 及其模块、构建/执行/比较脚本、性能基线/校准配置、联合晋升脚本和专项报告共 39 个文件已删除；覆盖率自身的比较器、基线与边界测试保留。GitHub 的旧 Performance workflow 已手动停用。runner 的 1.1 GiB 公共构建副本迁到数据盘并保留原路径软链接，根盘从 84% 降到 68%。测试指南更名为 docs/testing.zh-CN.md，并清理当前入口中的旧操作说明。
 
 ## 清理与适用范围
 
-已复查 11 个遗留应用 service/target 均为 not-found，3 条 YuXiangagent root cron 保留；升级快照时宿主根文件系统使用 55%，可用约 203 GiB（与初始 97% 对应）。已删除旧 Docker 应用、约 205 个容器和约 150 个卷、旧测试源码/配置/报告、指定遗留 systemd service/target/enablement 链接、stressctl/kache 和 TDengine 本机残留，以及 4 个约 3.9 GiB 的历史 core dump。旧清理授权仅适用于该批遗留资源。用户明确要求保留 YuXiangagent 的 3 条 root 定时任务及其文件；OS、SSH 和新实验室服务不属于旧应用。
+已复查 11 个遗留应用 service/target 均为 not-found，3 条 YuXiangagent root cron 保留；最终快照时宿主根文件系统使用 58%，可用约 190 GiB（初始为 97%，当前包含 11 台 VM 及新构建缓存）。已删除旧 Docker 应用、约 205 个容器和约 150 个卷、旧测试源码/配置/报告、指定遗留 systemd service/target/enablement 链接、stressctl/kache 和 TDengine 本机残留，以及 4 个约 3.9 GiB 的历史 core dump。最终检查又移除一个无进程占用的空 CI 目录；各 VM 没有 CI 临时目录、CI PV 或活动恢复 timer，runner online/idle。旧清理授权仅适用于该批遗留资源。用户明确要求保留 YuXiangagent 的 3 条 root 定时任务及其文件；OS、SSH 和新实验室服务不属于旧应用。
 
 升级启动时，应用与 sidecar 并发启动可产生少量 trace export failure，计数保留且会触发原有短时告警；不会通过清零计数或关闭告警隐藏。稳定后外部复查无活动告警，历史批次容量修复另有 194 秒的零增长证据。
 

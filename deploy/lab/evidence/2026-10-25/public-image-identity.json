@@ -1,0 +1,10 @@
+{
+  "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+  "ciImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+  "image": "localhost/tidemq-lab:public-c386434bbf6d",
+  "imageID": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+  "manifestDigest": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+  "runtimeImageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841",
+  "hostArchive": "/var/lib/tidemq-lab/images/public-c386434bbf6d.tar",
+  "separatePublicTag": true
+}

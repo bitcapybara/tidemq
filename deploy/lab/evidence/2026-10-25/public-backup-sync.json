@@ -1,0 +1,9 @@
+{
+  "capturedAt": "2026-10-26T04:50:57Z",
+  "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+  "image": "localhost/tidemq-lab:public-c386434bbf6d",
+  "imageID": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+  "runnerBuildPath": "/srv/tidemq/public-builds/tidemq-dev",
+  "archiveAndBinariesVerified": true,
+  "hostPrivateMetadataSynchronized": true
+}

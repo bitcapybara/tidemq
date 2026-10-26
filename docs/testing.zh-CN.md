@@ -24,6 +24,8 @@ cargo clippy --workspace --all-targets --no-deps --locked -j2 --features tidemq-
 CARGO_BUILD_JOBS=2 cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen --profile ci
 cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 # Linux only, from committed clean sources.
+TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
+TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol \
 TIDEMQ_REQUIRE_EXTERNAL=1 TIDEMQ_COVERAGE=1 bash scripts/ci/validate-and-integrate.sh
 node scripts/coverage-gate.mjs compare --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json --output target/ci/coverage/summary.json
 ```

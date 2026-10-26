@@ -1,0 +1,57 @@
+{
+  "capturedAt": "2026-10-26T01:57:46.458Z",
+  "test": "modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturated",
+  "failedCI": {
+    "runId": 40254563550,
+    "jobId": 121353525449,
+    "sourceCommit": "3e52ed7c79e4fec727c33faea15c79a8a486ffff",
+    "integrationPassed": 266,
+    "integrationTotal": 267
+  },
+  "originalReproduction": {
+    "failedRepetition": 97,
+    "observedAdmission": 4,
+    "expectedAdmission": 3,
+    "binary": "bc5b86f8bfc6d7b7c76b43c786ec942bf3fd1f48c7e1c70e74d4bd83bf301894  /srv/tidemq/cargo-target/debug/debug/deps/server_dispatch-5afc19fe3fbac1cd",
+    "logSha256": "a0351e5cd54ee6c28c2c21dde932fd8df5cfc05109f65c12bfa5bdad9b1a84b8"
+  },
+  "instrumentedReproduction": {
+    "failedRepetition": 2,
+    "immediate": {
+      "lanes": 4,
+      "admittedRequests": 4,
+      "admittedBytes": 216,
+      "pendingResponses": 3
+    },
+    "settled": {
+      "lanes": 4,
+      "admittedRequests": 3,
+      "admittedBytes": 171,
+      "pendingResponses": 3
+    },
+    "instrumentationSha256": "a2804cc091711d275f213ab60b3e23d53b7985d1d181f456722f29107ce081e1",
+    "logSha256": "2fd35b093cce1ea2a5294551728607e1525b628c7340acc06efa3e9969c9f17d"
+  },
+  "fixedCommit": "0c9194ab7c4d5bfe265e48732e3f42b6682f3221",
+  "fix": "Wait within a bounded deadline for asynchronous transport admission guards to settle, then retain the exact admission assertion and also assert the remaining response count.",
+  "productionCodeChanged": false,
+  "debugInstrumentationRemoved": true,
+  "linux": {
+    "platform": "linux",
+    "sourceCommit": "3e52ed7c79e4fec727c33faea15c79a8a486ffff",
+    "patchSha256": "5712a8ede13e15947ac073f51ad73be4255d92fc3c02376756b028a09a8c4753",
+    "binarySha256": "55da3380aad00bfac55170b0c77ab3388ed266e015966e34367f5453daec0ea3",
+    "repetitions": 100,
+    "passed": 100,
+    "failed": 0
+  },
+  "macOS": {
+    "platform": "darwin",
+    "sourceCommit": "e76eaa5f0cd4bd1bfd3386922fe663766249b55e",
+    "patchSha256": "5712a8ede13e15947ac073f51ad73be4255d92fc3c02376756b028a09a8c4753",
+    "binarySha256": "90315fd2b8636246a7b941e5ca1db2c0c69a63bcd88c584685dbb9f7f21ff5d1",
+    "repetitions": 100,
+    "passed": 100,
+    "failed": 0
+  }
+}

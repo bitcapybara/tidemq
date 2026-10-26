@@ -1,0 +1,656 @@
+{
+  "run": 40261250080,
+  "url": "https://github.com/bitcapybara/tidemq/actions/runs/40261250080",
+  "capturedAt": "2026-10-26T03:41:08.972Z",
+  "sourceCommit": "d90bf6e7d16f05efc364df052508914e830cfd9b",
+  "sourceRustPatchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "imageID": "sha256:1921266926519be413fb8d3bf41d53c3cd027737473ffffebf9b7e2c496ab7c1",
+  "artifactSha256": {
+    "source-commit.txt": "0be5943fd7a9e617a37ca6b145ef1f5ae3a23733a6447e016b949412c72f1e77",
+    "source-patch-sha256.txt": "abcfa6a9d4df344d1781bc2560b5e4cdcae08b39ed303063535e7e1e926a304a",
+    "image-id.txt": "25ecc057e764dcf4b2064282626c687c1e1358efa0afa3cb36d068d23ded877f",
+    "sha256.txt": "1e87ebd334809fe9db27f9ca4e9cee477326845d4e55f51c92172868d5b92daa",
+    "result.json": "048cef42aeb2980644f67da4e5201d967db7c145a8225fed11dfdb237fd73292",
+    "smoke/report.json": "c0f1a8a374903dbfe09538880c83492aa6296364e981145534d4d62e44a0a91b",
+    "replay/report.json": "003458591d5839361b7e8a16367bb06cbae74595ff325178a244fe60747bfc9a",
+    "worker-poweroff/report.json": "089f62057cb4a0e66fc519ddf27d4caa021d28040cb2a237a42156a17fae580e",
+    "data-isolation/report.json": "f8052a7f7a0fa9c038da007f283efc9595647df128b13ea3a0d037827c5a9ae8",
+    "quorum-loss/report.json": "992c9a8ebd9b8c6e561b73241403971524a2493f6737758a00007d5817721cf0",
+    "control-plane-fault/report.json": "ae96d284f3f988cf3b5a1fddcc1786e85ff5f92827ec4ab077403466ccf26af1",
+    "object-store-fault/report.json": "344db8f56335e9be8b764d365d95dd8e1a154d943e0116a86fa89942ae38d05a",
+    "recovered/report.json": "4971f68166014a15e03770ff0f5242be10b5a6ec6244b6bdba253bb1b5bb8475",
+    "worker-poweroff-infrastructure-recovery.json": "91ece793cff4be35ead8e149e5f6c7bde18ceccf6c675be94ccec398b338f5e6",
+    "data-isolation-infrastructure-recovery.json": "6008d0044d6bfb50e4b4596a2822c67a3c3a70994b303163ceb7c83d95490241",
+    "quorum-loss-infrastructure-recovery.json": "0f2fb16f4372874935a38147dbee0866f2eafa7cf23ab419f290cbd9a4b2271e",
+    "recovery-timer-during.txt": "1ee076faa4c405278caa4aca626ed44fa5e7efa125c95e436d4a821f8918aa5f",
+    "recovery-timer-after.txt": "0df8a1a2c2db6ce4e49947a533b0e084ed3612101332ca1346d00ff2ba0dd526",
+    "observability/metrics.json": "4e9a6f62c0edc8ceb8cf5c7a650b6f97e5bb94a5397a8fcde8ba1a8574f82ca9",
+    "observability/logs.json": "c9d7002ca4c66349088049a11cd5d8cf3e6e9dd68709fed0740954060be5fe19",
+    "observability/traces.json": "ef931e3a5869c5acadcca14212e35f69cf8c7b2bfdeb8fe2cbb08e0361fe43cc"
+  },
+  "result": {
+    "exitCode": 0,
+    "cleanupExitCode": 0
+  },
+  "cases": {
+    "smoke": {
+      "status": "passed",
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "uniqueMessages": 64,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 0,
+      "ackUnknownRetries": 0,
+      "originalPending": [],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792984963718,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792984963830,
+          "elapsed_ms": 112
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792984965086,
+          "elapsed_ms": 1368
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792984965947,
+          "elapsed_ms": 2229
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792984969110,
+          "elapsed_ms": 5392
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792984969379,
+          "elapsed_ms": 5662
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792984969383,
+          "elapsed_ms": 5665
+        }
+      ]
+    },
+    "replay": {
+      "status": "passed",
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "uniqueMessages": 64,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 0,
+      "ackUnknownRetries": 0,
+      "originalPending": [],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792984970483,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792984970598,
+          "elapsed_ms": 115
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792984971630,
+          "elapsed_ms": 1147
+        },
+        {
+          "phase": "replay_settle",
+          "unix_ms": 1792984972364,
+          "elapsed_ms": 1881
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792984977582,
+          "elapsed_ms": 7099
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792984981724,
+          "elapsed_ms": 11241
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792984982114,
+          "elapsed_ms": 11631
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792984982119,
+          "elapsed_ms": 11636
+        }
+      ]
+    },
+    "worker-poweroff": {
+      "status": "passed",
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "uniqueMessages": 80,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 0,
+      "ackUnknownRetries": 0,
+      "originalPending": [],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792984983213,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792984983330,
+          "elapsed_ms": 118
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792984984632,
+          "elapsed_ms": 1420
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792984985431,
+          "elapsed_ms": 2219
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792984988593,
+          "elapsed_ms": 5381
+        },
+        {
+          "phase": "waiting_fault",
+          "unix_ms": 1792984988594,
+          "elapsed_ms": 5381
+        },
+        {
+          "phase": "fault_injected",
+          "unix_ms": 1792984990733,
+          "elapsed_ms": 7521
+        },
+        {
+          "phase": "fault_production",
+          "unix_ms": 1792984990733,
+          "elapsed_ms": 7521
+        },
+        {
+          "phase": "fault_consumption",
+          "unix_ms": 1792984990832,
+          "elapsed_ms": 7619
+        },
+        {
+          "phase": "fault_observed",
+          "unix_ms": 1792984991396,
+          "elapsed_ms": 8184
+        },
+        {
+          "phase": "host_recovered",
+          "unix_ms": 1792985070623,
+          "elapsed_ms": 87411
+        },
+        {
+          "phase": "final_production",
+          "unix_ms": 1792985070623,
+          "elapsed_ms": 87411
+        },
+        {
+          "phase": "final_consumption",
+          "unix_ms": 1792985070842,
+          "elapsed_ms": 87630
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792985072388,
+          "elapsed_ms": 89176
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792985072392,
+          "elapsed_ms": 89179
+        }
+      ]
+    },
+    "data-isolation": {
+      "status": "passed",
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "uniqueMessages": 80,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 0,
+      "ackUnknownRetries": 0,
+      "originalPending": [],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792985076425,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792985076547,
+          "elapsed_ms": 122
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792985077939,
+          "elapsed_ms": 1515
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792985078807,
+          "elapsed_ms": 2382
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792985082085,
+          "elapsed_ms": 5660
+        },
+        {
+          "phase": "waiting_fault",
+          "unix_ms": 1792985082085,
+          "elapsed_ms": 5660
+        },
+        {
+          "phase": "fault_injected",
+          "unix_ms": 1792985083511,
+          "elapsed_ms": 7086
+        },
+        {
+          "phase": "fault_production",
+          "unix_ms": 1792985083511,
+          "elapsed_ms": 7086
+        },
+        {
+          "phase": "fault_consumption",
+          "unix_ms": 1792985090199,
+          "elapsed_ms": 13774
+        },
+        {
+          "phase": "fault_observed",
+          "unix_ms": 1792985092361,
+          "elapsed_ms": 15936
+        },
+        {
+          "phase": "host_recovered",
+          "unix_ms": 1792985098551,
+          "elapsed_ms": 22126
+        },
+        {
+          "phase": "final_production",
+          "unix_ms": 1792985098551,
+          "elapsed_ms": 22126
+        },
+        {
+          "phase": "final_consumption",
+          "unix_ms": 1792985098696,
+          "elapsed_ms": 22271
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792985100867,
+          "elapsed_ms": 24442
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792985100870,
+          "elapsed_ms": 24445
+        }
+      ]
+    },
+    "quorum-loss": {
+      "status": "passed",
+      "ledger": {
+        "expected": 80,
+        "committed": 80,
+        "received": 80,
+        "acknowledged": 80,
+        "frontier": 80
+      },
+      "uniqueMessages": 80,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 1,
+      "ackUnknownRetries": 0,
+      "originalPending": [
+        {
+          "firstSequence": 64,
+          "messages": 8,
+          "originalPending": 8,
+          "retryAttempts": 8,
+          "receiptSeen": true,
+          "messageIDs": [
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:64",
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:65",
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:66",
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:67",
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:68",
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:69",
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:70",
+            "01a1763d-827b-7a28-955e-90df6373ed64:615f22a7-1268-d293-8c0c-6e4733d94413:71"
+          ]
+        }
+      ],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792985104923,
+          "elapsed_ms": 5
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792985105019,
+          "elapsed_ms": 101
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792985106300,
+          "elapsed_ms": 1381
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792985107357,
+          "elapsed_ms": 2439
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792985110635,
+          "elapsed_ms": 5716
+        },
+        {
+          "phase": "waiting_fault",
+          "unix_ms": 1792985110635,
+          "elapsed_ms": 5717
+        },
+        {
+          "phase": "fault_injected",
+          "unix_ms": 1792985113079,
+          "elapsed_ms": 8161
+        },
+        {
+          "phase": "fault_production",
+          "unix_ms": 1792985113079,
+          "elapsed_ms": 8161
+        },
+        {
+          "phase": "fault_observed",
+          "unix_ms": 1792985123080,
+          "elapsed_ms": 18162
+        },
+        {
+          "phase": "host_recovered",
+          "unix_ms": 1792985205170,
+          "elapsed_ms": 100252
+        },
+        {
+          "phase": "original_pending_retry",
+          "unix_ms": 1792985205170,
+          "elapsed_ms": 100252
+        },
+        {
+          "phase": "recovered_consumption",
+          "unix_ms": 1792985205526,
+          "elapsed_ms": 100607
+        },
+        {
+          "phase": "final_production",
+          "unix_ms": 1792985206843,
+          "elapsed_ms": 101924
+        },
+        {
+          "phase": "final_consumption",
+          "unix_ms": 1792985206923,
+          "elapsed_ms": 102004
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792985207725,
+          "elapsed_ms": 102807
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792985207728,
+          "elapsed_ms": 102810
+        }
+      ]
+    },
+    "control-plane-fault": {
+      "status": "passed",
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "uniqueMessages": 64,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 0,
+      "ackUnknownRetries": 0,
+      "originalPending": [],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792985212808,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792985212920,
+          "elapsed_ms": 113
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792985214238,
+          "elapsed_ms": 1431
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792985215184,
+          "elapsed_ms": 2376
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792985218517,
+          "elapsed_ms": 5709
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792985218843,
+          "elapsed_ms": 6036
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792985218846,
+          "elapsed_ms": 6039
+        }
+      ]
+    },
+    "object-store-fault": {
+      "status": "passed",
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "uniqueMessages": 64,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 0,
+      "ackUnknownRetries": 0,
+      "originalPending": [],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792985223468,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792985223580,
+          "elapsed_ms": 112
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792985224698,
+          "elapsed_ms": 1230
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792985225563,
+          "elapsed_ms": 2095
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792985228674,
+          "elapsed_ms": 5206
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792985228971,
+          "elapsed_ms": 5504
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792985228975,
+          "elapsed_ms": 5507
+        }
+      ]
+    },
+    "recovered": {
+      "status": "passed",
+      "ledger": {
+        "expected": 64,
+        "committed": 64,
+        "received": 64,
+        "acknowledged": 64,
+        "frontier": 64
+      },
+      "uniqueMessages": 64,
+      "originalConsumerReused": true,
+      "clientCloseCompleted": true,
+      "receiveRetries": 0,
+      "ackUnknownRetries": 0,
+      "originalPending": [],
+      "phases": [
+        {
+          "phase": "connecting",
+          "unix_ms": 1792985247832,
+          "elapsed_ms": 0
+        },
+        {
+          "phase": "creating_queue",
+          "unix_ms": 1792985247947,
+          "elapsed_ms": 115
+        },
+        {
+          "phase": "initial_production",
+          "unix_ms": 1792985249100,
+          "elapsed_ms": 1268
+        },
+        {
+          "phase": "initial_consumption",
+          "unix_ms": 1792985249990,
+          "elapsed_ms": 2158
+        },
+        {
+          "phase": "initial_complete",
+          "unix_ms": 1792985253266,
+          "elapsed_ms": 5434
+        },
+        {
+          "phase": "ledger_complete",
+          "unix_ms": 1792985253535,
+          "elapsed_ms": 5703
+        },
+        {
+          "phase": "validation_finished",
+          "unix_ms": 1792985253537,
+          "elapsed_ms": 5705
+        }
+      ]
+    }
+  },
+  "infrastructureRecovery": {
+    "worker-poweroff": {
+      "restoredAtUnixSeconds": 1792984992,
+      "runtimeReadyAtUnixSeconds": 1792985069,
+      "budgetSeconds": 110
+    },
+    "data-isolation": {
+      "restoredAtUnixSeconds": 1792985092,
+      "runtimeReadyAtUnixSeconds": 1792985097,
+      "budgetSeconds": 110
+    },
+    "quorum-loss": {
+      "restoredAtUnixSeconds": 1792985124,
+      "runtimeReadyAtUnixSeconds": 1792985204,
+      "budgetSeconds": 110
+    }
+  },
+  "independentTimer": {
+    "during": "tidemq-loadgen: paused",
+    "after": "tidemq-loadgen: running"
+  },
+  "signals": {
+    "instances": 10,
+    "logEntries": 100,
+    "traceIDs": [
+      "10adaf696bfa08343e9cb730728de92",
+      "cd93067c6dc1f054ea28f92574728c",
+      "5b35f470c56f5ed069e2c46bac034",
+      "25884a7291c5336a4e90ceb292cdc",
+      "a4ed3187f3956dce2ea57ca0ee1029",
+      "eba99e9c135ab55545108c50778eea",
+      "129e86994bb4dae0374109714f9f728",
+      "32c98670555a42ec23d766945164b",
+      "11509b747c17e9a5c15aec924f0259c",
+      "ad1409caf5ce25c5bf7f4a669fa5eb",
+      "1a5e3f9914a9862cdf041b45546f947",
+      "1211a537aa27d6d9bc8b4560eaed38b",
+      "12281c69c1cf165934ad369fa96d5b3",
+      "1000fc598e7133886fa4dfb8485816a",
+      "4af1399b5bddd08b59cc9759968726",
+      "1a5e570d9545acbfca2af3041b6aa0f",
+      "32a6e81b47108bc63047d85d5852bd",
+      "1df7ce22bf5e558dd9be95deb456ade",
+      "1f8190b16d076205f44536068ca0d4d",
+      "169fcca90a141db207b0d93d688a23"
+    ]
+  }
+}

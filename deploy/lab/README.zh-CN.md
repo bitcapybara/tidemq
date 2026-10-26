@@ -47,7 +47,9 @@ Worker 挂载点为 `/var/lib/tidemq/storage` 和 `/var/lib/tidemq/metadata`。�
 
 MQ 入口采用 `externalTrafficPolicy: Local`，由有本地 gateway 的节点接流，避免入口再转到另一个节点的 UDP backend。[MetalLB 流量策略](https://metallb.io/usage/#traffic-policies)说明了 L2 模式的取舍；此模式的入口流量集中在当前公告节点，不能将两个 gateway 的 CPU 简单相加作为入口容量。
 
-常驻实例来自干净提交 `14372cd5a053bedf536fd3e91bf569d4bb17339c`，镜像 `localhost/tidemq-lab:1f85055a6ee540bed075e885`，image ID `sha256:625aba2cf3ddbc4dc9c5a4d4ad1a9abb0ebfbee44fb49f467f2d449e5a485142`。已创建 `validation` tenant 及其 `default` namespace，供 SDK 验收使用。初次部署清单见 [public-cluster-resources.json](evidence/2026-10-25/public-cluster-resources.json)，升级后的实际镜像与节点见 [final-state.json](evidence/2026-10-25/final-state.json)。本次保留原有 cluster ID、CA、token、Service IP 和卷绑定，10 个角色逐个重建并等待 Ready。公网关的 Service IP 为 `10.96.1.178`，UDP NodePort `31226`，健康检查 TCP NodePort `32278`；这些 NodePort 没有作为外部入口发布。
+常驻实例来自完整 CI 通过的干净提交 `c386434bbf6d478e96d68a53d7040323396b1648`，镜像 `localhost/tidemq-lab:public-c386434bbf6d`，manifest digest `sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c`。已创建 `validation` tenant 及其 `default` namespace，供 SDK 验收使用。初次部署清单见 [public-cluster-resources.json](evidence/2026-10-25/public-cluster-resources.json)，升级后的实际镜像与节点见 [final-state.json](evidence/2026-10-25/final-state.json)。本次保留原有 cluster ID、CA、token、Service IP 和卷绑定，10 个角色逐个重建并等待 Ready。公网关的 Service IP 为 `10.96.1.178`，UDP NodePort `31226`，健康检查 TCP NodePort `32278`；这些 NodePort 没有作为外部入口发布。
+
+公共镜像使用绑定提交的独立 `public-COMMIT` 标签，CI 的内容哈希标签可以复用，不再改写公共引用。[public-image-identity.json](evidence/2026-10-25/public-image-identity.json) 分别记录 Docker/manifest 身份与运行时 config digest；后者为 `sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841`。CRI 状态可能返回同一 digest 已有的标签名，因此升级检查 Pod spec 的公共标签、实际 imageID 和 Ready 状态，不以状态中的标签字符串代替镜像身份。
 
 每个 namespace 独立创建 QUIC CA、节点证书、访问 token 和 cluster ID。配置由 [workload.mjs](../../scripts/lab/workload.mjs) 生成，沿用仓库已有的 RF3 配置生成器。私钥及含 Secret 的资源文件只保存在私有目录，禁止作为 GitHub artifact 上传。
 
@@ -142,6 +144,7 @@ GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 2
 | `/srv/tidemq/work` | checkout、有限测试结果 |
 | `/srv/tidemq/tools` | 验证 SHA 的 RustFS、Collector 测试二进制、kubectl、Helm、nextest、llvm-cov |
 | `/srv/tidemq/rust` | Rust 1.99.1 工具链与 Cargo cache，`/opt/tidemq-rust` 软链接 |
+| `/srv/tidemq/public-builds/tidemq-dev` | 公共镜像构建副本；私有目录原 build 路径保留软链接，避免占用 runner 根盘 |
 | `/srv/tidemq/cargo-target` | 可重建的 debug / coverage 编译缓存 |
 | `/srv/tidemq/tmp` | 测试临时目录 |
 | `/home/actions/.config/tidemq-lab` | 私有 kubeconfig、受限 CI SSH key、telemetry 客户端证书与运行材料 |
@@ -150,13 +153,15 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
+Linux 的单元、默认 SDK、集成、故障钩子及真实外部服务测试都在同一 LLVM 插桩环境中执行，只在开始时清理一次旧 profile；结束后导出 LLVM JSON、LCOV、HTML。覆盖率 job 下载该制品校验源码/运行身份并比较受保护基线，不重新编译或重跑测试。VM 发布镜像仍为普通 release 构建，VM 故障报告独立保存。详细命令见[测试指南](../../docs/testing.zh-CN.md)。
+
 单元测试运行 `--lib --bins --examples`，主动移除外部服务环境变量。外部进程 / 网络依赖测试放在 `tests/`，由独立 integration 阶段运行；内建本地 mock 不要求预装外部服务。ignored 的真实 RustFS / Collector 测试在 Linux 上显式执行，缺少固定二进制会失败。
 
 RF3 集群测试由 loadgen VM 运行真实 SDK，runner 仅控制和收集证据；覆盖发送/接收/ACK、延后读取、单 worker 断电、数据网断链、双 worker 丢失仲裁及原 Pending/Consumer 恢复、control-plane 故障、对象存储实例隔离、runner 连接消失后独立恢复计时器，以及三类观测入库查询。
 
-按用户要求，性能 workflow、负载工具、比较器、配置、基线和专项报告已删除。本次只以有限 SDK 流量验收部署与持久正确性，不执行性能测试。
+按用户要求，性能 workflow、负载工具、比较器、配置、基线和专项报告已删除。GitHub 上默认分支残留的 Performance 工作流已设为 disabled_manually，防止旧入口误触发。本次只以有限 SDK 流量验收部署与持久正确性，不执行性能测试。
 
-Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。Linux 校验与集成、覆盖率和 VM 故障步骤都取得同一宿主 flock 租约；runner 上的手动测试和部署也必须通过 `scripts/lab/with-lease.sh`；root 运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`，避免同时运行时争用测试资源。租约忙时明确失败，不会并发执行。故障指令白名单只允许 cp、worker、fixtures、loadgen，禁止操作 storage、observe、runner；持续时间 5–300 秒，宿主先注册 systemd 恢复计时器再执行故障。
+Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。Linux 插桩校验、集成、报告导出和 VM 故障步骤取得同一宿主 flock 租约；只读报告比较不占用故障租约。runner 上的手动测试和部署也必须通过 `scripts/lab/with-lease.sh`；root 运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`，避免同时运行时争用测试资源。租约忙时明确失败，不会并发执行。故障指令白名单只允许 cp、worker、fixtures、loadgen，禁止操作 storage、observe、runner；持续时间 5–300 秒，宿主先注册 systemd 恢复计时器再执行故障。
 
 此仓库为公共仓库：fork PR 的单元测试走 GitHub-hosted runner；self-hosted jobs 不接受 fork 代码。GitHub outside contributor 审批策略设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
 
@@ -200,6 +205,8 @@ bash scripts/lab/deploy-workload.sh tidemq-dev PRIVATE_BUILD \
 `deploy-workload.sh` 会导入固定镜像、创建资源并等待全部角色 Ready。它要求新 namespace / 输出目录；重部署已有持久实例应先保存数据和身份材料，再按变更策略操作，不能直接删除公共 namespace 作为日常升级方式。
 
 角色 StatefulSet 使用 `OnDelete`。变更配置后，须在独占租约下逐个删除对应 Pod，再等待新 Pod 创建且 Ready 后处理下一个；同一 metadata/storage quorum 同时最多停一个副本。`kubectl rollout restart/status` 不能代替该策略下的实际 Pod 重建。
+
+公共恢复镜像归档在宿主 `/var/lib/tidemq-lab/images/public-c386434bbf6d.tar`；runner 的 `build/image.tar`、三个二进制、源码和工具链元数据同步保存在上表的数据盘目录，资源引用备份使用相同公共标签。仅采用 CI 通过且 Rust 补丁为空的构建；先将固定归档导入全部 worker 并验证 digest，再逐个更新角色。资源身份、卷绑定与私有材料必须沿用已有备份。
 
 公共服务私密材料在宿主 `/var/lib/tidemq-lab/private/credentials/`：`kubernetes.toml`、`devices.toml`、`grafana-password`、`metrics-password`。TLS 客户端材料在 `private/tls/`；发给外部设备时只提供对应客户端证书、私钥和 CA，不提供 CA 签名私钥。QUIC 客户端只取该 workload 的 `ca.pem` 和 `access.token`，不取节点私钥。
 

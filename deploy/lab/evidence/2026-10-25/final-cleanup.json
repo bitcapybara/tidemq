@@ -1,5 +1,5 @@
 {
-  "capturedAt": "2026-10-26T01:36:11.345Z",
+  "capturedAt": "2026-10-26T04:58:13.511Z",
   "legacyDirectoriesAbsent": [
     "/root/explorer-dashboard-1008",
     "/root/taosdata",
@@ -29,5 +29,58 @@
     "tidemq-lab-ingress.service": "active"
   },
   "hostDockerRunningContainers": 0,
-  "remainingHistoricalCoreDumps": []
+  "remainingHistoricalCoreDumps": [],
+  "activeHostRecoveryTimers": [],
+  "activeFixtureTimers": [],
+  "ciCleanup": {
+    "tidemq-fixtures": {
+      "directories": [
+        "/srv/tidemq/fixtures"
+      ],
+      "remainingCiDirectories": []
+    },
+    "tidemq-loadgen": {
+      "directories": [
+        "/srv/tidemq/validation"
+      ],
+      "remainingCiDirectories": []
+    },
+    "tidemq-runner": {
+      "directories": [
+        "/home/actions/.config/tidemq-lab/runs"
+      ],
+      "remainingCiDirectories": []
+    },
+    "tidemq-worker-a": {
+      "directories": [
+        "/var/lib/tidemq/storage",
+        "/var/lib/tidemq/metadata"
+      ],
+      "remainingCiDirectories": []
+    },
+    "tidemq-worker-b": {
+      "directories": [
+        "/var/lib/tidemq/storage",
+        "/var/lib/tidemq/metadata"
+      ],
+      "remainingCiDirectories": []
+    },
+    "tidemq-worker-c": {
+      "directories": [
+        "/var/lib/tidemq/storage",
+        "/var/lib/tidemq/metadata"
+      ],
+      "remainingCiDirectories": []
+    }
+  },
+  "removedEmptyCiDirectories": [
+    "/srv/tidemq/validation/ci-1792929522-1"
+  ],
+  "remainingCiPersistentVolumes": [],
+  "runner": {
+    "id": 21,
+    "name": "tidemq-dev-u126-8",
+    "status": "online",
+    "busy": false
+  }
 }

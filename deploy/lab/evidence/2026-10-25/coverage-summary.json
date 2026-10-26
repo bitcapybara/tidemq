@@ -9,8 +9,8 @@
         "covered": 27907
       },
       "candidate": {
-        "count": 62804,
-        "covered": 52529
+        "count": 63145,
+        "covered": 56246
       }
     },
     "functions": {
@@ -20,8 +20,8 @@
         "covered": 2576
       },
       "candidate": {
-        "count": 6581,
-        "covered": 4963
+        "count": 6652,
+        "covered": 5357
       }
     },
     "regions": {
@@ -31,28 +31,28 @@
         "covered": 38365
       },
       "candidate": {
-        "count": 89609,
-        "covered": 72285
+        "count": 90040,
+        "covered": 77289
       }
     }
   },
   "initialization": false,
-  "source_commit": "14372cd5a053bedf536fd3e91bf569d4bb17339c",
+  "source_commit": "c386434bbf6d478e96d68a53d7040323396b1648",
   "policy_sha256": "ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57",
   "previous_baseline_sha256": "638b8e963abe9e8936c7df0f2571093c0244b83946a4a173d5df7c7bf15fb2ee",
-  "llvm_report_sha256": "697a6c9dd1b0368099308cb6f14f6832b528b6f35fa0b01bd3984b8b2cf34807",
+  "llvm_report_sha256": "85b0bdfa0a19c3e212ab099bc0e73f442e81729975a69ec993180a3a5c466ee6",
   "counts": {
     "lines": {
-      "count": 62804,
-      "covered": 52529
+      "count": 63145,
+      "covered": 56246
     },
     "functions": {
-      "count": 6581,
-      "covered": 4963
+      "count": 6652,
+      "covered": 5357
     },
     "regions": {
-      "count": 89609,
-      "covered": 72285
+      "count": 90040,
+      "covered": 77289
     }
   },
   "environment": {
@@ -61,7 +61,7 @@
     "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
     "nextest": "cargo-nextest 0.9.148 (cd1d6d546 2026-10-07)\nrelease: 0.9.148\ncommit-hash: cd1d6d5467322dbc0d39a80cb671d000ac302798\ncommit-date: 2026-10-07\nhost: x86_64-unknown-linux-gnu",
     "llvm_cov": "cargo-llvm-cov 0.9.1",
-    "github_run_id": "40221753920",
-    "github_job": "coverage"
+    "github_run_id": "40266082534",
+    "github_job": "validate"
   }
 }

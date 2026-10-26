@@ -1,8 +1,10 @@
 {
-  "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-  "imageID": "sha256:625aba2cf3ddbc4dc9c5a4d4ad1a9abb0ebfbee44fb49f467f2d449e5a485142",
-  "sourceCommit": "14372cd5a053bedf536fd3e91bf569d4bb17339c",
-  "capturedAt": "2026-10-26T01:24:29Z",
+  "image": "localhost/tidemq-lab:public-c386434bbf6d",
+  "imageID": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+  "manifestDigest": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+  "runtimeImageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841",
+  "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+  "capturedAt": "2026-10-26T04:49:59Z",
   "identityPreserved": true,
   "persistentVolumesReused": true,
   "rolesUpdated": 10,
@@ -11,168 +13,6 @@
     "deploy_validation": "12a26285c118cf0e7d32c2c296be191ec2ad9dd1f60433338db18bb67c3c2987"
   },
   "before": [
-    {
-      "name": "node-11-0",
-      "uid": "ea43b09d-251f-42e6-9c67-691e19e61b5f",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        }
-      ]
-    },
-    {
-      "name": "node-12-0",
-      "uid": "8fb4bf1e-f636-4725-9fa0-e7aaf268d181",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        }
-      ]
-    },
-    {
-      "name": "node-13-0",
-      "uid": "96519970-0608-4c9c-be9b-ffb286d99251",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        }
-      ]
-    },
-    {
-      "name": "node-21-0",
-      "uid": "8f48aa01-0ea4-49c3-beef-398b1916dc74",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        }
-      ]
-    },
-    {
-      "name": "node-22-0",
-      "uid": "1a493e6f-8fe2-4324-b1d9-c6d67ab7f102",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        }
-      ]
-    },
-    {
-      "name": "node-23-0",
-      "uid": "60aacb4c-c3fd-490b-b649-a9dd38d54828",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        }
-      ]
-    },
-    {
-      "name": "node-31-0",
-      "uid": "029fd4f2-68ee-4b3c-b43f-de43469367b3",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        }
-      ]
-    },
-    {
-      "name": "node-32-0",
-      "uid": "d6a3e292-34ee-4a1b-b5d6-2cac3acc52be",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        }
-      ]
-    },
-    {
-      "name": "node-41-0",
-      "uid": "66385a66-e919-406d-b61b-e3da65e3f376",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:6486f6e21dafca0a2f21e9d71ac33b34b400615bf6c1dec4530ec6a00197788a"
-        }
-      ]
-    },
-    {
-      "name": "node-42-0",
-      "uid": "c7cbb387-ce7a-47d2-b555-31b9652aa94c",
-      "images": [
-        {
-          "name": "otelcol",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        },
-        {
-          "name": "tidemq",
-          "image": "localhost/tidemq-lab:e6776e0e13a494afe040804d",
-          "imageID": "sha256:5d1214106275b061149cf34922e0dc8c1e568d1a277c3b3c3eb9141e6e1e18f2"
-        }
-      ]
-    }
-  ],
-  "after": [
     {
       "name": "node-11-0",
       "uid": "d4bdc03e-909b-474e-ac6b-3395887faafc",
@@ -196,12 +36,12 @@
         {
           "name": "otelcol",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
@@ -212,12 +52,12 @@
         {
           "name": "otelcol",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
@@ -244,12 +84,12 @@
         {
           "name": "otelcol",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
@@ -260,12 +100,12 @@
         {
           "name": "otelcol",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
@@ -292,12 +132,12 @@
         {
           "name": "otelcol",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
@@ -324,17 +164,319 @@
         {
           "name": "otelcol",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     }
   ],
-  "preservedResources": [
+  "after": [
+    {
+      "name": "node-11-0",
+      "uid": "a66237fb-8600-4e0b-9095-671b50b270d6",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-12-0",
+      "uid": "f673ce6f-236a-4c0c-bedf-d171277e2b94",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-13-0",
+      "uid": "c340286a-cebc-4313-bc68-d56c748672e9",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-21-0",
+      "uid": "9cd55864-44db-4c6a-aa3e-1232721034dc",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-22-0",
+      "uid": "64907818-2bd7-41b8-a97b-61ecc84bff02",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-23-0",
+      "uid": "b006d41c-7088-45b6-946d-5f2ff80b4fd3",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-31-0",
+      "uid": "78aea10b-931a-4564-886c-8c5a6439e2f7",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-32-0",
+      "uid": "e7c04089-8c4f-4103-bebb-380ed0729c9f",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-41-0",
+      "uid": "6c61b750-79dd-469a-b087-111ac9040af6",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    },
+    {
+      "name": "node-42-0",
+      "uid": "77475b6d-0f86-4a59-a9ab-8b06e43b64ef",
+      "desiredImages": [
+        {
+          "name": "initialize",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        },
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:public-c386434bbf6d"
+        }
+      ],
+      "images": [
+        {
+          "name": "otelcol",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        },
+        {
+          "name": "tidemq",
+          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
+        }
+      ]
+    }
+  ],
+  "preservedIdentityMetadata": [
     {
       "clusterIP": null,
       "kind": "PersistentVolumeClaim",
@@ -531,5 +673,19 @@
       "uid": "c4f0453b-15d0-4deb-9a54-11340e8c93c1",
       "volumeName": null
     }
-  ]
+  ],
+  "artifactSha256": {
+    "result.json": "e3df9cbb741cd0074f092e66d7e669a89708aa41077af090b2cd76cfb5f796e7",
+    "pods-before.json": "0f3123766ec2c1669433b64cdc9959354b3b5754e6896064f68bf81bd2825b8a",
+    "pods-after.json": "c765583cdd6d45a4afac520dfd4c95f099a1633abfa6a448f95f51ea3d956e7f",
+    "identity-before.json": "38ce94d9ad0feb0d16f9f53bc707305abcf052aaaeedc797b4c38db525435d92",
+    "identity-after.json": "38ce94d9ad0feb0d16f9f53bc707305abcf052aaaeedc797b4c38db525435d92",
+    "binaries.sha256": "69324dd70d058ad01485b3d6f73c89ba68124307d609dc600639a716a5a16c1b"
+  },
+  "imageCheck": {
+    "desiredTagAndRuntimeDigestVerified": true,
+    "reportedTagMayUseExistingAlias": true,
+    "firstCheckStoppedAfterReadyNode11": true,
+    "resumedAfterCorrectingReportedTagAssumption": true
+  }
 }

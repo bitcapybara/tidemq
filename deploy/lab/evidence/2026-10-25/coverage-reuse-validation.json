@@ -1,0 +1,23 @@
+{
+  "run": 40266082534,
+  "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
+  "profileCount": 908,
+  "sourceFiles": 213,
+  "allReportFilesTrackedAtSource": true,
+  "coverageJob": {
+    "name": "Coverage report gate (no test rerun)",
+    "conclusion": "success",
+    "startedAt": "2026-10-26T04:42:30Z",
+    "completedAt": "2026-10-26T04:44:51Z",
+    "steps": [
+      "Run actions/checkout@v4",
+      "Run actions/checkout@v4",
+      "Run actions/download-artifact@v4",
+      "Run node --test trusted/scripts/coverage/*.test.mjs",
+      "Run node trusted/scripts/coverage-gate.mjs compare --tools trusted --candidate candidate --report coverage-result/llvm.json --measurement coverage-result/measurement.json --run-id \"$GITHUB_RUN_ID\" --output coverage-result/summary.json $COVERAGE_GATE_MODE",
+      "Run actions/upload-artifact@v4"
+    ],
+    "rustBuildOrTestCommands": 0,
+    "logSha256": "5c26c18e0c55879e2e70a0b310de088472303ae14bc658698b0918b0ac37dee3"
+  }
+}

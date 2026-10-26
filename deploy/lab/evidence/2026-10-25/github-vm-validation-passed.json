@@ -1,24 +1,33 @@
 {
-  "run": "ci-40221753920-1",
-  "url": "https://github.com/bitcapybara/tidemq/actions/runs/40221753920",
-  "capturedAt": "2026-10-25T19:42:22.214Z",
-  "sourceCommit": "14372cd5a053bedf536fd3e91bf569d4bb17339c",
+  "run": 40266082534,
+  "url": "https://github.com/bitcapybara/tidemq/actions/runs/40266082534",
+  "capturedAt": "2026-10-26T04:44:51.134Z",
+  "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
   "sourceRustPatchSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "imageID": "sha256:625aba2cf3ddbc4dc9c5a4d4ad1a9abb0ebfbee44fb49f467f2d449e5a485142",
-  "artifactSha256": [
-    {
-      "sha256": "a5265addc1a24092840416ad734d8da21d90c7681b9fce1198348e7b2b0430d7",
-      "file": "tidemq"
-    },
-    {
-      "sha256": "12a26285c118cf0e7d32c2c296be191ec2ad9dd1f60433338db18bb67c3c2987",
-      "file": "deploy_validation"
-    },
-    {
-      "sha256": "a82629c04d7a94fd42144b779ec08cc6fbad18663e74fb9ed342573daf746869",
-      "file": "image.tar"
-    }
-  ],
+  "imageID": "sha256:ed44f2266704e3613adc8e82f850d7a6e8babd7973346ab483baefbb5a3eab5c",
+  "artifactSha256": {
+    "source-commit.txt": "78ef6046a08e85851742ee69e6213c88a6cf54eb5932b6dbaaecee5c9ffd6ac2",
+    "source-patch-sha256.txt": "abcfa6a9d4df344d1781bc2560b5e4cdcae08b39ed303063535e7e1e926a304a",
+    "image-id.txt": "48cdb1e331285d3ef25753df15eac682c2ec5628a3ec89f1a460e823ebf9a34b",
+    "sha256.txt": "f28f5f4fa34122086621a8e9d81bb495e9a46a0e4dc09d68424e1950863391af",
+    "result.json": "048cef42aeb2980644f67da4e5201d967db7c145a8225fed11dfdb237fd73292",
+    "smoke/report.json": "18f33ff321d11e93fdccf2d06d862d470a7d54ce924c5f4fd2943b38e8fe2359",
+    "replay/report.json": "d0fb689826b355c7090ff190d85180f5648ff019aa459e2fb4a9e2abef147326",
+    "worker-poweroff/report.json": "dad30454f6cf6dbb3f6528c5f1da5db5082074395232ee446f6392f4361963c6",
+    "data-isolation/report.json": "08857e03614bbe2b18f64c1ec029926b3d5b0d0485f712173a81e66a0004e6be",
+    "quorum-loss/report.json": "a85caa084660ef006417733610c6e3c865aa5a12e9dc992878aa244ac29bf359",
+    "control-plane-fault/report.json": "13be79a6ad0e6825ad93ae774f0843b421d8f7d722c409322685587da93e4f4e",
+    "object-store-fault/report.json": "7358578e22b4c8829d6a57de6bf48ef6578116f6e9bbefe67c0729f87af3fc50",
+    "recovered/report.json": "61f38676ec05467f673f27d9c5a9fcd21946733a7e282e55fba7bdf33593c286",
+    "worker-poweroff-infrastructure-recovery.json": "3ad7fd95fbbe46df241c836335981c5d5854b11ea51f5be7ea851371f35105f8",
+    "data-isolation-infrastructure-recovery.json": "b5e3e6796f3ca7121eb222f010f76f3aa49a017b6a337a2e4698eac29c4d597e",
+    "quorum-loss-infrastructure-recovery.json": "cbcaa450ff058e4615ff77ece6a6e212a2694312bbd4f277efc41aa7016bdc71",
+    "recovery-timer-during.txt": "1ee076faa4c405278caa4aca626ed44fa5e7efa125c95e436d4a821f8918aa5f",
+    "recovery-timer-after.txt": "0df8a1a2c2db6ce4e49947a533b0e084ed3612101332ca1346d00ff2ba0dd526",
+    "observability/metrics.json": "06bb725480e4998b6192b8babb378fabdb4708d415b2bd182c8ea9490508546f",
+    "observability/logs.json": "9ac0b414b8f6ecb11775783b47817ce9e3aa0ecd9b9e071d30f73394c95e74c1",
+    "observability/traces.json": "8036c5c1f1e6ce08dc047d718045bdb63c6c2486f392775d739dd5fefac103b9"
+  },
   "result": {
     "exitCode": 0,
     "cleanupExitCode": 0
@@ -33,6 +42,7 @@
         "acknowledged": 64,
         "frontier": 64
       },
+      "uniqueMessages": 64,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 0,
@@ -41,38 +51,38 @@
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792956818539,
-          "elapsed_ms": 0
+          "unix_ms": 1792989386156,
+          "elapsed_ms": 1
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792956818653,
-          "elapsed_ms": 115
+          "unix_ms": 1792989386276,
+          "elapsed_ms": 120
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792956819843,
-          "elapsed_ms": 1305
+          "unix_ms": 1792989387374,
+          "elapsed_ms": 1219
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792956820756,
-          "elapsed_ms": 2218
+          "unix_ms": 1792989388231,
+          "elapsed_ms": 2075
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792956824091,
-          "elapsed_ms": 5552
+          "unix_ms": 1792989394648,
+          "elapsed_ms": 8493
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792956824361,
-          "elapsed_ms": 5823
+          "unix_ms": 1792989394889,
+          "elapsed_ms": 8733
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792956824364,
-          "elapsed_ms": 5826
+          "unix_ms": 1792989394892,
+          "elapsed_ms": 8736
         }
       ]
     },
@@ -85,6 +95,7 @@
         "acknowledged": 64,
         "frontier": 64
       },
+      "uniqueMessages": 64,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 0,
@@ -93,43 +104,43 @@
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792956825409,
+          "unix_ms": 1792989396020,
           "elapsed_ms": 0
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792956825524,
-          "elapsed_ms": 115
+          "unix_ms": 1792989396141,
+          "elapsed_ms": 121
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792956826422,
-          "elapsed_ms": 1013
+          "unix_ms": 1792989397221,
+          "elapsed_ms": 1201
         },
         {
           "phase": "replay_settle",
-          "unix_ms": 1792956827299,
-          "elapsed_ms": 1891
+          "unix_ms": 1792989397961,
+          "elapsed_ms": 1941
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792956832619,
-          "elapsed_ms": 7211
+          "unix_ms": 1792989403185,
+          "elapsed_ms": 7165
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792956837002,
-          "elapsed_ms": 11594
+          "unix_ms": 1792989406608,
+          "elapsed_ms": 10588
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792956837270,
-          "elapsed_ms": 11861
+          "unix_ms": 1792989406869,
+          "elapsed_ms": 10849
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792956837272,
-          "elapsed_ms": 11864
+          "unix_ms": 1792989406873,
+          "elapsed_ms": 10853
         }
       ]
     },
@@ -142,6 +153,7 @@
         "acknowledged": 80,
         "frontier": 80
       },
+      "uniqueMessages": 80,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 0,
@@ -150,78 +162,78 @@
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792956838338,
-          "elapsed_ms": 1
+          "unix_ms": 1792989407940,
+          "elapsed_ms": 0
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792956838459,
-          "elapsed_ms": 122
+          "unix_ms": 1792989408039,
+          "elapsed_ms": 99
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792956839926,
-          "elapsed_ms": 1589
+          "unix_ms": 1792989409088,
+          "elapsed_ms": 1148
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792956840787,
-          "elapsed_ms": 2449
+          "unix_ms": 1792989409917,
+          "elapsed_ms": 1977
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792956843977,
-          "elapsed_ms": 5640
+          "unix_ms": 1792989412956,
+          "elapsed_ms": 5016
         },
         {
           "phase": "waiting_fault",
-          "unix_ms": 1792956843978,
-          "elapsed_ms": 5640
+          "unix_ms": 1792989412956,
+          "elapsed_ms": 5016
         },
         {
           "phase": "fault_injected",
-          "unix_ms": 1792956846016,
-          "elapsed_ms": 7679
+          "unix_ms": 1792989415503,
+          "elapsed_ms": 7563
         },
         {
           "phase": "fault_production",
-          "unix_ms": 1792956846016,
-          "elapsed_ms": 7679
+          "unix_ms": 1792989415503,
+          "elapsed_ms": 7563
         },
         {
           "phase": "fault_consumption",
-          "unix_ms": 1792956846123,
-          "elapsed_ms": 7786
+          "unix_ms": 1792989415664,
+          "elapsed_ms": 7725
         },
         {
           "phase": "fault_observed",
-          "unix_ms": 1792956846687,
-          "elapsed_ms": 8350
+          "unix_ms": 1792989417498,
+          "elapsed_ms": 9559
         },
         {
           "phase": "host_recovered",
-          "unix_ms": 1792956926430,
-          "elapsed_ms": 88092
+          "unix_ms": 1792989495260,
+          "elapsed_ms": 87320
         },
         {
           "phase": "final_production",
-          "unix_ms": 1792956926430,
-          "elapsed_ms": 88092
+          "unix_ms": 1792989495260,
+          "elapsed_ms": 87320
         },
         {
           "phase": "final_consumption",
-          "unix_ms": 1792956926653,
-          "elapsed_ms": 88316
+          "unix_ms": 1792989495473,
+          "elapsed_ms": 87533
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792956929000,
-          "elapsed_ms": 90663
+          "unix_ms": 1792989497429,
+          "elapsed_ms": 89489
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792956929003,
-          "elapsed_ms": 90666
+          "unix_ms": 1792989497431,
+          "elapsed_ms": 89492
         }
       ]
     },
@@ -234,6 +246,7 @@
         "acknowledged": 80,
         "frontier": 80
       },
+      "uniqueMessages": 80,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 0,
@@ -242,78 +255,78 @@
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792956933117,
-          "elapsed_ms": 2
+          "unix_ms": 1792989501552,
+          "elapsed_ms": 0
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792956933233,
-          "elapsed_ms": 119
+          "unix_ms": 1792989501654,
+          "elapsed_ms": 103
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792956934514,
-          "elapsed_ms": 1399
+          "unix_ms": 1792989502997,
+          "elapsed_ms": 1445
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792956935344,
-          "elapsed_ms": 2229
+          "unix_ms": 1792989503808,
+          "elapsed_ms": 2256
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792956938553,
-          "elapsed_ms": 5438
+          "unix_ms": 1792989506898,
+          "elapsed_ms": 5346
         },
         {
           "phase": "waiting_fault",
-          "unix_ms": 1792956938554,
-          "elapsed_ms": 5439
+          "unix_ms": 1792989506898,
+          "elapsed_ms": 5346
         },
         {
           "phase": "fault_injected",
-          "unix_ms": 1792956940189,
-          "elapsed_ms": 7075
+          "unix_ms": 1792989508636,
+          "elapsed_ms": 7085
         },
         {
           "phase": "fault_production",
-          "unix_ms": 1792956940189,
-          "elapsed_ms": 7075
+          "unix_ms": 1792989508636,
+          "elapsed_ms": 7085
         },
         {
           "phase": "fault_consumption",
-          "unix_ms": 1792956946803,
-          "elapsed_ms": 13688
+          "unix_ms": 1792989515249,
+          "elapsed_ms": 13698
         },
         {
           "phase": "fault_observed",
-          "unix_ms": 1792956948026,
-          "elapsed_ms": 14911
+          "unix_ms": 1792989517374,
+          "elapsed_ms": 15823
         },
         {
           "phase": "host_recovered",
-          "unix_ms": 1792956954936,
-          "elapsed_ms": 21822
+          "unix_ms": 1792989523662,
+          "elapsed_ms": 22110
         },
         {
           "phase": "final_production",
-          "unix_ms": 1792956954936,
-          "elapsed_ms": 21822
+          "unix_ms": 1792989523662,
+          "elapsed_ms": 22110
         },
         {
           "phase": "final_consumption",
-          "unix_ms": 1792956955085,
-          "elapsed_ms": 21970
+          "unix_ms": 1792989525356,
+          "elapsed_ms": 23805
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792956958682,
-          "elapsed_ms": 25567
+          "unix_ms": 1792989527020,
+          "elapsed_ms": 25469
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792956958686,
-          "elapsed_ms": 25571
+          "unix_ms": 1792989527022,
+          "elapsed_ms": 25471
         }
       ]
     },
@@ -326,6 +339,7 @@
         "acknowledged": 80,
         "frontier": 80
       },
+      "uniqueMessages": 80,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 1,
@@ -333,106 +347,102 @@
       "originalPending": [
         {
           "firstSequence": 64,
-          "count": 8,
+          "messages": 8,
+          "originalPending": 8,
           "retryAttempts": 8,
-          "initialError": {
-            "kind": "DeadlineExceeded",
-            "outcome_unknown": true
-          },
-          "lastRetryError": null,
           "receiptSeen": true,
           "messageIDs": [
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:64",
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:65",
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:66",
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:67",
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:68",
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:69",
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:70",
-            "01a17490-1848-7981-830a-e32242106cb6:aa955843-e6ab-7b81-6153-80da6f8401a3:71"
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:64",
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:65",
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:66",
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:67",
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:68",
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:69",
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:70",
+            "01a17681-0c48-74b2-b54c-b03709963d51:823a2b34-d361-5eba-a724-153d9315e7f8:71"
           ]
         }
       ],
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792956962783,
-          "elapsed_ms": 2
+          "unix_ms": 1792989531108,
+          "elapsed_ms": 0
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792956962888,
-          "elapsed_ms": 107
+          "unix_ms": 1792989531207,
+          "elapsed_ms": 100
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792956964021,
-          "elapsed_ms": 1240
+          "unix_ms": 1792989532292,
+          "elapsed_ms": 1185
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792956964883,
-          "elapsed_ms": 2102
+          "unix_ms": 1792989533210,
+          "elapsed_ms": 2103
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792956968193,
-          "elapsed_ms": 5412
+          "unix_ms": 1792989536955,
+          "elapsed_ms": 5848
         },
         {
           "phase": "waiting_fault",
-          "unix_ms": 1792956968193,
-          "elapsed_ms": 5413
+          "unix_ms": 1792989536955,
+          "elapsed_ms": 5848
         },
         {
           "phase": "fault_injected",
-          "unix_ms": 1792956971144,
-          "elapsed_ms": 8363
+          "unix_ms": 1792989539704,
+          "elapsed_ms": 8597
         },
         {
           "phase": "fault_production",
-          "unix_ms": 1792956971144,
-          "elapsed_ms": 8363
+          "unix_ms": 1792989539704,
+          "elapsed_ms": 8597
         },
         {
           "phase": "fault_observed",
-          "unix_ms": 1792956981146,
-          "elapsed_ms": 18365
+          "unix_ms": 1792989549706,
+          "elapsed_ms": 18599
         },
         {
           "phase": "host_recovered",
-          "unix_ms": 1792957063647,
-          "elapsed_ms": 100866
+          "unix_ms": 1792989632414,
+          "elapsed_ms": 101306
         },
         {
           "phase": "original_pending_retry",
-          "unix_ms": 1792957063647,
-          "elapsed_ms": 100866
+          "unix_ms": 1792989632414,
+          "elapsed_ms": 101306
         },
         {
           "phase": "recovered_consumption",
-          "unix_ms": 1792957063959,
-          "elapsed_ms": 101178
+          "unix_ms": 1792989632693,
+          "elapsed_ms": 101586
         },
         {
           "phase": "final_production",
-          "unix_ms": 1792957065794,
-          "elapsed_ms": 103013
+          "unix_ms": 1792989634563,
+          "elapsed_ms": 103456
         },
         {
           "phase": "final_consumption",
-          "unix_ms": 1792957065870,
-          "elapsed_ms": 103090
+          "unix_ms": 1792989634665,
+          "elapsed_ms": 103558
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792957066719,
-          "elapsed_ms": 103938
+          "unix_ms": 1792989635729,
+          "elapsed_ms": 104621
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792957066722,
-          "elapsed_ms": 103941
+          "unix_ms": 1792989635732,
+          "elapsed_ms": 104624
         }
       ]
     },
@@ -445,6 +455,7 @@
         "acknowledged": 64,
         "frontier": 64
       },
+      "uniqueMessages": 64,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 0,
@@ -453,38 +464,38 @@
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792957071771,
+          "unix_ms": 1792989640766,
           "elapsed_ms": 0
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792957071886,
-          "elapsed_ms": 115
+          "unix_ms": 1792989640877,
+          "elapsed_ms": 112
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792957072970,
-          "elapsed_ms": 1199
+          "unix_ms": 1792989641934,
+          "elapsed_ms": 1169
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792957073768,
-          "elapsed_ms": 1997
+          "unix_ms": 1792989642827,
+          "elapsed_ms": 2062
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792957076907,
-          "elapsed_ms": 5135
+          "unix_ms": 1792989645948,
+          "elapsed_ms": 5182
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792957077155,
-          "elapsed_ms": 5384
+          "unix_ms": 1792989646220,
+          "elapsed_ms": 5454
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792957077158,
-          "elapsed_ms": 5387
+          "unix_ms": 1792989646223,
+          "elapsed_ms": 5458
         }
       ]
     },
@@ -497,6 +508,7 @@
         "acknowledged": 64,
         "frontier": 64
       },
+      "uniqueMessages": 64,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 0,
@@ -505,38 +517,38 @@
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792957081773,
-          "elapsed_ms": 0
+          "unix_ms": 1792989650791,
+          "elapsed_ms": 1
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792957081887,
+          "unix_ms": 1792989650904,
           "elapsed_ms": 114
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792957083108,
-          "elapsed_ms": 1335
+          "unix_ms": 1792989651983,
+          "elapsed_ms": 1193
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792957084031,
-          "elapsed_ms": 2258
+          "unix_ms": 1792989652804,
+          "elapsed_ms": 2014
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792957087537,
-          "elapsed_ms": 5765
+          "unix_ms": 1792989655884,
+          "elapsed_ms": 5094
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792957087809,
-          "elapsed_ms": 6036
+          "unix_ms": 1792989656139,
+          "elapsed_ms": 5349
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792957087811,
-          "elapsed_ms": 6039
+          "unix_ms": 1792989656142,
+          "elapsed_ms": 5352
         }
       ]
     },
@@ -549,6 +561,7 @@
         "acknowledged": 64,
         "frontier": 64
       },
+      "uniqueMessages": 64,
       "originalConsumerReused": true,
       "clientCloseCompleted": true,
       "receiveRetries": 0,
@@ -557,56 +570,56 @@
       "phases": [
         {
           "phase": "connecting",
-          "unix_ms": 1792957105381,
+          "unix_ms": 1792989674963,
           "elapsed_ms": 0
         },
         {
           "phase": "creating_queue",
-          "unix_ms": 1792957105492,
-          "elapsed_ms": 111
+          "unix_ms": 1792989675070,
+          "elapsed_ms": 107
         },
         {
           "phase": "initial_production",
-          "unix_ms": 1792957106562,
-          "elapsed_ms": 1182
+          "unix_ms": 1792989676163,
+          "elapsed_ms": 1201
         },
         {
           "phase": "initial_consumption",
-          "unix_ms": 1792957107564,
-          "elapsed_ms": 2184
+          "unix_ms": 1792989677151,
+          "elapsed_ms": 2188
         },
         {
           "phase": "initial_complete",
-          "unix_ms": 1792957111535,
-          "elapsed_ms": 6155
+          "unix_ms": 1792989680287,
+          "elapsed_ms": 5325
         },
         {
           "phase": "ledger_complete",
-          "unix_ms": 1792957111936,
-          "elapsed_ms": 6556
+          "unix_ms": 1792989680573,
+          "elapsed_ms": 5611
         },
         {
           "phase": "validation_finished",
-          "unix_ms": 1792957111940,
-          "elapsed_ms": 6559
+          "unix_ms": 1792989680575,
+          "elapsed_ms": 5613
         }
       ]
     }
   },
   "infrastructureRecovery": {
     "worker-poweroff": {
-      "restoredAtUnixSeconds": 1792956848,
-      "runtimeReadyAtUnixSeconds": 1792956925,
+      "restoredAtUnixSeconds": 1792989417,
+      "runtimeReadyAtUnixSeconds": 1792989494,
       "budgetSeconds": 110
     },
     "data-isolation": {
-      "restoredAtUnixSeconds": 1792956948,
-      "runtimeReadyAtUnixSeconds": 1792956954,
+      "restoredAtUnixSeconds": 1792989518,
+      "runtimeReadyAtUnixSeconds": 1792989523,
       "budgetSeconds": 110
     },
     "quorum-loss": {
-      "restoredAtUnixSeconds": 1792956982,
-      "runtimeReadyAtUnixSeconds": 1792957062,
+      "restoredAtUnixSeconds": 1792989550,
+      "runtimeReadyAtUnixSeconds": 1792989631,
       "budgetSeconds": 110
     }
   },
@@ -618,26 +631,26 @@
     "instances": 10,
     "logEntries": 100,
     "traceIDs": [
-      "f6890905b8d43de19a6e818a45a86d",
-      "10b9ed31426b406786dd7dd68cf58b24",
-      "1d05f1aedb4a81585dfa49534a2237a",
-      "e177e88f2519ffb859d091a52757811",
-      "108f3cae1e5f92cb02b46b74eec73b8f",
-      "1008cf9ccba2ac69a49b4309ce2ff725",
-      "15b22a5a0fcce09c6b95d92d3e3c46",
-      "36d165eff8e8f228b8f2a8f23ed92ab",
-      "88d093a06d61acf549e27370234a3a8",
-      "693f511af829327d6d5f8a065fcbc3b",
-      "13cda4d2cbc785a632d7c38947676c97",
-      "9190439c41ae5812a24ac79675aee10",
-      "46ffef969bb04e754fb8f2336ac8eab",
-      "46237e2a962ccab27d731aab359dc7f",
-      "85b98184bc584741ae6f5d99cb3d94f",
-      "b417536b5f286fde3ecadb548835a79",
-      "aa6c4715859d587173dbfc7f35fe43f",
-      "313e799f87953d617b3493c9d1581fb",
-      "641001b1f86b5a80c78127a5662ed90",
-      "41b82f30e7794cd7ac1893a77cbae85"
+      "6683b8f1e9979fa850c0d0328802591",
+      "b764dcfcad555cce2db939e07c12faf",
+      "c940eb1428cd71a9f0fe3f3162274e2",
+      "3497619d2fdcedc3916278523ec8731",
+      "43ee333568b39de13d38fec58a2cc08",
+      "6333beb601f0f4e1923eda823bd2e",
+      "9bf65bed44b373cece293464b097b1e",
+      "c90add375d4065659c35737a0692d7d",
+      "1f31acd5df1cbb47f000ac7657c62a3",
+      "7e1503f1ef2999ace78daf3f5976257",
+      "a6bd0b4392f63aa258adf3c729aba05",
+      "90f4033aa97d65643786a7f24390acf",
+      "1c5f6958725117762aa17aefa3c271f",
+      "9796b6d3303f26b91fd5dc9df39b6ca",
+      "3a72553eab527e7c3707bda9eba1833",
+      "1ae15252e9f662118ed844e0be68ad4",
+      "8cf2cf32abe79d6e068af0892c1f9a1",
+      "212d74f9dfb375b303b7337911fedaa",
+      "68fe98a6877ec8e33a8a830787c891c",
+      "236e185af7b25fe0735eea366b3c1bf"
     ]
   }
 }

@@ -1,6 +1,6 @@
 {
-  "capturedAt": "2026-10-26T01:25:20.546Z",
-  "sourceCommit": "14372cd5a053bedf536fd3e91bf569d4bb17339c",
+  "capturedAt": "2026-10-26T04:56:17.411Z",
+  "sourceCommit": "c386434bbf6d478e96d68a53d7040323396b1648",
   "host": {
     "hostname": "u126-8",
     "kernel": "7.0.0-38-generic",
@@ -8,9 +8,9 @@
     "memoryBytes": 67239825408,
     "filesystem": {
       "sizeBytes": 501809635328,
-      "usedBytes": 257918447616,
-      "availableBytes": 218325385216,
-      "usedPercent": "55%"
+      "usedBytes": 271822389248,
+      "availableBytes": 204421443584,
+      "usedPercent": "58%"
     }
   },
   "vms": [
@@ -161,7 +161,7 @@
   "pods": [
     {
       "name": "node-11-0",
-      "uid": "d4bdc03e-909b-474e-ac6b-3395887faafc",
+      "uid": "a66237fb-8600-4e0b-9095-671b50b270d6",
       "node": "tidemq-worker-a",
       "phase": "Running",
       "containers": [
@@ -169,21 +169,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-12-0",
-      "uid": "f5c692d1-b24a-4028-99be-25e0ea4cbbd8",
+      "uid": "f673ce6f-236a-4c0c-bedf-d171277e2b94",
       "node": "tidemq-worker-b",
       "phase": "Running",
       "containers": [
@@ -191,21 +193,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-13-0",
-      "uid": "1a17f23f-100e-4a26-8258-c0788d94a2e0",
+      "uid": "c340286a-cebc-4313-bc68-d56c748672e9",
       "node": "tidemq-worker-c",
       "phase": "Running",
       "containers": [
@@ -213,21 +217,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-21-0",
-      "uid": "75b4ae5c-31a4-4a0c-bda6-2bc3335beafe",
+      "uid": "9cd55864-44db-4c6a-aa3e-1232721034dc",
       "node": "tidemq-worker-a",
       "phase": "Running",
       "containers": [
@@ -235,21 +241,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-22-0",
-      "uid": "65471acf-7a17-4b39-bc86-54bb6e4b4ff2",
+      "uid": "64907818-2bd7-41b8-a97b-61ecc84bff02",
       "node": "tidemq-worker-b",
       "phase": "Running",
       "containers": [
@@ -257,21 +265,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-23-0",
-      "uid": "c8b4160b-1044-423a-b3ec-a172e8725243",
+      "uid": "b006d41c-7088-45b6-946d-5f2ff80b4fd3",
       "node": "tidemq-worker-c",
       "phase": "Running",
       "containers": [
@@ -279,21 +289,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-31-0",
-      "uid": "ef65d7b2-6f6a-461d-8265-7d372a636687",
+      "uid": "78aea10b-931a-4564-886c-8c5a6439e2f7",
       "node": "tidemq-worker-a",
       "phase": "Running",
       "containers": [
@@ -301,21 +313,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-32-0",
-      "uid": "b81999b2-852a-4c39-a5d8-4606117cca8b",
+      "uid": "e7c04089-8c4f-4103-bebb-380ed0729c9f",
       "node": "tidemq-worker-b",
       "phase": "Running",
       "containers": [
@@ -323,21 +337,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-41-0",
-      "uid": "1c326fae-692c-445d-a014-91e9ce946632",
+      "uid": "6c61b750-79dd-469a-b087-111ac9040af6",
       "node": "tidemq-worker-a",
       "phase": "Running",
       "containers": [
@@ -345,21 +361,23 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     },
     {
       "name": "node-42-0",
-      "uid": "e6a8d5d9-0d91-4742-9c1a-1304e9460d5c",
+      "uid": "77475b6d-0f86-4a59-a9ab-8b06e43b64ef",
       "node": "tidemq-worker-b",
       "phase": "Running",
       "containers": [
@@ -367,15 +385,17 @@
           "name": "otelcol",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         },
         {
           "name": "tidemq",
           "ready": true,
           "restarts": 0,
-          "image": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
-          "imageID": "sha256:20047292cf996bf0cff53c4408a5dc9d9c04168c3462b3ff0ebce12fa6168973"
+          "image": "localhost/tidemq-lab:public-c386434bbf6d",
+          "reportedImage": "localhost/tidemq-lab:1f85055a6ee540bed075e885",
+          "imageID": "sha256:9dffd22cafa91b655b32cd15762e684829e2c86fe22d1f55c082ca60d278b841"
         }
       ]
     }
