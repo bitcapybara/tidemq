@@ -59,7 +59,8 @@ export function sidecarConfig(node, namespace) {
   };
 }
 
-export function workload(node, namespace, image) {
+export function workload(node, namespace, image, coverage = false) {
+  if (coverage && !/^ci-[0-9]+-[0-9]+$/.test(namespace)) throw new Error('Coverage mounts are restricted to numbered CI namespaces');
   const name = `node-${node.id}`;
   const persistent = ['metadata', 'storage'].includes(node.role);
   const labels = {app: 'tidemq', role: node.role, 'tidemq-node': name};
@@ -92,6 +93,12 @@ export function workload(node, namespace, image) {
   const spec = {serviceName: name, replicas: 1, selector: {matchLabels: {'tidemq-node': name}},
     updateStrategy: {type: 'OnDelete'}, persistentVolumeClaimRetentionPolicy: {whenDeleted: 'Retain', whenScaled: 'Retain'},
     template: {metadata: {labels}, spec: pod}};
+  if (coverage) {
+    const server = pod.containers.find(container => container.name === 'tidemq');
+    server.env.push({name: 'LLVM_PROFILE_FILE', value: `/coverage/node-${node.id}-%h-%p-%m.profraw`});
+    server.volumeMounts.push({name: 'coverage', mountPath: '/coverage'});
+    pod.volumes.push({name: 'coverage', hostPath: {path: `/var/lib/tidemq/coverage/${namespace}/node-${node.id}`, type: 'Directory'}});
+  }
   if (persistent) {
     const size = node.role === 'storage' ? (namespace === 'tidemq-dev' ? '4Gi' : '1Gi') : '512Mi';
     spec.volumeClaimTemplates = [{metadata: {name: 'data'}, spec: {accessModes: ['ReadWriteOnce'], storageClassName: 'tidemq-local',
@@ -174,7 +181,7 @@ function main() {
       data: {'config.toml': config, 'collector.json': JSON.stringify(sidecarConfig(node, namespace))}});
     const pv = persistentVolume(node, namespace);
     if (pv) items.push(pv);
-    const statefulSet = workload(node, namespace, image);
+    const statefulSet = workload(node, namespace, image, process.env.TIDEMQ_API_COVERAGE === '1');
     statefulSet.metadata.namespace = namespace;
     items.push(statefulSet);
   }

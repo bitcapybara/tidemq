@@ -1,12 +1,9 @@
-//! Bounded real-SDK validation coordinated with host-owned container fault injection.
+//! Black-box public API validation against an independently deployed TideMQ service.
 
-#[path = "deploy/ledger.rs"]
+mod api;
 mod ledger;
-#[path = "deploy/output.rs"]
 mod output;
-#[path = "deploy/recovery.rs"]
 mod recovery;
-#[path = "deploy/scenario.rs"]
 mod scenario;
 
 use std::{net::SocketAddr, path::PathBuf, process::ExitCode, time::Duration};
@@ -46,6 +43,9 @@ struct Args {
     stage_fault: bool,
     #[arg(long)]
     require_unavailable: bool,
+    /// Validate management, authorization, Stream and Queue contracts through the public SDK.
+    #[arg(long)]
+    api_contract: bool,
 }
 
 impl Args {
@@ -100,6 +100,7 @@ struct Report {
     sdk_after: Option<serde_json::Value>,
     transport_after: Option<serde_json::Value>,
     client_close_completed: bool,
+    api_checks: Vec<&'static str>,
     #[serde(skip)]
     started: Instant,
 }
@@ -115,7 +116,7 @@ impl Report {
             status: "failed",
             configuration: serde_json::json!({"endpoint":args.endpoint,
                 "messages":args.messages,"message_bytes":args.message_bytes,"replay_settle_ms":args.replay_settle_ms,
-                "stage_fault":args.stage_fault,"require_unavailable":args.require_unavailable,
+                "stage_fault":args.stage_fault,"require_unavailable":args.require_unavailable,"api_contract":args.api_contract,
                 "request_timeout_ms":10000,"total_timeout_seconds":total_seconds,"host_wait_timeout_seconds":120,
                 "producer_workers":1,"consumer_instances":1,"consumer_credit_messages":256,
                 "consumer_credit_bytes":4194304,"batch_messages":8,"allocator":"system",
@@ -138,6 +139,7 @@ impl Report {
             sdk_after: None,
             transport_after: None,
             client_close_completed: false,
+            api_checks: Vec::new(),
             started,
         })
     }
@@ -223,11 +225,17 @@ async fn validate_connected(
     total: Instant,
 ) -> Result<()> {
     report.sdk_before = Some(client_metrics(client));
-    let mut result =
-        match timeout_at(work, scenario::run(args, output, client, run, report, work)).await {
-            Ok(result) => result,
-            Err(error) => Err(error).context("Validation exceeded the original work deadline"),
-        };
+    let mut result = match timeout_at(work, async {
+        if args.api_contract {
+            api::run(args, client, run, report).await?;
+        }
+        scenario::run(args, output, client, run, report, work).await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => Err(error).context("Validation exceeded the original work deadline"),
+    };
     report.sdk_after = Some(client_metrics(client));
     match serde_json::to_value(client.transport_metrics().snapshot()) {
         Ok(snapshot) => report.transport_after = Some(snapshot),

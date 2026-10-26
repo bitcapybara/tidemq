@@ -26,7 +26,7 @@
 
 数据盘可用量低于 12 GiB 或根盘低于 2 GiB 时，再清理可重建的 Cargo / 临时缓存。仍未达到额度则拒绝继续任务，保留运行数据供排查。额度是空闲时的保留限制；单个运行中任务仍受 64 GiB 数据盘及 CI 超时约束，不能把它当成无限临时空间。近期 runner 日志和 file commands 可能暂时超过软额度，磁盘检查不会为腾空间删除它们。
 
-LLVM profile 与编译产物在单元、集成、故障钩子、外部依赖测试和最终报告导出之间一直保留；完成钩子在上传后运行。独立 coverage job 仍只下载、比较报告，没有重编译或重跑 Rust 测试。
+LLVM profile 与编译产物在单元、集成、故障钩子、外部依赖、K8s 黑盒测试和最终报告导出之间一直保留；10 个服务实例受控退出、profile 回传合并后，才删除 worker 上该 CI run 的 coverage 目录。完成钩子在制品上传后运行。独立 coverage job 仍只下载、比较报告，没有重编译或重跑 Rust 测试。
 
 Docker 删除包括 runtime base 的本地副本。[ensure-runtime-base.sh](../../scripts/lab/ensure-runtime-base.sh) 按 inventory 的官方完整 digest 拉取并核验；已有镜像身份错误会失败，不静默接受。冷重建需要访问固定镜像及依赖的下载源。
 

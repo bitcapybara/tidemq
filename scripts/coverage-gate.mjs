@@ -5,6 +5,7 @@ import {execFileSync} from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {validateApiCoverage} from './coverage/api.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const METRICS = ['lines', 'functions', 'regions'];
@@ -107,6 +108,8 @@ export function validateMeasurement(measured, policy, sourceCommit, raw, runId) 
   assert.ok(Number.isSafeInteger(measured.profile_count) && measured.profile_count > 0, 'Missing test profiles');
   assert.deepEqual(Object.keys(measured.test_reports ?? {}).sort(), [...TEST_STAGES].sort(), 'Missing preceding test stages');
   for (const hash of Object.values(measured.test_reports)) assert.match(hash, /^[0-9a-f]{64}$/, 'Invalid test report digest');
+  const apiCount = validateApiCoverage(measured.api_coverage, sourceCommit, runId);
+  assert.ok(measured.profile_count > apiCount, 'Missing native profiles alongside deployed API profiles');
   validateEnvironment(policy, measured.environment);
   if (runId) assert.equal(measured.environment.github_run_id, runId, 'Coverage artifact is from another Rust run');
   return measured.environment;
@@ -122,8 +125,17 @@ async function record(settings) {
     assert.ok(bytes.length > 0, `Missing ${stage} test results`);
     testReports[stage] = digest(bytes);
   }
-  const measured = {schema_version: 1, source_commit: cleanHead(ROOT), llvm_report_sha256: digest(raw.bytes),
-    profile_count: Number(settings['--profile-count']), test_reports: testReports, environment: environment(policy.value)};
+  const api = (await read(path.join(ROOT, 'target/ci/api-coverage.json'))).value;
+  const sourceCommit = cleanHead(ROOT);
+  validateApiCoverage(api, sourceCommit, process.env.GITHUB_RUN_ID);
+  for (const profile of [...api.nodes.flatMap(node => node.profiles), ...api.client_profiles]) {
+    const file = path.join(process.env.CARGO_LLVM_COV_TARGET_DIR, profile.file);
+    const stat = await fs.lstat(file);
+    assert.ok(stat.isFile() && stat.size === profile.bytes, 'API profile was lost before final export');
+    assert.equal(digest(await fs.readFile(file)), profile.sha256, 'API profile changed before final export');
+  }
+  const measured = {schema_version: 1, source_commit: sourceCommit, llvm_report_sha256: digest(raw.bytes),
+    profile_count: Number(settings['--profile-count']), test_reports: testReports, api_coverage: api, environment: environment(policy.value)};
   validateMeasurement(measured, policy.value, measured.source_commit, raw.bytes, process.env.GITHUB_RUN_ID);
   await save(path.resolve(settings['--output']), measured);
 }
@@ -150,7 +162,9 @@ async function comparison(settings) {
   const result = initializing ? {status: 'passed', metrics: null} : compareCoverage(baseline.value.counts, counts);
   const summary = {schema_version: 1, ...result, initialization: initializing, source_commit: sourceCommit,
     policy_sha256: digest(policy.bytes), previous_baseline_sha256: digest(baseline.bytes),
-    llvm_report_sha256: digest(raw.bytes), counts, environment: measuredEnvironment};
+    llvm_report_sha256: digest(raw.bytes), counts, environment: measuredEnvironment,
+    api_profile_count: validateApiCoverage(measured.api_coverage, sourceCommit, settings['--run-id']),
+    api_server_count: measured.api_coverage.nodes.length, api_checks: measured.api_coverage.api_checks};
   await save(path.resolve(settings['--output']), summary);
   console.log(`Coverage gate: ${summary.status}${initializing ? ' (initial measurement pending promotion)' : ''}`);
   assert.equal(summary.status, 'passed', 'Coverage decreased; add meaningful tests before accepting this source');

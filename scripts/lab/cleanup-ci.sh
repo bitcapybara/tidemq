@@ -32,7 +32,7 @@ done
 kubectl delete namespace "$run" --ignore-not-found --wait=true --timeout=2m
 for id in 11 12 13 21 22 23; do kubectl delete pv "$run-node-$id" --ignore-not-found --timeout=30s; done
 for suffix in a b c; do
-  lab_ssh "tidemq-worker-$suffix" sudo rm -rf -- "/var/lib/tidemq/storage/$run" "/var/lib/tidemq/metadata/$run"
+  lab_ssh "tidemq-worker-$suffix" sudo rm -rf -- "/var/lib/tidemq/storage/$run" "/var/lib/tidemq/metadata/$run" "/var/lib/tidemq/coverage/$run" /tmp/tidemq-workload-image.tar
 done
 lab_ssh tidemq-fixtures sudo /usr/local/sbin/tidemq-fixtures remove "$run"
 lab_ssh tidemq-loadgen pkill -TERM -f "^/srv/tidemq/validation/$run/deploy_validation( |$)" || [[ $? == 1 ]]

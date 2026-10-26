@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {compareCoverage, llvmCounts, validateCounts, validateMeasurement, validatePromotion} from '../coverage-gate.mjs';
+import {API_CHECKS, validateApiCoverage, validateProfileListing} from './api.mjs';
+import {roles} from '../lab/workload.mjs';
 
 const ROOT = new URL('../../', import.meta.url);
 const policy = JSON.parse(await readFile(new URL('coverage/policy.json', ROOT)));
@@ -79,7 +81,7 @@ test('reused coverage binds every preceding test stage to the same source, LLVM 
   try {
     const measurement = {schema_version: 1, source_commit: f.head, llvm_report_sha256: sha(f.raw), profile_count: 12,
       test_reports: Object.fromEntries(['unit', 'sdk-default-unit', 'integration', 'runtime-faults', 'external-services']
-        .map(stage => [stage, 'a'.repeat(64)])), environment: f.summary.environment};
+        .map(stage => [stage, 'a'.repeat(64)])), api_coverage: apiFixture(f.head), environment: f.summary.environment};
     const verify = value => validateMeasurement(value, policy, f.head, f.raw, '123');
     assert.equal(verify(measurement).github_run_id, '123');
     for (const [key, value, message] of [
@@ -88,6 +90,8 @@ test('reused coverage binds every preceding test stage to the same source, LLVM 
       ['profile_count', 0, /Missing test profiles/],
       ['test_reports', {}, /Missing preceding test stages/],
       ['test_reports', {...measurement.test_reports, unit: ''}, /Invalid test report/],
+      ['api_coverage', null, /Missing API coverage/],
+      ['profile_count', 11, /Missing native profiles/],
       ['environment', {...measurement.environment, github_run_id: '124'}, /another Rust run/],
       ['environment', {...measurement.environment, platform: 'darwin'}, /fixed platform/],
     ]) assert.throws(() => verify({...measurement, [key]: value}), message);
@@ -167,4 +171,52 @@ test('first initialization requires a real nonzero report and PRs cannot initial
       assert.match(replaced.stderr, /cannot replace/);
     } finally { await rm(other, {recursive: true, force: true}); }
   } finally { await rm(f.directory, {recursive: true, force: true}); }
+});
+
+function apiFixture(source = '1'.repeat(40), run = '123') {
+  const profile = label => ({file: `tidemq-api-${label}.profraw`, bytes: 128, sha256: 'a'.repeat(64)});
+  return {schema_version: 1, mode: 'kubernetes', namespace: `ci-${run}-1`, source_commit: source,
+    build_profile: 'debug', instrumented: true, image: `localhost/tidemq-lab:${'a'.repeat(24)}`,
+    binary_sha256: {tidemq: 'b'.repeat(64), deploy_validation: 'c'.repeat(64)},
+    nodes: roles.map(node => ({...node, pod_uid: '11111111-1111-4111-8111-111111111111', image_id: `sha256:${'d'.repeat(64)}`,
+      profiles: [profile(`server-${node.id}`)]})), client_profiles: [profile('client')],
+    test_reports: Object.fromEntries(['api-contract', 'smoke', 'replay', 'worker-poweroff', 'data-isolation', 'quorum-loss', 'control-plane-fault', 'object-store-fault', 'recovered']
+      .map(name => [name, 'e'.repeat(64)])), api_checks: API_CHECKS, graceful_shutdown: true};
+}
+
+test('API coverage requires profiles from every role, black-box assertions, the same build and CI run', () => {
+  const valid = apiFixture();
+  const verify = value => validateApiCoverage(value, '1'.repeat(40), '123');
+  assert.equal(verify(valid), 11);
+  for (const mutate of [
+    value => {value.source_commit = '2'.repeat(40);},
+    value => {value.namespace = 'ci-124-1';},
+    value => {value.build_profile = 'release';},
+    value => {value.instrumented = false;},
+    value => {value.binary_sha256.tidemq = '';},
+    value => {value.nodes.pop();},
+    value => {value.nodes[0].profiles = [];},
+    value => {value.nodes[0].worker = 'tidemq-worker-c';},
+    value => {value.nodes[0].profiles[0].file = '../escape.profraw';},
+    value => {value.nodes[0].profiles[0].sha256 = '';},
+    value => {value.nodes[0].profiles[0].bytes = 0;},
+    value => {value.client_profiles = [];},
+    value => {delete value.test_reports['api-contract'];},
+    value => {value.api_checks = [];},
+    value => {value.graceful_shutdown = false;},
+  ]) {
+    const candidate = structuredClone(valid);
+    mutate(candidate);
+    assert.throws(() => verify(candidate));
+  }
+});
+
+test('remote profile listing rejects traversal, duplicates, empty files and unbounded input', () => {
+  assert.deepEqual(validateProfileListing('node-11-pod-42-123.profraw\t1024\n', 'node-11-'),
+    [{name: 'node-11-pod-42-123.profraw', bytes: 1024}]);
+  for (const listing of ['', 'node-12-a.profraw\t1', 'node-11-../x.profraw\t1', 'node-11-a.profraw\t0',
+    'node-11-a.profraw\t16777217', 'node-11-a.profraw\t1\nnode-11-a.profraw\t1',
+    Array.from({length: 65}, (_, index) => `node-11-${index}.profraw\t1`).join('\n')]) {
+    assert.throws(() => validateProfileListing(listing, 'node-11-'));
+  }
 });

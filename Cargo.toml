@@ -55,6 +55,10 @@ required-features = ["test-hooks"]
 name = "runtime_consumer_reads"
 required-features = ["test-hooks"]
 
+[[example]]
+name = "deploy_validation"
+path = "tests/deployment/driver.rs"
+
 [dependencies]
 anyhow = "=1.0.104"
 async-trait = "=0.1.89"

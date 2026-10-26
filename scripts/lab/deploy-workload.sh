@@ -17,6 +17,11 @@ for suffix in a b c; do
     [[ "$role" != storage ]] || id=$((20 + index))
     lab_ssh "$worker" sudo bash -c 'set -euo pipefail; mountpoint -q "/var/lib/tidemq/$1"; available=$(df --output=avail -B1 "/var/lib/tidemq/$1" | tail -n 1); (( available > 1073741824 )); install -d -m 0700 -o 10001 -g 10001 "/var/lib/tidemq/$1/$2/node-$3"' -- "$role" "$namespace" "$id"
   done
+  if [[ ${TIDEMQ_API_COVERAGE:-0} == 1 ]]; then
+    [[ "$namespace" =~ ^ci-[0-9]+-[0-9]+$ ]] || exit 2
+    ids=$(node --input-type=module -e 'import {roles} from "./scripts/lab/workload.mjs"; console.log(roles.filter(node => node.worker === process.argv[1]).map(node => node.id).join(" "))' "$worker")
+    lab_ssh "$worker" sudo bash -c 'set -euo pipefail; for id in $2; do install -d -m 0700 -o 10001 -g 10001 "/var/lib/tidemq/coverage/$1/node-$id"; done' -- "$namespace" "$ids"
+  fi
   lab_copy "$worker" "$build/image.tar" /tmp/tidemq-workload-image.tar
   lab_ssh "$worker" sudo ctr -n k8s.io images import --platform linux/amd64 /tmp/tidemq-workload-image.tar > "$lab_state/logs/$namespace-$suffix-image-import.log" 2>&1
   lab_ssh "$worker" rm /tmp/tidemq-workload-image.tar

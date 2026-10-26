@@ -10,11 +10,31 @@
 
 固定 nextest 0.9.148，ci profile 逐测试隔离、并发为 1、不重试失败项，保留 JUnit；业务测试内部并发不变。doctest 单独由 cargo test 执行。Linux 的固定 RustFS / Collector 版本与哈希由 inventory 和制品记录，不使用用户既有数据。
 
-Linux 单元和集成阶段直接使用 cargo-llvm-cov 0.9.1 的 `show-env --sh` 插桩构建；开始时只清理一次历史 profile，单元、SDK 默认 feature、原生集成、故障钩子及真实外部服务测试共用同一构建目录并累计 profile。测试结束后 `scripts/coverage-run.sh` 只读取已有二进制和 profile，生成 LLVM JSON、LCOV、HTML，不重新编译或执行测试。后续 coverage job 只下载报告并比较；measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量和五阶段 JUnit 哈希，拒绝跨提交或跨运行混用。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
+Linux 单元、集成和远程 API 阶段直接使用 cargo-llvm-cov 0.9.1 的 `show-env --sh` 插桩环境；开始时只清理一次历史 profile，共用一个构建目录。执行顺序为单元 → 默认 SDK → 原生集成 → 故障钩子 → 真实外部服务 → K8s 黑盒/VM 故障 → 合并导出。K8s 阶段把同一插桩环境生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
+
+所有阶段结束后 [coverage-run.sh](../scripts/coverage-run.sh) 只读取已有二进制和 profile，统一生成 LLVM JSON、LCOV、HTML 和原始 `profiles.tar.gz`，不重新编译或执行测试。coverage job 只下载报告并比较；measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量、五阶段 JUnit 哈希，以及 [API 采集清单](../scripts/coverage/api.mjs)。清单记录两种部署二进制的 SHA256、镜像、10 个 Pod 的 UID/角色/worker/imageID、各个 profile 的大小/哈希、9 个远程用例的报告哈希及行为断言。缺少任一角色、客户端、行为结果或跨提交/跨运行混用均失败。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
 
 [policy.json](../coverage/policy.json) 固定源码范围；[baseline.json](../coverage/baseline.json) 保留已有覆盖率基线。比较器用 BigInt 对 lines / functions / regions 原始整数比例逐项比较，任何下降失败，不设浮点容差，不额外排除源码来抬高数字。PR 使用 base 的可信工具和策略，不能替换自己的基线。当前 CI 只比较覆盖率，不自动写入或推送基线。
 
-VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。完成或失败均恢复故障并清理该次资源。Linux 插桩校验、集成、报告导出及 VM 故障与手动运维共享宿主 flock；只读的覆盖率报告比较不占用故障租约。VM 内的发布镜像以普通 release 构建，VM 故障场景另留独立验收结果，不混入 LLVM 覆盖率。
+VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。Linux 全流程与手动运维共享宿主 flock，保持插桩二进制和 profile 不被中途清理；只读 coverage job 不占用故障租约。常驻公共 workload 和手动普通验收仍使用 release 构建。
+
+服务端 `LLVM_PROFILE_FILE=/coverage/node-ID-%h-%p-%m.profraw` 写入该 run 独享的 worker 目录；loadgen 的 CLI/SDK 使用独享 `profiles/client-%h-%p-%m.profraw`。收集业务结果和日志后，将该 CI namespace 的 10 个 StatefulSet 受控缩容为 0，等待进程正常处理 SIGTERM 并退出，然后逐实例通过 SSH 回收非空 profile，校验并复制到原生覆盖率构建目录。最后才删除 namespace、PV、worker profile、RustFS fixture 和私有构建；取消留下的资源由 runner 维护机制重试。最终覆盖率导出及制品上传完成后，才运行任务完成清理钩子。
+
+LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://doc.rust-lang.org/rustc/instrument-coverage.html)，外部程序与已有测试合并的方式见 [cargo-llvm-cov 官方说明](https://github.com/taiki-e/cargo-llvm-cov#usage)。VM 断电或 SIGKILL 前来不及写出的计数可能丢失，不能把最终报告当作每次崩溃前执行路径的完整记录；恢复后的全部 10 个实例必须正常退出并产生有效 profile。故障用例是否满足行为契约仍独立断言，不能用覆盖率数字代替。
+
+## 远程 API 黑盒断言
+
+入口为 [tests/deployment/driver.rs](../tests/deployment/driver.rs)，保留 `cargo build --example deploy_validation` 构建接口。纯解析/账本单元测试只测试本地逻辑，外部服务行为由 [lab.sh](../scripts/ci/lab.sh) 在部署后显式运行，不混入 lib/bin 单元测试。
+
+| 场景 | 预期行为 |
+|---|---|
+| `api-contract` 管理与授权 | 创建/分页列举 Tenant、Namespace、Principal、Credential；Topic 身份稳定；Namespace Topic 限额拒绝超额；只读凭据拒绝管理；撤销 token 后拒绝访问；查询集群/数据组；删除订阅、Topic 和父资源 |
+| `api-contract` 消息语义 | Producer 提交；Queue 收到相同 ID/正文/key，NACK 后保持 ID 重投并持久 ACK；Stream 独立收到相同消息，累计 ACK 后重连不会重放已确认消息 |
+| `smoke` / `replay` | 完整账本无丢失、正文错误和未确认消息；延迟加入持久订阅后能读取归档消息 |
+| worker 掉电 / 数据网隔离 / 多数派丢失恢复 | 故障窗口、原 Pending/Consumer 身份、恢复后持久前沿及有限关闭满足原断言 |
+| 控制面故障 / RustFS a 隔离 / `recovered` | 备用控制面可用、独立 RustFS b 存活、恢复后的完整生产/消费/ACK |
+
+独立 watchdog 另验证 VM 暂停后自动恢复；Loki/Tempo/Prometheus 另验证同一 run 的日志、trace、metrics 可查询。以上是有限正确性矩阵，未声称穷尽所有管理 API、部署形态或故障组合。本轮选用现有多角色 K8s 环境，未另加单机插桩部署。
 
 ## 可复现验证
 
@@ -26,7 +46,8 @@ cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/o
 # Linux only, from committed clean sources.
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs \
 TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol \
-TIDEMQ_REQUIRE_EXTERNAL=1 TIDEMQ_COVERAGE=1 bash scripts/ci/validate-and-integrate.sh
+TIDEMQ_REQUIRE_EXTERNAL=1 TIDEMQ_COVERAGE=1 \
+bash scripts/lab/with-lease.sh bash scripts/ci/validate-and-integrate.sh
 node scripts/coverage-gate.mjs compare --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json --output target/ci/coverage/summary.json
 ```
 
@@ -71,7 +92,7 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 | S09 [成员迁移](../tests/scaling_raft.rs)、[远程闭合迁移](../tests/scaling_remote.rs) | learner/joint/stable、隔离后保留原计划、joint 中换主、完成证明私有、容量新鲜度与预算、真实 native RF3 自动替换、缺样不创建计划 | 部分远程 fixture 为语义 codec loopback；S08 另验证实际 CLI/mTLS 修复，跨区与高压力组合仍待验 |
 | S10 [观测边界](../tests/observability_boundaries.rs)、[分配器](../tests/allocator_diagnostics.rs)、[堆采样](../tests/heap_profile.rs)、quota/retention 单元测试 | 字节许可、控制保留、有限指标、日志丢弃/失败/脱敏、临时过滤、真实 RSS、cgroup 解析、迟滞、同 allocator profile；原生 Prometheus/Grafana 实际 RF1 查询、29 面板和匿名只读权限，见[部署证据](../deploy/observability/README.zh-CN.md)；Linux 容器限额与 RF1 受控真 OOM 见 S12 | Linux 同 allocator 分配栈、长期趋势与浏览器画面待验；Collector 与正式开销单独记录 |
 | S11 [追踪导出](../tests/tracing_export.rs)、[四角色链路](../tests/runtime_support/tracing.rs) | 官方 OTLP HTTP/protobuf、TLS 拒绝、宿主设施共存、外部 sampled 仍受本地预算限制、慢/503/超大响应/关闭与恢复；真实 SDK→Gateway→Broker 父关系、owned 提交及持久 ACK、原期限清理；Linux 普通回归覆盖内置采集器边界；官方 native Collector 在 macOS 实际 accepted 与退出端口释放 | native Collector 用例需显式 ignored，当前 Linux CI 已执行；默认 nop 不持久化 trace。域名/私有 CA/mTLS 由本地 Collector 代理；公网与正式 Linux Collector 部署待验，Docker 集群默认未开 OTLP |
-| S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../examples/deploy_validation.rs)、[读取回收集成测试](../tests/runtime_reclamation.rs)、[最新 Docker 记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
+| S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../tests/deployment/driver.rs)、[读取回收集成测试](../tests/runtime_reclamation.rs)、[最新 Docker 记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
 | M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
 
 ## 构建、生成与 allocator

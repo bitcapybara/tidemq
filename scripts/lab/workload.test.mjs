@@ -9,6 +9,16 @@ test('only numbered CI namespaces opt into automatic deletion', () => {
     assert.deepEqual(workloadNamespace(name).metadata.labels, {});
   }
 });
+test('instrumented servers persist unique profiles outside disposable Pods and never mount the public workload', () => {
+  for (const node of roles) {
+    const pod = workload(node, 'ci-123-1', 'localhost/tidemq-lab:0123456789ab', true).spec.template.spec;
+    assert.equal(pod.volumes.find(volume => volume.name === 'coverage').hostPath.path, `/var/lib/tidemq/coverage/ci-123-1/node-${node.id}`);
+    assert.equal(pod.containers.find(container => container.name === 'tidemq').env.find(item => item.name === 'LLVM_PROFILE_FILE').value,
+      `/coverage/node-${node.id}-%h-%p-%m.profraw`);
+    assert.equal(workload(node, 'tidemq-dev', 'localhost/tidemq-lab:0123456789ab').spec.template.spec.volumes.some(volume => volume.name === 'coverage'), false);
+    assert.throws(() => workload(node, 'tidemq-dev', 'localhost/tidemq-lab:0123456789ab', true), /numbered CI/);
+  }
+});
 test('RF3 storage and metadata quorums span separate guest kernels and failure zones', () => {
   for (const role of ['metadata', 'storage']) {
     const voters = roles.filter(node => node.role === role);

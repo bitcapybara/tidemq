@@ -28,10 +28,19 @@ wait_runtime() {
     done
   done
 }
+collect_api_coverage() {
+  [[ ${CARGO_LLVM_COV_SHOW_ENV:-0} == 1 ]] || return 1
+  kube get namespace "$run" -o json | jq -e '.metadata.labels["tidemq.lab/ci"] == "true"' >/dev/null || return 1
+  kube get pods -l app=tidemq -o json > "$report/pods-before-shutdown.json" || return 1
+  # LLVM writes profiles on normal process termination; collect before disposable data is removed.
+  kube scale statefulset node-{11,12,13,21,22,23,31,32,41,42} --replicas=0 || return 1
+  kube wait pod -l app=tidemq --for=delete --timeout=2m || return 1
+  node scripts/coverage/api.mjs "$run" "$private/build" "$report" "$CARGO_LLVM_COV_TARGET_DIR"
+}
 cleanup() {
   local result=$? cleanup_result=0
   trap - EXIT
-  for file in build.log source-commit.txt source-patch-sha256.txt toolchain.txt sha256.txt image-id.txt; do
+  for file in build.log source-commit.txt source-patch-sha256.txt toolchain.txt sha256.txt image-id.txt image.txt profile.txt; do
     [[ ! -f "$private/build/$file" ]] || cp "$private/build/$file" "$report/$file"
   done
   if [[ -n "$validator_pid" ]]; then kill "$validator_pid" 2>/dev/null || true; wait "$validator_pid" 2>/dev/null || true; fi
@@ -41,6 +50,9 @@ cleanup() {
   kube get events -o json > "$report/events.json" 2>/dev/null || true
   for id in 11 12 13 21 22 23 31 32 41 42; do kube logs "node-$id-0" -c tidemq --tail=200 > "$report/node-$id.log" 2>&1 || true; done
   scp -q -r -i "$TIDEMQ_LAB_KEY" -o "UserKnownHostsFile=$TIDEMQ_LAB_KNOWN_HOSTS" "lab@192.168.240.35:$load_root/results/." "$report/" >> "$report/cleanup.log" 2>&1 || true
+  if [[ ${TIDEMQ_API_COVERAGE:-0} == 1 ]]; then
+    collect_api_coverage >> "$report/coverage-collection.log" 2>&1 || cleanup_result=1
+  fi
   bash scripts/lab/cleanup-ci.sh "$run" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
   (( cleanup_result == 0 )) || result=1
   printf '{"exitCode":%s,"cleanupExitCode":%s}\n' "$result" "$cleanup_result" > "$report/result.json"
@@ -59,18 +71,26 @@ bash scripts/lab/deploy-workload.sh "$run" "$private/build" https://192.168.241.
 validator="$private/build/bin/deploy_validation"
 material="$private/workload/material"
 lab_ssh tidemq-loadgen sudo install -d -m 0700 -o lab -g lab "$load_root" "$load_root/results"
+lab_ssh tidemq-loadgen install -d -m 0700 "$load_root/profiles"
 lab_copy tidemq-loadgen "$validator" "$load_root/deploy_validation"
 lab_copy tidemq-loadgen "$private/build/bin/tidemq" "$load_root/tidemq"
 lab_copy tidemq-loadgen "$material/ca.pem" "$load_root/ca.pem"
 lab_copy tidemq-loadgen "$material/access.token" "$load_root/access.token"
 connection=(--endpoint 192.168.241.201:7443 --ca "$load_root/ca.pem" --token-file "$load_root/access.token")
 common=("${connection[@]}" --messages 64)
-tenant=$(lab_ssh tidemq-loadgen "$load_root/tidemq" admin "${connection[@]}" create-tenant validation | jq -er '.result.id')
-lab_ssh tidemq-loadgen "$load_root/tidemq" admin "${connection[@]}" create-namespace "$tenant" default > "$report/namespace-created.json"
+client() {
+  if [[ ${TIDEMQ_API_COVERAGE:-0} == 1 ]]; then
+    lab_ssh tidemq-loadgen env "LLVM_PROFILE_FILE=$load_root/profiles/client-%h-%p-%m.profraw" "$@"
+  else
+    lab_ssh tidemq-loadgen "$@"
+  fi
+}
+tenant=$(client "$load_root/tidemq" admin "${connection[@]}" create-tenant validation | jq -er '.result.id')
+client "$load_root/tidemq" admin "${connection[@]}" create-namespace "$tenant" default > "$report/namespace-created.json"
 smoke() {
   local name=$1
   shift
-  lab_ssh tidemq-loadgen "$load_root/deploy_validation" "${common[@]}" --output-dir "$load_root/results/$name" "$@" > "$report/$name.log" 2>&1
+  client "$load_root/deploy_validation" "${common[@]}" --output-dir "$load_root/results/$name" "$@" > "$report/$name.log" 2>&1
   mkdir -p "$report/$name"
   lab_fetch tidemq-loadgen "$load_root/results/$name/report.json" "$report/$name/report.json"
   jq -e '.status == "passed" and .client_close_completed == true' "$report/$name/report.json" >/dev/null
@@ -85,6 +105,7 @@ wait_marker() {
   printf 'The SDK validator fault marker timed out\n' >&2
   return 1
 }
+smoke api-contract --api-contract
 smoke smoke
 smoke replay --replay-settle-ms 5000
 staged_fault() {
@@ -92,7 +113,7 @@ staged_fault() {
   shift 3
   local flags=(--stage-fault)
   [[ "$unavailable" != 1 ]] || flags+=(--require-unavailable)
-  lab_ssh tidemq-loadgen "$load_root/deploy_validation" "${common[@]}" --output-dir "$load_root/results/$name" "${flags[@]}" > "$report/$name.log" 2>&1 &
+  client "$load_root/deploy_validation" "${common[@]}" --output-dir "$load_root/results/$name" "${flags[@]}" > "$report/$name.log" 2>&1 &
   validator_pid=$!
   wait_marker "$load_root/results/$name/waiting-fault.json" "$validator_pid"
   for vm in "$@"; do host_control "$action" "$vm" 120 >> "$report/$name-inject.txt"; done

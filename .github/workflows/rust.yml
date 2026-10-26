@@ -30,7 +30,7 @@ jobs:
           - os: macOS
             runner: macos-latest
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
@@ -54,24 +54,17 @@ jobs:
         if: always()
         with:
           name: tests-${{ matrix.os }}
-          path: target/ci
+          path: |
+            target/ci
+            !target/ci/coverage
+            !target/ci/lab-report
           retention-days: 14
       - uses: actions/upload-artifact@v4
         if: success() && runner.os == 'Linux'
         with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
 
-  lab:
-    name: Kubernetes RF3 and VM faults
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: validate
-    runs-on: [self-hosted, Linux, X64, tidemq-dev]
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-        with: {persist-credentials: false}
-      - run: bash scripts/lab/with-lease.sh bash scripts/ci/lab.sh
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && runner.os == 'Linux'
         with:
           name: kubernetes-lab
           path: target/ci/lab-report
@@ -122,12 +115,12 @@ jobs:
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, lab, coverage, untrusted]
+    needs: [validate, coverage, untrusted]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - run: >-
-          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; if(fork ? r.untrusted.result!=="success" : ["validate","lab","coverage"].some(k=>r[k].result!=="success")) process.exit(1)'
+          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; if(fork ? r.untrusted.result!=="success" : ["validate","coverage"].some(k=>r[k].result!=="success")) process.exit(1)'
         env:
           RESULTS: ${{ toJSON(needs) }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

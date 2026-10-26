@@ -155,7 +155,7 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
-Linux 的单元、默认 SDK、集成、故障钩子及真实外部服务测试都在同一 LLVM 插桩环境中执行，只在开始时清理一次旧 profile；结束后导出 LLVM JSON、LCOV、HTML。覆盖率 job 下载该制品校验源码/运行身份并比较受保护基线，不重新编译或重跑测试。VM 发布镜像仍为普通 release 构建，VM 故障报告独立保存。详细命令见[测试指南](../../docs/testing.zh-CN.md)。
+Linux 的单元、默认 SDK、集成、故障钩子、真实外部服务及 K8s 黑盒/VM 故障测试在同一 LLVM 插桩环境中顺序执行，只在开始时清理一次旧 profile。K8s 的 10 个角色实例和 loadgen 客户端均使用插桩二进制；受控退出后通过 SSH 回传各实例 profile，与原生测试一起导出 LLVM JSON、LCOV、HTML 及原始 profile 归档。measurement 绑定源码、镜像、二进制哈希、角色/Pod/worker 和行为断言；缺少任一实例则失败。覆盖率 job 下载制品比较受保护基线，不重新编译或重跑测试。公共常驻服务与手动普通验收仍使用 release 构建。详细流程及崩溃前未写出计数的限制见[测试指南](../../docs/testing.zh-CN.md)。
 
 单元测试运行 `--lib --bins --examples`，主动移除外部服务环境变量。外部进程 / 网络依赖测试放在 `tests/`，由独立 integration 阶段运行；内建本地 mock 不要求预装外部服务。ignored 的真实 RustFS / Collector 测试在 Linux 上显式执行，缺少固定二进制会失败。
 
