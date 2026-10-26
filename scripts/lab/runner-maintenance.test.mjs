@@ -172,3 +172,28 @@ elif [[ "$1" == tag ]]; then printf '%s\\n' "$EXPECTED" > "$TEST_ROOT/image"; fi
   fs.writeFileSync(path.join(root, 'image'), 'sha256:wrong');
   assert.notEqual(run().status, 0);
 });
+
+test('API images accept the llvm-cov rustc wrapper without RUSTFLAGS and reject missing instrumentation', t => {
+  const root = fixture(t), bin = path.join(root, 'bin'); fs.mkdirSync(bin);
+  const inventory = JSON.parse(fs.readFileSync(path.join(scripts, '../../deploy/lab/inventory.json')));
+  executable(path.join(bin, 'docker'), `#!/usr/bin/env bash
+printf '%s\\n' '${inventory.docker.runtimeBaseImageID}'
+`);
+  executable(path.join(bin, 'cargo'), '#!/usr/bin/env bash\nprintf "%s\\n" "$*" > "$TEST_ROOT/cargo.log"\nexit 42\n');
+  const env = {...process.env, PATH: `${bin}:${process.env.PATH}`, TEST_ROOT: root, TIDEMQ_LAB_HOME: root,
+    TIDEMQ_API_COVERAGE: '1', CARGO_LLVM_COV_SHOW_ENV: '1', CARGO_LLVM_COV: '1', RUSTC_WRAPPER: '/fixed/cargo-llvm-cov'};
+  delete env.RUSTFLAGS;
+  delete env.CARGO_ENCODED_RUSTFLAGS;
+  const run = (settings, name) => spawnSync('bash', [path.join(scripts, 'build-image.sh'), path.join(root, name)], {env: settings, encoding: 'utf8'});
+  assert.equal(run(env, 'instrumented').status, 42);
+  const args = fs.readFileSync(path.join(root, 'cargo.log'), 'utf8');
+  assert.ok(args.includes('--bin tidemq --example deploy_validation'));
+  assert.ok(!args.includes('--release'));
+  for (const [index, patch] of [{CARGO_LLVM_COV_SHOW_ENV: '0'}, {CARGO_LLVM_COV: '0'}, {RUSTC_WRAPPER: ''}].entries()) {
+    fs.rmSync(path.join(root, 'cargo.log'), {force: true});
+    assert.equal(run({...env, ...patch}, `rejected-${index}`).status, 1);
+    assert.ok(!fs.existsSync(path.join(root, 'cargo.log')));
+  }
+  assert.equal(run({...env, TIDEMQ_API_COVERAGE: '0'}, 'release').status, 42);
+  assert.ok(fs.readFileSync(path.join(root, 'cargo.log'), 'utf8').includes('--release'));
+});

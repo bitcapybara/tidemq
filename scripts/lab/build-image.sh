@@ -7,19 +7,20 @@ cd "$repo"
 lab_home=${TIDEMQ_LAB_HOME:?Set TIDEMQ_LAB_HOME}
 tools=${TIDEMQ_LAB_TOOLS:-/srv/tidemq/tools}
 base=$(jq -er .docker.runtimeBaseImage deploy/lab/inventory.json)
-bash scripts/lab/ensure-runtime-base.sh
-mkdir -m 0700 -p "$1/bin"
-output=$(cd "$1" && pwd -P)
-target=${CARGO_TARGET_DIR:-$repo/target}
 profile=release
 flags=(--release)
 if [[ ${TIDEMQ_API_COVERAGE:-0} == 1 ]]; then
-  [[ ${CARGO_LLVM_COV_SHOW_ENV:-0} == 1 && "${RUSTFLAGS:-}" == *instrument-coverage* ]] || {
+  # The pinned llvm-cov uses its rustc wrapper instead of global RUSTFLAGS.
+  [[ ${CARGO_LLVM_COV_SHOW_ENV:-0} == 1 && ${CARGO_LLVM_COV:-0} == 1 && "${RUSTC_WRAPPER:-}" == */cargo-llvm-cov ]] || {
     printf 'API coverage requires the existing llvm-cov instrumentation environment\n' >&2; exit 1;
   }
   profile=debug
   flags=(--features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen)
 fi
+bash scripts/lab/ensure-runtime-base.sh
+mkdir -m 0700 -p "$1/bin"
+output=$(cd "$1" && pwd -P)
+target=${CARGO_TARGET_DIR:-$repo/target}
 cargo build "${flags[@]}" --locked --bin tidemq --example deploy_validation
 cp "$target/$profile/tidemq" "$output/bin/tidemq"
 cp "$target/$profile/examples/deploy_validation" "$output/bin/deploy_validation"
