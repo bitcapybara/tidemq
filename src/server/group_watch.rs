@@ -84,7 +84,7 @@ impl Drop for AuthorityCharge {
 }
 
 impl Budget {
-    #[cfg(feature = "test-hooks")]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn diagnostic(&self) -> (usize, usize, usize) {
         let (bytes, targets) = self
             .0

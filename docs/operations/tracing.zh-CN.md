@@ -52,7 +52,7 @@ Rust SDK 开启 `opentelemetry` feature 后，从宿主当前 tracing span 获�
 
 固定 `event_code` 包括 `watch_completed`、`watch_failed`、`watch_cancelled`、`watch_cleanup_unknown` 和 `watch_scope_failed`。最后一项记录发生失败的数据组、`stage`、数值错误码/outcome、是否可重试和原请求剩余毫秒数。`leader_discovery`/`route`/`forward` 指向发现或转发，`initial_barrier`/`final_barrier` 指向线性化检查，`initial_samples`/`registered_samples`/`final_samples` 指向应用状态投影，`final_authorize` 与 `local_*_changed`/`local_permission_expired` 指向最终授权或路由复查。这些分类不记录消息、凭据、观察 token 或原始错误链。
 
-`WatchRetry` 是重新安排只读观察的提示，不能当成 `UNCHANGED`，也不能据此新建替代 `GroupRead` 身份。结合[消费说明](../guide/consumption.zh-CN.md#watch-与实际读取)和[指标](./metrics.zh-CN.md)检查当前成员、路由、准入与原截止时间；取消或 drain 后的明确拒绝也不表示已领取的数据丢失。
+`WatchRetry` 是重新安排只读观察的提示，不能当成 `UNCHANGED`，也不能据此新建替代 `GroupRead` 身份。结合[消费说明](../guide/consumption.zh-CN.md#空闲等待与公平读取)和[指标](./metrics.zh-CN.md)检查当前成员、路由、准入与原截止时间；取消或 drain 后的明确拒绝也不表示已领取的数据丢失。
 
 ## 故障定位
 
