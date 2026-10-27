@@ -18,7 +18,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-use crate::budget::{MemoryBudget, MemoryPermit};
+use crate::budget::{FrameReservation, MemoryBudget, MemoryPermit};
 
 use super::{
     Authorization, Error, FramedStream, Result, TransportConfig, TransportMetrics, telemetry::add,
@@ -132,6 +132,19 @@ pub struct Connection {
 impl Connection {
     pub fn class(&self) -> TrafficClass {
         self.state.class
+    }
+    pub(crate) fn request_capacity(&self) -> usize {
+        ordinary_capacity(self.state.class, &self.state.config)
+    }
+    /// Carve a consumer's frame capacity from this connection's shared normal/data budget.
+    pub fn reserve_frames(&self, bytes: u32) -> Result<FrameReservation> {
+        if self.is_closed() {
+            return Err(Error::Closed);
+        }
+        self.state
+            .budget
+            .reserve_frames(self.state.class, bytes)
+            .map_err(|source| Error::Memory { source })
     }
     pub fn authorization(&self) -> &Authorization {
         &self.state.authorization
@@ -367,13 +380,14 @@ pub(super) fn start_session(
     acceptor: StreamAcceptor,
     initial: FramedStream,
 ) -> Arc<Session> {
+    let connection = Connection {
+        state: state.clone(),
+    };
     let (core_tx, core_rx) = mpsc::channel(state.config.core_streams);
-    let (ordinary_tx, ordinary_rx) = mpsc::channel(ordinary_capacity(state.class, &state.config));
+    let (ordinary_tx, ordinary_rx) = mpsc::channel(connection.request_capacity());
     let pump = tokio::spawn(pump_streams(state.clone(), acceptor, core_tx, ordinary_tx));
     Arc::new(Session {
-        connection: Connection {
-            state: state.clone(),
-        },
+        connection,
         initial: Mutex::new(vec![initial]),
         incoming: Mutex::new(IncomingStreams {
             core: core_rx,

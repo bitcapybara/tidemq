@@ -12,7 +12,7 @@ use tokio::{
     time::{Instant, timeout_at},
 };
 
-use crate::budget::{MemoryBudget, MemoryPermit};
+use crate::budget::{FrameReservation, MemoryBudget, MemoryPermit};
 
 use super::{
     Error, Result, TransportConfig,
@@ -23,28 +23,31 @@ use super::{
 const RESET_INVALID: u32 = 0x101;
 const MIN_SHARED_PAYLOAD_BYTES: usize = 16 * 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) enum FrameAdmission {
     Handshake(Option<TrafficClass>),
     Core,
     Ack,
     Normal(TrafficClass),
+    Reserved(FrameReservation),
 }
 
 impl FrameAdmission {
-    fn class(self) -> Option<TrafficClass> {
+    fn class(&self) -> Option<TrafficClass> {
         match self {
-            Self::Handshake(class) => class,
+            Self::Handshake(class) => *class,
             Self::Core | Self::Ack => Some(TrafficClass::Control),
-            Self::Normal(class) => Some(class),
+            Self::Normal(class) => Some(*class),
+            Self::Reserved(_) => Some(TrafficClass::Delivery),
         }
     }
-    fn reserve(self, budget: &MemoryBudget, bytes: u32) -> Result<MemoryPermit> {
+    fn reserve(&self, budget: &MemoryBudget, bytes: u32) -> Result<MemoryPermit> {
         match self {
             Self::Handshake(_) => budget.try_reserve_handshake(bytes),
             Self::Core => budget.try_reserve_core(bytes),
             Self::Ack => budget.try_reserve_ack(bytes),
-            Self::Normal(class) => budget.try_reserve(class, bytes),
+            Self::Normal(class) => budget.try_reserve(*class, bytes),
+            Self::Reserved(reservation) => reservation.try_reserve(budget, bytes),
         }
         .map_err(|source| Error::Memory { source })
     }
@@ -73,6 +76,7 @@ pub struct FramedStream {
 pub struct FrameSender {
     pub(super) stream: SendStream,
     lease: Arc<StreamLease>,
+    admission: FrameAdmission,
     usable: bool,
     clean_end: bool,
 }
@@ -80,6 +84,7 @@ pub struct FrameSender {
 pub struct FrameReceiver {
     stream: ReceiveStream,
     lease: Arc<StreamLease>,
+    admission: FrameAdmission,
     usable: bool,
     clean_end: bool,
 }
@@ -120,21 +125,44 @@ impl FramedStream {
         send: SendStream,
         lease: StreamLease,
     ) -> Self {
+        let admission = match lease.purpose {
+            StreamPurpose::Core => FrameAdmission::Core,
+            StreamPurpose::Ack => FrameAdmission::Ack,
+            StreamPurpose::Request => FrameAdmission::Normal(lease.state.class),
+        };
         let lease = Arc::new(lease);
         Self {
             sender: FrameSender {
                 stream: send,
                 lease: lease.clone(),
+                admission: admission.clone(),
                 usable: true,
                 clean_end: false,
             },
             receiver: FrameReceiver {
                 stream: receive,
                 lease,
+                admission,
                 usable: true,
                 clean_end: false,
             },
         }
+    }
+    /// Bind both halves to a consumer's private pool before starting its request lane.
+    pub fn with_reserved_frames(mut self, reservation: &FrameReservation) -> Result<Self> {
+        for lease in [&self.sender.lease, &self.receiver.lease] {
+            if lease.purpose != StreamPurpose::Request {
+                return Err(Error::Authorization {
+                    reason: "reserved frames require a Request lane",
+                });
+            }
+            reservation
+                .validate(&lease.state.budget, lease.state.class)
+                .map_err(|source| Error::Memory { source })?;
+        }
+        self.sender.admission = FrameAdmission::Reserved(reservation.clone());
+        self.receiver.admission = FrameAdmission::Reserved(reservation.clone());
+        Ok(self)
     }
     pub fn id(&self) -> u64 {
         self.sender.stream.id()
@@ -249,11 +277,7 @@ impl FrameSender {
         let state = &self.lease.state;
         let (mut chunks, length) = encode_charged_owned(
             frame,
-            match self.lease.purpose {
-                StreamPurpose::Core => FrameAdmission::Core,
-                StreamPurpose::Ack => FrameAdmission::Ack,
-                _ => FrameAdmission::Normal(state.class),
-            },
+            self.admission.clone(),
             &state.config,
             &state.budget,
             deadline,
@@ -368,11 +392,7 @@ impl FrameReceiver {
         let state = &self.lease.state;
         let result = read_wire_started(
             &mut self.stream,
-            match self.lease.purpose {
-                StreamPurpose::Core => FrameAdmission::Core,
-                StreamPurpose::Ack => FrameAdmission::Ack,
-                _ => FrameAdmission::Normal(state.class),
-            },
+            self.admission.clone(),
             &state.config,
             &state.budget,
             &state.metrics,
@@ -609,7 +629,13 @@ fn encode_charged_owned(
     deadline: Instant,
 ) -> Result<([Bytes; 3], u32)> {
     let (mut frame, length) = bound_frame(frame, deadline)?;
-    let shared = shared_charge(&mut frame, length).and_then(|(charge, metadata)| {
+    // Reserved sends stay within max_frame_bytes + 4 while a full receive is retained.
+    let shared = if matches!(admission, FrameAdmission::Reserved(_)) {
+        None
+    } else {
+        shared_charge(&mut frame, length)
+    }
+    .and_then(|(charge, metadata)| {
         admission
             .reserve(budget, charge)
             .ok()

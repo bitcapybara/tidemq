@@ -40,7 +40,60 @@ pub struct MemoryBudget {
 pub struct MemoryPermit {
     _total: OwnedSemaphorePermit,
     _data: Option<OwnedSemaphorePermit>,
-    _class: OwnedSemaphorePermit,
+    _class: Option<OwnedSemaphorePermit>,
+    // A charged child buffer keeps its entire carved parent region alive.
+    _parent: Option<Arc<MemoryPermit>>,
+}
+
+/// A private Delivery frame pool carved from the shared normal/data budget.
+#[derive(Clone)]
+pub struct FrameReservation {
+    source: Arc<Semaphore>,
+    pool: Arc<Semaphore>,
+    parent: Arc<MemoryPermit>,
+}
+
+impl FrameReservation {
+    pub fn available_bytes(&self) -> usize {
+        self.pool.available_permits()
+    }
+
+    pub(crate) fn validate(&self, budget: &MemoryBudget, class: TrafficClass) -> Result<()> {
+        if class != TrafficClass::Delivery {
+            return Err(Error::Configuration {
+                reason: "reserved frames require the Delivery traffic class",
+            });
+        }
+        if !Arc::ptr_eq(&self.source, &budget.total) {
+            return Err(Error::Configuration {
+                reason: "frame reservation belongs to a different memory budget",
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn try_reserve(&self, budget: &MemoryBudget, bytes: u32) -> Result<MemoryPermit> {
+        self.validate(budget, TrafficClass::Delivery)?;
+        if bytes == 0 {
+            return Err(Error::Configuration {
+                reason: "reserved frame admission requires nonzero bytes",
+            });
+        }
+        let permit = self
+            .pool
+            .clone()
+            .try_acquire_many_owned(bytes)
+            .map_err(|source| Error::Admission {
+                traffic_class: "reserved delivery frames",
+                source,
+            })?;
+        Ok(MemoryPermit {
+            _total: permit,
+            _data: None,
+            _class: None,
+            _parent: Some(self.parent.clone()),
+        })
+    }
 }
 
 impl MemoryBudget {
@@ -111,6 +164,29 @@ impl MemoryBudget {
             })
     }
 
+    /// Keep frame capacity private to one consumer across connections sharing this budget.
+    pub fn reserve_frames(&self, class: TrafficClass, bytes: u32) -> Result<FrameReservation> {
+        if class != TrafficClass::Delivery {
+            return Err(Error::Configuration {
+                reason: "frame reservations require the Delivery traffic class",
+            });
+        }
+        let capacity = usize::try_from(bytes).map_err(|_| Error::Configuration {
+            reason: "frame reservation does not fit the platform",
+        })?;
+        if capacity == 0 || capacity > Semaphore::MAX_PERMITS {
+            return Err(Error::Configuration {
+                reason: "frame reservation must be nonzero and fit the semaphore capacity",
+            });
+        }
+        let parent = self.try_reserve(class, bytes)?;
+        Ok(FrameReservation {
+            source: self.total.clone(),
+            pool: Arc::new(Semaphore::new(capacity)),
+            parent: Arc::new(parent),
+        })
+    }
+
     pub fn try_reserve(&self, class: TrafficClass, bytes: u32) -> Result<MemoryPermit> {
         if class == TrafficClass::Unspecified {
             return Err(Error::Configuration {
@@ -154,7 +230,8 @@ impl MemoryBudget {
         Ok(MemoryPermit {
             _total: total,
             _data: data,
-            _class: normal,
+            _class: Some(normal),
+            _parent: None,
         })
     }
 
@@ -201,7 +278,8 @@ impl MemoryBudget {
         Ok(MemoryPermit {
             _total: total,
             _data: None,
-            _class: permit,
+            _class: Some(permit),
+            _parent: None,
         })
     }
 
@@ -244,6 +322,122 @@ pub fn class_name(class: TrafficClass) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn snapshot(budget: &MemoryBudget) -> [usize; 6] {
+        [
+            budget.available_bytes(),
+            budget.available_data_bytes(),
+            budget.available_normal_bytes(),
+            budget.available_core_bytes(),
+            budget.available_ack_bytes(),
+            budget.available_handshake_bytes(),
+        ]
+    }
+
+    fn small_budget() -> MemoryBudget {
+        MemoryBudget::new(MemoryLimits {
+            total_bytes: 100,
+            control_reserved_bytes: 20,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn frame_regions_carve_normal_data_and_cannot_borrow_from_each_other() {
+        let budget = small_budget();
+        let before = snapshot(&budget);
+        let first = budget.reserve_frames(TrafficClass::Delivery, 30).unwrap();
+        let second = budget.reserve_frames(TrafficClass::Delivery, 30).unwrap();
+        assert_eq!(snapshot(&budget), [40, 20, 25, 8, 2, 5]);
+        assert!(first.try_reserve(&budget, 31).is_err());
+        let first_frame = first.try_reserve(&budget, 30).unwrap();
+        assert!(first.try_reserve(&budget, 1).is_err());
+        assert_eq!(second.available_bytes(), 30);
+        let second_frame = second.try_reserve(&budget, 30).unwrap();
+        assert_eq!(snapshot(&budget), [40, 20, 25, 8, 2, 5]);
+        let ordinary = budget.try_reserve(TrafficClass::Delivery, 20).unwrap();
+        let control = budget.try_reserve(TrafficClass::Control, 5).unwrap();
+        assert!(budget.try_reserve(TrafficClass::Delivery, 1).is_err());
+        let core = budget.try_reserve_core(8).unwrap();
+        let ack = budget.try_reserve_ack(2).unwrap();
+        let handshake = budget.try_reserve_handshake(5).unwrap();
+        assert_eq!(budget.available_bytes(), 0);
+        drop((first_frame, second_frame));
+        assert_eq!(budget.available_bytes(), 0);
+        assert_eq!(first.available_bytes(), 30);
+        assert_eq!(second.available_bytes(), 30);
+        drop((first, second, ordinary, control, core, ack, handshake));
+        assert_eq!(snapshot(&budget), before);
+    }
+
+    #[test]
+    fn child_permits_keep_the_parent_region_after_every_handle_is_dropped() {
+        let budget = small_budget();
+        let before = snapshot(&budget);
+        let region = budget.reserve_frames(TrafficClass::Delivery, 40).unwrap();
+        let handle_clone = region.clone();
+        let first = region.try_reserve(&budget, 25).unwrap();
+        let last = Arc::new(region.try_reserve(&budget, 15).unwrap());
+        let last_clone = last.clone();
+        drop((region, handle_clone, first, last));
+        assert_eq!(snapshot(&budget), [60, 40, 45, 8, 2, 5]);
+        drop(last_clone);
+        assert_eq!(snapshot(&budget), before);
+    }
+
+    #[test]
+    fn frame_reservations_require_delivery_and_the_original_shared_budget() {
+        let budget = small_budget();
+        let before = snapshot(&budget);
+        for class in [
+            TrafficClass::Unspecified,
+            TrafficClass::Control,
+            TrafficClass::Produce,
+            TrafficClass::Bulk,
+            TrafficClass::Replication,
+        ] {
+            assert!(budget.reserve_frames(class, 1).is_err());
+        }
+        for bytes in [0, 81, u32::MAX] {
+            assert!(
+                budget
+                    .reserve_frames(TrafficClass::Delivery, bytes)
+                    .is_err()
+            );
+            assert_eq!(snapshot(&budget), before);
+        }
+        let region = budget.reserve_frames(TrafficClass::Delivery, 40).unwrap();
+        let unrelated = small_budget();
+        assert!(region.validate(&unrelated, TrafficClass::Delivery).is_err());
+        assert!(region.try_reserve(&unrelated, 1).is_err());
+        assert!(region.validate(&budget, TrafficClass::Control).is_err());
+        assert!(region.try_reserve(&budget, 0).is_err());
+        let reconnected = budget.clone();
+        region
+            .validate(&reconnected, TrafficClass::Delivery)
+            .unwrap();
+        let memory = region.try_reserve(&reconnected, 40).unwrap();
+        drop((region, memory));
+        assert_eq!(snapshot(&budget), before);
+        assert_eq!(snapshot(&unrelated), before);
+    }
+
+    #[test]
+    fn failed_frame_region_creation_rolls_back_its_parent_admission() {
+        let budget = small_budget();
+        let before = snapshot(&budget);
+        let ordinary = budget.try_reserve(TrafficClass::Control, 85).unwrap();
+        let saturated = snapshot(&budget);
+        assert!(budget.reserve_frames(TrafficClass::Delivery, 20).is_err());
+        assert_eq!(snapshot(&budget), saturated);
+        drop(ordinary);
+        assert_eq!(snapshot(&budget), before);
+        let region = budget.reserve_frames(TrafficClass::Delivery, 80).unwrap();
+        assert!(region.try_reserve(&budget, 81).is_err());
+        assert_eq!(region.available_bytes(), 80);
+        drop(region);
+        assert_eq!(snapshot(&budget), before);
+    }
 
     #[test]
     fn cache_retention_shares_a_node_cap_without_double_charging_active_buffers() {
