@@ -2,7 +2,7 @@
 
 历史一次性命令、临时探针、重复 LLVM/运行快照和报告已移出当前工作目录，完整过程仍由 Git 跟踪。归档基准为整理前已推送的提交 `e0be78cfc00c81f7d36caaf3f7835b9c45e963b6`；不重写历史、不重复携带旧构建和缓存。
 
-当前可重复执行的验证入口为[测试指南](../testing.zh-CN.md)和 [VM 实验室](../../deploy/lab/README.zh-CN.md)，最近部署验收见[合并结果](../../deploy/lab/evidence/2026-10-25/README.zh-CN.md)。覆盖率基线和所有可复用功能/故障回归测试仍保留在当前项目。
+当前可重复执行的验证入口为[测试指南](../testing.zh-CN.md)和 [VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)，最近部署验收见[合并结果](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/evidence/2026-10-25/README.zh-CN.md)。覆盖率基线和所有可复用功能/故障回归测试仍保留在当前项目。
 
 完整[历史目录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/)包含原始 JSON、日志摘要、临时脚本/补丁和失败尝试；下表按原报告保留索引：
 

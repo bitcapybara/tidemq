@@ -2,102 +2,89 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A cloud-native message queue built on object storage, designed for high throughput, low latency, and elastic scaling.
+TideMQ is a Rust message queue for durable event ingestion and background processing. It combines replicated write-ahead logs for the live message path with optional S3-compatible object storage for historical data.
 
-TideMQ targets data ingestion and stream processing. Its architecture separates message serving, replicated write-ahead logs (WALs), object storage, and control metadata so that compute and storage can scale independently.
+Applications use logical Topics and durable Stream or Queue subscriptions through the in-repository Rust SDK. Gateways provide the public QUIC endpoint; Brokers coordinate requests; independent Metadata and Storage Raft groups own control state and message durability. A separate, stateless Console provides browser access.
 
-> **Status:** The runtime and in-repository Rust SDK support durable production, per-message acknowledgements, authenticated QUIC, separate metadata/data Raft groups, RustFS/S3 archival, cold reads, retention, and safe object reclamation. Functional CI covers Linux/macOS, real external dependencies, and RF3 Kubernetes/VM recovery. See the [implementation status](docs/implementation-status.zh-CN.md) and [VM lab acceptance](deploy/lab/README.zh-CN.md).
+**Status:** TideMQ is in development (`0.1.0`). APIs, configuration and on-disk formats may change. RF1 is for a single node; RF3 requires a majority and never falls back to RF1. Functional and fault tests do not establish a production SLA, capacity rating or throughput claim. Review the [product limits](docs/guide/overview.zh-CN.md) before deployment.
 
-## Design goals
+## What it provides
 
-- **High throughput and low latency:** Batch appends, group commit, pipelined replication, and bounded queues. Object storage uploads stay outside the producer acknowledgement path.
-- **Object storage for long-term data:** Archive committed messages into immutable objects, with range reads, manifests, compaction, and safe reclamation.
-- **Independent compute and storage scaling:** Separate Brokers from the WAL storage pool; deploy Gateways independently or together with Brokers.
-- **Durability across three availability zones:** Use three WAL replicas per data group in one cloud region, with quorum commit before producer acknowledgement. Keep Raft control metadata separate from the data path.
-- **Durable subscriptions:** Stable offsets within each partition, per-message acknowledgements, and at-least-once delivery. Support parallel completion or SDK-managed serial processing per key; external side effects require their own idempotency or fencing.
-- **A stable client endpoint:** A fixed domain and layer-4 load balancer in front of protocol Gateways, with SDK reconnection, session recovery, bounded retries, and backpressure.
-- **Backlog protection:** Combine minimum retention with protection for unacknowledged messages. At capacity limits, throttle or reject new writes while allowing consumption, acknowledgements, and reclamation to continue.
+- Durable publishing: success means data Raft commitment, with producer identity and original-result recovery after a lost response.
+- Durable subscriptions: Stream supports ordered delivery for the same key and cumulative ACK; Queue shares work across members and supports individual ACK/NACK. Delivery is at least once; application side effects need idempotency.
+- Storage separation: messages and ACK progress live in data groups; optional immutable S3 objects support archival and cold reads. Object upload is outside the producer acknowledgement path.
+- Bounded resource use: admission budgets, backpressure, retention and tenant/namespace quotas protect existing ACK, recovery and control work.
+- Authenticated access: public QUIC with TLS and scoped credentials, pinned internal mTLS identities, and loopback management endpoints.
+- Operations: structured logs, OpenMetrics, optional OTLP, a browser Console, and SDK/CLI administration for controlled membership changes and drain.
 
 ## Architecture
 
-| Component | Responsibility |
+```text
+Rust application -> QUIC/TLS -> Gateway -> Broker -> Storage Raft groups
+                                  |         |             |
+                                  +-- Metadata Raft       +-- S3-compatible storage
+
+Browser -> HTTPS -> Console -> authenticated QUIC -> Gateway
+```
+
+| Role | Responsibility |
 | --- | --- |
-| Client SDK | Batching, request identity, reconnects, retry deadlines, and consumer concurrency |
-| Gateway | Protocol connections, authentication, cached routing, forwarding, and draining |
-| Broker | Write coordination, subscription delivery, caching, and flow control |
-| WAL storage pool | Independent replicated data groups that commit messages, offsets, deduplication results, writer fences, and publication intents |
-| Metadata Raft | Topics, partition placement, ownership epochs, subscription configuration, object manifests, and lifecycle state |
-| Subscription state | Sharded replicated acknowledgement progress, delivery generations, and recovery checkpoints, outside the global metadata group |
-| Object storage | Immutable historical data objects and range reads |
+| `gateway` | Public connections, authentication, routing and forwarding |
+| `broker` | Serving ownership, publishing coordination and subscription delivery |
+| `storage` | Replicated messages, offsets, producer results, delivery attempts and durable ACKs |
+| `metadata` | Identities, authorization, Topic topology, ownership, manifests and control plans |
+| `combined` | Gateway, Broker, Storage and Metadata in one process |
+| `console` | Stateless HTTP UI and authenticated SDK access; no Raft membership or MQ data volume |
 
-### Write path
+The producer receipt, durable consumer ACK, object publication and local WAL reclamation are separate completion points. A timeout does not determine whether a mutation committed. See the [architecture guide](docs/guide/architecture.zh-CN.md).
 
-1. The SDK sends a batch through the stable endpoint; the Gateway forwards it to the owning Broker.
-2. The Broker submits the batch with its ownership epoch to the partition's data group.
-3. The data group validates fencing, producer identity, and sequence numbers, then assigns offsets and durably replicates the batch under Raft commit rules.
-4. Only committed messages become visible to consumers, and the producer receives the committed offsets. A lost response is retried with the same batch identity to recover the original result.
+## Run locally
 
-### Background archival
-
-1. Build immutable objects from committed messages, combining partitions only within the same data group in the initial design.
-2. Register and upload each object, reconcile durable publication intent with conditional manifest updates, and record publication completion in the data group.
-3. Reclaim local message data only after publication, durable recovery checkpoints, and replica catch-up conditions permit it. Object deletion also waits for references, pending publication tasks, and valid pins to clear.
-
-The design keeps four completion points distinct: producer acknowledgement, durable consumer acknowledgement, object publication, and WAL reclamation. A timeout alone does not establish whether an operation committed.
-
-## Deployment and recovery
-
-The runtime provides combined RF1 and separate Gateway, Broker, storage, and metadata roles. The local generator supports RF1 and RF3 configurations. Production deployment across three cloud availability zones needs separate infrastructure and validation. Single-node mode has no node-level high availability and is not an automatic production fallback.
-
-See the [VM lab operations inventory](deploy/lab/README.zh-CN.md) for the deployed KVM/kubeadm cluster, public RustFS, observability services, GitHub self-hosted runner, VM allocations, network endpoints, commands, and validation evidence.
-
-Candidate recovery targets are typically within 1 second for planned migration, P99 at most 5 seconds for a Broker or Gateway failure, and P99 at most 10 seconds for a single-zone failure. These are design and benchmark targets, not an SLA. Measurements include failure detection, leader election, fencing, state recovery, routing, and SDK reconnection. Gateway failure can break existing connections; the SDK must reconnect and restore sessions.
-
-## Getting started
-
-The repository pins Rust 1.99.1 with rustfmt, Clippy, and matching LLVM coverage tools. Create private local certificates, credentials, and a fresh RF1 configuration, then start the service:
+Prerequisites: the repository's pinned Rust **1.99.1** toolchain, Bash and OpenSSL. Run from the repository root with a new output directory:
 
 ```sh
-cargo build --locked
-deploy/local/generate.sh rf1 /tmp/tidemq-demo
+cargo build --locked -p tidemq -j2
+bash deploy/local/generate.sh rf1 /tmp/tidemq-demo
 target/debug/tidemq validate-config --config /tmp/tidemq-demo/node-1.toml
-target/debug/tidemq serve --config /tmp/tidemq-demo/node-1.toml
+bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 ```
 
-The generator requires a new directory and OpenSSL. It creates short-lived development identities; retain the private token file locally. See [running TideMQ](docs/guide/running.zh-CN.md) and the [Rust SDK](sdk/rust/README.md) for topic creation, production, consumption, durable ACKs, and RF3 deployment. Management endpoints expose the running process on loopback; the separate `diagnose` command describes its own short-lived process.
-
-Replica storage uses a versioned segmented WAL with reference checkpoints and generation-named full snapshots. This development format requires fresh state directories or Docker volumes; the old `raft.wal` / `snapshot.bin` layout is rejected without deleting it. Preserve the whole replica directory for recovery, including its manifest and referenced files. See the [storage and recovery contract](docs/design/storage-recovery.zh-CN.md) for capacity limits, reader pins, and safe reclamation.
-
-Docker deployment assets are versioned under [deploy/docker](deploy/docker/README.zh-CN.md): the [builder Dockerfile](deploy/docker/Dockerfile.builder), [runtime Dockerfile](deploy/docker/Dockerfile), complete [RF1 Compose](deploy/docker/compose.rf1.yaml) and [RF3 Compose](deploy/docker/compose.rf3.yaml) configurations, and [deployment preparation script](deploy/docker/prepare.sh). Generate a private state directory before starting Compose; see the deployment guide for build, startup, validation, and cleanup commands.
-
-Install cargo-nextest 0.9.148, then run the same target scope as CI:
+In another terminal:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --no-deps --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen -- -D warnings
-cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen --profile ci
-cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
+curl --fail http://127.0.0.1:8410/readyz
 ```
 
-See the [testing guide](docs/testing.zh-CN.md) for the pinned coverage tools, JSON/LCOV/HTML reports, and the coverage baseline gate.
+The generated Gateway is `127.0.0.1:7410`; use `ca.pem` and the private `access.token` from that directory. Generated certificates expire after seven days. RF1 has no node-level high availability. Follow the [quickstart](docs/guide/quickstart.zh-CN.md) to create a tenant, namespace, Topic and subscription, publish a message, and confirm a durable ACK.
 
-The SDK uses configured timeouts by default; `RequestContext` and `CancellationToken` share cancellation and a total deadline across calls. Large uniquely owned frame payloads can use bounded vectored sending. See the [SDK guide](docs/guide/rust-sdk.zh-CN.md) and [zero-copy format evaluation](docs/research/zero-copy-formats.zh-CN.md).
+## Deploy and integrate
 
-Performance testing workflows, workload tools, comparison scripts, configurations, baselines, and dedicated reports have been removed. Functional, coverage, and VM fault CI remain enabled.
+| Task | Documentation |
+| --- | --- |
+| Understand scope and limits | [Product overview](docs/guide/overview.zh-CN.md) · [Roles and durability](docs/guide/architecture.zh-CN.md) |
+| Run RF1 or RF3 | [Native deployment](docs/guide/running.zh-CN.md) · [Docker](deploy/docker/README.zh-CN.md) · [Kubernetes](deploy/kubernetes/README.zh-CN.md) |
+| Configure each process | [Configuration reference and role examples](docs/guide/configuration.zh-CN.md) |
+| Use the Rust SDK | [English SDK reference](sdk/rust/README.md) · [Integration guide](docs/guide/rust-sdk.zh-CN.md) · [Publishing](docs/guide/production.zh-CN.md) · [Consumption and ACK](docs/guide/consumption.zh-CN.md) |
+| Use the browser Console | [Console guide](docs/guide/console.zh-CN.md) · [HTTPS and replica deployment](deploy/console/README.zh-CN.md) |
+| Secure and operate | [Security](docs/operations/security.zh-CN.md) · [Metrics](docs/operations/metrics.zh-CN.md) · [Logs](docs/operations/logging.zh-CN.md) · [Tracing](docs/operations/tracing.zh-CN.md) |
+| Recover and diagnose | [Recovery](docs/operations/recovery.zh-CN.md) · [Troubleshooting](docs/operations/troubleshooting.zh-CN.md) |
+| Validate a change | [Testing and evidence boundaries](docs/testing.zh-CN.md) |
 
-## Documentation and implementation roadmap
+The [Chinese documentation index](docs/README.zh-CN.md) is the primary user manual. Design documents and dated lab evidence remain available as supporting material. Production deployment needs real failure domains, protected credentials, durable volumes and validation against the chosen environment. The development storage format has no automatic migration from older experimental layouts; retain the complete original state and matching binary before any upgrade.
 
-The [complete architecture draft in Chinese](docs/architecture.zh-CN.md) preserves all nine pages of the source PDF, including the safety invariants, failure cases, performance-reference limitations, official references, and review checklist. The source draft is dated 2026-10-19. Its original undecided-language statements are preserved; this repository selects Rust.
+## Build the documentation
 
-1. Model the protocol and deterministic failure scenarios.
-2. Implement a minimal local message path.
-3. Add three-node replication, producer deduplication, durable acknowledgements, and recovery.
-4. Implement object packing, publication, reconciliation, and garbage collection.
-5. Add Gateways and controlled scaling.
-6. Benchmark and validate failures across three availability zones with matched durability and delivery semantics.
+The documentation site uses VitePress's default theme and its own Node package; it is independent of `console/web`.
 
-The implemented baseline uses OpenRaft, s2n-quic, Protobuf, an in-repository Rust SDK, aws-sdk-s3, and RustFS for local object integration. The service binary defaults to mimalloc through `allocator-mimalloc`; System and jemalloc are mutually exclusive build alternatives selected with `--no-default-features`. The SDK leaves allocator ownership to its host. See the [allocator configuration and diagnostics](docs/operations/memory-troubleshooting.zh-CN.md), [documentation index](docs/README.zh-CN.md), [current design](docs/design/architecture.zh-CN.md), [requirement coverage](docs/requirements-coverage.zh-CN.md). Allocator performance, workload values, and production deployment budgets still require validation. AutoMQ figures in the historical draft are external references, not TideMQ results.
+```sh
+npm --prefix docs ci
+npm --prefix docs test
+npm --prefix docs run docs:build
+npm --prefix docs run docs:preview
+```
+
+Use Node.js 24 or newer. The preview serves the project at `/tidemq/`. The [site maintenance guide](docs/site.zh-CN.md) explains the pinned VitePress alpha toolchain, link checks and the manually gated GitHub Pages workflow. No site publication is implied by a successful local build.
 
 ## License
 
-TideMQ is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE).

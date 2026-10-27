@@ -1,6 +1,6 @@
 # 实施状态
 
-2026-10-26 当前安排：已完成方案 A 的 11 台 KVM VM、6 节点 kubeadm、独立公共 RustFS / 观测 / runner / fixtures / loadgen 部署。修复版本 `14372cd` 的完整 Rust CI（Linux/macOS、真实依赖、覆盖率、VM 故障）通过，常驻 10 个角色及 loadgen 已升级到同版。资源、入口、使用方法和逐次证据见[实验室清单](../deploy/lab/README.zh-CN.md)。按用户要求删除性能 workflow、负载工具、比较器、配置、基线和专项报告；本次不做性能测试。以下带日期的内容为历史实施范围，旧宿主服务、源码、数据和配置已清理，不能作为当前运行清单。
+2026-10-26 当前安排：已完成方案 A 的 11 台 KVM VM、6 节点 kubeadm、独立公共 RustFS / 观测 / runner / fixtures / loadgen 部署。修复版本 `14372cd` 的完整 Rust CI（Linux/macOS、真实依赖、覆盖率、VM 故障）通过，常驻 10 个角色及 loadgen 已升级到同版。资源、入口、使用方法和逐次证据见[实验室清单](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。按用户要求删除性能 workflow、负载工具、比较器、配置、基线和专项报告；本次不做性能测试。以下带日期的内容为历史实施范围，旧宿主服务、源码、数据和配置已清理，不能作为当前运行清单。
 
 2026-10-21：分段 WAL 已实现，包含唯一 manifest、有序 writer、引用检查点、有界段搬迁、快照 reader pin、失败关闭、物理容量采样与迁移预留；详见[当前存储设计](design/storage-recovery.zh-CN.md)。磁盘布局版本为 2，开发阶段使用全新数据目录，明确拒绝旧格式。冻结 `24471ce` 的 macOS／Linux 普通及 Linux 插桩 nextest 均为 **364 passed／13 skipped**；[精确覆盖率](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-wal-segments-coverage-24471ce.zh-CN.md)和[新卷 Docker 十项／736 条持久 ACK](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-wal-segments-linux-24471ce.zh-CN.md)通过，完整原始归档已回传并核验。
 

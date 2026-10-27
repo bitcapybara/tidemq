@@ -18,7 +18,7 @@ tests/raft_quic.rs 使用临时磁盘目录、独立 CA 与逐节点证书、随
 
 真实认证 QUIC peer 还验证合法拒绝不会关闭 sibling RPC、未知或非法错误仍严格拒绝、Quota 退避不重置硬截止。三 combined 进程的四队列生产/消费/元数据并发回归同时验证唯一交付与持久 ACK 前沿；它保留了触发共享 Core 控制额度拒绝的真实并发，不以缩小负载替代修复。
 
-`fd3c01e` 的准入回归位于 [tests/server_dispatch_internal.rs](../../tests/server_dispatch_internal.rs)：真实 mTLS、默认两个 Raft 执行槽，验证原 100ms 期限内释放槽位后原请求完成、两条 Core lane 的等待到期后 CANCEL 继续处理并归还帧额度、服务关闭与对端关闭释放待帧且已 owned handler 继续完成。最大活跃 Raft handler 保持为 2。原 [tests/server_dispatch.rs](../../tests/server_dispatch.rs) 的五项回归继续覆盖迟到回复不关闭共享流、生产顺序与独立 Core/ACK、空闲 sibling lane 和原生 idle 关闭。这些边界回归不代表完整性能验收：`4f79a5` 的完整 RF3 性能 cohort 已失败，同版两个独立绿色 trial 也不能替代新冻结版本的完整 cohort。
+`fd3c01e` 的准入回归位于 [tests/server_dispatch_internal.rs](https://github.com/bitcapybara/tidemq/blob/main/tests/server_dispatch_internal.rs)：真实 mTLS、默认两个 Raft 执行槽，验证原 100ms 期限内释放槽位后原请求完成、两条 Core lane 的等待到期后 CANCEL 继续处理并归还帧额度、服务关闭与对端关闭释放待帧且已 owned handler 继续完成。最大活跃 Raft handler 保持为 2。原 [tests/server_dispatch.rs](https://github.com/bitcapybara/tidemq/blob/main/tests/server_dispatch.rs) 的五项回归继续覆盖迟到回复不关闭共享流、生产顺序与独立 Core/ACK、空闲 sibling lane 和原生 idle 关闭。这些边界回归不代表完整性能验收：`4f79a5` 的完整 RF3 性能 cohort 已失败，同版两个独立绿色 trial 也不能替代新冻结版本的完整 cohort。
 
 强制选举可能在旧 leader 租约有效期内被正确拒绝；故障测试启用真实自动选举并等待剩余 quorum 达成新 leader。单机测试不构成恢复 P99 或三区证据。
 
