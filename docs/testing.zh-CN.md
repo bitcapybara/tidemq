@@ -19,6 +19,8 @@
 
 Playwright 的 `mock-network` 套件覆盖确定性的页面操作和故障展示，不计作真实后端验收。`live` 套件通过独立 combined、Console 和 HTTPS 代理进程运行实际登录、导航、刷新、退出与凭据写入结果恢复，使用本次生成的私有身份和数据。真实凭据用例禁用 trace、视频和截图；mock 套件保留失败制品。浏览器结果与 Vitest 源码覆盖率分别统计。
 
+mock 浏览器在 CI 中保留一次诊断重试，但 flaky 结果仍使 CI 失败；必须定位并修复首败原因，不能用重试通过解除门禁。`node --test tests/ci/*.test.mjs` 在 `console/web` 中实际启动受控 Playwright 用例，验证首败后重试通过仍返回失败。此负例不启动浏览器或后端，不替代三引擎交互测试。
+
 ```sh
 npm --prefix console/web ci
 npm --prefix console/web run typecheck
