@@ -20,9 +20,21 @@ function fixture(t) {
   return {root, destination, manifest};
 }
 
-test('action cache retains only pinned archives and installs readable, immutable files', t => {
+test('action cache remains readable under a private umask and retains only pinned archives', t => {
   const {root, destination, manifest} = fixture(t);
-  assert.equal(installActionCache(manifest, root, destination).actions, 3);
+  const mask = process.umask(0o077);
+  try {
+    assert.equal(installActionCache(manifest, root, destination).actions, 3);
+  } finally {
+    process.umask(mask);
+  }
+  assert.equal(fs.statSync(destination).mode & 0o777, 0o755);
+  assert.equal(fs.statSync(path.join(destination, '.tidemq-action-cache.json')).mode & 0o777, 0o444);
+  for (const value of Object.values(manifest)) {
+    const directory = path.join(destination, value.action.replace('/', '_'));
+    assert.equal(fs.statSync(directory).mode & 0o777, 0o755);
+    assert.equal(fs.statSync(path.join(directory, `${value.commit}.tar.gz`)).mode & 0o777, 0o444);
+  }
   const old = path.join(destination, 'actions_checkout', `${'a'.repeat(40)}.tar.gz`);
   fs.writeFileSync(old, 'obsolete');
   installActionCache(manifest, root, destination);

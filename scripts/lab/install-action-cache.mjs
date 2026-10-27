@@ -38,13 +38,18 @@ export function installActionCache(manifest, source, destination) {
   });
   const staging = fs.mkdtempSync(path.join(path.dirname(destination), '.action-archives-'));
   try {
+    // Preserve shared read permissions even when the installer inherits umask 077.
     for (const archive of archives) {
       const directory = path.join(staging, archive.action.replace('/', '_'));
       fs.mkdirSync(directory, {mode: 0o755});
-      fs.writeFileSync(path.join(directory, `${archive.commit}.tar.gz`), archive.contents, {mode: 0o444});
+      fs.chmodSync(directory, 0o755);
+      const file = path.join(directory, `${archive.commit}.tar.gz`);
+      fs.writeFileSync(file, archive.contents, {mode: 0o444});
+      fs.chmodSync(file, 0o444);
     }
     const actions = archives.map(({contents, ...value}) => value);
     fs.writeFileSync(path.join(staging, marker), `${JSON.stringify({schema_version: 1, actions}, null, 2)}\n`, {mode: 0o444});
+    fs.chmodSync(path.join(staging, marker), 0o444);
     fs.chmodSync(staging, 0o755);
     if (previous) fs.rmSync(destination, {recursive: true});
     fs.renameSync(staging, destination);
