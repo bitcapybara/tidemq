@@ -342,6 +342,7 @@ fn core(client: &Client, targets: usize, messages: u32, max_bytes: u32) -> Arc<C
         lease_fence_after: Mutex::new(Instant::now() + Duration::from_secs(45)),
         task: Mutex::new(None),
         quarantine: Mutex::new(None),
+        stop_after_join_replacement: std::sync::atomic::AtomicBool::new(false),
         resource_memory: Mutex::new(Some(
             client
                 .inner

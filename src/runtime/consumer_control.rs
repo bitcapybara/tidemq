@@ -73,6 +73,12 @@ impl Service {
         } else {
             None
         };
+        #[cfg(feature = "test-hooks")]
+        if let Some(observation) = &join_observation {
+            observation
+                .pause(super::consumer_join_hook::Point::BeforeCommit, deadline)
+                .await;
+        }
         let guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
         let subscription = if action == public::ConsumerAction::EnsureConsumerSubscription {
             match self
@@ -130,12 +136,6 @@ impl Service {
                 .await?;
             }
             public::ConsumerAction::JoinConsumer => {
-                #[cfg(feature = "test-hooks")]
-                if let Some(observation) = &join_observation {
-                    observation
-                        .pause(super::consumer_join_hook::Point::BeforeCommit, deadline)
-                        .await;
-                }
                 self.consumer_meta_write(
                     operation,
                     ConsumerCommand::Join {

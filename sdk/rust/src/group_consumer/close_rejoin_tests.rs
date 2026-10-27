@@ -70,6 +70,13 @@ struct Observed {
     retired: bool,
     delayed_commit: bool,
     foreign_epoch: bool,
+    replacement: Option<Replacement>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Replacement {
+    Expired,
+    RegistrationConflict,
 }
 
 struct Peer {
@@ -334,6 +341,42 @@ fn control_reply(frame: &Frame, session: &Session, state: &mut Observed) -> (Fra
         public::ConsumerAction::JoinConsumer if request.member_epoch == 1 => (1, 2),
         public::ConsumerAction::JoinConsumer => {
             assert_eq!(request.member_epoch, REJOIN_EPOCH);
+            if let Some(replacement) = state.replacement {
+                state.original = Some(call);
+                return match replacement {
+                    Replacement::Expired => (
+                        response(
+                            frame,
+                            FrameKind::ConsumerControlResult,
+                            &public::ConsumerControlResult {
+                                subscription_id: bytes(id(3)),
+                                member_epoch: REJOIN_EPOCH,
+                                member_status: 5,
+                                next_member_epoch: REJOIN_EPOCH + 1,
+                                assignment_version: 1,
+                                plan_active: true,
+                                assignment_fenced: true,
+                                ..Default::default()
+                            },
+                        ),
+                        false,
+                    ),
+                    Replacement::RegistrationConflict => (
+                        response(
+                            frame,
+                            FrameKind::Error,
+                            &ErrorReply {
+                                code: ErrorCode::RegistrationConflict.into(),
+                                outcome: Outcome::Rejected.into(),
+                                message: "The prepared epoch was superseded before its Join".into(),
+                                expected_registration_epoch: Some(REJOIN_EPOCH + 1),
+                                ..Default::default()
+                            },
+                        ),
+                        false,
+                    ),
+                };
+            }
             if let Some(original) = &state.original {
                 assert_eq!(call.operation, original.operation);
                 assert_eq!(call.request, original.request);
@@ -354,6 +397,12 @@ fn control_reply(frame: &Frame, session: &Session, state: &mut Observed) -> (Fra
         }
         public::ConsumerAction::LeaveConsumer if request.member_epoch == REJOIN_EPOCH => {
             (REJOIN_EPOCH, 4)
+        }
+        public::ConsumerAction::LeaveConsumer if request.member_epoch == 1 && state.expire => {
+            (1, 5)
+        }
+        public::ConsumerAction::RetireConsumer if request.member_epoch == 1 && state.expire => {
+            (1, 7)
         }
         public::ConsumerAction::RetireConsumer if request.member_epoch == REJOIN_EPOCH => {
             state.retired = true;
@@ -573,5 +622,138 @@ async fn close_rejects_a_foreign_join_epoch_without_guessing_or_leaving_it() {
             .report()
             .unresolved_joins(),
         1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_discards_a_prepared_rejoin_without_ever_submitting_it() {
+    let peer = Peer::new().await;
+    let consumer = peer
+        .client
+        .new_queue_consumer(TOPIC, "jobs")
+        .build()
+        .await
+        .unwrap();
+    peer.observed.lock().unwrap().expire = true;
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        if consumer.owner.core.state().unwrap().pending_join.is_some()
+            && consumer.owner.core.epoch.load(Ordering::Acquire) == 0
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < until,
+            "The original member never reached its prepared rejoin boundary"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert!(peer.observed.lock().unwrap().original.is_none());
+    let result = consumer.close().await;
+    {
+        let state = peer.observed.lock().unwrap();
+        assert!(
+            state.original.is_none(),
+            "Close submitted a Join that had only been prepared between heartbeat ticks"
+        );
+        assert!(state.calls.iter().all(|call| call.request.action
+            != i32::from(public::ConsumerAction::JoinConsumer)
+            || call.request.member_epoch != REJOIN_EPOCH));
+        assert!(state.calls.iter().any(|call| call.request.action
+            == i32::from(public::ConsumerAction::RetireConsumer)
+            && call.request.member_epoch == 1));
+    }
+    let report = result.unwrap();
+    assert_eq!(report.members_left(), 1);
+    assert_eq!(report.unresolved_joins(), 0);
+    assert!(report.local_cleanup_complete());
+    peer.client.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_does_not_start_the_next_identity_after_a_known_join_replacement() {
+    for replacement in [Replacement::Expired, Replacement::RegistrationConflict] {
+        let peer = Peer::new().await;
+        let consumer = peer
+            .client
+            .new_queue_consumer(TOPIC, "jobs")
+            .build()
+            .await
+            .unwrap();
+        consumer
+            .owner
+            .core
+            .stop_after_join_replacement
+            .store(true, Ordering::Release);
+        {
+            let mut state = peer.observed.lock().unwrap();
+            state.replacement = Some(replacement);
+            state.expire = true;
+        }
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            consumer.owner.core.stop.cancelled(),
+        )
+        .await
+        .unwrap();
+        let report = consumer.close().await.unwrap();
+        assert!(report.local_cleanup_complete());
+        assert_eq!(report.members_left(), 1);
+        assert_eq!(report.unresolved_joins(), 0);
+        {
+            let state = peer.observed.lock().unwrap();
+            let original = state.original.as_ref().unwrap();
+            assert!(
+                state
+                    .calls
+                    .iter()
+                    .all(|call| call.request.member_epoch != REJOIN_EPOCH + 1),
+                "Close submitted the next operation while it was still Prepared: {replacement:?}"
+            );
+            let closed_epoch = match replacement {
+                Replacement::Expired => REJOIN_EPOCH,
+                Replacement::RegistrationConflict => 1,
+            };
+            assert!(state.calls.iter().any(|call| call.request.action
+                == i32::from(public::ConsumerAction::LeaveConsumer)
+                && call.request.member_epoch == closed_epoch
+                && call.client == original.client
+                && call.credential == original.credential));
+        }
+        peer.client.close().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_an_initial_prepared_join_reports_no_remote_member_or_unknown_join() {
+    let peer = Peer::new().await;
+    let mut builder = peer.client.new_queue_consumer(TOPIC, "initial");
+    builder.0.stop_before_initial_join = true;
+    assert!(matches!(
+        builder.build().await,
+        Err(Error::Background { .. })
+    ));
+    let error = peer.client.close().await.unwrap_err();
+    assert!(error.report().local_cleanup_complete());
+    assert_eq!(error.report().members_left(), 0);
+    assert_eq!(error.report().unresolved_joins(), 0);
+    assert!(
+        peer.observed
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .all(
+                |call| call.request.action != i32::from(public::ConsumerAction::JoinConsumer)
+                    && call.request.action != i32::from(public::ConsumerAction::LeaveConsumer)
+                    && call.request.action != i32::from(public::ConsumerAction::RetireConsumer)
+            )
+    );
+    assert_eq!(
+        peer.client
+            .transport_metrics()
+            .snapshot()
+            .active_connections,
+        0
     );
 }

@@ -139,7 +139,8 @@ fn publish_close(core: &Arc<Core>, mut result: CloseResult) {
     let fenced = match &result {
         Ok(report) => report.members_left > 0,
         Err(error) => error.report.members_left > 0,
-    };
+    } || core.epoch.load(Ordering::Acquire) == 0
+        && core.state().is_ok_and(|state| state.pending_join.is_none());
     if fenced {
         release_local(core);
     } else {
@@ -220,7 +221,8 @@ async fn cleanup(
         failure.get_or_insert_with(|| Arc::new(error));
     }
     let leave = match resolve_join(core, deadline).await {
-        Ok(()) => leave(core, deadline).await,
+        Ok(true) => leave(core, deadline).await.map(|()| true),
+        Ok(false) => Ok(false),
         Err(error) => Err(error),
     };
     let mut report = CloseReport {
@@ -236,7 +238,8 @@ async fn cleanup(
         });
     }
     if let Ok(state) = core.state() {
-        report.unresolved_joins = usize::from(state.pending_join.is_some());
+        report.unresolved_joins =
+            usize::from(state.pending_join.as_ref().is_some_and(|join| join.started));
         for pending in state.pending.values() {
             if pending.is_complete() {
                 report.unclaimed_results = report.unclaimed_results.saturating_add(1);
@@ -247,7 +250,7 @@ async fn cleanup(
     }
     if let Err(error) = leave {
         failure.get_or_insert_with(|| Arc::new(error));
-    } else {
+    } else if matches!(leave, Ok(true)) {
         report.members_left = 1;
         if let Err(error) = retire_pending_reads(core, deadline).await {
             failure.get_or_insert_with(|| Arc::new(error));
@@ -268,11 +271,19 @@ async fn cleanup(
     }
 }
 
-async fn resolve_join(core: &Core, deadline: Instant) -> Result<()> {
+async fn resolve_join(core: &Core, deadline: Instant) -> Result<bool> {
     let pending = core.state()?.pending_join.clone();
     let Some(pending) = pending else {
-        return Ok(());
+        return Ok(core.epoch.load(Ordering::Acquire) > 0);
     };
+    if !pending.started {
+        core.epoch.store(pending.previous_epoch, Ordering::Release);
+        core.state()?.pending_join = None;
+        tracing::debug!(target: "tidemq_sdk::consumer", event_code = "consumer_close_join_not_started",
+            operation_id = %pending.operation, member_id = %core.member,
+            previous_epoch = pending.previous_epoch, "Close discarded an unsubmitted consumer Join");
+        return Ok(pending.previous_epoch > 0);
+    }
     let after = deadline
         .checked_add(Duration::from_secs(15))
         .ok_or(Error::Deadline)?;
@@ -312,7 +323,7 @@ async fn resolve_join(core: &Core, deadline: Instant) -> Result<()> {
         operation_id = %pending.operation, member_id = %core.member,
         member_epoch = status.member_epoch, member_status = status.member_status,
         "Original consumer Join resolved before closing its confirmed epoch");
-    Ok(())
+    Ok(true)
 }
 
 async fn retire_member(core: &Core, deadline: Instant) -> Result<()> {
@@ -460,7 +471,7 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
     if let Some(joining) = &mut lease.join {
         let (status, observed) = core
             .client
-            .operation(|deadline| join_control(&core.client, joining, deadline))
+            .operation(|deadline| join_control(core, joining, deadline))
             .await?;
         core.epoch.store(status.member_epoch, Ordering::Release);
         lease.sequence = status.next_heartbeat_sequence;
@@ -528,6 +539,8 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
                     operation: Id::new_v7()?,
                     request,
                     heartbeat: None,
+                    started: false,
+                    previous_epoch: core.info.lock().map_err(|_| Error::Closed)?.member_epoch,
                 });
                 core.state()?.pending_join = lease.join.clone();
             }
