@@ -29,6 +29,8 @@
 
 `tidemq_watch_bytes`、`tidemq_watch_targets` 反映已计费观察占用，`tidemq_watch_admission_rejected_total` 统计观察准入拒绝，`tidemq_watch_rechecks_total` 和 `tidemq_watch_dirty_total` 区分复查与实际就绪版本变化。`tidemq_watch_result_capacity_releases_total` 统计数据组结果槽的实际释放；消息已 ACK 不代表对应原 Read 结果已经退休。`tidemq_watch_cleanup_unknown_total` 增长说明下游取消尚未获得清理确认，应关联有限 deadline、断连和关闭结果排查。
 
+`tidemq_watch_admission_queued` 和 `tidemq_watch_rechecks_queued` 显示等待准入与复查的队列占用；队列按租户、成员轮转，持续积压时先检查准入拒绝与观察耗时。`tidemq_watch_authority_inbound` 和 `tidemq_watch_authority_outbound` 显示专用授权的入站、出站占用，各自最多 8 槽；它们使用普通请求预算，长等授权不占用 heartbeat、ACK 或取消的 Core 执行槽。授权持续饱和时排查元数据 leader、quorum 与截止时间，不能把失败解释为目标空闲。
+
 `tidemq_watch_group_reads_total`、`tidemq_watch_group_retires_total`、`tidemq_watch_empty_reads_total` 记录观察启用后实际应用的读取、退休及空读。比较空闲开销时，固定同一业务窗口、版本与负载，核对计数启用时点；不能用全部 Raft index 增量直接代替细分命令次数。CPU 火焰图、无采样吞吐和尾延迟也应分别测量。
 
 这些指标使用固定系列；Topic、订阅、root/parent operation 和 attempt 用于受限 trace 或诊断关联，不作为指标 label。访问令牌、观察 token、权限 proof 和消息正文不得写入日志或 trace。
