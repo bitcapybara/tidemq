@@ -4,7 +4,7 @@
 
 ## 指标与口径
 
-将 `ProducerMetrics` 克隆一次注册为管理面单一 Registry 的固定 Collector，前缀为 `tidemq_producer`。没有动态 Topic、producer、request、partition 标签；共 9 条 counter 与 2 条 gauge。计数单位分别为请求、批次、消息和逻辑字节，时间使用现有 `tidemq_stage_duration_seconds` 的 Produce/Admission、Commit、Total。
+将 `ProducerMetrics` 克隆一次注册为管理面单一 Registry 的固定 Collector，前缀为 `tidemq_producer`。没有动态 Topic、producer、request、partition 标签；共 10 条 counter 与 2 条 gauge。计数单位分别为请求、批次、消息和逻辑字节，时间使用现有 `tidemq_stage_duration_seconds` 的 Produce/Admission、Commit、Total。
 
 | 指标 | 用途 |
 | --- | --- |
@@ -14,10 +14,15 @@
 | `tidemq_producer_rejected_attempts_total` | 准入、身份、容量或确定性业务拒绝 |
 | `tidemq_producer_unknown_attempts_total` | 调用方未能看到确定结果，包括交给 Raft 后的调用方取消 |
 | `tidemq_producer_failed_attempts_total` | 本地运行时故障 |
+| `tidemq_producer_quota_retries_total` | 同一原 Publish 在未记录、可重试的额度拒绝后，重新确认 grant 并实际开始的额外 native commit attempt；不含第一次尝试、单纯等待、预检查拒绝、Unknown 或已记录结果 |
 | `tidemq_producer_new_batches_total`、`new_messages_total`、`new_bytes_total` | 当前 runtime 观察到的首次提交；重复、follower apply 和重放不增加 |
 | `tidemq_producer_pending_operations`、`pending_bytes` | 已进入 FIFO 或等待 Raft 终态、仍由 owned submission 持有的工作量和准入字节 |
 
 Counter 随进程重启归零，Broker 崩溃后尚未观察到的已提交操作可能不计入。unknown 与后台新提交允许同时出现，两个维度不可合并为审计账本。Commit histogram 是 Broker 等待 `client_write` 返回的总阶段，再结合 WAL sync、复制和 apply 证据细分，不直接把阶段重叠值相加。
+
+外层一次成功请求可能包含多次额度准入交错。例如一次原 Publish 的 `quota_retries_total` 增量为 5，表示含初次尝试共 6 次 native commit attempt，不是 6 条消息；`new_messages_total` 仍只增加 1。每个调用最多 8 次 attempt，使用 10、20、40、随后最高 50ms 的退避，所有 grant 重确认与提交共享原 deadline。真实限额或暂停在预检查时继续明确拒绝；Unknown 和已记录结果不自动重提，Console 的终态拒绝分类保持不变。
+
+结构化 debug 事件 `event_code=producer_quota_retry` 沿用当前 `producer_submission` span，只有 `attempt`、`max_attempts`、`backoff_ms`、`stage` 等固定字段。`stage=backoff` 表示计划退避，下一次预检查仍可能拒绝；`stage=commit` 才对应上述 counter 增加。事件不附带 token、body、key、权限 proof 或动态资源标签。
 
 ## 现象与只读验证
 

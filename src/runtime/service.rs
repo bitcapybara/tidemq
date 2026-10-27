@@ -341,23 +341,30 @@ impl Service {
     }
 
     pub async fn leader(&self, group: u64, deadline: Instant) -> Result<u64> {
-        if let Some((leader, expires)) = self
-            .leaders
-            .read()
-            .await
-            .get(&group)
-            .filter(|(_, expires)| *expires > Instant::now())
+        let cached = self.leaders.read().await.get(&group).copied();
+        if let Some((leader, expires)) = cached
+            && expires > Instant::now()
         {
-            let _ = expires;
-            return Ok(*leader);
+            return Ok(leader);
         }
         let voters = self
             .registry
             .candidates(group, self.config.runtime.metadata_group)?;
-        for node in &voters {
+        // Expiry requires rediscovery, but does not make a previously confirmed voter a worse hint.
+        let preferred = cached.map(|(leader, _)| leader);
+        let candidates = preferred
+            .filter(|node| voters.contains(node))
+            .into_iter()
+            .chain(
+                voters
+                    .iter()
+                    .copied()
+                    .filter(|node| Some(*node) != preferred),
+            );
+        for node in candidates {
             let request = Request::control(wire::LEADER, &())?;
             let attempt_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
-            if let Ok(bytes) = self.rpc.call(*node, group, request, attempt_deadline).await {
+            if let Ok(bytes) = self.rpc.call(node, group, request, attempt_deadline).await {
                 let leader: Option<u64> = wire::decode_json(&bytes)?;
                 if let Some(leader) = leader.filter(|leader| voters.contains(leader)) {
                     self.leaders
@@ -953,7 +960,9 @@ impl Service {
                     })?
             }
             wire::FORWARD => {
-                if !matches!(peer.role.as_str(), "gateway" | "broker" | "combined")
+                let console_send = peer.role == "metadata";
+                if (!console_send
+                    && !matches!(peer.role.as_str(), "gateway" | "broker" | "combined"))
                     || request.hops == 0
                     || request.hops > 2
                     || request.principal.len() > 128
@@ -973,14 +982,22 @@ impl Service {
                     .ok_or_else(forbidden)?
                     .parse()
                     .map_err(|_| forbidden())?;
-                let (access, expires) = self
-                    .dynamic_access(
-                        credential,
-                        wire::id(&request.client_session)?,
-                        &inner,
-                        deadline,
-                    )
-                    .await?;
+                let session = wire::id(&request.client_session)?;
+                let (access, expires) = if console_send {
+                    if request.hops != 1
+                        || !self.config.role.serves_broker()
+                        || inner.operation_id != frame.operation_id
+                        || request.scope != "*"
+                    {
+                        return Err(forbidden());
+                    }
+                    // Metadata may delegate only a Publish bound by its committed Console record.
+                    self.console_send_access(credential, session, &inner, deadline)
+                        .await?
+                } else {
+                    self.dynamic_access(credential, session, &inner, deadline)
+                        .await?
+                };
                 let deadline = super::auth::admit_deadline(deadline, expires)?;
                 if request.tenant
                     != access

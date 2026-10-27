@@ -37,6 +37,114 @@ struct Executed {
     secret_unavailable: bool,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+pub(super) struct DelegatedConsoleSend {
+    pub credential: Id,
+    client: Id,
+    operation: Id,
+    topic: Id,
+    shard: Id,
+    partition: u32,
+    registration: u64,
+    digest: [u8; 32],
+}
+
+impl DelegatedConsoleSend {
+    pub fn from_frame(
+        credential: Id,
+        client: Id,
+        frame: &Frame,
+        limits: &tidemq_protocol::ProtocolLimits,
+    ) -> Result<Self> {
+        if frame.kind != i32::from(FrameKind::Publish)
+            || frame.traffic_class != i32::from(TrafficClass::Produce)
+        {
+            return Err(forbidden());
+        }
+        let request: public::Publish =
+            tidemq_protocol::framing::decode_payload(frame.payload.clone(), limits)
+                .map_err(|source| Error::operation("decode delegated Console send", source))?;
+        let operation = wire::id(&frame.operation_id)?;
+        if wire::id(&request.producer_id)? != operation
+            || request.sequence != 1
+            || request.retired_before != 1
+        {
+            return Err(forbidden());
+        }
+        Ok(Self {
+            credential,
+            client,
+            operation,
+            topic: wire::id(&request.topic_id)?,
+            shard: wire::id(&request.shard_id)?,
+            partition: request.partition_id,
+            registration: request.registration,
+            digest: request
+                .digest
+                .as_ref()
+                .try_into()
+                .map_err(|_| forbidden())?,
+        })
+    }
+
+    pub fn authorize(
+        &self,
+        state: &metadata::MetadataState,
+        now: u64,
+    ) -> Result<(Option<Id>, u64)> {
+        let record = state
+            .console_record(self.operation)
+            .filter(|record| {
+                record.credential == self.credential
+                    && record.id == self.client
+                    && record.expires_ms > now
+            })
+            .ok_or_else(forbidden)?;
+        let auth = state.auth();
+        let actor = auth
+            .current_principal(self.credential, now)
+            .map_err(|_| forbidden())?;
+        if actor.id != record.actor {
+            return Err(forbidden());
+        }
+        let ConsoleBinding::Send {
+            topic,
+            shard,
+            partition,
+            permit,
+            digest,
+            ..
+        } = &record.binding
+        else {
+            return Err(forbidden());
+        };
+        if *topic != self.topic
+            || *shard != self.shard
+            || partition.partition != self.partition
+            || permit.registration != self.registration
+            || permit.client != self.client
+            || permit.credential != self.credential
+            || permit.producer != self.operation
+            || *digest != self.digest
+        {
+            return Err(forbidden());
+        }
+        authorize_binding(state, self.credential, now, record.id, &record.binding)?;
+        if record.receipt.is_some() && record_receipt(record, now)?.status != Status::Succeeded {
+            return Err(forbidden());
+        }
+        let tenant = auth
+            .credential_scope(self.credential, now)
+            .map_err(|_| forbidden())?
+            .0;
+        let expires = auth
+            .credential(self.credential)
+            .ok_or_else(forbidden)?
+            .expires_ms;
+        Ok((tenant, expires.min(record.expires_ms)))
+    }
+}
+
 impl Executed {
     fn receipt(resource: Id, receipt: String) -> Self {
         Self {
@@ -579,15 +687,10 @@ impl Service {
             &request,
             deadline,
         )?;
-        let mut access = console_access(record);
-        access.tenant = self
-            .metadata
-            .as_ref()
-            .ok_or_else(Error::unavailable)?
-            .state
-            .try_with_application(|state| state.topic(topic).and_then(|topic| topic.tenant))
-            .await
-            .map_err(|source| Error::operation("read send scope", source))?;
+        let (access, expires) = self
+            .dynamic_access(record.credential, record.id, &frame, deadline)
+            .await?;
+        let deadline = super::auth::admit_deadline(deadline, expires)?;
         let reply = Box::pin(self.public(access, &frame, deadline, None, 0)).await?;
         let reply: public::PublishResult =
             tidemq_protocol::framing::decode_payload(reply.payload, &self.config.protocol)
