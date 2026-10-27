@@ -48,7 +48,11 @@ cleanup() {
   for vm in tidemq-cp-{a,b,c} tidemq-worker-{a,b,c} tidemq-fixtures tidemq-loadgen; do host_control restore "$vm" 5 >> "$report/cleanup.log" 2>&1 || cleanup_result=1; done
   kube get pods -o json > "$report/pods-after.json" 2>/dev/null || true
   kube get events -o json > "$report/events.json" 2>/dev/null || true
-  for id in 11 12 13 21 22 23 31 32 41 42; do kube logs "node-$id-0" -c tidemq --tail=200 > "$report/node-$id.log" 2>&1 || true; done
+  for id in 11 12 13 21 22 23 31 32 41 42; do
+    kube logs "node-$id-0" -c tidemq --tail=200 > "$report/node-$id.log" 2>&1 || true
+    kube exec "node-$id-0" -c tidemq -- curl --fail --silent --max-time 2 http://127.0.0.1:9419/metrics > "$report/node-$id.metrics" 2> "$report/node-$id.metrics-error" || true
+    kube exec "node-$id-0" -c tidemq -- curl --fail --silent --max-time 2 http://127.0.0.1:9419/diagnostics > "$report/node-$id.diagnostics.json" 2> "$report/node-$id.diagnostics-error" || true
+  done
   scp -q -r -i "$TIDEMQ_LAB_KEY" -o "UserKnownHostsFile=$TIDEMQ_LAB_KNOWN_HOSTS" "lab@192.168.240.35:$load_root/results/." "$report/" >> "$report/cleanup.log" 2>&1 || true
   if [[ ${TIDEMQ_API_COVERAGE:-0} == 1 ]]; then
     collect_api_coverage >> "$report/coverage-collection.log" 2>&1 || cleanup_result=1

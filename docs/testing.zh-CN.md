@@ -13,7 +13,25 @@
 
 不使用 `cargo check` 作为 Rust 校验入口；Clippy 有发现时修复并重复到通过。文档站的构建会检查 Markdown 死链及生成 HTML 的本地路径、资源与锚点；它不会查询远程链接或验证服务行为。站点命令见[文档站维护](site.zh-CN.md)。
 
-前端覆盖率门槛和浏览器矩阵以已集成的脚本与工作流为准。尚未集成或未实际运行的检查，不计作对应版本的验收结果。
+## Console 前端质量门禁
+
+前端使用 Vitest/V8、React Testing Library、user-event、jsdom 和 MSW。单元测试覆盖协议解析与业务逻辑；DOM 集成测试通过实际组件、React Query 和网络 mock 检查交互、权限失效、表单及原写入结果恢复。覆盖率包含全部应用 `src/**/*.{ts,tsx}`，只排除测试和类型声明：行、语句、函数至少 80%，分支至少 70%；认证、会话、权限、写入恢复和表单模块逐文件要求行至少 90%、分支至少 80%。HTML、LCOV 和 JSON 报告保存在 `console/web/coverage/unit-integration/`。降低阈值或排除未测页面不能代替补测试。
+
+Playwright 的 `mock-network` 套件覆盖确定性的页面操作和故障展示，不计作真实后端验收。`live` 套件通过独立 combined、Console 和 HTTPS 代理进程运行实际登录、导航、刷新、退出与凭据写入结果恢复，使用本次生成的私有身份和数据。真实凭据用例禁用 trace、视频和截图；mock 套件保留失败制品。浏览器结果与 Vitest 源码覆盖率分别统计。
+
+```sh
+npm --prefix console/web ci
+npm --prefix console/web run typecheck
+npm --prefix console/web run lint
+npm --prefix console/web run test:coverage
+npm --prefix console/web run build
+npm --prefix console/web exec -- playwright install chromium firefox webkit
+npm --prefix console/web run test:e2e
+cargo build --locked -p tidemq -j2
+npm --prefix console/web run test:e2e:live
+```
+
+真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。PR 运行 Chromium，main 运行 Chromium/Firefox/WebKit；Rust 最终 gate 同时要求前端覆盖率、mock 浏览器和真实后端浏览器 job 成功。真实后端 job 校验同一次 Linux 构建制品的源码提交与二进制 SHA256，fork PR 不访问自托管服务。未实际运行的检查不计作该版本验收结果。
 
 ## CI 与覆盖率
 
