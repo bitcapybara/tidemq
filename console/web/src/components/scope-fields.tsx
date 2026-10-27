@@ -51,6 +51,7 @@ export function ScopeFields({
         <span>{t("Tenant UUID", "租户 UUID")}</span>
         <Input
           name="tenantId"
+          aria-label={t("Tenant UUID", "租户 UUID")}
           list={`${id}-tenants`}
           value={tenant}
           onChange={(event) => {
@@ -74,6 +75,7 @@ export function ScopeFields({
           <span>{t("Namespace UUID", "命名空间 UUID")}</span>
           <Input
             name="namespaceId"
+            aria-label={t("Namespace UUID", "命名空间 UUID")}
             list={`${id}-namespaces`}
             value={space}
             onChange={(event) => {
