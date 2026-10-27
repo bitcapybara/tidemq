@@ -17,7 +17,7 @@
 | 迁移空间 | 实际源文件 + 完整目标文件预算 + 两份实际 framed snapshot + 控制余量，全部 checked arithmetic；statvfs available 独立采样 |
 | 格式切换 | 新物理版本、全新数据目录；旧布局明确拒绝，无兼容读取、双写、迁移工具或自动清空 |
 
-代码入口为 [`src/wal`](../../src/wal/mod.rs)、[`src/replication`](../../src/replication/store.rs)、[`物理采样`](../../src/runtime/physical.rs)、[`管理容量`](../../src/runtime/management.rs)和[`迁移估算`](../../src/scaling/remote/data.rs)。具名文件的长度不是文件系统已分配块上界；控制 reserve 不替代设备、文件系统和并发任务余量。
+代码入口为 [`src/wal`](https://github.com/bitcapybara/tidemq/blob/main/src/wal/mod.rs)、[`src/replication`](https://github.com/bitcapybara/tidemq/blob/main/src/replication/store.rs)、[`物理采样`](https://github.com/bitcapybara/tidemq/blob/main/src/runtime/physical.rs)、[`管理容量`](https://github.com/bitcapybara/tidemq/blob/main/src/runtime/management.rs)和[`迁移估算`](https://github.com/bitcapybara/tidemq/blob/main/src/scaling/remote/data.rs)。具名文件的长度不是文件系统已分配块上界；控制 reserve 不替代设备、文件系统和并发任务余量。
 
 正确性测试、进程 SIGKILL 与完整 RF1/RF3 回归的实际结果由实施证据记录。设备掉电、慢盘/满盘长稳、真实三区和固定基线性能比较仍需相应环境；没有测量结果时，不宣称吞吐提升百分比或恢复时间 SLA。以下章节是 `9e80cb7` 的原始评估，描述的“当前”均指该历史基线。
 
@@ -32,14 +32,14 @@
 | 路径与关键位置 | 实际行为 |
 | --- | --- |
 | [`wal/journal.rs`（历史版本）](https://github.com/bitcapybara/tidemq/blob/9e80cb76790dec7a9348682bc2108fab4e44f3ce/src/wal/journal.rs)：`JournalOptions`、`Writer::append_group`、`Writer::rewrite` | 每组单 writer、单文件、有限队列、group commit；rewrite 写新文件后原子替换；当前源码已删除该文件 |
-| [`wal/codec.rs`](../../src/wal/codec.rs)：`scan`、`frame`、`write_atomic` | 88 字节头、头部和正文 BLAKE3、连续物理序号、严格恢复、文件和父目录同步 |
-| [`replication/store.rs`](../../src/replication/store.rs)：`DiskStore::open`、`StorageOptions`、`LogState` | `raft.wal`、`snapshot.bin`；启动保留全部原始 record 再解码；retained entries 在有界 BTreeMap 中 |
-| [`replication/log.rs`](../../src/replication/log.rs)：`purge`、`checkpoint`、`truncate` | purge 克隆 log、删除前缀、逐条重编码剩余 entries，再等待整文件替换；truncate 先追加持久标记 |
-| [`replication/state_machine.rs`](../../src/replication/state_machine.rs)：`recover`、`apply_committed`、`build_durable_snapshot` | 公开应用结果前持久化 committed；完整应用视图构建快照；仅恢复 committed tail |
-| [`runtime/node.rs`](../../src/runtime/node.rs)：`open_replica` | OpenRaft 配置保留已入快照的 1024 条日志；未重写库的其他默认快照策略 |
-| [`runtime/physical.rs`](../../src/runtime/physical.rs)、[`runtime/management.rs`](../../src/runtime/management.rs) | 固定副本目录、每目录最多 16 项、要求 `raft.wal`；文件长度及磁盘 available 分开采样 |
-| [`scaling/remote/data.rs`](../../src/scaling/remote/data.rs)：`estimate` | 迁移空间估算包含实际副本文件、快照复制、未来 snapshot/rewrite/tail 增长 |
-| [`lifecycle/coordinator.rs`](../../src/lifecycle/coordinator.rs)、[`lifecycle/data.rs`](../../src/lifecycle/data.rs) | 对象发布、各 voter 恢复快照、元数据检查点与本地正文 reclaim 是另一套持久协议 |
+| [`wal/codec.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/wal/codec.rs)：`scan`、`frame`、`write_atomic` | 88 字节头、头部和正文 BLAKE3、连续物理序号、严格恢复、文件和父目录同步 |
+| [`replication/store.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/replication/store.rs)：`DiskStore::open`、`StorageOptions`、`LogState` | `raft.wal`、`snapshot.bin`；启动保留全部原始 record 再解码；retained entries 在有界 BTreeMap 中 |
+| [`replication/log.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/replication/log.rs)：`purge`、`checkpoint`、`truncate` | purge 克隆 log、删除前缀、逐条重编码剩余 entries，再等待整文件替换；truncate 先追加持久标记 |
+| [`replication/state_machine.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/replication/state_machine.rs)：`recover`、`apply_committed`、`build_durable_snapshot` | 公开应用结果前持久化 committed；完整应用视图构建快照；仅恢复 committed tail |
+| [`runtime/node.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/runtime/node.rs)：`open_replica` | OpenRaft 配置保留已入快照的 1024 条日志；未重写库的其他默认快照策略 |
+| [`runtime/physical.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/runtime/physical.rs)、[`runtime/management.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/runtime/management.rs) | 固定副本目录、每目录最多 16 项、要求 `raft.wal`；文件长度及磁盘 available 分开采样 |
+| [`scaling/remote/data.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/scaling/remote/data.rs)：`estimate` | 迁移空间估算包含实际副本文件、快照复制、未来 snapshot/rewrite/tail 增长 |
+| [`lifecycle/coordinator.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/lifecycle/coordinator.rs)、[`lifecycle/data.rs`](https://github.com/bitcapybara/tidemq/blob/main/src/lifecycle/data.rs) | 对象发布、各 voter 恢复快照、元数据检查点与本地正文 reclaim 是另一套持久协议 |
 
 ### 当前不是无限追加，也不是每次生产都做完整快照
 
@@ -133,7 +133,7 @@ manifest 唯一指定哪些文件属于当前恢复链，包括布局版本、cl
 
 ## 验收与停止条件
 
-现有 [`wal_journal`](../../tests/wal_journal.rs)、[`replication_storage`](../../tests/replication_storage.rs)、[`replication_crash`](../../tests/replication_crash.rs) 覆盖的是单文件实现，本次阅读不等于重新运行，也不证明分段格式正确。实施时至少补齐：
+现有 [`wal_journal`](https://github.com/bitcapybara/tidemq/blob/main/tests/wal_journal.rs)、[`replication_storage`](https://github.com/bitcapybara/tidemq/blob/main/tests/replication_storage.rs)、[`replication_crash`](https://github.com/bitcapybara/tidemq/blob/main/tests/replication_crash.rs) 覆盖的是单文件实现，本次阅读不等于重新运行，也不证明分段格式正确。实施时至少补齐：
 
 1. 每个持久边界前后注入 SIGKILL：旧 active sync、新段创建/目录 sync、manifest 写/sync/rename/目录 sync、checkpoint 发布、段删除；恢复结果必须是完整旧状态或完整新状态，不能失去任何已确认数据。
 2. active partial header/body 可修复；sealed partial、完整帧 checksum 错误、错误身份、缺段、重复/乱序物理序号、损坏 manifest/index 和断裂 committed tail 必须拒绝。禁止扫描 magic 跳过损坏。

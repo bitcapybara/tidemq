@@ -60,7 +60,7 @@ TlsTrust 接受服务端 CA 文件或 PEM，不接收 CA 私钥。Credentials �
 
 ## 生产与并发
 
-send 接受 Into<Message>，简单消息可写 producer.send("hello").await。Message 用于设置 key 和属性。成功回执表示数据 Raft 已持久提交；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。
+send 接受 `Into<Message>`，简单消息可写 `producer.send("hello").await`。Message 用于设置 key 和属性。成功回执表示数据 Raft 已持久提交；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。
 
 一个 Producer 可并发发送到多个分片。应用使用有界 FuturesOrdered/FuturesUnordered 或任务池驱动多个 send；集合 push 本身不推进 Future。逐条 await 会按应用写法串行等待。同 key 的发送按同一逻辑 Producer 的准入顺序推进，返回回执的顺序不建立跨 key 顺序。
 

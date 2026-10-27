@@ -818,6 +818,13 @@ impl Service {
         };
         #[cfg(test)]
         let gate = matches!(&command, GroupCommand::OpenGate { .. });
+        #[cfg(test)]
+        super::data::control_lease_tests::before_group_write(
+            route.partition,
+            &command,
+            write_deadline,
+        )
+        .await;
         let result = self
             .data_write(
                 route.group_id,

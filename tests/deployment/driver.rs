@@ -1,6 +1,7 @@
 //! Black-box public API validation against an independently deployed TideMQ service.
 
 mod api;
+mod connection;
 mod ledger;
 mod output;
 mod recovery;
@@ -265,19 +266,23 @@ async fn validate_connected(
 }
 
 async fn connect(args: &Args, deadline: Instant) -> Result<Client> {
-    Ok(
-        tidemq_sdk::RequestContext::with_deadline(request_deadline(deadline)?)
-            .scope(
-                Client::builder(
-                    args.endpoint.to_string(),
-                    TlsTrust::ca_file(&args.ca),
-                    Credentials::token_file(&args.token_file),
+    Ok(connection::connect_until(
+        request_deadline(deadline)?,
+        |original_deadline| async move {
+            tidemq_sdk::RequestContext::with_deadline(original_deadline)
+                .scope(
+                    Client::builder(
+                        args.endpoint.to_string(),
+                        TlsTrust::ca_file(&args.ca),
+                        Credentials::token_file(&args.token_file),
+                    )
+                    .request_timeout(Duration::from_secs(10))
+                    .build(),
                 )
-                .request_timeout(Duration::from_secs(10))
-                .build(),
-            )
-            .await?,
+                .await
+        },
     )
+    .await?)
 }
 
 fn client_metrics(client: &Client) -> serde_json::Value {

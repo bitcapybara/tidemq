@@ -2,102 +2,45 @@
 
 [English](README.md) | 简体中文
 
-基于对象存储构建的云原生消息队列，面向高吞吐、低延迟与弹性扩缩容。
+TideMQ 是使用 Rust 开发的持久消息队列，面向事件接入、流式消费和后台任务。在线写入由复制 WAL 提供持久性，可选的 S3 兼容对象存储承载历史数据与冷读。
 
-TideMQ 面向数据采集与流处理，将消息服务、复制式预写日志（WAL）、对象存储和控制元数据分层，使计算与存储能够独立扩缩容。
+应用通过同仓库 Rust SDK 使用逻辑 Topic 和持久 Stream / Queue 订阅。Gateway 提供 QUIC 入口，Broker 协调服务，Metadata 与 Storage 使用独立的 Raft 组；浏览器管理由独立无状态 Console 提供。
 
-> **项目状态：** 运行时与同仓库 Rust SDK 已支持持久生产、逐条 ACK、认证 QUIC、独立元数据/数据 Raft、RustFS/S3 归档、冷读、保留策略及安全对象回收。功能 CI 覆盖 Linux/macOS、真实外部依赖及 RF3 Kubernetes/VM 故障恢复。详见[实施状态](docs/implementation-status.zh-CN.md)和[VM 实验室验收](deploy/lab/README.zh-CN.md)。
+**当前处于 `0.1.0` 开发阶段。** API、配置和磁盘格式可能变化。RF1 没有节点级高可用；RF3 失去多数派后不会降为 RF1。功能与故障测试不构成生产 SLA、吞吐或容量承诺，部署前请阅读[产品能力与边界](docs/guide/overview.zh-CN.md)。
 
-## 设计目标
+## 核心能力
 
-- **高吞吐、低延迟：** 采用批量追加、group commit、流水线复制与有界队列，对象存储上传不进入生产 ACK 的关键路径。
-- **对象存储承载长期数据：** 将已提交消息归档为不可变对象，支持范围读取、清单管理、对象整理与安全回收。
-- **计算与存储独立扩缩容：** Broker 与 WAL 存储池分离，Gateway 可以独立部署，也可以与 Broker 组合运行。
-- **跨三个可用区持久化：** 同一云地域内，每个数据组设置三副本，经多数派提交后才返回生产 ACK；Raft 控制元数据与数据路径分离。
-- **独立持久订阅：** 分区内稳定 offset、逐条 ACK、至少一次交付。支持并行完成或由 SDK 按 key 串行处理，外部副作用仍需业务幂等或 fencing。
-- **统一客户端入口：** 固定域名与四层负载均衡后接协议 Gateway，由 SDK 完成重连、会话恢复、有界重试和背压。
-- **未确认积压保护：** 同时满足最低保留时长和未确认消息保护。达到容量上限时限制或拒绝新写入，继续消费、ACK 与回收。
+- Producer 成功表示数据 Raft 已持久提交；回包丢失时沿原身份恢复结果。
+- Stream 提供同 key 有效交付有序与累计 ACK；Queue 提供成员分摊、单条 ACK / NACK。交付至少一次，业务副作用须幂等。
+- 数据组持久化消息、offset、去重结果、投递 attempt 与 ACK；对象归档在后台完成，不进入 Producer ACK 路径。
+- 有界准入、背压、保留与租户/Namespace 配额；容量不足时优先保留已有 ACK、恢复和控制工作的资源。
+- TLS、作用域凭据、内部固定身份 mTLS、loopback 管理 HTTP，以及日志、指标和可选 OTLP。
+- 独立无状态 Console 用于日常浏览与授权范围内的操作；成员替换、扩缩容和排空使用现有 SDK / CLI。
 
-## 分层架构
+## 本地启动
 
-| 组件 | 职责 |
-| --- | --- |
-| 客户端 SDK | 批量发送、请求身份、连接恢复、重试期限与消费并发控制 |
-| Gateway | 协议连接、鉴权、路由缓存、转发与排空 |
-| Broker | 写入协调、订阅分发、缓存与流控 |
-| WAL 存储池 | 通过独立复制组提交消息、offset、去重结果、writer fence 与对象发布意图 |
-| 元数据 Raft | Topic、分区放置、所有权 epoch、订阅配置、对象清单与生命周期 |
-| 持久订阅状态 | 分片复制 ACK 进度、投递代次与恢复检查点，不进入全局元数据组 |
-| 对象存储 | 不可变历史数据对象与范围读取 |
-
-### 写入链路
-
-1. SDK 通过统一入口发送批次，Gateway 转发至持有分区所有权的 Broker。
-2. Broker 携带所有权 epoch，向分区所属数据组提交批次。
-3. 数据组校验 fence、生产者身份和序号，分配 offset，并按 Raft 提交规则完成持久化复制。
-4. 消费者只看见已提交消息，生产者获得已提交 offset。响应丢失时以相同批次身份重试，取回原结果。
-
-### 后台归档
-
-1. 从已提交消息生成不可变对象；首版仅在同一数据复制组内跨分区合装。
-2. 登记并上传对象，将持久发布意图与清单的条件更新对账，再在数据组记录发布完成。
-3. 对象发布、持久恢复检查点和副本追赶条件均满足后，才回收本地消息正文。删除对象还需等待引用、待发布任务与有效 pin 全部解除。
-
-生产 ACK、持久消费 ACK、对象发布和 WAL 回收是四个不同的完成点。仅凭超时不能判断操作是否已经提交。
-
-## 部署与恢复
-
-运行时提供 RF1 组合角色，以及独立 Gateway、Broker、Storage 和 Metadata 角色；本地生成器可生成 RF1/RF3 配置。同地域三区部署仍需实际基础设施与独立验收。单节点不具备节点级高可用，也不是生产故障时的自动降级模式。
-
-已实施的 KVM/kubeadm 实验室、公共 RustFS、观测服务和 GitHub self-hosted runner 见[实验室运维清单](deploy/lab/README.zh-CN.md)，包含 VM 分配、网络入口、操作方法及验证证据。
-
-候选恢复目标为：计划迁移通常不超过 1 秒，单 Broker 或 Gateway 故障 P99 不超过 5 秒，单可用区故障 P99 不超过 10 秒。这些是设计与压测目标，不是 SLA。计时覆盖故障检测、选主、fence、状态恢复、路由与 SDK 重连。Gateway 故障可能中断已有连接，SDK 需要重连并恢复会话。
-
-## 开始使用
-
-仓库固定 Rust 1.99.1 及 rustfmt、Clippy、匹配的 LLVM 覆盖率工具。生成本地私有证书、令牌和全新 RF1 配置后启动服务：
+需要仓库固定的 Rust 1.99.1、Bash 和 OpenSSL。在仓库根目录使用尚不存在的输出目录：
 
 ```sh
-cargo build --locked
-deploy/local/generate.sh rf1 /tmp/tidemq-demo
+cargo build --locked -p tidemq -j2
+bash deploy/local/generate.sh rf1 /tmp/tidemq-demo
 target/debug/tidemq validate-config --config /tmp/tidemq-demo/node-1.toml
-target/debug/tidemq serve --config /tmp/tidemq-demo/node-1.toml
+bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 ```
 
-生成器需要 OpenSSL 和尚不存在的输出目录，证书仅供短期本地开发；令牌保存在私有文件中。创建 Topic、生产、消费、持久 ACK 及 RF3 操作见[运行指南](docs/guide/running.zh-CN.md)和[Rust SDK](sdk/rust/README.md)。管理接口在 loopback 展示运行中服务；独立 `diagnose` 命令只描述它自身的短生命周期进程。
+另一个终端运行 `curl --fail http://127.0.0.1:8410/readyz`。SDK 使用 `127.0.0.1:7410` 和生成目录中的 `ca.pem`、私有 `access.token`；开发证书七天过期。继续按[快速开始](docs/guide/quickstart.zh-CN.md)创建资源、发送、接收并持久 ACK。
 
-副本存储使用带版本的分段 WAL、记录引用检查点和按代次命名的完整快照。本开发版本要求全新状态目录或 Docker 数据卷；旧 `raft.wal` / `snapshot.bin` 布局会被拒绝启动，已有文件不会自动清空。恢复时保留完整副本目录，包括 manifest 及其引用文件；容量限制、reader pin 和安全回收见[存储契约](docs/design/storage-recovery.zh-CN.md)。
+## 使用文档
 
-Docker 部署文件均在 [deploy/docker](deploy/docker/README.zh-CN.md) 中版本管理，包括[构建 Dockerfile](deploy/docker/Dockerfile.builder)、[运行 Dockerfile](deploy/docker/Dockerfile)、完整 [RF1 Compose](deploy/docker/compose.rf1.yaml)、[RF3 Compose](deploy/docker/compose.rf3.yaml) 和[部署准备脚本](deploy/docker/prepare.sh)。先生成私有状态目录，再使用其中的 Compose 配置；构建、启动、验证和清理命令见部署文档。
+| 任务 | 入口 |
+| --- | --- |
+| 理解产品 | [能力与限制](docs/guide/overview.zh-CN.md)、[架构与角色](docs/guide/architecture.zh-CN.md) |
+| 部署与配置 | [RF1 / RF3](docs/guide/running.zh-CN.md)、[每个角色的配置](docs/guide/configuration.zh-CN.md)、[Docker](deploy/docker/README.zh-CN.md)、[Kubernetes](deploy/kubernetes/README.zh-CN.md) |
+| 应用开发 | [Rust SDK](docs/guide/rust-sdk.zh-CN.md)、[生产](docs/guide/production.zh-CN.md)、[消费与 ACK](docs/guide/consumption.zh-CN.md) |
+| 浏览器使用 | [Console 使用](docs/guide/console.zh-CN.md)、[Console 部署](deploy/console/README.zh-CN.md) |
+| 安全与运维 | [安全](docs/operations/security.zh-CN.md)、[指标](docs/operations/metrics.zh-CN.md)、[日志](docs/operations/logging.zh-CN.md)、[追踪](docs/operations/tracing.zh-CN.md)、[恢复](docs/operations/recovery.zh-CN.md)、[排障](docs/operations/troubleshooting.zh-CN.md) |
+| 开发验证 | [测试方法与证据边界](docs/testing.zh-CN.md)、[文档站维护](docs/site.zh-CN.md) |
 
-安装 cargo-nextest 0.9.148 后，按 CI 的 target 范围执行本地验证：
+[完整文档导航](docs/README.zh-CN.md)按用户路径组织。设计稿与带版本、日期的实验室证据作为补充资料保留。开发磁盘格式不提供旧实验格式自动迁移；升级前保留完整原目录、身份、证书与匹配二进制，禁止通过清空 WAL 解决启动失败。
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --no-deps --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen -- -D warnings
-cargo nextest run --workspace --all-targets --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen --profile ci
-cargo test --workspace --doc --locked --features tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
-```
-
-固定的覆盖率工具、JSON／LCOV／HTML 报告及覆盖率门禁见[测试指南](docs/testing.zh-CN.md)。
-
-SDK 默认使用配置超时，通过 `RequestContext` 与 `CancellationToken` 在多次调用间共享总期限和取消；大块唯一所有权 payload 使用有界分段发送。接口见[SDK 手册](docs/guide/rust-sdk.zh-CN.md)，格式候选见[rkyv / FlatBuffers / FlexBuffers 调研](docs/research/zero-copy-formats.zh-CN.md)。
-
-已删除性能 workflow、负载工具、比较脚本、配置、基线及专项报告。功能、覆盖率与 VM 故障 CI 继续执行；本次不运行性能测试。
-
-## 完整文档与实施路线
-
-[完整架构草案](docs/architecture.zh-CN.md) 保留了源 PDF 的全部九页内容，包括安全约束、故障场景、性能参考的限制、官方资料与评审清单。原稿日期为 2026-10-19；其中“实现语言尚未确定”等原始表述作为历史记录保留，本仓库已选择 Rust。
-
-1. 建立协议模型与确定性故障模拟。
-2. 实现本地最小消息链路。
-3. 实现三节点复制、生产去重、持久 ACK 与恢复。
-4. 实现对象合装、发布、对账与垃圾回收。
-5. 实现 Gateway 与受控扩缩容。
-6. 在对齐持久化和交付语义的前提下，完成三可用区性能对标与故障验证。
-
-实现基线使用 OpenRaft、s2n-quic、Protobuf、同仓库 Rust SDK、aws-sdk-s3 和本地 RustFS。服务端通过 `allocator-mimalloc` 默认启用 mimalloc；System、jemalloc 为互斥的构建选项，切换时使用 `--no-default-features`。SDK 的分配器由宿主决定。参见[分配器配置与排障](docs/operations/memory-troubleshooting.zh-CN.md)、[文档导航](docs/README.zh-CN.md)、[当前设计](docs/design/architecture.zh-CN.md)、[要求覆盖](docs/requirements-coverage.zh-CN.md)。分配器性能、负载数值和生产预算仍需验证；历史草案中的 AutoMQ 数据是外部参考，不是 TideMQ 实测。
-
-## 许可证
-
-TideMQ 使用 [MIT License](LICENSE)。
+许可证：[MIT](LICENSE)。

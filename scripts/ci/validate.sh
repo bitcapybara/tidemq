@@ -29,4 +29,4 @@ cp target/nextest/ci/junit.xml target/ci/sdk-default-unit-junit.xml
 cargo build -p tidemq-protocol --features codegen --locked
 cargo fmt --all -- --check
 git diff --exit-code -- crates/tidemq-protocol/src/generated
-cargo run --locked -- validate-config --config config/local.toml
+cargo run --locked -- validate-config --config config/combined.toml

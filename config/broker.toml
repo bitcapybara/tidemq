@@ -1,0 +1,144 @@
+# TideMQ broker: separated RF1 (metadata 11, storage 21, broker 31, gateway 41).
+# From the repository root: tidemq validate-config --config config/broker.toml
+# After provisioning: tidemq serve --config config/broker.toml
+# Relative paths resolve from the process working directory, not this file.
+# Lines prefixed "#? " are disabled optional examples. Enable a complete block
+# only after supplying its required operational values.
+# RF1 is a local demonstration, not high availability. For three-zone RF3 use
+# deploy/local/generate.sh rf3 (separated) or rf3-combined.
+#
+# Required operational identity/topology: choose a unique nonzero node_id and
+# a stable cluster UUID shared by all peers. The UUID below is a placeholder.
+# Code defaults: node_id=1, cluster_id as below, data_dir="data/node-1", RF=1.
+# Role is required in a file; the in-memory default is combined.
+node_id = 31
+cluster_id = "00000000-0000-4000-8000-000000000001"
+role = "broker"
+# Loopback is required. Code default: 127.0.0.1:9419.
+management_listen = "127.0.0.1:8710"
+# Provision a writable private directory per node; never share it with peers.
+data_dir = "data/node-31"
+replication_factor = 1
+
+# Code defaults shared by all MQ roles; capacity admission preserves control work.
+[memory]
+total_bytes = 67108864
+control_reserved_bytes = 4194304
+max_connections = 128
+max_streams_per_connection = 64
+max_pending_requests = 256
+
+[protocol]
+max_frame_bytes = 1048576
+max_control_frame_bytes = 16384
+max_message_bytes = 262144
+max_batch_messages = 1024
+max_payload_fields = 1100
+max_traceparent_bytes = 55
+
+[logging]
+filter = "warn,tidemq=info"
+json = true
+queue_events = 1024
+max_event_bytes = 16384
+
+# Code defaults. Optional OTLP export is disabled. Remote endpoints require HTTPS
+# and a literal IP; the path must be /v1/traces. Never put credentials in the URL.
+[tracing]
+enabled = false
+endpoint = "http://127.0.0.1:4318/v1/traces"
+sample_per_mille = 10
+spans_per_second = 128
+queue_spans = 256
+batch_spans = 32
+export_interval_ms = 500
+export_timeout_ms = 500
+
+# All MQ roles require provisioned PEM certificate/key/CA files for internal mTLS.
+# Provision the recorded peer certificate in DER form too. These are paths only.
+# Private keys require owner-only access; no real secrets are shipped.
+# Code defaults: certs/server.pem, certs/server-key.pem, certs/ca.pem.
+[tls]
+certificate = "certs/node-31.pem"
+private_key = "certs/node-31-key.pem"
+trust_roots = "certs/ca.pem"
+
+# Shared section required on every MQ role. The token file defaults to None.
+# Only combined/metadata consumes it when authentication is uninitialized.
+# Generate a private random token (32-256 printable ASCII characters) separately
+# and store only that token in an owner-only file. No token value is shipped.
+[authorization]
+#? bootstrap_admin_token_file = "secrets/bootstrap.token"
+
+# All MQ roles need the same peer inventory and voter topology.
+# Internal listener code default: 127.0.0.1:7444.
+# This example runs four separated roles on one host. For remote hosts, replace
+# loopback addresses, identities, certificate paths, and zones consistently.
+[runtime]
+internal_listen = "127.0.0.1:7711"
+metadata_group = 1
+metadata_voters = [11]
+# Operational choice for a NEW cluster; the code default is false.
+# Only the lowest voter initializes each pristine hosted Raft group.
+# Use false to prevent initialization when joining an existing cluster.
+bootstrap = true
+
+# Required on every role. Code default: group 2, voters [1], no standby.
+[[runtime.groups]]
+group_id = 2
+voters = [21]
+standby = []
+
+# Peers have no entry defaults (default inventory is empty and cannot start).
+# Include this node. All six fields are required for each peer.
+[[runtime.peers]]
+node_id = 11
+role = "metadata"
+zone = "local"
+internal_address = "127.0.0.1:7511"
+server_name = "node-11.local"
+certificate_der = "certs/node-11.der"
+
+[[runtime.peers]]
+node_id = 21
+role = "storage"
+zone = "local"
+internal_address = "127.0.0.1:7611"
+server_name = "node-21.local"
+certificate_der = "certs/node-21.der"
+
+[[runtime.peers]]
+node_id = 31
+role = "broker"
+zone = "local"
+internal_address = "127.0.0.1:7711"
+server_name = "node-31.local"
+certificate_der = "certs/node-31.der"
+
+[[runtime.peers]]
+node_id = 41
+role = "gateway"
+zone = "local"
+internal_address = "127.0.0.1:7811"
+server_name = "node-41.local"
+certificate_der = "certs/node-41.der"
+
+# Shared code defaults: byte watermarks with low < high and a fresh sample.
+[runtime.capacity]
+max_sample_age_ms = 1000
+
+[runtime.capacity.logical_backlog]
+low = 100663296
+high = 134217728
+
+[runtime.capacity.physical_storage]
+low = 201326592
+high = 268435456
+
+[runtime.capacity.shared_reclaim_lag]
+low = 50331648
+high = 67108864
+
+[runtime.capacity.process_memory]
+low = 201326592
+high = 268435456

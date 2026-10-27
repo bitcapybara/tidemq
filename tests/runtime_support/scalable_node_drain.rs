@@ -2,6 +2,111 @@ use super::*;
 use tidemq::metadata::PartitionKey;
 use tidemq_sdk::Message;
 
+async fn acknowledge_original_after_drain(
+    consumer: &tidemq_sdk::StreamConsumer,
+    message: &tidemq_sdk::ReceivedMessage,
+) {
+    let receipt = match consumer.ack_cumulative(message).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            assert!(
+                error.outcome_unknown() || error.kind() == tidemq_sdk::ErrorKind::Unavailable,
+                "The held ACK was rejected: {error:?}"
+            );
+            let tidemq_sdk::Error::Acknowledgement { pending, .. } = error else {
+                panic!("An unknown ACK must retain its original recovery handle");
+            };
+            assert!(consumer.pending_acks().await.unwrap().len() <= 1);
+            eprintln!("Recovering the original ACK after broker drain: {pending:?}");
+            let until = deadline();
+            loop {
+                let result = tidemq_sdk::RequestContext::with_deadline(until)
+                    .scope(pending.retry())
+                    .await;
+                match result {
+                    Ok(receipt) => {
+                        let progress = pending.progress().unwrap();
+                        assert_eq!(progress.acknowledged, 1);
+                        assert_eq!(progress.pending, 0);
+                        assert_eq!(progress.rejected, 0);
+                        assert_eq!(pending.retry().await.unwrap(), receipt);
+                        break receipt;
+                    }
+                    Err(error) => {
+                        assert!(
+                            error.outcome_unknown()
+                                || error.kind() == tidemq_sdk::ErrorKind::Unavailable,
+                            "ACK recovery was rejected: {error:?}"
+                        );
+                        assert!(
+                            Instant::now() < until,
+                            "Original ACK recovery expired: {error:?}"
+                        );
+                        assert_eq!(
+                            pending.progress().unwrap().rejected,
+                            0,
+                            "A retryable handoff failure permanently settled the original ACK: {error:?}"
+                        );
+                    }
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+    };
+    assert_eq!(receipt, tidemq_sdk::AckReceipt::Acknowledged);
+    assert!(consumer.pending_acks().await.unwrap().is_empty());
+}
+
+async fn observed_stream_cursor(client: &Client, topic: Id) -> (Id, u64, u64) {
+    use tidemq_protocol::console::{Query, Reply};
+    let Reply::Subscriptions(subscriptions) = client
+        .console_read(Query::Subscriptions {
+            topic: Some(topic),
+            after: None,
+            limit: 32,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("Expected the durable stream subscription");
+    };
+    assert_eq!(subscriptions.items.len(), 1);
+    let subscription = subscriptions.items.first().unwrap().id;
+    let Reply::Members(members) = client
+        .console_read(Query::Members {
+            topic,
+            subscription,
+            after: None,
+            limit: 32,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("Expected the original stream member");
+    };
+    assert_eq!(members.items.len(), 1);
+    let member = members.items.first().unwrap();
+    let Reply::Progress(progress) = client
+        .console_read(Query::Progress {
+            topic,
+            subscription,
+            after: None,
+            limit: 32,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("Expected the committed stream frontier");
+    };
+    assert!(!progress.observation.partial);
+    assert_eq!(progress.items.len(), 1);
+    (
+        member.id,
+        member.epoch.0,
+        progress.items.first().unwrap().frontier.unwrap().0,
+    )
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_topics_use_surviving_registered_brokers_after_the_bootstrap_broker_retires() {
     let mut fixture = Fixture::new(
@@ -322,6 +427,8 @@ async fn draining_broker_hands_off_existing_ownership_before_reporting_clear_blo
         .message_id();
     let held = consumer.receive().await.unwrap();
     assert_eq!(held.message_id(), first);
+    let before = observed_stream_cursor(&client, partition.topic_id).await;
+    assert_eq!(before.2, 0);
     client.admin().begin_node_drain(2).await.unwrap();
     let until = deadline();
     loop {
@@ -335,7 +442,12 @@ async fn draining_broker_hands_off_existing_ownership_before_reporting_clear_blo
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    consumer.ack_cumulative(&held).await.unwrap();
+    // Drained ownership can still leave the committed consumer writer temporarily unknown.
+    acknowledge_original_after_drain(&consumer, &held).await;
+    assert_eq!(held.message_id(), first);
+    let after = observed_stream_cursor(&client, partition.topic_id).await;
+    assert_eq!((after.0, after.1), (before.0, before.1));
+    assert_eq!(after.2, 1);
     client.admin().retire_node(2).await.unwrap();
     fixture.stop(2).await;
     let second = producer
@@ -346,6 +458,9 @@ async fn draining_broker_hands_off_existing_ownership_before_reporting_clear_blo
     let message = consumer.receive().await.unwrap();
     assert_eq!(message.message_id(), second);
     consumer.ack_cumulative(&message).await.unwrap();
+    let after = observed_stream_cursor(&client, partition.topic_id).await;
+    assert_eq!((after.0, after.1), (before.0, before.1));
+    assert_eq!(after.2, 2);
     consumer.close().await.unwrap();
     producer.close().await.unwrap();
     client.close().await.unwrap();

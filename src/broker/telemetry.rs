@@ -18,6 +18,7 @@ struct Counters {
     rejected: AtomicU64,
     unknown: AtomicU64,
     failed: AtomicU64,
+    quota_retries: AtomicU64,
     batches: AtomicU64,
     messages: AtomicU64,
     bytes: AtomicU64,
@@ -46,6 +47,7 @@ pub struct ProducerMetricsSnapshot {
     pub rejected_attempts_total: u64,
     pub unknown_attempts_total: u64,
     pub failed_attempts_total: u64,
+    pub quota_retries_total: u64,
     pub new_batches_total: u64,
     pub new_messages_total: u64,
     pub new_bytes_total: u64,
@@ -63,6 +65,7 @@ impl ProducerMetrics {
             rejected_attempts_total: counters.rejected.load(Ordering::Relaxed),
             unknown_attempts_total: counters.unknown.load(Ordering::Relaxed),
             failed_attempts_total: counters.failed.load(Ordering::Relaxed),
+            quota_retries_total: counters.quota_retries.load(Ordering::Relaxed),
             new_batches_total: counters.batches.load(Ordering::Relaxed),
             new_messages_total: counters.messages.load(Ordering::Relaxed),
             new_bytes_total: counters.bytes.load(Ordering::Relaxed),
@@ -95,6 +98,10 @@ impl ProducerMetrics {
         add(&self.0.batches, 1);
         add(&self.0.messages, messages);
         add(&self.0.bytes, bytes);
+    }
+
+    pub(crate) fn quota_retry(&self) {
+        add(&self.0.quota_retries, 1);
     }
 }
 
@@ -196,6 +203,11 @@ impl Collector for ProducerMetrics {
                 &counters.failed,
             ),
             (
+                "quota_retries",
+                "Additional native commit attempts for one original Publish after quota reconfirmation",
+                &counters.quota_retries,
+            ),
+            (
                 "new_batches",
                 "New batches observed committed by this runtime",
                 &counters.batches,
@@ -258,16 +270,20 @@ mod tests {
         drop(queued);
         let pending = metrics.begin_submission(100);
         metrics.committed_batch(3, 90);
+        metrics.quota_retry();
+        metrics.quota_retry();
         assert_eq!(metrics.snapshot().unknown_attempts_total, 1);
         assert_eq!(metrics.snapshot().rejected_attempts_total, 1);
         assert_eq!(metrics.snapshot().new_messages_total, 3);
         assert_eq!(metrics.snapshot().pending_bytes, 100);
+        assert_eq!(metrics.snapshot().quota_retries_total, 2);
         drop(pending);
         assert_eq!(metrics.snapshot().pending_operations, 0);
         let mut text = String::new();
         prometheus_client::encoding::text::encode(&mut text, &registry).unwrap();
         assert!(text.lines().count() < 50);
         assert!(text.contains("tidemq_producer_new_messages_total 3"));
+        assert!(text.contains("tidemq_producer_quota_retries_total 2"));
         assert!(!text.contains("producer_id"));
     }
 }

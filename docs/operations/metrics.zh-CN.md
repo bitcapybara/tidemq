@@ -7,6 +7,7 @@
 | `tidemq_operations_total{operation,outcome}` | 固定 Produce/Read/Ack/Control/Archive/Recover 与 Committed/Rejected/Unknown/Failed。按记录节点和权威阶段理解；不能把跨角色转发计数相加当作唯一业务消息数 |
 | `tidemq_stage_duration_seconds{operation,stage}` | 本进程单调分段直方图；Broker Admission/Queue/Commit 与 WAL WalAdmission/WalQueue/CommitPersist 分开，另有 Append/Sync/Replicate/RepairPace/Apply/Total。WalRotate、WalCheckpoint、WalRelocate、WalGc 记录已完成的轮转、引用检查点、单段整理和回收耗时。Decode/Response 未完整观测；无样本不能解释为零耗时。边界见[观测设计](../design/observability.zh-CN.md) |
 | `tidemq_producer_*` | attempts、committed/duplicate/rejected/unknown/failed、new_messages/new_bytes、owned pending。新持久消息与重复原结果分别统计；业务吞吐采用 new_messages |
+| `tidemq_producer_quota_retries_total` | 固定无标签 counter：同一原 Publish 在未记录、可重试的额度拒绝后实际开始的额外 native commit attempt。初次尝试、等待、真实限额/暂停的预检查拒绝、Unknown 和已记录结果不增加；一次最终成功不能掩盖内部重试，口径见[生产路径排障](producer-troubleshooting.zh-CN.md) |
 | `tidemq_dispatch_*` | 有限 handler 准入/拒绝/错误/活跃与限速日志抑制，独立于日志是否成功写出 |
 | `tidemq_internal_client_*` / `internal_server_*` / `external_server_*` | 连接、active_connections、流、帧/字节、deadline、TLS、丢包和连接/流 credit 阻塞；内部客户端还含 liveness probe/failure。连接总计是累计准入；active_connections 计仍持有状态/资源的连接对象，随最后引用释放而下降，不是精确的原生 open 连接数；缓存/RPC 可暂时保留已关闭连接 |
 | `tidemq_capacity_used_bytes{kind}` / `blocked{kind}` | LogicalBacklog、PhysicalStorage、SharedReclaimLag、ProcessMemory，四种独立口径，不相加。低水位迟滞与样本年龄共同决定新工作准入 |
@@ -25,7 +26,7 @@
 
 ## 本地 Prometheus 与 Grafana
 
-[采集配置](../../deploy/observability/prometheus.yml)默认抓取 RF1 的 `127.0.0.1:8410`，15 秒一次、3 秒期限、4 MB 响应与 20000 样本硬上限。Prometheus 须与管理端口同机，或使用已有受保护代理。RF3 按[运行指南](../guide/running.zh-CN.md)把 targets 改为十个实际管理地址；目标标签来自固定部署清单，不使用 topic/partition/group/request/object/用户名称生成 series。
+[采集配置](https://github.com/bitcapybara/tidemq/blob/main/deploy/observability/prometheus.yml)默认抓取 RF1 的 `127.0.0.1:8410`，15 秒一次、3 秒期限、4 MB 响应与 20000 样本硬上限。Prometheus 须与管理端口同机，或使用已有受保护代理。RF3 按[运行指南](../guide/running.zh-CN.md)把 targets 改为十个实际管理地址；目标标签来自固定部署清单，不使用 topic/partition/group/request/object/用户名称生成 series。
 
 ```sh
 promtool check config deploy/observability/prometheus.yml
@@ -42,7 +43,7 @@ GOMEMLIMIT=192MiB prometheus --config.file=deploy/observability/prometheus.yml -
 
 2026-10-19 的早期 debug RF1 与独立 Prometheus 抓取实验中，`up=1`、target lastError 为空，当时实际 1186 个样本、单一 EOF，查询 producer counter 成功。启动持久化产生 Control/Produce 的 WAL Sync 样本分别为 12/8；这是初始化事件，不能当作消息提交或消费 ACK 延迟。关闭 Prometheus 后服务仍 ready，正常关闭服务后四个私有 TCP/UDP 端口均可重新绑定。该实验未验证负载中的 Collector 中断、Grafana 渲染或三档观测开销；当前版本增加有限指标族后，不再假定样本数仍为 1186。
 
-2026-10-20 的原生 Grafana/Prometheus/RF1 链路验证已覆盖四个看板共 29 面板的 provisioning、真实数据源查询和匿名 Viewer 权限，详见[观测部署](../../deploy/observability/README.zh-CN.md)。手动 Prometheus 命令使用配置中的一小时/64 MiB block 保留和有限查询参数；Go 软内存限制不替代容器内存与文件系统硬配额，推荐的隔离限额由 Compose 示例提供。
+2026-10-20 的原生 Grafana/Prometheus/RF1 链路验证已覆盖四个看板共 29 面板的 provisioning、真实数据源查询和匿名 Viewer 权限，详见[观测部署](https://github.com/bitcapybara/tidemq/blob/main/deploy/observability/README.zh-CN.md)。手动 Prometheus 命令使用配置中的一小时/64 MiB block 保留和有限查询参数；Go 软内存限制不替代容器内存与文件系统硬配额，推荐的隔离限额由 Compose 示例提供。
 
 `promtool check metrics` 的默认 Prometheus 文本 lint 会把 OpenMetrics 的 counter family HELP 与 `_total` 样本名误作缺少 HELP；本次采用实际 HTTP Content-Type 协商与 Prometheus 抓取验证，没有修改合法 OpenMetrics 输出去迎合该文本 lint。
 

@@ -18,6 +18,25 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
+  documentation:
+    name: Documentation build and links
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run docs:build
+
   console:
     name: Console web
     runs-on: ubuntu-24.04
@@ -36,9 +55,47 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      - run: npm run test:coverage
       - run: npm run build
       - run: node --test ../../scripts/console-package.test.mjs ../../deploy/console/prepare.test.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: console-coverage
+          path: console/web/coverage
+          retention-days: 14
+
+  console-browser:
+    name: Console browser (${{ matrix.browser }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: ${{ fromJSON((github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && '["chromium","firefox","webkit"]' || '["chromium"]') }}
+    defaults:
+      run:
+        working-directory: console/web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: console/web/package-lock.json
+      - run: npm ci
+      - run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run build
+      - run: npm run test:e2e -- --project=${{ matrix.browser }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: console-browser-${{ matrix.browser }}
+          path: |
+            console/web/playwright-report
+            console/web/test-results
+          retention-days: 14
 
   validate:
     name: Validate (${{ matrix.os }})
@@ -79,10 +136,55 @@ jobs:
             !target/ci/coverage
             !target/ci/coverage-inputs
             !target/ci/lab-report
+            !target/ci/console-server
           retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success() && runner.os == 'Linux'
         with: {name: coverage-inputs-native, path: target/ci/coverage-inputs, compression-level: 6, retention-days: 3}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: success() && runner.os == 'Linux'
+        with: {name: console-server-linux, path: target/ci/console-server, retention-days: 3}
+
+  console-browser-live:
+    name: Console real backend (${{ matrix.browser }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: [validate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: ${{ fromJSON((github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && '["chromium","firefox","webkit"]' || '["chromium"]') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: console/web/package-lock.json
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: {name: console-server-linux, path: target/ci/console-server}
+      - run: |
+          test "$(cat target/ci/console-server/source-commit.txt)" = "$GITHUB_SHA"
+          sha256sum --check target/ci/console-server/binary.sha256
+          chmod 0700 target/ci/console-server/tidemq
+      - run: npm ci
+        working-directory: console/web
+      - run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
+        working-directory: console/web
+      - run: npm run build
+        working-directory: console/web
+      - run: npm run test:e2e:live -- --project=${{ matrix.browser }}
+        working-directory: console/web
+        env:
+          TIDEMQ_BINARY: ${{ github.workspace }}/target/ci/console-server/tidemq
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: console-browser-live-${{ matrix.browser }}
+          path: target/ci/console-browser-live
+          retention-days: 14
 
   faults:
     name: Faults and deployed API (Linux)
@@ -161,12 +263,12 @@ jobs:
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, faults, coverage, untrusted, console]
+    needs: [validate, faults, coverage, untrusted, console, console-browser, console-browser-live, documentation]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - run: >-
-          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["untrusted","console"]:["validate","faults","coverage","console"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
+          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["untrusted","console","console-browser","documentation"]:["validate","faults","coverage","console","console-browser","console-browser-live","documentation"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
         env:
           RESULTS: ${{ toJSON(needs) }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

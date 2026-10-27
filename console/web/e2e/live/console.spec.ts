@@ -1,0 +1,62 @@
+import { test, expect } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+
+test("real Rust backend: Secure session login, authorized directory, reload and logout", async ({ page, context }) => {
+  const tokenFile = process.env.TIDEMQ_LIVE_TOKEN_FILE;
+  if (!tokenFile) throw new Error("TIDEMQ_LIVE_TOKEN_FILE is required");
+  await page.goto("/login");
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+  await page.getByLabel("Personal token", { exact: true }).fill((await readFile(tokenFile, "utf8")).trim());
+  const loginReply = page.waitForResponse((response) => response.url().endsWith("/api/v1/session") && response.request().method() === "POST");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  const response = await loginReply;
+  expect(response.status()).toBe(200);
+  expect(response.headers()["cache-control"]).toContain("no-store");
+  const cookies = await context.cookies();
+  expect(cookies.some((cookie) => cookie.secure && cookie.httpOnly)).toBe(true);
+  await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
+  const directoryReply = page.waitForResponse((reply) => new URL(reply.url()).pathname === "/api/v1/topics");
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Topics", exact: true }).click();
+  expect((await directoryReply).status()).toBe(200);
+  await expect(page.getByRole("table", { name: "Authorized topics" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("table", { name: "Authorized topics" })).toBeVisible();
+  await page.goto("/login");
+  await expect(page.getByRole("heading", { name: "Current identity" })).toBeVisible();
+  const logoutReply = page.waitForResponse((reply) => reply.url().endsWith("/api/v1/session") && reply.request().method() === "DELETE");
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  expect((await logoutReply).ok()).toBe(true);
+  await expect(page.getByLabel("Personal token", { exact: true })).toBeVisible();
+  expect((await page.request.get("/api/v1/me")).status()).toBe(401);
+});
+
+test("real Rust backend: a credential write keeps its operation ID across result reloads", async ({ page }) => {
+  const tokenFile = process.env.TIDEMQ_LIVE_TOKEN_FILE;
+  if (!tokenFile) throw new Error("TIDEMQ_LIVE_TOKEN_FILE is required");
+  await page.goto("/login");
+  await expect(page.getByRole("button", { name: "Sign in", exact: true })).toBeEnabled();
+  await page.getByLabel("Personal token", { exact: true }).fill((await readFile(tokenFile, "utf8")).trim());
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Identity & access", exact: true }).click();
+  await page.getByRole("button", { name: "Issue token", exact: true }).click();
+  await page.getByLabel("Validity duration").fill("1");
+  await page.getByRole("dialog", { name: "Issue token", exact: true }).getByRole("combobox", { name: "Unit", exact: true }).selectOption("minutes");
+  let writes = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/v1/credentials" && request.method() === "POST") writes++;
+  });
+  await page.getByRole("button", { name: "Confirm and submit" }).click();
+  await expect(page).toHaveURL(/\/operations\/[0-9a-f-]+$/);
+  const resultUrl = page.url();
+  await expect(page.getByText("Succeeded", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("New token secret")).toHaveAttribute("type", "password");
+  await page.reload();
+  await expect(page.getByText("Succeeded", { exact: true })).toBeVisible();
+  await expect(page).toHaveURL(resultUrl);
+  await expect(page.getByLabel("New token secret")).toHaveCount(0);
+  await expect(page.getByText(/The original token secret cannot be retrieved again/)).toBeVisible();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(page.getByText("Succeeded", { exact: true })).toBeVisible();
+  expect(writes).toBe(1);
+});

@@ -588,13 +588,12 @@ impl Service {
         Ok(())
     }
 
-    async fn advance_retention(
+    pub(super) async fn advance_retention(
         &self,
         group: u64,
         partition: PartitionKey,
         deadline: Instant,
     ) -> Result<()> {
-        let lease = self.data_lease(group, partition, deadline).await?;
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         wire::within(deadline, replica.raft.ensure_linearizable())
             .await?
@@ -614,12 +613,16 @@ impl Service {
             .await
             .map_err(|source| Error::operation("read same-lock retention status", source))?;
         let status = status.ok_or_else(Error::unavailable)?;
+        let lease = self.data_lease(group, partition, deadline).await?;
         lease
             .check(
                 &fence.ok_or_else(Error::unavailable)?,
                 Work::ControlMutation,
             )
             .map_err(|_| Error::unavailable())?;
+        let write_deadline = deadline.min(lease.expires_at().into());
+        #[cfg(test)]
+        super::data::control_lease_tests::before_control_write(partition, write_deadline).await;
         self.reserve_and_advance_retention(
             group,
             partition,
@@ -629,7 +632,7 @@ impl Service {
                 node_id: lease.grant().owner_node,
                 owner_epoch: lease.grant().epoch,
             },
-            deadline.min(lease.expires_at().into()),
+            write_deadline,
         )
         .await
     }
