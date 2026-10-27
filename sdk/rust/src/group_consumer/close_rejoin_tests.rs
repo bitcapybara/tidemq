@@ -1,6 +1,6 @@
 //! Real QUIC checks of SDK ownership; this peer models metadata and does not run Raft.
 use super::*;
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::Weak};
 
 use prost::Message;
 use rcgen::{CertificateParams, KeyPair};
@@ -54,11 +54,17 @@ impl TokenAuthenticator for Auth {
 
 #[derive(Clone, Debug)]
 struct Call {
+    ordinal: usize,
+    wire_request: Id,
     operation: Id,
     request: public::ConsumerControl,
+    payload: Bytes,
     client: Id,
     credential: Id,
     timeout_ms: u64,
+    received: Instant,
+    close_deadline: Option<Instant>,
+    refused: bool,
 }
 
 #[derive(Default)]
@@ -71,6 +77,10 @@ struct Observed {
     delayed_commit: bool,
     foreign_epoch: bool,
     replacement: Option<Replacement>,
+    consumer: Weak<Core>,
+    refuse_close_join_once: bool,
+    transient_refusals: usize,
+    close_replays: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -219,20 +229,24 @@ async fn serve_stream(
         tokio::select! {
             received = receiver.receive(Instant::now() + Duration::from_secs(15)) => {
                 let Ok(Some(received)) = received else { return };
-                let (response, hold, delayed) = {
+                let (response, hold, delayed, closing) = {
                     let mut state = observed.lock().unwrap();
                     let (response, hold) = handle(received.frame(), &session, &mut state);
                     let request = decode_payload::<public::ConsumerControl>(received.frame().payload.clone(), &ProtocolLimits::default());
                     let join = received.frame().kind == i32::from(FrameKind::ConsumerControl)
                         && request.is_ok_and(|request| request.action == i32::from(public::ConsumerAction::JoinConsumer)
                             && request.member_epoch == REJOIN_EPOCH);
-                    (response, hold, join && state.delayed_commit)
+                    let closing = join && state.calls.last().is_some_and(|call| call.close_deadline.is_some());
+                    let delayed = join && state.delayed_commit
+                        && response.kind == i32::from(FrameKind::ConsumerControlResult);
+                    if delayed && !hold && closing { state.close_replays += 1; }
+                    (response, hold, delayed, closing)
                 };
                 let sender = sender.clone();
                 let mut release = release.clone();
                 let observed = observed.clone();
                 if hold { accepted.notify_one(); }
-                if delayed && !hold { retried.notify_one(); }
+                if delayed && !hold && closing { retried.notify_one(); }
                 responses.spawn(async move {
                     if hold || delayed { let _ = release.wait_for(|released| *released).await; }
                     if delayed { observed.lock().unwrap().rejoined = true; }
@@ -308,11 +322,20 @@ fn control_reply(frame: &Frame, session: &Session, state: &mut Observed) -> (Fra
         panic!("Expected authenticated credential binding");
     };
     let call = Call {
+        ordinal: state.calls.len() + 1,
+        wire_request: Id::from_slice(&frame.request_id).unwrap(),
         operation: Id::from_slice(&frame.operation_id).unwrap(),
         request: request.clone(),
+        payload: frame.payload.clone(),
         client: *session_id,
         credential: *credential,
         timeout_ms: frame.remaining_timeout_ms,
+        received: Instant::now(),
+        close_deadline: state
+            .consumer
+            .upgrade()
+            .and_then(|core| *core.close_deadline.lock().unwrap()),
+        refused: false,
     };
     state.calls.push(call.clone());
     let action = public::ConsumerAction::try_from(request.action).unwrap();
@@ -382,6 +405,27 @@ fn control_reply(frame: &Frame, session: &Session, state: &mut Observed) -> (Fra
                 assert_eq!(call.request, original.request);
                 assert_eq!(call.client, original.client);
                 assert_eq!(call.credential, original.credential);
+                if state.refuse_close_join_once && call.close_deadline.is_some() {
+                    state.refuse_close_join_once = false;
+                    state.transient_refusals += 1;
+                    state.calls.last_mut().unwrap().refused = true;
+                    return (
+                        response(
+                            frame,
+                            FrameKind::Error,
+                            &ErrorReply {
+                                code: ErrorCode::Unavailable.into(),
+                                outcome: Outcome::Rejected.into(),
+                                retryable: true,
+                                message:
+                                    "Temporary admission refusal during original Join recovery"
+                                        .into(),
+                                ..Default::default()
+                            },
+                        ),
+                        false,
+                    );
+                }
             } else {
                 state.original = Some(call);
                 state.rejoined = !state.delayed_commit;
@@ -454,7 +498,11 @@ async fn rejoining(peer: &Peer) -> QueueConsumer {
         .build()
         .await
         .unwrap();
-    peer.observed.lock().unwrap().expire = true;
+    {
+        let mut state = peer.observed.lock().unwrap();
+        state.consumer = Arc::downgrade(&consumer.owner.core);
+        state.expire = true;
+    }
     tokio::time::timeout(Duration::from_secs(10), peer.accepted.notified())
         .await
         .unwrap();
@@ -465,33 +513,121 @@ async fn rejoining(peer: &Peer) -> QueueConsumer {
 fn assert_original_closed(peer: &Peer) {
     let state = peer.observed.lock().unwrap();
     let original = state.original.as_ref().unwrap();
+    dump_close_ledger(&state, original);
     let joins = state
         .calls
         .iter()
         .filter(|call| {
-            call.request.action == i32::from(public::ConsumerAction::JoinConsumer)
-                && call.request.member_epoch == REJOIN_EPOCH
+            call.ordinal >= original.ordinal
+                && call.request.action == i32::from(public::ConsumerAction::JoinConsumer)
         })
         .collect::<Vec<_>>();
-    assert_eq!(joins.len(), 2);
+    // Transport and cleanup may retry this intent more than once within the same deadline.
+    assert!(joins.len() >= 2);
+    for call in &joins {
+        assert_eq!(call.operation, original.operation);
+        assert_eq!(call.request, original.request);
+        assert!(
+            call.payload == original.payload,
+            "Recovery changed the original Join payload"
+        );
+        assert_eq!(call.client, original.client);
+        assert_eq!(call.credential, original.credential);
+    }
+    let core = state.consumer.upgrade().unwrap();
+    let deadline = core.close_deadline.lock().unwrap().unwrap();
+    let budget = u64::try_from(core.client.inner.config.close_timeout.as_millis()).unwrap();
+    assert!(
+        joins
+            .iter()
+            .any(|call| call.close_deadline == Some(deadline))
+    );
+    for call in state
+        .calls
+        .iter()
+        .filter(|call| call.close_deadline.is_some())
+    {
+        assert_eq!(call.close_deadline, Some(deadline));
+        assert!(call.received < deadline);
+        assert!(call.timeout_ms > 0 && call.timeout_ms <= budget);
+    }
+    assert!(state.rejoined);
     assert!(state.retired);
-    assert!(state.calls.iter().any(|call| {
-        call.request.action == i32::from(public::ConsumerAction::LeaveConsumer)
-            && call.request.member_epoch == REJOIN_EPOCH
-            && call.client == original.client
-            && call.credential == original.credential
-    }));
-    assert!(joins.last().unwrap().timeout_ms <= 5000);
+    for action in [
+        public::ConsumerAction::LeaveConsumer,
+        public::ConsumerAction::RetireConsumer,
+    ] {
+        assert!(state.calls.iter().any(|call| {
+            call.request.action == i32::from(action)
+                && call.request.member_epoch == REJOIN_EPOCH
+                && call.client == original.client
+                && call.credential == original.credential
+                && call.close_deadline == Some(deadline)
+        }));
+    }
     assert!(!state.calls.iter().any(|call| {
         call.request.action == i32::from(public::ConsumerAction::HeartbeatConsumer)
             && call.request.member_epoch == REJOIN_EPOCH
     }));
+    if state.transient_refusals > 0 {
+        let recovery = joins
+            .iter()
+            .filter(|call| call.close_deadline.is_some())
+            .collect::<Vec<_>>();
+        assert!(recovery.len() >= 2);
+        assert!(recovery.last().unwrap().timeout_ms < recovery.first().unwrap().timeout_ms);
+    }
     eprintln!(
-        "Confirmed original Join {} at epoch {}; requests={}, no renewal during close",
+        "Confirmed original Join {} at epoch {}; requests={}, transient_refusals={}, no renewal during close",
         original.operation,
         REJOIN_EPOCH,
-        joins.len()
+        joins.len(),
+        state.transient_refusals
     );
+}
+
+fn dump_close_ledger(state: &Observed, original: &Call) {
+    for call in state
+        .calls
+        .iter()
+        .filter(|call| call.ordinal >= original.ordinal)
+    {
+        eprintln!(
+            "Join close ledger: ordinal={}, action={}, wire_request={}, operation={}, epoch={}, client={}, credential={}, original_payload={}, elapsed_us={}, close_started={}, transient_refusal={}, timeout_ms={}, close_remaining_ms={:?}",
+            call.ordinal,
+            public::ConsumerAction::try_from(call.request.action)
+                .unwrap()
+                .as_str_name(),
+            call.wire_request,
+            call.operation,
+            call.request.member_epoch,
+            call.client,
+            call.credential,
+            call.payload == original.payload,
+            call.received.duration_since(original.received).as_micros(),
+            call.close_deadline.is_some(),
+            call.refused,
+            call.timeout_ms,
+            call.close_deadline
+                .map(|until| until.saturating_duration_since(call.received).as_millis())
+        );
+    }
+}
+
+async fn wait_for_close_replay<F: Future>(peer: &Peer, mut close: Pin<&mut F>)
+where
+    F::Output: std::fmt::Debug,
+{
+    loop {
+        let notified = peer.retried.notified();
+        if peer.observed.lock().unwrap().close_replays > 0 {
+            return;
+        }
+        tokio::select! {
+            _ = notified => {},
+            result = close.as_mut() => panic!("Close finished before resolving its inflight Join: {result:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -508,26 +644,54 @@ async fn close_resolves_the_original_committed_join_before_leaving_its_confirmed
     assert_original_closed(&peer);
     peer.reply.send(true).unwrap();
     peer.client.close().await.unwrap();
+    assert_eq!(
+        peer.client
+            .transport_metrics()
+            .snapshot()
+            .active_connections,
+        0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn close_waits_for_the_same_inflight_join_to_commit_without_starting_a_new_join() {
+    close_inflight_join(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_retries_the_same_inflight_join_after_one_transient_refusal() {
+    close_inflight_join(true).await;
+}
+
+async fn close_inflight_join(refuse_once: bool) {
     let peer = Peer::configured(true, Duration::from_secs(5)).await;
+    peer.observed.lock().unwrap().refuse_close_join_once = refuse_once;
     let consumer = rejoining(&peer).await;
     assert!(!peer.observed.lock().unwrap().rejoined);
+    // A replay before close may leave a notification; it must not release the pending reply.
+    peer.retried.notify_one();
     let close = consumer.close();
     tokio::pin!(close);
-    tokio::select! {
-        _ = peer.retried.notified() => {},
-        result = &mut close => panic!("Close finished before resolving its inflight Join: {result:?}"),
-    }
+    wait_for_close_replay(&peer, close.as_mut()).await;
+    assert!(!peer.observed.lock().unwrap().rejoined);
     peer.reply.send(true).unwrap();
     let report = close.await.unwrap();
     assert!(report.local_cleanup_complete());
     assert_eq!(report.members_left(), 1);
     assert_eq!(report.unresolved_joins(), 0);
+    assert_eq!(
+        peer.observed.lock().unwrap().transient_refusals,
+        usize::from(refuse_once)
+    );
     assert_original_closed(&peer);
     peer.client.close().await.unwrap();
+    assert_eq!(
+        peer.client
+            .transport_metrics()
+            .snapshot()
+            .active_connections,
+        0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -538,10 +702,7 @@ async fn close_deadline_keeps_the_original_unknown_join_owned_through_quarantine
     *consumer.owner.core.lease_fence_after.lock().unwrap() = Instant::now();
     let close = consumer.close();
     tokio::pin!(close);
-    tokio::select! {
-        _ = peer.retried.notified() => {},
-        result = &mut close => panic!("Close lost the pending Join before retrying its original identity: {result:?}"),
-    }
+    wait_for_close_replay(&peer, close.as_mut()).await;
     let error = close.await.unwrap_err();
     assert!(error.source.outcome_unknown());
     assert_eq!(error.report.unresolved_joins(), 1);
