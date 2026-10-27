@@ -7,10 +7,12 @@
 Linux 需要项目指定 Rust、C/C++ 构建工具、OpenSSL、Git、jq、curl、util-linux、Linux perf 和 Perl。先在独立的源码目录准备基线版本，不能在构建或测量过程中修改源码。使用同一组编译选项构建待比较版本，分开放置二进制，保留基线。
 
 ```sh
-env CARGO_BUILD_JOBS=4 bash scripts/perf/build.sh /private/path/baseline-bin
+env CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/private/path/target-baseline-raw bash scripts/perf/build.sh /private/path/baseline-bin
 ```
 
 源码由 `git archive` 复制、没有 `.git` 时，必须通过 `TIDEMQ_PERF_REVISION` 提供完整源版本。`build.sh` 保留 release 默认 mimalloc、行号信息，并对 Rust/C 开启 frame pointer；构建日志、编译器、Cargo 版本、参数、二进制 SHA256 和工具源码 SHA256 都保存在输出目录。
+
+每个完整源码版本及原始/观测副本分别使用独立 `CARGO_TARGET_DIR`，并记录目标目录与源码身份。不要在 A/B 或原始/插桩副本之间直接复用同一个编译目标目录：归档保留的文件时间可能早于缓存产物，导致旧工作区 crate 被判为可复用。registry 和 Git 下载缓存可以共享。若复制已有编译缓存，只能在本轮专用副本内先执行 `cargo clean --workspace --locked --offline`，确认工作区 crate 产物已清除后再构建，并保留清理日志；不要清理公共 CI 缓存。示例中的目标目录也应为每个版本和副本换成新的唯一目录。
 
 ## 无采样基线
 
