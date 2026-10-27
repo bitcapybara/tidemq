@@ -1,10 +1,23 @@
 # 测试方法与现有证据
 
-当前校验包含纯单元测试、功能集成、真实外部依赖、覆盖率，以及 Kubernetes / VM 故障恢复。本次按用户要求删除性能 workflow、负载工具、比较器、性能基线、配置和专项报告；不执行性能测试，也不据功能测试耗时推断吞吐或延迟。
+仓库校验分为单元、功能集成、真实外部依赖、覆盖率、前端交互，以及 Kubernetes / VM 故障恢复。测试配置、某个 job 通过、完整 pipeline 通过和实际部署验收分别记录；下文带日期的历史成功记录不代表最新提交已通过。不据功能测试耗时推断吞吐或延迟。
+
+## 按改动选择入口
+
+| 改动 | 先执行 | 不能替代的验证 |
+| --- | --- | --- |
+| 产品文档 / 站点 | `npm --prefix docs ci`、`npm --prefix docs test`、`npm --prefix docs run docs:build` | 浏览器预览、远端 Pages 实际发布、示例的真实集群行为 |
+| Console 前端 | `console/web/package.json` 中的类型、lint、测试和构建脚本，以及 Rust workflow 的对应 job | 浏览器交互、真实用户凭据/权限、上游写入结果恢复和平台部署 |
+| 一个 Rust crate | `cargo fmt --all`，再对修改的 package 执行 `cargo clippy -p PACKAGE --tests --no-deps --locked`，并运行相关测试 | 跨角色、外部依赖、持久故障和完整 CI |
+| 跨 crate / 协议 / 恢复 | 下文 workspace 检查、对应集成与故障回归 | 实际平台 quorum、旧状态、外部存储和故障域验证 |
+
+不使用 `cargo check` 作为 Rust 校验入口；Clippy 有发现时修复并重复到通过。文档站的构建会检查 Markdown 死链及生成 HTML 的本地路径、资源与锚点；它不会查询远程链接或验证服务行为。站点命令见[文档站维护](site.zh-CN.md)。
+
+前端覆盖率门槛和浏览器矩阵以已集成的脚本与工作流为准。尚未集成或未实际运行的检查，不计作对应版本的验收结果。
 
 ## CI 与覆盖率
 
-[Rust 工作流](../.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 使用 ssh dev 的 runner VM 及其中新增的一个容器 runner，macOS 使用 GitHub-hosted runner。workflow 负责调度与制品，执行步骤位于 [scripts/ci](../scripts/ci/)。详细环境、入口与验收见[VM 实验室](../deploy/lab/README.zh-CN.md)。
+[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 使用 ssh dev 的 runner VM 及其中新增的一个容器 runner，macOS 使用 GitHub-hosted runner。workflow 负责调度与制品，执行步骤位于 [scripts/ci](https://github.com/bitcapybara/tidemq/tree/main/scripts/ci)。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
 
 先运行 fmt、workspace 全目标 Clippy、生产 panic / 索引审计、脚本自检、协议生成检查，再运行单元与集成。单元阶段只运行 lib / bin / example，移除外部服务环境变量；需要 RustFS、Collector 或网络服务的场景位于 tests/，Linux 显式运行真实依赖测试，缺少固定工具则失败。SDK 默认与 instrumentation 两条路径均覆盖。
 
@@ -12,9 +25,9 @@
 
 Linux 分为两条并行流程：容器执行静态检查、单元、默认 SDK 和普通集成；原生 runner 执行故障钩子、真实外部服务和 K8s 黑盒/VM 故障。两边均使用 cargo-llvm-cov 0.9.1 的 `show-env --sh`，各自开始时清理一次历史 profile，使用独立 target 和带流程前缀的 profile 文件名。Cargo registry/git 下载缓存共用，任务持有共享缓存锁，清理必须取得独占锁；编译和覆盖率目录不共用。K8s 阶段把插桩生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
 
-两条流程分别上传已有 ELF 二进制、profile、JUnit 和清单，短期制品为 `coverage-inputs-native` / `coverage-inputs-lab`。[bundle.mjs](../scripts/coverage/bundle.mjs) 校验相同源码提交、CI run、工作区绝对路径、工具版本及每个文件的大小/SHA256；拒绝路径穿越、符号链接、缺失流程和篡改输入。相同文件去重，不同 feature 的二进制均保留。coverage job 下载两份输入并调用 [coverage-run.sh](../scripts/coverage-run.sh)，统一导出 LLVM JSON、LCOV、HTML、原始 `profiles.tar.gz` 和 `inputs.json`，随后比较基线，全程不重编译或重跑 Rust 测试。measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量、五阶段 JUnit 哈希，以及 [API 采集清单](../scripts/coverage/api.mjs)。清单记录两种部署二进制的 SHA256、镜像、10 个 Pod 的 UID/角色/worker/imageID、各个 profile 的大小/哈希、9 个远程用例的报告哈希及行为断言。缺少任一角色、客户端、行为结果或跨提交/跨运行混用均失败。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
+两条流程分别上传已有 ELF 二进制、profile、JUnit 和清单，短期制品为 `coverage-inputs-native` / `coverage-inputs-lab`。[bundle.mjs](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage/bundle.mjs) 校验相同源码提交、CI run、工作区绝对路径、工具版本及每个文件的大小/SHA256；拒绝路径穿越、符号链接、缺失流程和篡改输入。相同文件去重，不同 feature 的二进制均保留。coverage job 下载两份输入并调用 [coverage-run.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage-run.sh)，统一导出 LLVM JSON、LCOV、HTML、原始 `profiles.tar.gz` 和 `inputs.json`，随后比较基线，全程不重编译或重跑 Rust 测试。measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量、五阶段 JUnit 哈希，以及 [API 采集清单](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage/api.mjs)。清单记录两种部署二进制的 SHA256、镜像、10 个 Pod 的 UID/角色/worker/imageID、各个 profile 的大小/哈希、9 个远程用例的报告哈希及行为断言。缺少任一角色、客户端、行为结果或跨提交/跨运行混用均失败。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
 
-[policy.json](../coverage/policy.json) 固定源码范围；[baseline.json](../coverage/baseline.json) 保留已有覆盖率基线。比较器用 BigInt 对 lines / functions / regions 原始整数比例逐项比较，任何下降失败，不设浮点容差，不额外排除源码来抬高数字。PR 使用 base 的可信工具和策略，不能替换自己的基线。当前 CI 只比较覆盖率，不自动写入或推送基线。
+[policy.json](https://github.com/bitcapybara/tidemq/blob/main/coverage/policy.json) 固定源码范围；[baseline.json](https://github.com/bitcapybara/tidemq/blob/main/coverage/baseline.json) 保留已有覆盖率基线。比较器用 BigInt 对 lines / functions / regions 原始整数比例逐项比较，任何下降失败，不设浮点容差，不额外排除源码来抬高数字。PR 使用 base 的可信工具和策略，不能替换自己的基线。当前 CI 只比较覆盖率，不自动写入或推送基线。
 
 VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。只有故障/部署流程与手动运维共享宿主 flock；容器普通测试无需该租约。两边的 profile 和二进制上传后才执行完成清理；coverage job 从制品重建报告目录，不占用故障租约。常驻公共 workload 和手动普通验收仍使用 release 构建。
 
@@ -24,7 +37,7 @@ LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://d
 
 ## 远程 API 黑盒断言
 
-入口为 [tests/deployment/driver.rs](../tests/deployment/driver.rs)，保留 `cargo build --example deploy_validation` 构建接口。纯解析/账本单元测试只测试本地逻辑，外部服务行为由 [lab.sh](../scripts/ci/lab.sh) 在部署后显式运行，不混入 lib/bin 单元测试。
+入口为 [tests/deployment/driver.rs](https://github.com/bitcapybara/tidemq/blob/main/tests/deployment/driver.rs)，保留 `cargo build --example deploy_validation` 构建接口。纯解析/账本单元测试只测试本地逻辑，外部服务行为由 [lab.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/ci/lab.sh) 在部署后显式运行，不混入 lib/bin 单元测试。
 
 | 场景 | 预期行为 |
 |---|---|
@@ -57,7 +70,7 @@ LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://d
 | Linux 真实外部依赖 | 16 | 109.238 |
 | macOS 单元 / 默认 SDK / 普通集成 / 故障钩子 | 655 | 1001.870 |
 
-9 个 K8s/API 场景、独立 watchdog、日志/trace/metrics 查询和退出清理均通过。最终报告合并 922 份 profile，其中 10 份服务端、11 份远程客户端；已逐个核对归档内容的大小和 SHA256，并核对全部 profile 出现在实际 LLVM 合并输入中。覆盖率 lines 89.36%、functions 80.98%、regions 86.15%，原基线和策略未修改，门禁通过。可长期定位的环境、哈希、失败尝试及验证记录见 [runner 验收](../deploy/lab/evidence/runner-maintenance.json)。
+9 个 K8s/API 场景、独立 watchdog、日志/trace/metrics 查询和退出清理均通过。最终报告合并 922 份 profile，其中 10 份服务端、11 份远程客户端；已逐个核对归档内容的大小和 SHA256，并核对全部 profile 出现在实际 LLVM 合并输入中。覆盖率 lines 89.36%、functions 80.98%、regions 86.15%，原基线和策略未修改，门禁通过。可长期定位的环境、哈希、失败尝试及验证记录见 [runner 验收](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/evidence/runner-maintenance.json)。
 
 第一次 coverage job 因 GitHub 制品下载停滞超时；随后只重跑报告 job，复用第一次尝试的两份输入和五份 JUnit，Rust 测试没有重跑。成功尝试的下载耗时 10 分 15 秒，恢复/导出脚本耗时 80 秒。当前输入未压缩总量约 3.99 GiB；后续配置将输入压缩等级设为 6、报告 job 总期限设为 45 分钟，并将恢复字节上限设为 8 GiB。该配置调整经过 Node 自检和 YAML 解析，尚未另跑整条 CI；上述完整运行验证的是 `87b3442`。
 
@@ -110,19 +123,19 @@ TIDEMQ_OTELCOL_BIN=/absolute/path/to/verified/otelcol cargo test -p tidemq --tes
 
 | 代号与入口 | 实际验证内容 | 范围限制 |
 | --- | --- | --- |
-| S01 [真实 QUIC](../tests/quic_transport.rs)、[分派](../tests/server_dispatch.rs)、SDK 的网络测试 | TLS/mTLS 与伪造身份拒绝、有限分类连接/流、取消隔离、control/ACK 推进、RPC 结果匹配；四 lane 单 affinity 持续请求不因 sibling 空闲断连，半帧仍 poison；原期限内关闭 owned native I/O 并重绑端口；新 1-RTT 包 ACK 探测能淘汰失联旧连接，慢业务有网络进展时不误杀 | 本机 UDP；真实 LB/NAT/CID 和同预算性能对照另验 |
-| S02 [WAL](../tests/wal_journal.rs)、[分段边界](../src/wal/segmented/tests.rs)、[段发布故障](../src/wal/segmented/fault_tests.rs)、[存储](../tests/replication_storage.rs)、[Raft QUIC](../tests/raft_quic.rs)、[崩溃](../tests/replication_crash.rs)、[应用失败](../tests/application_failure.rs) | 分段 fsync/vote/log/commit、唯一 manifest、refs-only 检查点、原 index 重用／truncate、受限段搬迁、快照 reader pin 与取消、实际文件大小限制写失败、SIGKILL 发布屏障、损坏拒绝；官方 storage-v2、RF1/RF3 多数派、换主与原结果 | 完整应用快照仍非增量；新格式用新目录，拒绝旧布局。一部分测试使用受控内存网络；真实 QUIC、Linux、性能按冻结版本分别验收，进程崩溃不代表宿主掉电 |
-| S03 [元数据](../tests/metadata_state.rs)、[权威](../tests/ownership_authority.rs) | CRUD 与永久身份、grant/fence/recover/activate、重试/CAS/旧 epoch、TTL 从请求开始、控制失 quorum、有限安全收尾 | 纯状态证据与 S08 的实际角色接管分别记录，前者不能代表入口故障 |
-| S04 [Broker 测试](../src/broker/tests/mod.rs)、SDK 网络测试 | producer 注册/固定过期/全局高水位、canonical digest、sequence/冲突/原结果、owned 取消后提交、快照恢复、原 PendingBatch 重试 | 有限原结果窗口；SDK 进程重启没有持久 outbox |
-| S05 [订阅状态](../tests/subscription_state.rs)、[持久组合](../tests/lifecycle_persistence.rs)、SDK 网络测试 | 逐条 attempt/token/ACK、洞/连续前沿、旧代次拒绝、seek、KeySerial、冷 H/接收屏障和 B 重试 | 外部副作用需要业务幂等；自动接管仍以运行时回归为准 |
-| S06 [格式](../tests/archive_format.rs)、[S3 边界](../tests/s3_boundaries.rs)、[RustFS](../tests/s3_rustfs.rs) | 不可变 pack、合装、checksum/索引/Range、坏响应、挂起 Range 不占全部控制槽、multipart cancel/abort/reconcile、实际 aws-sdk-s3 与 RustFS | 受控 HTTP 边界测试和真实 RustFS 分开；不代表公网 S3 中断或掉电 |
-| S07 [生命周期持久组合](../tests/lifecycle_persistence.rs)、[实现测试](../src/lifecycle/mod.rs) | 原对象授权/上传/发布/完成对账、不可逆取消、防迟到复活、替换验证/原子换引用、pin/恢复保护、全 voter 快照证明、本地回收/floor/DELETING | RustFS 场景需显式运行 ignored；新 voter 与运行时自动任务组合另验 |
-| S08 [运行时](../tests/runtime_queue.rs)、[Broker 故障](../tests/runtime_support/broker_failover.rs) | 实际 SDK 的生产/接收/持久 ACK；独立 RF3 CLI 强杀 Storage/失多数派恢复；九进程 Broker 自动接管及旧 mTLS 身份被 Fenced；稳定 UDP 入口 Gateway 强杀/丢包/重排/MTU 黑洞；原 Client/Producer/Consumer 恢复；RF1/RF3 全部热正文回收后 33 条冷读 | 同进程 Runtime 与独立 OS 子进程分别识别；真实 RustFS 需显式 ignored。单机不是三区，恢复单例不是 P99 |
-| S09 [成员迁移](../tests/scaling_raft.rs)、[远程闭合迁移](../tests/scaling_remote.rs) | learner/joint/stable、隔离后保留原计划、joint 中换主、完成证明私有、容量新鲜度与预算、真实 native RF3 自动替换、缺样不创建计划 | 部分远程 fixture 为语义 codec loopback；S08 另验证实际 CLI/mTLS 修复，跨区与高压力组合仍待验 |
-| S10 [观测边界](../tests/observability_boundaries.rs)、[分配器](../tests/allocator_diagnostics.rs)、[堆采样](../tests/heap_profile.rs)、quota/retention 单元测试 | 字节许可、控制保留、有限指标、日志丢弃/失败/脱敏、临时过滤、真实 RSS、cgroup 解析、迟滞、同 allocator profile；原生 Prometheus/Grafana 实际 RF1 查询、29 面板和匿名只读权限，见[部署证据](../deploy/observability/README.zh-CN.md)；Linux 容器限额与 RF1 受控真 OOM 见 S12 | Linux 同 allocator 分配栈、长期趋势与浏览器画面待验；Collector 与正式开销单独记录 |
-| S11 [追踪导出](../tests/tracing_export.rs)、[四角色链路](../tests/runtime_support/tracing.rs) | 官方 OTLP HTTP/protobuf、TLS 拒绝、宿主设施共存、外部 sampled 仍受本地预算限制、慢/503/超大响应/关闭与恢复；真实 SDK→Gateway→Broker 父关系、owned 提交及持久 ACK、原期限清理；Linux 普通回归覆盖内置采集器边界；官方 native Collector 在 macOS 实际 accepted 与退出端口释放 | native Collector 用例需显式 ignored，当前 Linux CI 已执行；默认 nop 不持久化 trace。域名/私有 CA/mTLS 由本地 Collector 代理；公网与正式 Linux Collector 部署待验，Docker 集群默认未开 OTLP |
-| S12 [Docker 脚本](../scripts/docker-validate.sh)、[真实 SDK driver](../tests/deployment/driver.rs)、[读取回收集成测试](../tests/runtime_reclamation.rs)、[最新 Docker 记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
-| M01 [有限参考模型](../tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
+| S01 [真实 QUIC](https://github.com/bitcapybara/tidemq/blob/main/tests/quic_transport.rs)、[分派](https://github.com/bitcapybara/tidemq/blob/main/tests/server_dispatch.rs)、SDK 的网络测试 | TLS/mTLS 与伪造身份拒绝、有限分类连接/流、取消隔离、control/ACK 推进、RPC 结果匹配；四 lane 单 affinity 持续请求不因 sibling 空闲断连，半帧仍 poison；原期限内关闭 owned native I/O 并重绑端口；新 1-RTT 包 ACK 探测能淘汰失联旧连接，慢业务有网络进展时不误杀 | 本机 UDP；真实 LB/NAT/CID 和同预算性能对照另验 |
+| S02 [WAL](https://github.com/bitcapybara/tidemq/blob/main/tests/wal_journal.rs)、[分段边界](https://github.com/bitcapybara/tidemq/blob/main/src/wal/segmented/tests.rs)、[段发布故障](https://github.com/bitcapybara/tidemq/blob/main/src/wal/segmented/fault_tests.rs)、[存储](https://github.com/bitcapybara/tidemq/blob/main/tests/replication_storage.rs)、[Raft QUIC](https://github.com/bitcapybara/tidemq/blob/main/tests/raft_quic.rs)、[崩溃](https://github.com/bitcapybara/tidemq/blob/main/tests/replication_crash.rs)、[应用失败](https://github.com/bitcapybara/tidemq/blob/main/tests/application_failure.rs) | 分段 fsync/vote/log/commit、唯一 manifest、refs-only 检查点、原 index 重用／truncate、受限段搬迁、快照 reader pin 与取消、实际文件大小限制写失败、SIGKILL 发布屏障、损坏拒绝；官方 storage-v2、RF1/RF3 多数派、换主与原结果 | 完整应用快照仍非增量；新格式用新目录，拒绝旧布局。一部分测试使用受控内存网络；真实 QUIC、Linux、性能按冻结版本分别验收，进程崩溃不代表宿主掉电 |
+| S03 [元数据](https://github.com/bitcapybara/tidemq/blob/main/tests/metadata_state.rs)、[权威](https://github.com/bitcapybara/tidemq/blob/main/tests/ownership_authority.rs) | CRUD 与永久身份、grant/fence/recover/activate、重试/CAS/旧 epoch、TTL 从请求开始、控制失 quorum、有限安全收尾 | 纯状态证据与 S08 的实际角色接管分别记录，前者不能代表入口故障 |
+| S04 [Broker 测试](https://github.com/bitcapybara/tidemq/blob/main/src/broker/tests/mod.rs)、SDK 网络测试 | producer 注册/固定过期/全局高水位、canonical digest、sequence/冲突/原结果、owned 取消后提交、快照恢复、原 PendingBatch 重试 | 有限原结果窗口；SDK 进程重启没有持久 outbox |
+| S05 [订阅状态](https://github.com/bitcapybara/tidemq/blob/main/tests/subscription_state.rs)、[持久组合](https://github.com/bitcapybara/tidemq/blob/main/tests/lifecycle_persistence.rs)、SDK 网络测试 | 逐条 attempt/token/ACK、洞/连续前沿、旧代次拒绝、seek、KeySerial、冷 H/接收屏障和 B 重试 | 外部副作用需要业务幂等；自动接管仍以运行时回归为准 |
+| S06 [格式](https://github.com/bitcapybara/tidemq/blob/main/tests/archive_format.rs)、[S3 边界](https://github.com/bitcapybara/tidemq/blob/main/tests/s3_boundaries.rs)、[RustFS](https://github.com/bitcapybara/tidemq/blob/main/tests/s3_rustfs.rs) | 不可变 pack、合装、checksum/索引/Range、坏响应、挂起 Range 不占全部控制槽、multipart cancel/abort/reconcile、实际 aws-sdk-s3 与 RustFS | 受控 HTTP 边界测试和真实 RustFS 分开；不代表公网 S3 中断或掉电 |
+| S07 [生命周期持久组合](https://github.com/bitcapybara/tidemq/blob/main/tests/lifecycle_persistence.rs)、[实现测试](https://github.com/bitcapybara/tidemq/blob/main/src/lifecycle/mod.rs) | 原对象授权/上传/发布/完成对账、不可逆取消、防迟到复活、替换验证/原子换引用、pin/恢复保护、全 voter 快照证明、本地回收/floor/DELETING | RustFS 场景需显式运行 ignored；新 voter 与运行时自动任务组合另验 |
+| S08 [运行时](https://github.com/bitcapybara/tidemq/blob/main/tests/runtime_queue.rs)、[Broker 故障](https://github.com/bitcapybara/tidemq/blob/main/tests/runtime_support/broker_failover.rs) | 实际 SDK 的生产/接收/持久 ACK；独立 RF3 CLI 强杀 Storage/失多数派恢复；九进程 Broker 自动接管及旧 mTLS 身份被 Fenced；稳定 UDP 入口 Gateway 强杀/丢包/重排/MTU 黑洞；原 Client/Producer/Consumer 恢复；RF1/RF3 全部热正文回收后 33 条冷读 | 同进程 Runtime 与独立 OS 子进程分别识别；真实 RustFS 需显式 ignored。单机不是三区，恢复单例不是 P99 |
+| S09 [成员迁移](https://github.com/bitcapybara/tidemq/blob/main/tests/scaling_raft.rs)、[远程闭合迁移](https://github.com/bitcapybara/tidemq/blob/main/tests/scaling_remote.rs) | learner/joint/stable、隔离后保留原计划、joint 中换主、完成证明私有、容量新鲜度与预算、真实 native RF3 自动替换、缺样不创建计划 | 部分远程 fixture 为语义 codec loopback；S08 另验证实际 CLI/mTLS 修复，跨区与高压力组合仍待验 |
+| S10 [观测边界](https://github.com/bitcapybara/tidemq/blob/main/tests/observability_boundaries.rs)、[分配器](https://github.com/bitcapybara/tidemq/blob/main/tests/allocator_diagnostics.rs)、[堆采样](https://github.com/bitcapybara/tidemq/blob/main/tests/heap_profile.rs)、quota/retention 单元测试 | 字节许可、控制保留、有限指标、日志丢弃/失败/脱敏、临时过滤、真实 RSS、cgroup 解析、迟滞、同 allocator profile；原生 Prometheus/Grafana 实际 RF1 查询、29 面板和匿名只读权限，见[部署证据](https://github.com/bitcapybara/tidemq/blob/main/deploy/observability/README.zh-CN.md)；Linux 容器限额与 RF1 受控真 OOM 见 S12 | Linux 同 allocator 分配栈、长期趋势与浏览器画面待验；Collector 与正式开销单独记录 |
+| S11 [追踪导出](https://github.com/bitcapybara/tidemq/blob/main/tests/tracing_export.rs)、[四角色链路](https://github.com/bitcapybara/tidemq/blob/main/tests/runtime_support/tracing.rs) | 官方 OTLP HTTP/protobuf、TLS 拒绝、宿主设施共存、外部 sampled 仍受本地预算限制、慢/503/超大响应/关闭与恢复；真实 SDK→Gateway→Broker 父关系、owned 提交及持久 ACK、原期限清理；Linux 普通回归覆盖内置采集器边界；官方 native Collector 在 macOS 实际 accepted 与退出端口释放 | native Collector 用例需显式 ignored，当前 Linux CI 已执行；默认 nop 不持久化 trace。域名/私有 CA/mTLS 由本地 Collector 代理；公网与正式 Linux Collector 部署待验，Docker 集群默认未开 OTLP |
+| S12 [Docker 脚本](https://github.com/bitcapybara/tidemq/blob/main/scripts/docker-validate.sh)、[真实 SDK driver](https://github.com/bitcapybara/tidemq/blob/main/tests/deployment/driver.rs)、[读取回收集成测试](https://github.com/bitcapybara/tidemq/blob/main/tests/runtime_reclamation.rs)、[最新 Docker 记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-docker-077004e.zh-CN.md) | 冻结同版 RF1 三项、RF3 七项；真 OOM、实际 Storage leader/Broker owner 强杀、两类多数派中断及 Gateway 冷重启；原 Client/Producer/Consumer/Pending、64/80 持久前沿；历史真实 S3 回收竞态的首条/前缀、逻辑过期及 Unknown 四边界另保留原记录 | 单机共享项目内 netns，无宿主端口；最新 736 条为正确性短例，非性能或恢复分位数。Gateway 只冷重启，真实 LB/三区/长稳待验；故障中不可达采样及历史失败保留原记录 |
+| M01 [有限参考模型](https://github.com/bitcapybara/tidemq/blob/main/tests/safety_model.rs) | 发布 18 状态/540 转换，订阅 411 状态/972 次旧 token 尝试；枚举 Unknown、迟到授权、取消、pin、丢回包 | 有限状态图，不模拟任意并发/时钟/磁盘，也不代替 S03/S05/S07 |
 
 ## 构建、生成与 allocator
 

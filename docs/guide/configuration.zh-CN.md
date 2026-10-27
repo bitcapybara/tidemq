@@ -1,11 +1,30 @@
 # 配置来源、单位与校验
 
-服务通过显式 `--config` 读取 TOML，最多 64 KiB，拒绝未知字段。相对数据、证书和秘密文件路径相对启动工作目录。`config/local.toml` 展示字段；[本地生成器](running.zh-CN.md)生成可直接启动的完整文件。`validate-config` 校验结构、角色拓扑和预算；运行时才读取证书/秘密内容、打开 WAL 并连接对端和 S3。
+服务通过显式 `--config` 读取 TOML，最多 64 KiB，拒绝未知字段。相对数据、证书和秘密文件路径相对启动工作目录。[Combined 示例](https://github.com/bitcapybara/tidemq/blob/main/config/combined.toml)展示 MQ 字段；[本地生成器](running.zh-CN.md)生成可直接启动的完整文件。`validate-config` 校验结构、角色拓扑和预算；运行时才读取证书/秘密内容、打开 WAL 并连接对端和 S3。
+
+`role = "console"` 使用独立的 HTTP / cluster / session 配置，见本页 Console 表；不要把 MQ 的 `runtime`、`gateway`、`storage` 或 `authorization` 表复制给 Console。
+
+## 每个角色的完整样例
+
+| 角色 | 配置文件 | 样例拓扑与用途 |
+| --- | --- | --- |
+| Combined | [config/combined.toml](https://github.com/bitcapybara/tidemq/blob/main/config/combined.toml) | 节点 1 的单节点 RF1，合并四个 MQ 职责 |
+| Gateway | [config/gateway.toml](https://github.com/bitcapybara/tidemq/blob/main/config/gateway.toml) | 分离 RF1 的节点 41，提供应用 QUIC 入口 |
+| Broker | [config/broker.toml](https://github.com/bitcapybara/tidemq/blob/main/config/broker.toml) | 分离 RF1 的节点 31，协调服务所有权与投递 |
+| Storage | [config/storage.toml](https://github.com/bitcapybara/tidemq/blob/main/config/storage.toml) | 分离 RF1 的节点 21，持久数据组副本 |
+| Metadata | [config/metadata.toml](https://github.com/bitcapybara/tidemq/blob/main/config/metadata.toml) | 分离 RF1 的节点 11，持久控制组副本 |
+| Console | [config/console.toml](https://github.com/bitcapybara/tidemq/blob/main/config/console.toml) | 独立无状态 HTTP，连接已部署的 Gateway |
+
+四份分离角色文件共同使用 peers 11/21/31/41、Metadata voters [11]、data voters [21]，不能把它们与 Combined 节点 1 的拓扑混用。它们是待供应证书、私钥、token 和目录的完整字段样例；直接运行仍须先替换部署身份与路径。首次运行优先使用[生成器](running.zh-CN.md)，RF3 使用 `rf3` 或 `rf3-combined`，并部署在真实独立故障域。
+
+字段值区分代码默认、部署身份和可选示例。MQ 样例采用代码默认的 **64 MiB 应用预算 / 4 MiB 控制预留**；生成器为了归档验证采用 **192 / 32 MiB**，两者不是同一个默认值。`#? ` 开头的行是禁用的可选块，须完整启用并供应必要参数；对象存储先提高预算，自动 Topic 分片的八项零容量须改成当前 RF 下实测的正数。`bootstrap = true` 是新集群的运维选择，代码默认是 false。
+
+## MQ 字段参考
 
 | 字段 | 作用与边界 |
 | --- | --- |
 | `node_id` / `cluster_id` / `data_dir` | 非零节点 ID、非 nil UUID、独立持久目录。恢复时保留三者与原有节点证书身份 |
-| `role` / `replication_factor` | `combined/gateway/broker/storage/metadata`；RF 显式为 1 或 3，失去多数派不会降为 RF1 |
+| `role` / `replication_factor` | MQ 角色为 `combined/gateway/broker/storage/metadata`；RF 显式为 1 或 3，失去多数派不会降为 RF1；Console 使用独立 schema |
 | `gateway.listen` / `runtime.internal_listen` / `management_listen` | 外部业务 QUIC、内部 mTLS QUIC、管理 HTTP。只有 Gateway/Combined 配置并占用外部监听；管理必须 loopback，实际启用的地址不能冲突；远程管理由受保护代理提供 |
 | `memory.total_bytes` / `control_reserved_bytes` | 应用许可预算及其中的控制预留，单位字节；数据不能消耗控制预留。这不是进程 RSS 上限 |
 | `memory.max_connections` / `max_streams_per_connection` / `max_pending_requests` | 有限连接、流、未决请求；范围分别为 1—4096、2—4096、1—65536，实际 transport 还按类别限制池和队列 |
@@ -32,14 +51,36 @@
 | `broker` / `metadata` | 当前没有私有调参项，不添加空表 | 同上 |
 | `combined` | `[gateway]` 和 `[storage]` | 同上 |
 
-生成器分别输出每个进程的 `node-ID.toml`。例如 RF3 的 `node-41.toml` 只有 Gateway 表，`node-21.toml` 只有 Storage 表，`node-31.toml` 和 `node-11.toml` 只有共享设置；无需将整套角色的配置复制进每个进程。`config/local.toml` 展示 Combined 配置。配置中误加未启用角色的表、未知字段、缺少必需角色表或授权路径时立即失败，不静默忽略。
+生成器分别输出每个进程的 `node-ID.toml`。例如 RF3 的 `node-41.toml` 只有 Gateway 表，`node-21.toml` 只有 Storage 表，`node-31.toml` 和 `node-11.toml` 只有共享设置；无需将整套角色的配置复制进每个进程。`config/combined.toml` 展示 Combined 配置。配置中误加未启用角色的表、未知字段、缺少必需角色表或公共 `[authorization]` 表时立即失败，不静默忽略。
 
-当前开发阶段只接受这一套按角色组织的配置。旧版顶层 `listen`、`[runtime]` 中的授权/对象/retention/归档字段，以及新旧位置混合都明确拒绝，不提供自动兼容或回退分支。已有开发环境需要按当前示例更新配置，显式填写 `role`、共享授权路径和适用的角色表；保留原 cluster/node/group 身份、证书和数据目录，不自动删除已有数据，也不为了重建配置清空 WAL 或快照。
+当前开发阶段只接受这一套按角色组织的配置。旧版顶层 `listen`、`[runtime]` 中的授权/对象/retention/归档字段，以及新旧位置混合都明确拒绝，不提供自动兼容或回退分支。已有开发环境需要按当前示例更新配置，显式填写 `role`、公共 `[authorization]` 和适用的角色表；保留原 cluster/node/group 身份、证书和数据目录，不自动删除已有数据，也不为了重建配置清空 WAL 或快照。
 
 生成器的完整接口为 `bash deploy/local/generate.sh MODE NEW_OUTPUT`，`MODE` 为 `rf1`、`rf3` 或 `rf3-combined`。它始终生成当前角色格式，拒绝多余参数。生成目录必须尚不存在，只为新的开发拓扑创建身份；已有持久目录的配置调整应保留其原始身份与密钥。
 
-本地生成配置明确给出 192 MiB 应用预算和 32 MiB 控制预留。开启 S3 时要求至少这些预算，并要求 RSS 高水位至少高于应用预算 64 MiB，保证打包临时缓冲、最终对象和控制工作能同时准入。修改应用预算必须同步检查 RSS、水位与容器限制；原生 QUIC、线程栈、诊断、追踪和 allocator 保留不包含在应用许可里。Linux cgroup v2 另按可见祖先的实际压力做独立门控，无法读取时不能填零。
+生成器明确给出 192 MiB 应用预算和 32 MiB 控制预留；每角色样例采用 64 / 4 MiB 代码默认。开启 S3 时至少提升至 192 / 32 MiB，并要求 RSS 高水位至少高于应用预算 64 MiB，保证打包临时缓冲、最终对象和控制工作能同时准入。修改应用预算必须同步检查 RSS、水位与容器限制；原生 QUIC、线程栈、诊断、追踪和 allocator 保留不包含在应用许可里。Linux cgroup v2 另按可见祖先的实际压力做独立门控，无法读取时不能填零。
 
 构建时只能选择一个全局 allocator；默认开启 `allocator-mimalloc`。System 使用 `--no-default-features --features allocator-system`，jemalloc 使用 `--no-default-features --features allocator-jemalloc`；jemalloc 堆采样使用 `--no-default-features --features heap-profiling`。不支持运行中切换，也不能使用 `--all-features`。SDK 不安装全局 allocator、subscriber 或 exporter。统计、采样 feature、native 启动设置和运行中实际生效状态分别核对，详见[内存管理](../design/memory-management.zh-CN.md)与[内存排障](../operations/memory-troubleshooting.zh-CN.md)。
 
 当前数据组与元数据状态格式版本为 2。发现不支持的版本应失败关闭；没有旧实验格式的自动迁移工具。升级前保留一致的 WAL/快照和二进制，不手改序列化内容或复制运行中目录。
+
+## Console 配置参考
+
+完整示例为 [config/console.toml](https://github.com/bitcapybara/tidemq/blob/main/config/console.toml)，部署与 Secret 分发见[Console 部署](https://github.com/bitcapybara/tidemq/blob/main/deploy/console/README.zh-CN.md)。Console 不配置 node/cluster 身份、RF、数据目录或 Raft peer。
+
+| 字段 | 含义与边界 |
+| --- | --- |
+| `role` / `listen` / `management_listen` | `console`、浏览器后端 HTTP 地址、不同的 loopback 管理地址；公共流量经 HTTPS 代理 |
+| `static_dir` | 与二进制来自同一源码版本的已构建静态目录；启动验证入口与 manifest 资源 |
+| `cluster.address` / `server_name` / `trust_roots` | 固定 Gateway 地址、证书匹配的 DNS 服务名、CA 文件；不接受用户提供任意集群 URL |
+| `session.key_file` / `previous_key_files` | 恰好 32 字节的随机当前密钥及最多两个旧验证密钥，所有副本保持一致；启动加载 |
+| `session.public_origin` / `max_age_seconds` | 精确 HTTPS Origin；默认最长 1800 秒，同时受真实凭据到期约束 |
+| `observability.components` | 最多 32 个固定 ID / 名称 / 健康入口及可选 HTTPS 详情链接；不携带个人 token |
+| `observability.alerts_url` / `alerts_detail_url` | 固定 Prometheus `/api/v1/alerts` 和可选 HTTPS 详情；缺失或失败保持未知 |
+| `logging` / `tracing` | 沿用有界日志和可选 OTLP；不设置任意转发目标、header 或查询语言 |
+
+验证两个 schema 使用同一个命令；不会启动进程或读取全部秘密内容：
+
+```sh
+target/debug/tidemq validate-config --config config/combined.toml
+target/debug/tidemq validate-config --config config/console.toml
+```

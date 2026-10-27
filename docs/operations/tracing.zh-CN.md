@@ -71,7 +71,7 @@ Rust SDK 开启 `opentelemetry` feature 后，从宿主当前 tracing span 获�
 
 ## 本地 Collector
 
-仓库 [collector.yaml](../../deploy/observability/collector.yaml) 针对官方 core **0.162.0**，HTTP 监听 `127.0.0.1:4318`，自身 Prometheus 指标监听 `127.0.0.1:18888`。HTTP 请求体 64 KiB，read/header/write/idle 各 1 秒；memory limiter 128 MiB、spike 32 MiB，单 batch 无 metadata 分片、32 条触发/128 条上限/500 ms。
+仓库 [collector.yaml](https://github.com/bitcapybara/tidemq/blob/main/deploy/observability/collector.yaml) 针对官方 core **0.162.0**，HTTP 监听 `127.0.0.1:4318`，自身 Prometheus 指标监听 `127.0.0.1:18888`。HTTP 请求体 64 KiB，read/header/write/idle 各 1 秒；memory limiter 128 MiB、spike 32 MiB，单 batch 无 metadata 分片、32 条触发/128 条上限/500 ms。
 
 默认 `nop` exporter 接收后丢弃：出口队列 0、网络出口 0、重试 0，既不记录 span 内容，也不提供 trace 搜索/持久存储。用 receiver accepted/refused span 指标判断接收情况。接真实后端时显式替换成受信 HTTPS OTLP exporter，同时设置有限发送队列、并发、单请求 timeout、整体重试期限和磁盘预算；不能直接把默认黑洞接收等同生产 trace 存储。
 

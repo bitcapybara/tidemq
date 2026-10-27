@@ -2,7 +2,7 @@
 
 本手册对应 `src/scaling` 的真实共识执行器、固定迁移槽和运行时 drain 接缝。不要直接修改 voter 配置、清空计划或删除仍有状态的节点目录。
 
-部署入口包括[单机配置生成器](../../deploy/local/generate.sh)、[Compose RF1/RF3](../../deploy/docker/README.zh-CN.md)和 [Kubernetes 人工部署](../../deploy/kubernetes/README.zh-CN.md)，共用下述管理与退休协议。
+部署入口包括[单机配置生成器](https://github.com/bitcapybara/tidemq/blob/main/deploy/local/generate.sh)、[Compose RF1/RF3](https://github.com/bitcapybara/tidemq/blob/main/deploy/docker/README.zh-CN.md)和 [Kubernetes 人工部署](https://github.com/bitcapybara/tidemq/blob/main/deploy/kubernetes/README.zh-CN.md)，共用下述管理与退休协议。
 
 ## 管理 CLI
 
