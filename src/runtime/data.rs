@@ -59,7 +59,11 @@ impl Service {
         partition: PartitionKey,
         deadline: Instant,
     ) -> Result<Arc<ControlLease>> {
-        self.data_lease_for(group, partition, deadline, Duration::ZERO)
+        // Reserve commit time without extending the original operation budget.
+        let minimum_remaining = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(1));
+        self.data_lease_for(group, partition, deadline, minimum_remaining)
             .await
     }
 
@@ -112,12 +116,16 @@ impl Service {
                 .clone()
         };
         let mut cached = wire::within(deadline, slot.lock()).await?;
+        #[cfg(test)]
+        control_lease_tests::prepare_cached_lease(partition, &mut cached);
         if let Some(lease) = cached.as_ref().filter(|lease| {
-            lease.check(&fence, Work::ControlMutation).is_ok()
-                && lease
-                    .expires_at()
-                    .saturating_duration_since(std::time::Instant::now())
-                    >= minimum_remaining
+            let valid = lease.check(&fence, Work::ControlMutation).is_ok();
+            let remaining = lease
+                .expires_at()
+                .saturating_duration_since(std::time::Instant::now());
+            #[cfg(test)]
+            control_lease_tests::observe_cached_lease(partition, lease, valid, remaining);
+            valid && remaining >= minimum_remaining
         }) {
             return Ok(lease.clone());
         }

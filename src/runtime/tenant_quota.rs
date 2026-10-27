@@ -497,6 +497,10 @@ impl Service {
             node_id: lease.grant().owner_node,
             owner_epoch: lease.grant().epoch,
         };
+        let write_deadline = deadline.min(lease.expires_at().into());
+        #[cfg(test)]
+        super::data::control_lease_tests::before_control_write(grant.partition, write_deadline)
+            .await;
         match self
             .data_write(
                 group,
@@ -506,7 +510,7 @@ impl Service {
                     grant: grant.clone(),
                     now_ms: super::data::unix_millis()?,
                 },
-                deadline.min(lease.expires_at().into()),
+                write_deadline,
             )
             .await?
         {

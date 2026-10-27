@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Mutex};
+use std::sync::Mutex;
 
 use tidemq_protocol::{
     console::{Query, Reply},
@@ -10,61 +10,134 @@ use tokio::sync::Notify;
 use super::*;
 use crate::{
     config::Role,
-    metadata::Route,
+    metadata::{AllocationRequest, QuotaGrant, Route},
     ownership::{ControlPolicy, test_lease},
     runtime::data::consumer_tests::fixture::{Fixture, deadline},
     subscription::{GroupCommand, GroupIdentity, GroupOutcome, GroupRead, MemberGrant},
 };
 
-type RetireKey = (
-    PartitionKey,
-    tidemq_protocol::Id,
-    tidemq_protocol::Id,
-    u64,
-    u64,
-);
-static WRITES: Mutex<BTreeMap<RetireKey, Arc<WritePause>>> = Mutex::new(BTreeMap::new());
+tokio::task_local! {
+    static LEASE_PROBE: Arc<LeaseProbe>;
+}
 
-struct WritePause {
-    deadline: Mutex<Option<Instant>>,
+struct LeaseProbe {
+    partition: PartitionKey,
+    ttl: Duration,
+    old: Mutex<Option<Arc<ControlLease>>>,
+    observed_remaining: Mutex<Option<Duration>>,
+    write_deadline: Mutex<Option<Instant>>,
     ready: Notify,
     resume: Notify,
 }
 
-struct InstalledPause {
-    key: RetireKey,
-    state: Arc<WritePause>,
-}
-
-impl InstalledPause {
-    fn new(partition: PartitionKey, command: &GroupCommand) -> Self {
-        let key = retire_key(partition, command).unwrap();
-        let state = Arc::new(WritePause {
-            deadline: Mutex::new(None),
+impl LeaseProbe {
+    fn new(partition: PartitionKey, ttl: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            partition,
+            ttl,
+            old: Mutex::new(None),
+            observed_remaining: Mutex::new(None),
+            write_deadline: Mutex::new(None),
             ready: Notify::new(),
             resume: Notify::new(),
-        });
-        assert!(WRITES.lock().unwrap().insert(key, state.clone()).is_none());
-        Self { key, state }
+        })
+    }
+
+    fn old_lease(&self) -> Arc<ControlLease> {
+        assert!(self.observed_remaining.lock().unwrap().is_some());
+        self.old.lock().unwrap().as_ref().unwrap().clone()
+    }
+
+    async fn wait_for_write(&self, deadline: Instant) -> Instant {
+        tokio::time::timeout_at(deadline, self.ready.notified())
+            .await
+            .unwrap();
+        self.write_deadline.lock().unwrap().unwrap()
+    }
+
+    async fn resume_after_old_expiry(&self, deadline: Instant) -> (Arc<ControlLease>, Instant) {
+        let write_deadline = self.wait_for_write(deadline).await;
+        let lease = self.old_lease();
+        tokio::time::sleep_until((lease.expires_at() + Duration::from_millis(20)).into()).await;
+        assert!(Instant::now() < deadline);
+        self.resume.notify_one();
+        (lease, write_deadline)
     }
 }
 
-impl Drop for InstalledPause {
-    fn drop(&mut self) {
-        WRITES.lock().unwrap().remove(&self.key);
-        self.state.resume.notify_one();
-    }
+pub(in crate::runtime) fn prepare_cached_lease(
+    partition: PartitionKey,
+    cached: &mut Option<Arc<ControlLease>>,
+) {
+    let _ = LEASE_PROBE.try_with(|probe| {
+        if probe.partition != partition {
+            return;
+        }
+        let mut old = probe.old.lock().unwrap();
+        if old.is_some() {
+            return;
+        }
+        // Inject under the cache lock in this task, after all pre-selection awaits.
+        let lease = Arc::new(
+            test_lease(
+                cached.as_ref().unwrap().grant().clone(),
+                ControlPolicy {
+                    ttl: probe.ttl,
+                    ..ControlPolicy::default()
+                },
+            )
+            .unwrap(),
+        );
+        *cached = Some(lease.clone());
+        *old = Some(lease);
+    });
 }
 
-fn retire_key(partition: PartitionKey, command: &GroupCommand) -> Option<RetireKey> {
-    match command {
-        GroupCommand::RetireRead {
-            subscription,
-            member,
-            epoch,
-            sequence,
-        } => Some((partition, *subscription, *member, *epoch, *sequence)),
-        _ => None,
+pub(in crate::runtime) fn observe_cached_lease(
+    partition: PartitionKey,
+    lease: &Arc<ControlLease>,
+    valid: bool,
+    remaining: Duration,
+) {
+    let _ = LEASE_PROBE.try_with(|probe| {
+        if probe.partition != partition
+            || !Arc::ptr_eq(lease, probe.old.lock().unwrap().as_ref().unwrap())
+        {
+            return;
+        }
+        assert!(
+            valid,
+            "The injected cache must still pass the real fence and TTL check"
+        );
+        assert!(
+            !remaining.is_zero(),
+            "The old lease must be live at cache selection"
+        );
+        if probe.ttl < Duration::from_secs(1) {
+            assert!(remaining < Duration::from_secs(1));
+        }
+        assert!(
+            probe
+                .observed_remaining
+                .lock()
+                .unwrap()
+                .replace(remaining)
+                .is_none()
+        );
+        eprintln!(
+            "Cache selection: valid={valid}, old_remaining_ns={}",
+            remaining.as_nanos()
+        );
+    });
+}
+
+pub(in crate::runtime) async fn before_control_write(partition: PartitionKey, deadline: Instant) {
+    let probe = LEASE_PROBE.try_with(Arc::clone).ok();
+    if let Some(probe) = probe.filter(|probe| probe.partition == partition) {
+        assert!(probe.observed_remaining.lock().unwrap().is_some());
+        *probe.write_deadline.lock().unwrap() = Some(deadline);
+        probe.ready.notify_one();
+        probe.resume.notified().await;
     }
 }
 
@@ -73,12 +146,8 @@ pub(in crate::runtime) async fn before_group_write(
     command: &GroupCommand,
     deadline: Instant,
 ) {
-    let pause =
-        retire_key(partition, command).and_then(|key| WRITES.lock().unwrap().get(&key).cloned());
-    if let Some(pause) = pause {
-        *pause.deadline.lock().unwrap() = Some(deadline);
-        pause.ready.notify_one();
-        pause.resume.notified().await;
+    if matches!(command, GroupCommand::RetireRead { .. }) {
+        before_control_write(partition, deadline).await;
     }
 }
 
@@ -92,8 +161,11 @@ struct Prepared {
     retire: GroupCommand,
 }
 
-async fn prepared() -> Prepared {
+async fn service_fixture() -> (Fixture, Client, Arc<Service>, Route) {
     let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let config = fixture.configs.get_mut(&1).unwrap();
+    config.runtime.retention.minimum_age_ms = 0;
+    config.runtime.archive_interval_ms = 60_000;
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let tenant = client.admin().create_tenant("lease-test").await.unwrap();
@@ -108,16 +180,22 @@ async fn prepared() -> Prepared {
         .await
         .unwrap();
     let topic = topic.id().into();
-    let Reply::Topic(detail) = client.console_read(Query::Topic { topic }).await.unwrap() else {
-        panic!("Expected the native shard identity");
-    };
-    let shard = detail.shard_details.first().unwrap().id;
     let partition = PartitionKey {
         topic_id: topic,
         partition: 0,
     };
     let service = fixture.running.get(&1).unwrap().service.clone();
     let route = service.route(partition, deadline()).await.unwrap();
+    (fixture, client, service, route)
+}
+
+async fn prepared() -> Prepared {
+    let (fixture, client, service, route) = service_fixture().await;
+    let topic = route.partition.topic_id;
+    let Reply::Topic(detail) = client.console_read(Query::Topic { topic }).await.unwrap() else {
+        panic!("Expected the native shard identity");
+    };
+    let shard = detail.shard_details.first().unwrap().id;
     let subscription = tidemq_protocol::Id::new_v7().unwrap();
     let member = tidemq_protocol::Id::new_v7().unwrap();
     let actor = tidemq_protocol::Id::new_v7().unwrap();
@@ -202,34 +280,6 @@ async fn prepared() -> Prepared {
     }
 }
 
-async fn install_lease(prepared: &Prepared, ttl: Duration) -> Arc<ControlLease> {
-    let current = prepared
-        .service
-        .data_lease(2, prepared.route.partition, deadline())
-        .await
-        .unwrap();
-    let lease = Arc::new(
-        test_lease(
-            current.grant().clone(),
-            ControlPolicy {
-                ttl,
-                ..ControlPolicy::default()
-            },
-        )
-        .unwrap(),
-    );
-    let slot = prepared
-        .service
-        .leases
-        .lock()
-        .unwrap()
-        .get(&prepared.route.partition)
-        .unwrap()
-        .clone();
-    *slot.lock().await = Some(lease.clone());
-    lease
-}
-
 async fn retired(prepared: &Prepared) -> bool {
     prepared
         .service
@@ -261,23 +311,17 @@ async fn retired(prepared: &Prepared) -> bool {
 async fn retire_read_refreshes_a_near_expiry_control_lease_before_the_original_raft_write() {
     let prepared = prepared().await;
     assert!(!retired(&prepared).await);
-    let lease = install_lease(&prepared, Duration::from_millis(200)).await;
-    let pause = InstalledPause::new(prepared.route.partition, &prepared.retire);
+    let probe = LeaseProbe::new(prepared.route.partition, Duration::from_millis(200));
     let original_deadline = deadline();
     let service = prepared.service.clone();
     let route = prepared.route.clone();
     let command = prepared.retire.clone();
-    let pending = tokio::spawn(async move {
+    let pending = tokio::spawn(LEASE_PROBE.scope(probe.clone(), async move {
         service
             .group_commit(&route, command, original_deadline)
             .await
-    });
-    tokio::time::timeout_at(original_deadline, pause.state.ready.notified())
-        .await
-        .unwrap();
-    let write_deadline = pause.state.deadline.lock().unwrap().unwrap();
-    tokio::time::sleep_until((lease.expires_at() + Duration::from_millis(20)).into()).await;
-    pause.state.resume.notify_one();
+    }));
+    let (lease, write_deadline) = probe.resume_after_old_expiry(original_deadline).await;
     let outcome = pending.await.unwrap().unwrap();
     assert!(matches!(outcome, GroupOutcome::ReadRetired));
     let refreshed = prepared
@@ -289,7 +333,6 @@ async fn retire_read_refreshes_a_near_expiry_control_lease_before_the_original_r
     assert_eq!(lease.grant(), refreshed.grant());
     assert!(write_deadline <= original_deadline && write_deadline > lease.expires_at().into());
     assert!(retired(&prepared).await);
-    drop(pause);
     assert!(matches!(
         prepared
             .service
@@ -335,30 +378,246 @@ async fn retire_read_reuses_a_fresh_control_lease_with_the_original_writer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retirement_keeps_unknown_when_the_original_business_deadline_expires() {
     let prepared = prepared().await;
-    let lease = install_lease(&prepared, Duration::from_secs(2)).await;
-    let pause = InstalledPause::new(prepared.route.partition, &prepared.retire);
+    let probe = LeaseProbe::new(prepared.route.partition, Duration::from_secs(2));
     let original_deadline = Instant::now() + Duration::from_millis(200);
     let service = prepared.service.clone();
     let route = prepared.route.clone();
     let command = prepared.retire.clone();
-    let pending = tokio::spawn(async move {
+    let pending = tokio::spawn(LEASE_PROBE.scope(probe.clone(), async move {
         service
             .group_commit(&route, command, original_deadline)
             .await
-    });
-    tokio::time::timeout_at(deadline(), pause.state.ready.notified())
-        .await
-        .unwrap();
-    assert!(pause.state.deadline.lock().unwrap().unwrap() <= original_deadline);
+    }));
+    let write_deadline = probe.wait_for_write(deadline()).await;
+    let lease = probe.old_lease();
+    assert!(write_deadline <= original_deadline);
     tokio::time::sleep_until(original_deadline + Duration::from_millis(20)).await;
-    pause.state.resume.notify_one();
+    probe.resume.notify_one();
     let error = pending.await.unwrap().unwrap_err();
     assert_eq!(
         error.failure().outcome,
         i32::from(tidemq_protocol::common::Outcome::Unknown)
     );
     assert!(lease.expires_at() > std::time::Instant::now());
-    drop(pause);
+    prepared.client.close().await.unwrap();
+    prepared.fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quota_install_refreshes_a_near_expiry_control_lease_before_the_original_raft_write() {
+    let prepared = prepared().await;
+    let current = prepared
+        .service
+        .data
+        .get(&2)
+        .unwrap()
+        .state
+        .try_with_application(|state| {
+            state
+                .tenant_quota(prepared.route.partition)
+                .unwrap()
+                .clone()
+        })
+        .await
+        .unwrap();
+    let request = AllocationRequest {
+        partition: current.partition,
+        tenant: current.tenant,
+        namespace: current.namespace,
+        expected_version: current.version,
+        capacity: current.capacity,
+        frozen: current.frozen,
+    };
+    let reply = prepared
+        .service
+        .quota_control_command(
+            1,
+            &serde_json::to_vec(&serde_json::json!({"Prepare": request})).unwrap(),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+    let grant: QuotaGrant = serde_json::from_value(reply.get("Grant").unwrap().clone()).unwrap();
+    assert_eq!(grant.version, current.version + 1);
+    let body = serde_json::to_vec(&serde_json::json!({"Install": grant})).unwrap();
+    let probe = LeaseProbe::new(prepared.route.partition, Duration::from_millis(200));
+    let original_deadline = deadline();
+    let service = prepared.service.clone();
+    let pending = tokio::spawn(LEASE_PROBE.scope(probe.clone(), async move {
+        service
+            .quota_data_command(2, &body, original_deadline)
+            .await
+    }));
+    let (old, write_deadline) = probe.resume_after_old_expiry(original_deadline).await;
+    let reply = pending.await.unwrap().unwrap();
+    assert_eq!(serde_json::from_slice::<QuotaGrant>(&reply).unwrap(), grant);
+    let installed = prepared
+        .service
+        .data
+        .get(&2)
+        .unwrap()
+        .state
+        .try_with_application(|state| {
+            state
+                .tenant_quota(prepared.route.partition)
+                .unwrap()
+                .clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(installed, grant);
+    let refreshed = prepared
+        .service
+        .data_lease(2, prepared.route.partition, original_deadline)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&old, &refreshed));
+    assert_eq!(old.grant(), refreshed.grant());
+    assert!(write_deadline > old.expires_at().into() && write_deadline <= original_deadline);
+    assert!(!retired(&prepared).await);
+    prepared.client.close().await.unwrap();
+    prepared.fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retention_refreshes_a_near_expiry_control_lease_before_the_original_control_chain() {
+    let (fixture, client, service, route) = service_fixture().await;
+    let queue = client
+        .new_queue_consumer("lease-test/app/retirement", "retention")
+        .build()
+        .await
+        .unwrap();
+    let producer = client
+        .new_producer("lease-test/app/retirement")
+        .build()
+        .await
+        .unwrap();
+    let receipt = producer.send("retain-until-acknowledged").await.unwrap();
+    let delivery = queue.receive().await.unwrap();
+    assert_eq!(delivery.message_id(), receipt.message_id());
+    queue.ack(&delivery).await.unwrap();
+    let before = tokio::time::timeout_at(deadline(), async {
+        loop {
+            let status = service
+                .data
+                .get(&2)
+                .unwrap()
+                .state
+                .try_with_application(|state| {
+                    state
+                        .retention_status(route.partition, unix_millis().unwrap())
+                        .unwrap()
+                })
+                .await
+                .unwrap();
+            if status.maximum_floor == 1 {
+                break status;
+            }
+            // Retention only releases a completed timestamp bucket, even with zero minimum age.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(before.floor, 0);
+    assert_eq!(before.maximum_floor, 1);
+    let original_deadline = deadline();
+    service
+        .data_lease(2, route.partition, original_deadline)
+        .await
+        .unwrap();
+    let probe = LeaseProbe::new(route.partition, Duration::from_millis(200));
+    let handler = service.clone();
+    let partition = route.partition;
+    let pending = tokio::spawn(LEASE_PROBE.scope(probe.clone(), async move {
+        handler
+            .advance_retention(2, partition, original_deadline)
+            .await
+    }));
+    let (old, write_deadline) = probe.resume_after_old_expiry(original_deadline).await;
+    pending.await.unwrap().unwrap();
+    let after = service
+        .data
+        .get(&2)
+        .unwrap()
+        .state
+        .try_with_application(|state| {
+            state
+                .retention_status(partition, unix_millis().unwrap())
+                .unwrap()
+        })
+        .await
+        .unwrap();
+    assert_eq!(after.floor, 1);
+    let plan = service
+        .retention_control(
+            crate::runtime::retention_control::Control::Inspect(partition),
+            original_deadline,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.command.before, 1);
+    assert!(plan.completed_revision.is_some());
+    let refreshed = service
+        .data_lease(2, partition, original_deadline)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&old, &refreshed));
+    assert_eq!(old.grant(), refreshed.grant());
+    assert!(write_deadline > old.expires_at().into() && write_deadline <= original_deadline);
+    producer.close().await.unwrap();
+    queue.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn default_lease_reuses_a_live_cache_when_the_original_budget_is_shorter() {
+    let prepared = prepared().await;
+    let probe = LeaseProbe::new(prepared.route.partition, Duration::from_millis(700));
+    let lease = LEASE_PROBE
+        .scope(
+            probe.clone(),
+            prepared.service.data_lease(
+                2,
+                prepared.route.partition,
+                Instant::now() + Duration::from_millis(200),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&lease, &probe.old_lease()));
+    assert!(probe.observed_remaining.lock().unwrap().unwrap() < Duration::from_secs(1));
+    prepared.client.close().await.unwrap();
+    prepared.fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn explicit_lease_minimum_can_remain_stronger_than_the_shared_default() {
+    let prepared = prepared().await;
+    let probe = LeaseProbe::new(prepared.route.partition, Duration::from_millis(1500));
+    let lease = LEASE_PROBE
+        .scope(
+            probe.clone(),
+            prepared.service.data_lease_for(
+                2,
+                prepared.route.partition,
+                deadline(),
+                Duration::from_secs(2),
+            ),
+        )
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&lease, &probe.old_lease()));
+    assert_eq!(lease.grant(), probe.old_lease().grant());
+    assert!(
+        lease
+            .expires_at()
+            .saturating_duration_since(std::time::Instant::now())
+            >= Duration::from_secs(2)
+    );
     prepared.client.close().await.unwrap();
     prepared.fixture.close().await;
 }

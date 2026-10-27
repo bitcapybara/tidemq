@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 use tidemq_protocol::{
     Id,
     common::{ErrorCode, Frame, FrameKind},
@@ -772,12 +771,8 @@ impl Service {
                     .await?;
             }
         }
-        // Reserve commit time within the original budget before reusing a control lease.
-        let minimum_remaining = deadline
-            .saturating_duration_since(Instant::now())
-            .min(Duration::from_secs(1));
         let lease = self
-            .data_lease_for(route.group_id, route.partition, deadline, minimum_remaining)
+            .data_lease(route.group_id, route.partition, deadline)
             .await?;
         let replica = self
             .data
