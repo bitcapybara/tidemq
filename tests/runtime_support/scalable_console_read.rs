@@ -265,6 +265,8 @@ async fn console_reads_scope_hot_messages_members_and_ack_holes_without_consumin
     assert_eq!(first.message_id(), identities[0]);
     assert_eq!(second.message_id(), identities[1]);
     queue.ack(&second).await.unwrap();
+    // Release the acknowledged view before admitting another protected delivery.
+    drop(second);
     let until = Instant::now() + Duration::from_secs(10);
     let before = loop {
         let row = progress(&reader, topic, subscription).await;
