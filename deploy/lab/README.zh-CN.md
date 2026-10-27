@@ -143,6 +143,7 @@ GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 2
 | 路径 | 内容 |
 |---|---|
 | `/srv/tidemq/actions-runner` | Actions runner 2.338.1 与 systemd 服务 |
+| `/srv/tidemq/action-archives` | 两个 runner 共用的只读官方 Action 缓存；固定提交、SHA-256、离线安装及额度见[容器 runner 运维](container-runner/README.zh-CN.md) |
 | `/srv/tidemq/work` | checkout、有限测试结果 |
 | `/srv/tidemq/tools` | 验证 SHA 的 RustFS、Collector 测试二进制、kubectl、Helm、nextest、llvm-cov |
 | `/srv/tidemq/rust` | Rust 1.99.1 工具链与 Cargo cache，`/opt/tidemq-rust` 软链接 |

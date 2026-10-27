@@ -27,6 +27,8 @@ action 缓存使用 runner 2.338.1 的 `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`。�
 
 dev 下载缓慢时，可先在本机执行下列命令，复制生成的 `tools/action*.archive` 到宿主 `/var/lib/tidemq-lab/tools/`，然后在两个 runner 空闲时安装并重新创建容器。归档来源始终为官方 codeload，完整性在安装时再次校验。
 
+使用本机已有代理时，按 [curl 代理环境变量说明](https://everything.curl.dev/usingcurl/proxies/env.html)为下载脚本设置 `HTTPS_PROXY` 或 `ALL_PROXY`，地址采用本机实际配置；仅设置 macOS 系统代理不保证命令行 curl 使用该代理。离线缓存只替代上述三个 Action 归档的下载；runner 的 GitHub 会话、源码 checkout 和制品传输仍需要网络连通，临时借用本机代理不能作为 dev 的常态网络保障。
+
 ```bash
 TIDEMQ_LAB_STATE="$HOME/.cache/tidemq-lab" bash scripts/lab/download-tools.sh actions
 scp "$HOME/.cache/tidemq-lab"/tools/action*.archive dev:/var/lib/tidemq-lab/tools/
