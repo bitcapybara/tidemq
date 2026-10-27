@@ -37,7 +37,7 @@ async fn observed(counter: &AtomicU64, at_least: u64) {
 async fn stop(core: Arc<Core>, worker: tokio::task::JoinHandle<()>, peer: &Peer) {
     core.stop.cancel();
     worker.await.unwrap();
-    finish(core.clone(), None).await;
+    finish_joined(&core).await;
     {
         let state = core.state().unwrap();
         let report = state.closed.as_ref().unwrap().as_ref().unwrap();
@@ -227,7 +227,7 @@ async fn temporary_layout_unassignment_preserves_retired_sequence_on_reassignmen
     scheduling::finish_read(&core, id, &next, Ok(progress)).unwrap();
     assert_eq!(core.state().unwrap().queue.len(), 2);
     core.stop.cancel();
-    finish(core.clone(), None).await;
+    finish_joined(&core).await;
     drop((read, next));
     peer.client.close().await.unwrap();
     assert_eq!(peer.client.metrics().snapshot().admitted_bytes, 0);

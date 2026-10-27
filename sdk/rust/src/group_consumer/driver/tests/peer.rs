@@ -424,7 +424,7 @@ async fn finite_quic_attempt_releases_execution_and_discards_late_original_respo
         );
     }
     core.stop.cancel();
-    finish(core.clone(), None).await;
+    finish_joined(&core).await;
     assert_eq!(
         core.state()
             .unwrap()
@@ -483,7 +483,7 @@ async fn quic_retirement_recovery_only_retires_and_close_cancels_watch_resources
     watch::finish(&core, watch_id, request.attempt, result).unwrap();
     drop(permit);
     core.stop.cancel();
-    finish(core.clone(), None).await;
+    finish_joined(&core).await;
     {
         let state = core.state().unwrap();
         let report = state.closed.as_ref().unwrap().as_ref().unwrap();
@@ -595,7 +595,7 @@ async fn native_protected_reads_survive_shared_pending_exhaustion_for_two_consum
     drop(pending);
     for core in [&first, &second] {
         core.stop.cancel();
-        finish(core.clone(), None).await;
+        finish_joined(core).await;
         assert_eq!(
             core.state()
                 .unwrap()
@@ -637,7 +637,7 @@ async fn native_private_reopen_keeps_registration_and_drops_old_lane_before_repl
     drop(protected_delivery(&core).await);
     let retained = protected_delivery(&core).await;
     core.stop.cancel();
-    finish(core.clone(), None).await;
+    finish_joined(&core).await;
     assert!(!normal.is_closed());
     let next_registration = normal.reserve_protected().unwrap();
     drop(next_registration);
@@ -697,7 +697,7 @@ async fn native_capacity_survives_a_physical_delivery_reconnect() {
     assert!(!current.is_closed());
     assert_eq!(diagnostics(&core).unwrap().ordinary_unknown, 8);
     core.stop.cancel();
-    finish(core.clone(), None).await;
+    finish_joined(&core).await;
     assert!(!current.is_closed());
     let capacity = current.reserve_protected().unwrap();
     drop(capacity);

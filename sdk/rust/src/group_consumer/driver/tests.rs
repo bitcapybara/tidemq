@@ -1,6 +1,11 @@
 use super::*;
 mod peer;
 
+async fn finish_joined(core: &Arc<Core>) {
+    let result = cleanup(core, None, None).await;
+    publish_close(core, result);
+}
+
 fn remote_failure(code: tidemq_protocol::common::ErrorCode, retryable: bool) -> Error {
     Error::Remote {
         code,
