@@ -27,7 +27,7 @@
 
 `tidemq_watch_{sync,changed,unchanged,reset,retry,rejected}_total` 分别统计观察结果，`tidemq_watch_wait_seconds` 统计观察耗时。`UNCHANGED` 仅表示该次有效观察没有变化；错误、过期授权和容量拒绝不能计作空闲结果。
 
-`tidemq_watch_bytes`、`tidemq_watch_targets` 反映已计费观察占用，`tidemq_watch_rechecks_total` 和 `tidemq_watch_dirty_total` 区分复查与实际就绪版本变化。`tidemq_watch_result_capacity_releases_total` 统计数据组结果槽的实际释放；消息已 ACK 不代表对应原 Read 结果已经退休。`tidemq_watch_cleanup_unknown_total` 增长说明下游取消尚未获得清理确认，应关联有限 deadline、断连和关闭结果排查。
+`tidemq_watch_bytes`、`tidemq_watch_targets` 反映已计费观察占用，`tidemq_watch_admission_rejected_total` 统计观察准入拒绝，`tidemq_watch_rechecks_total` 和 `tidemq_watch_dirty_total` 区分复查与实际就绪版本变化。`tidemq_watch_result_capacity_releases_total` 统计数据组结果槽的实际释放；消息已 ACK 不代表对应原 Read 结果已经退休。`tidemq_watch_cleanup_unknown_total` 增长说明下游取消尚未获得清理确认，应关联有限 deadline、断连和关闭结果排查。
 
 `tidemq_watch_group_reads_total`、`tidemq_watch_group_retires_total`、`tidemq_watch_empty_reads_total` 记录观察启用后实际应用的读取、退休及空读。比较空闲开销时，固定同一业务窗口、版本与负载，核对计数启用时点；不能用全部 Raft index 增量直接代替细分命令次数。CPU 火焰图、无采样吞吐和尾延迟也应分别测量。
 
