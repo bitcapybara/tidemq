@@ -23,6 +23,10 @@ use super::{Error, Result};
 #[path = "consumer_tests.rs"]
 pub(super) mod consumer_tests;
 
+#[cfg(test)]
+#[path = "../../tests/runtime_support/consumer_control_lease.rs"]
+pub(super) mod control_lease_tests;
+
 fn payload<T: Message + Default>(frame: &Frame, limits: &ProtocolLimits) -> Result<T> {
     decode_payload(frame.payload.clone(), limits)
         .map_err(|source| Error::operation("decode public business request", source))
@@ -59,7 +63,7 @@ impl Service {
             .await
     }
 
-    async fn data_lease_for(
+    pub(super) async fn data_lease_for(
         &self,
         group: u64,
         partition: PartitionKey,
