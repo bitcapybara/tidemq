@@ -398,6 +398,7 @@ fn start_read(
         request,
         operation: Id::new_v7()?,
         applied: false,
+        retiring: false,
         uncertain: false,
         pool,
         credit: Some(credit),
@@ -471,8 +472,10 @@ pub(super) fn finish_read(
                 return Ok(());
             }
             read.uncertain |= error.outcome_unknown();
+            // AssignmentBusy from GroupRead means its successor gate is not open yet.
+            let waiting_for_gate = !read.applied && !read.retiring && read_gate_pending(&error);
             drop(read);
-            if !no_work(&error) {
+            if !no_work(&error) && !waiting_for_gate {
                 drop(state);
                 report_error(core, error);
             }

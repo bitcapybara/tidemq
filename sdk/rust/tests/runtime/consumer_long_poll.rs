@@ -142,6 +142,152 @@ fn key_for(shard: &tidemq_sdk::ShardInfo, topic: Id) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_child_read_waits_for_its_gate_without_changing_original_identity() {
+    use tidemq::runtime::consumer_read_test_hooks::InstalledReadReplyFault;
+    let _serial = SERIAL.lock().await;
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter("tidemq_sdk::consumer_recovery=debug")
+        .try_init();
+    let runtime = standalone().await;
+    let client = runtime.client(1).await;
+    let tenant = client.admin().create_tenant("test").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    const GATED: &str = "test/app/sdk-gated-child";
+    let topic = client.admin().create_topic(GATED).await.unwrap();
+    let topic_id: Id = topic.id().to_string().parse().unwrap();
+    let consumer = client
+        .new_stream_consumer(GATED, "gated")
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(GATED).build().await.unwrap();
+    let old = producer.send(Message::new("predecessor")).await.unwrap();
+    let held = tokio::time::timeout(Duration::from_secs(15), consumer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(held.message_id(), old.message_id());
+    client
+        .admin()
+        .split_topic_at(GATED, 1_u64 << 63)
+        .await
+        .unwrap();
+    let active: Vec<_> = client
+        .admin()
+        .topic_shards(GATED)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|shard| !shard.sealed)
+        .collect();
+    let shard = active.first().unwrap();
+    let key = key_for(shard, topic_id);
+    let wire = group_watch::WireClient::connect(&runtime, 1).await;
+    let layout_reply = wire
+        .call(group_watch::frame(
+            tidemq_protocol::common::FrameKind::GetTopicLayout,
+            Id::new_v7().unwrap(),
+            &tidemq_protocol::public::GetTopicLayout {
+                topic_id: Bytes::copy_from_slice(topic_id.as_bytes()),
+                ..Default::default()
+            },
+        ))
+        .await;
+    let layout: tidemq_protocol::public::TopicLayoutResult = group_watch::decoded(
+        &layout_reply,
+        tidemq_protocol::common::FrameKind::TopicLayoutResult,
+    );
+    let child = layout
+        .active
+        .iter()
+        .find(|entry| {
+            entry.shard_id.as_ref() == shard.id.to_string().parse::<Id>().unwrap().as_bytes()
+        })
+        .unwrap();
+    let child_id = Id::from_slice(&child.shard_id).unwrap();
+    let cluster = runtime.configs.get(&1).unwrap().cluster_id.parse().unwrap();
+    let fault = InstalledReadReplyFault::install(
+        cluster,
+        vec![PartitionKey {
+            topic_id,
+            partition: child.birth_partition,
+        }],
+    )
+    .unwrap();
+    let sent = producer
+        .send(Message::new("successor").key(key))
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            assert!(
+                consumer.try_receive().unwrap().is_none(),
+                "A closed child gate delivered before the predecessor was acknowledged"
+            );
+            let diagnostics = consumer.diagnostics().unwrap();
+            if diagnostics.assigned_targets >= active.len() && diagnostics.recovery_queue > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("The child Read did not reach the closed gate");
+    assert!(
+        !fault
+            .wait_for_targets(1, Instant::now() + Duration::from_millis(50))
+            .await,
+        "The child returned a successful Read before the predecessor was acknowledged"
+    );
+    consumer.ack_cumulative(&held).await.unwrap();
+    assert!(
+        fault
+            .wait_for_targets(1, Instant::now() + Duration::from_secs(15))
+            .await
+    );
+    let attempts = fault.attempts();
+    assert!(!attempts.is_empty() && !fault.overflowed());
+    let original = attempts.first().unwrap();
+    assert!(
+        attempts
+            .iter()
+            .all(|attempt| attempt.operation == original.operation
+                && attempt.sequence == original.sequence
+                && attempt.member_epoch == original.member_epoch
+                && attempt.max_messages == original.max_messages
+                && attempt.max_bytes == original.max_bytes)
+    );
+    eprintln!(
+        "Gated child original identity: {}",
+        serde_json::json!({
+            "shard": child_id.to_string(), "operation": original.operation.to_string(),
+            "sequence": original.sequence, "member_epoch": original.member_epoch,
+            "attempts": attempts.len()
+        })
+    );
+    fault.release();
+    let delivery = tokio::time::timeout(Duration::from_secs(15), consumer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delivery.message_id(), sent.message_id());
+    consumer.ack_cumulative(&delivery).await.unwrap();
+    drop((held, delivery));
+    let closed = consumer.close().await.unwrap();
+    assert_eq!(closed.unresolved_reads(), 0);
+    assert_eq!(closed.unresolved_watches(), 0);
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    assert_eq!(client.metrics().snapshot().admitted_bytes, 0);
+    runtime.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_sdk_uses_native_protection_while_business_holds_ordinary_credit() {
     let _serial = SERIAL.lock().await;
     let runtime = standalone().await;

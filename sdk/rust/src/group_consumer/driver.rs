@@ -31,6 +31,7 @@ pub(super) struct ReadAttempt {
     request: public::GroupRead,
     operation: Id,
     applied: bool,
+    retiring: bool,
     uncertain: bool,
     pool: Pool,
     credit: Option<Credit>,
@@ -468,7 +469,8 @@ async fn poll_read(
     permit: Attempt,
 ) -> Result<ReadProgress> {
     let (request, operation, applied, original_deadline, uncertain) = {
-        let read = work.lock().map_err(|_| Error::Closed)?;
+        let mut read = work.lock().map_err(|_| Error::Closed)?;
+        read.retiring = read.applied;
         (
             read.request.clone(),
             read.operation,
@@ -510,6 +512,8 @@ async fn poll_read(
             member_epoch: request.member_epoch,
             sequence: request.sequence,
         };
+        // A fenced body can be discarded without setting applied, but retirement is still a mutation.
+        work.lock().map_err(|_| Error::Closed)?.retiring = true;
         let _: public::GroupRetired = core
             .client
             .request_reserved(
@@ -540,7 +544,8 @@ async fn poll_read(
             shard = %domain,
             member_epoch = request.member_epoch,
             sequence = request.sequence,
-            phase = if read.applied { "retire" } else { "read" },
+            phase = if read.retiring { "retire" } else { "read" },
+            waiting_for_gate = !read.applied && !read.retiring && read_gate_pending(error),
             error_kind = ?error.kind(),
             outcome_unknown = error.outcome_unknown(),
             "Consumer original read attempt failed"
@@ -552,6 +557,18 @@ async fn poll_read(
             );
     }
     result
+}
+
+fn read_gate_pending(error: &Error) -> bool {
+    match error {
+        Error::RequestUnknown { source } => read_gate_pending(source),
+        Error::Remote {
+            code: tidemq_protocol::common::ErrorCode::AssignmentBusy,
+            outcome: tidemq_protocol::common::Outcome::Rejected,
+            ..
+        } => true,
+        _ => false,
+    }
 }
 
 pub(super) fn no_work(error: &Error) -> bool {

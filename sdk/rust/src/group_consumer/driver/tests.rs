@@ -14,6 +14,154 @@ fn remote_failure(code: tidemq_protocol::common::ErrorCode, retryable: bool) -> 
     }
 }
 
+#[tokio::test]
+async fn a_read_gate_rejection_retries_only_the_same_unapplied_read() {
+    use tidemq_protocol::common::ErrorCode;
+    let client = client();
+    let core = core(&client, 1, 256, 8 * 1024 * 1024);
+    let (id, read, permit) = scheduling::next_read(&core, false).unwrap().unwrap();
+    let original = {
+        let read = read.lock().unwrap();
+        (
+            read.operation,
+            read.request.clone(),
+            read.deadline,
+            read.pool,
+        )
+    };
+    drop(permit);
+    let error = remote_failure(ErrorCode::AssignmentBusy, false);
+    assert!(
+        !no_work(&error),
+        "The exception must not change non-Read recovery"
+    );
+    scheduling::finish_read(&core, id, &read, Err(error)).unwrap();
+    assert!(core.try_receive().unwrap().is_none());
+    unknown(&core, id, &read);
+    scheduling::finish_read(
+        &core,
+        id,
+        &read,
+        Err(remote_failure(ErrorCode::AssignmentBusy, false).preserve_uncertainty(true)),
+    )
+    .unwrap();
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .next_poll = Instant::now();
+    let (_, recovered, permit) = scheduling::next_read(&core, true).unwrap().unwrap();
+    assert!(Arc::ptr_eq(&read, &recovered));
+    let retained = recovered.lock().unwrap();
+    assert_eq!(
+        (
+            retained.operation,
+            retained.request.clone(),
+            retained.deadline,
+            retained.pool
+        ),
+        original
+    );
+    assert!(retained.uncertain && retained.credit.is_some());
+    drop(retained);
+    drop(permit);
+    let request = read.lock().unwrap().request.clone();
+    accept_read(
+        &core,
+        id,
+        &read,
+        &request,
+        deliveries(&read, Bytes::from_static(b"gate-open")),
+    )
+    .unwrap();
+    scheduling::finish_read(
+        &core,
+        id,
+        &read,
+        Err(remote_failure(ErrorCode::AssignmentBusy, false)),
+    )
+    .unwrap();
+    assert_eq!(
+        core.try_receive().unwrap_err().kind(),
+        crate::ErrorKind::Conflict,
+        "The Read exception must not hide a retirement refusal"
+    );
+    assert_eq!(core.state().unwrap().queue.len(), 1);
+    {
+        let mut read = read.lock().unwrap();
+        // A fenced response can be discarded before applied is set, then still require retirement.
+        read.applied = false;
+        read.retiring = true;
+    }
+    scheduling::finish_read(
+        &core,
+        id,
+        &read,
+        Err(remote_failure(ErrorCode::AssignmentBusy, false)),
+    )
+    .unwrap();
+    assert_eq!(
+        core.try_receive().unwrap_err().kind(),
+        crate::ErrorKind::Conflict
+    );
+}
+
+fn assert_read_refusal_visible(error: Error) {
+    let client = client();
+    let core = core(&client, 1, 256, 8 * 1024 * 1024);
+    let (id, read, permit) = scheduling::next_read(&core, false).unwrap().unwrap();
+    let kind = error.kind();
+    drop(permit);
+    scheduling::finish_read(&core, id, &read, Err(error)).unwrap();
+    assert_eq!(core.try_receive().unwrap_err().kind(), kind);
+    assert!(Arc::ptr_eq(
+        core.state()
+            .unwrap()
+            .domains
+            .get(&id)
+            .unwrap()
+            .read
+            .as_ref()
+            .unwrap(),
+        &read
+    ));
+}
+
+#[tokio::test]
+async fn nonretryable_read_refusals_other_than_a_closed_gate_remain_visible() {
+    use tidemq_protocol::common::{ErrorCode, Outcome};
+    for code in [
+        ErrorCode::Forbidden,
+        ErrorCode::Unauthenticated,
+        ErrorCode::DeduplicationExpired,
+        ErrorCode::OffsetExpired,
+        ErrorCode::SessionExpired,
+        ErrorCode::ContentConflict,
+        ErrorCode::QuotaExceeded,
+        ErrorCode::Unavailable,
+        ErrorCode::InvalidRequest,
+    ] {
+        assert_read_refusal_visible(remote_failure(code, false));
+    }
+    assert_read_refusal_visible(Error::Protocol {
+        source: tidemq_protocol::Error::Limit {
+            name: "read protocol bound",
+        },
+    });
+    assert_read_refusal_visible(Error::ResponseMismatch {
+        reason: "Read result is malformed".into(),
+    });
+    assert_read_refusal_visible(Error::Query {
+        source: Box::new(remote_failure(ErrorCode::AssignmentBusy, false)),
+    });
+    let mut unknown = remote_failure(ErrorCode::AssignmentBusy, false);
+    if let Error::Remote { outcome, .. } = &mut unknown {
+        *outcome = Outcome::Unknown;
+    }
+    assert_read_refusal_visible(unknown);
+}
+
 #[test]
 fn terminal_causes_are_not_made_retryable_by_query_or_unknown_wrappers() {
     use tidemq_protocol::common::ErrorCode;
