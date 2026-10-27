@@ -33,13 +33,15 @@ bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baselin
 | `TIDEMQ_PERF_MESSAGE_BYTES` | 1024 | 32–65536，总 payload 不超过 512 MiB |
 | `TIDEMQ_PERF_CONCURRENCY` | 4 | 1–32，不超过消息数 |
 | `TIDEMQ_PERF_IDLE_SECONDS` | 10 | 1–60 |
+| `TIDEMQ_PERF_REQUEST_TIMEOUT_SECONDS` | 10 | 1–120，必须小于总 deadline |
+| `TIDEMQ_PERF_TIMEOUT_SECONDS` | 120 | 15–600，必须大于请求预算和 idle 时长 |
 | `TIDEMQ_PERF_SERVICE_CPUS` | 2-5 | taskset CPU 列表 |
 | `TIDEMQ_PERF_CLIENT_CPUS` | 6-7 | taskset CPU 列表 |
 | `TIDEMQ_PERF_PORT` | 17410 | 1024–55500；内部端口 +1，管理端口 +1000 |
 
 每个发送/消费 worker 共享同一原始 SDK handle。payload 包含本轮 ID、业务序号和校验内容；ledger 保存每条消息的 SDK receipt ID、delivery ID、提交/接收/持久 ACK 单调时间。允许接收先于发送 receipt 返回，最终要求同一身份逐条一致、无重复、无遗漏。收齐后额外观察 500 ms 捕获已排队的额外消息；不证明窗口之后永不出现重复。
 
-任何 SDK 错误或 Unknown 都使测量失败，不重新提交新身份，也不执行应用层重试。失败报告、部分 ledger 和原始 Pending 的诊断状态被保留。总 deadline 默认 120 秒，SDK 关闭另有 5 秒。输出目录已存在时拒绝复用。
+任何 SDK 错误或 Unknown 都使测量失败，不重新提交新身份，也不执行应用层重试。失败报告、部分 ledger 和原始 Pending 的诊断状态被保留。总 deadline 默认 120 秒，SDK 请求预算默认 10 秒，SDK 关闭另有 5 秒。调大 SDK 请求预算不会延长服务端控制 lease，Unknown 仍使测量失败。输出目录已存在时拒绝复用。
 
 `measurement/report.json` 中吞吐为发送开始到最后一条持久 ACK 的消息数/秒；提交延迟为每次 `send` 调用前到 receipt 返回，端到端延迟为同一次发送开始到接收。p50/p95/p99 使用最近秩，不插值。统计包括 SDK 排队和 RPC，排除本地 payload 构造。idle 模式不计算吞吐和延迟。
 

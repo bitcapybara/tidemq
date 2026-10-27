@@ -54,6 +54,9 @@ struct Args {
     idle_seconds: u64,
     #[arg(long, default_value_t = 120)]
     timeout_seconds: u64,
+    /// Existing SDK request budget, including original-identity recovery.
+    #[arg(long, default_value_t = 10)]
+    request_timeout_seconds: u64,
     /// Publish ready.json, then wait for the harness to create output-dir/start.
     #[arg(long)]
     wait_for_start: bool,
@@ -94,6 +97,11 @@ impl Args {
         ensure!(
             (15..=600).contains(&self.timeout_seconds) && self.idle_seconds < self.timeout_seconds,
             "Timeout must be in 15..=600 and exceed idle seconds"
+        );
+        ensure!(
+            (1..=120).contains(&self.request_timeout_seconds)
+                && self.request_timeout_seconds < self.timeout_seconds,
+            "Request timeout must be in 1..=120 and below the total timeout"
         );
         Ok(())
     }
@@ -173,7 +181,7 @@ async fn run(args: &Args) -> Result<()> {
                 TlsTrust::ca_file(&args.ca),
                 Credentials::token_file(&args.token_file),
             )
-            .request_timeout(Duration::from_secs(10))
+            .request_timeout(Duration::from_secs(args.request_timeout_seconds))
             .build()
             .await?,
         );
@@ -447,6 +455,21 @@ mod tests {
         for hidden in ["token_file", "ca.pem", "new-output"] {
             assert!(!text.contains(hidden));
         }
+    }
+
+    #[test]
+    fn request_deadline_remains_bounded_by_the_original_task_deadline() {
+        let mut value = args();
+        value.request_timeout_seconds = 30;
+        value.validate().unwrap();
+        value.request_timeout_seconds = 0;
+        assert!(value.validate().is_err());
+        value.request_timeout_seconds = 120;
+        assert!(value.validate().is_err());
+        value.timeout_seconds = 600;
+        value.validate().unwrap();
+        value.request_timeout_seconds = 121;
+        assert!(value.validate().is_err());
     }
 
     #[tokio::test]
