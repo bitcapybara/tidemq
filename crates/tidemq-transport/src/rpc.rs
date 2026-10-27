@@ -17,6 +17,10 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::{Connection, FrameReceiver, FrameSender, FramedStream, ReceivedFrame, Session};
 
+mod protected;
+use protected::ProtectedLane;
+pub use protected::{ProtectedCapacity, RpcBudget};
+
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Invalid RPC configuration: {reason}"))]
@@ -96,6 +100,7 @@ impl RpcConfig {
 struct Pending {
     result: oneshot::Sender<ReceivedFrame>,
     operation: Id,
+    lane: Option<Arc<()>>,
     _slots: Arc<OwnedSemaphorePermit>,
     _bytes: Arc<OwnedSemaphorePermit>,
 }
@@ -107,6 +112,12 @@ struct Outbound {
     _bytes: Arc<OwnedSemaphorePermit>,
 }
 
+#[derive(Clone)]
+struct Lane {
+    sender: mpsc::Sender<Outbound>,
+    identity: Arc<()>,
+}
+
 #[derive(Clone, Copy)]
 enum Priority {
     Request,
@@ -114,6 +125,7 @@ enum Priority {
     Completion,
 }
 
+#[derive(Clone)]
 struct Capacity {
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
@@ -129,9 +141,60 @@ struct State {
     connection: Option<Connection>,
     completion: Option<Capacity>,
     core: Option<Capacity>,
+    shared: Option<RpcBudget>,
+    protected: Option<Arc<ProtectedLane>>,
 }
 
 impl State {
+    fn for_streams(
+        streams: &[FramedStream],
+        config: &RpcConfig,
+        session: Option<&Session>,
+        shared: Option<RpcBudget>,
+        protected: Option<Arc<ProtectedLane>>,
+    ) -> Result<Arc<Self>> {
+        let completion = control_capacity(streams, session, config)?;
+        let core = control_capacity(streams, session, config)?;
+        let reservations = [core.as_ref(), completion.as_ref()];
+        let reserved_requests: usize = reservations
+            .iter()
+            .flatten()
+            .map(|limit| limit.slots.available_permits())
+            .sum();
+        let reserved_bytes: usize = reservations
+            .iter()
+            .flatten()
+            .map(|limit| limit.bytes.available_permits())
+            .sum();
+        let capacity = shared
+            .as_ref()
+            .map(RpcBudget::capacity)
+            .or_else(|| protected.as_ref().map(|lane| lane.capacity()))
+            .unwrap_or_else(|| Capacity {
+                slots: Arc::new(Semaphore::new(
+                    config
+                        .max_pending_requests
+                        .saturating_sub(reserved_requests),
+                )),
+                bytes: Arc::new(Semaphore::new(
+                    (config.max_pending_bytes as usize).saturating_sub(reserved_bytes),
+                )),
+                max_bytes: config.max_pending_bytes,
+            });
+        Ok(Arc::new(Self {
+            pending: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
+            draining: AtomicBool::new(false),
+            slots: capacity.slots,
+            bytes: capacity.bytes,
+            connection: session.map(Session::connection),
+            completion,
+            core,
+            shared,
+            protected,
+        }))
+    }
+
     fn available_requests(&self) -> usize {
         self.slots.available_permits()
             + [&self.core, &self.completion]
@@ -150,8 +213,10 @@ impl State {
     }
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
-        self.slots.close();
-        self.bytes.close();
+        if self.shared.is_none() && self.protected.is_none() {
+            self.slots.close();
+            self.bytes.close();
+        }
         for capacity in [&self.completion, &self.core].into_iter().flatten() {
             capacity.slots.close();
             capacity.bytes.close();
@@ -163,17 +228,32 @@ impl State {
             pending.clear();
         }
     }
+
+    fn close_lane(&self, lane: &Arc<()>) {
+        match self.pending.lock() {
+            Ok(mut pending) => pending.retain(|_, request| {
+                request
+                    .lane
+                    .as_ref()
+                    .is_none_or(|current| !Arc::ptr_eq(current, lane))
+            }),
+            Err(error) => {
+                drop(error);
+                self.close();
+            }
+        }
+    }
 }
 
 struct Inner {
     state: Arc<State>,
-    writers: Vec<mpsc::Sender<Outbound>>,
-    core_writers: Vec<mpsc::Sender<Outbound>>,
-    request_writer: Mutex<Option<mpsc::Sender<Outbound>>>,
+    writers: Vec<Lane>,
+    core_writers: Vec<Lane>,
+    request_writer: Mutex<Option<Lane>>,
     request_open: tokio::sync::Mutex<()>,
     protocol: tidemq_protocol::ProtocolLimits,
     next_lane: AtomicUsize,
-    ack_writer: Mutex<Option<mpsc::Sender<Outbound>>>,
+    ack_writer: Mutex<Option<Lane>>,
     ack_open: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     _session: Option<Arc<Session>>,
@@ -225,6 +305,28 @@ impl RpcClient {
         request_lanes: usize,
         deadline: Instant,
     ) -> Result<Self> {
+        Self::from_session_lanes(session, config, request_lanes, None, deadline).await
+    }
+
+    /// Reconnects share admission with existing consumers and their private reservations.
+    pub async fn from_session_with_lanes_and_budget(
+        session: Arc<Session>,
+        config: RpcConfig,
+        request_lanes: usize,
+        budget: RpcBudget,
+        deadline: Instant,
+    ) -> Result<Self> {
+        budget.validate(&config, &session.connection(), request_lanes)?;
+        Self::from_session_lanes(session, config, request_lanes, Some(budget), deadline).await
+    }
+
+    async fn from_session_lanes(
+        session: Arc<Session>,
+        config: RpcConfig,
+        request_lanes: usize,
+        budget: Option<RpcBudget>,
+        deadline: Instant,
+    ) -> Result<Self> {
         if request_lanes == 0 || request_lanes > 64 {
             return Err(Error::Configuration {
                 reason: "request_lanes must be between 1 and 64",
@@ -247,7 +349,7 @@ impl RpcClient {
                 }
             }
         }
-        Self::start_inner(streams, config, Some(session))
+        Self::start_with_capacity(streams, config, Some(session), budget, None)
     }
 
     fn start_inner(
@@ -255,47 +357,28 @@ impl RpcClient {
         config: RpcConfig,
         session: Option<Arc<Session>>,
     ) -> Result<Self> {
+        Self::start_with_capacity(streams, config, session, None, None)
+    }
+
+    fn start_with_capacity(
+        streams: Vec<FramedStream>,
+        config: RpcConfig,
+        session: Option<Arc<Session>>,
+        shared: Option<RpcBudget>,
+        protected: Option<Arc<ProtectedLane>>,
+    ) -> Result<Self> {
         config.validate()?;
         if streams.is_empty() || streams.len() > 64 {
             return Err(Error::Configuration {
                 reason: "streams must contain between 1 and 64 RPC lanes",
             });
         }
-        let completion = control_capacity(&streams, session.as_deref(), &config)?;
-        let core = control_capacity(&streams, session.as_deref(), &config)?;
-        let reserved_requests = completion
-            .as_ref()
-            .map_or(0, |limit| limit.slots.available_permits())
-            .saturating_add(
-                core.as_ref()
-                    .map_or(0, |limit| limit.slots.available_permits()),
-            );
-        let reserved_bytes = completion
-            .as_ref()
-            .map_or(0, |limit| limit.bytes.available_permits())
-            .saturating_add(
-                core.as_ref()
-                    .map_or(0, |limit| limit.bytes.available_permits()),
-            );
-        let requests = config
-            .max_pending_requests
-            .saturating_sub(reserved_requests);
-        let bytes = (config.max_pending_bytes as usize).saturating_sub(reserved_bytes);
         let protocol = streams
             .first()
             .ok_or(Error::Closed)?
             .protocol_limits()
             .clone();
-        let state = Arc::new(State {
-            pending: Mutex::new(HashMap::new()),
-            closed: AtomicBool::new(false),
-            draining: AtomicBool::new(false),
-            slots: Arc::new(Semaphore::new(requests)),
-            bytes: Arc::new(Semaphore::new(bytes)),
-            connection: session.as_ref().map(|session| session.connection()),
-            completion,
-            core,
-        });
+        let state = State::for_streams(&streams, &config, session.as_deref(), shared, protected)?;
         let mut writers = Vec::new();
         let mut core_writers = Vec::new();
         let mut tasks = Vec::new();
@@ -308,19 +391,18 @@ impl RpcClient {
         }
         for stream in streams {
             let purpose = stream.purpose();
-            let (sender, receiver) = stream.split();
-            let (tx, rx) = mpsc::channel(config.max_pending_requests);
-            match purpose {
-                crate::StreamPurpose::Ack => ack_writer = Some(tx),
-                crate::StreamPurpose::Core => core_writers.push(tx),
-                _ => writers.push(tx),
-            }
-            tasks.push(tokio::spawn(write_loop(sender, rx, Arc::downgrade(&state))));
-            tasks.push(tokio::spawn(read_loop(
-                receiver,
-                Arc::downgrade(&state),
+            let (lane, task) = lane_task(
+                stream,
+                &state,
+                config.max_pending_requests,
                 config.read_idle_timeout,
-            )));
+            );
+            match purpose {
+                crate::StreamPurpose::Ack => ack_writer = Some(lane),
+                crate::StreamPurpose::Core => core_writers.push(lane),
+                _ => writers.push(lane),
+            }
+            tasks.push(task);
         }
         Ok(Self {
             inner: Arc::new(Inner {
@@ -351,19 +433,26 @@ impl RpcClient {
     }
 
     pub fn lane_count(&self) -> usize {
-        self.inner.writers.len()
-            + self.inner.core_writers.len()
+        self.inner
+            .writers
+            .iter()
+            .filter(|lane| !lane.sender.is_closed())
+            .count()
+            + self
+                .inner
+                .core_writers
+                .iter()
+                .filter(|lane| !lane.sender.is_closed())
+                .count()
             + usize::from(
-                self.inner
-                    .ack_writer
-                    .lock()
-                    .is_ok_and(|writer| writer.is_some()),
+                self.inner.ack_writer.lock().is_ok_and(|writer| {
+                    writer.as_ref().is_some_and(|lane| !lane.sender.is_closed())
+                }),
             )
             + usize::from(
-                self.inner
-                    .request_writer
-                    .lock()
-                    .is_ok_and(|writer| writer.is_some()),
+                self.inner.request_writer.lock().is_ok_and(|writer| {
+                    writer.as_ref().is_some_and(|lane| !lane.sender.is_closed())
+                }),
             )
     }
 
@@ -489,6 +578,7 @@ impl RpcClient {
                 Pending {
                     result,
                     operation,
+                    lane: None,
                     _slots: slots.clone(),
                     _bytes: bytes.clone(),
                 },
@@ -509,6 +599,7 @@ impl RpcClient {
             deadline,
             affinity,
             priority,
+            Some(id),
         )
         .await?;
         Ok(RpcResponse {
@@ -532,6 +623,7 @@ impl RpcClient {
             deadline,
             None,
             priority,
+            None,
         )
         .await
     }
@@ -544,6 +636,23 @@ impl RpcClient {
     ) -> Result<(Arc<OwnedSemaphorePermit>, Arc<OwnedSemaphorePermit>)> {
         if self.is_closed() || self.inner.state.draining.load(Ordering::Acquire) {
             return Err(Error::Closed);
+        }
+        if self
+            .inner
+            .state
+            .protected
+            .as_ref()
+            .is_some_and(|lane| !lane.parent_admitting())
+        {
+            return Err(Error::Closed);
+        }
+        if self.inner.state.protected.is_some()
+            && (frame.kind != i32::from(FrameKind::GroupRead)
+                || frame.traffic_class != i32::from(TrafficClass::Delivery))
+        {
+            return Err(Error::Configuration {
+                reason: "protected RPC capacity is only available to a new GroupRead",
+            });
         }
         let length = u32::try_from(frame.encoded_len()).map_err(|_| Error::Admission {
             resource: "encoded RPC frame length exceeds u32",
@@ -600,14 +709,11 @@ impl RpcClient {
         deadline: Instant,
         affinity: Option<u64>,
         priority: Priority,
+        request: Option<Id>,
     ) -> Result<()> {
         let writer = match priority {
             Priority::Completion => {
                 self.special_writer(crate::StreamPurpose::Ack, deadline)
-                    .await?
-            }
-            Priority::Request if self.inner.writers.is_empty() => {
-                self.special_writer(crate::StreamPurpose::Request, deadline)
                     .await?
             }
             priority => {
@@ -617,12 +723,8 @@ impl RpcClient {
                     &self.inner.writers
                 };
                 let count = writers.len();
-                if count == 0 {
-                    return Err(Error::Configuration {
-                        reason: "RPC has no matching stream lane",
-                    });
-                }
                 let lane = match affinity {
+                    _ if count == 0 => 0,
                     Some(affinity) => usize::try_from(affinity % count as u64).map_err(|_| {
                         Error::Configuration {
                             reason: "RPC affinity exceeds the platform address space",
@@ -630,28 +732,72 @@ impl RpcClient {
                     })?,
                     None => self.inner.next_lane.fetch_add(1, Ordering::Relaxed) % count,
                 };
-                writers.get(lane).cloned().ok_or(Error::Closed)?
+                match writers
+                    .iter()
+                    .skip(lane)
+                    .chain(writers.iter().take(lane))
+                    .find(|lane| !lane.sender.is_closed())
+                    .cloned()
+                {
+                    Some(lane) => lane,
+                    None if matches!(priority, Priority::Request) => {
+                        if self.inner._session.is_none() {
+                            return Err(Error::Closed);
+                        }
+                        self.special_writer(crate::StreamPurpose::Request, deadline)
+                            .await?
+                    }
+                    None => return Err(Error::Closed),
+                }
             }
         };
-        timeout_at(deadline, writer.send(outbound))
-            .await
-            .map_err(|_| Error::Deadline {
+        // Keep enqueue and receiver teardown on the same barrier, including notifications.
+        let mut pending = self.inner.state.pending.lock().map_err(|_| Error::Closed)?;
+        if self.inner.state.closed.load(Ordering::Acquire) {
+            return Err(Error::Closed);
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Deadline {
                 may_have_been_sent: false,
-            })?
-            .map_err(|_| Error::Closed)
+            });
+        }
+        if let Some(id) = request {
+            let request = pending
+                .get_mut(&id)
+                .filter(|request| Arc::ptr_eq(&request._slots, &outbound._slots))
+                .ok_or(Error::Closed)?;
+            if writer.sender.is_closed() {
+                return Err(Error::Closed);
+            }
+            request.lane = Some(writer.identity.clone());
+        }
+        let result = writer.sender.try_send(outbound);
+        drop(pending);
+        result.map_err(|error| match error {
+            mpsc::error::TrySendError::Closed(_) => Error::Closed,
+            mpsc::error::TrySendError::Full(_) => Error::Admission {
+                resource: "RPC lane queue",
+            },
+        })
     }
 
     async fn special_writer(
         &self,
         purpose: crate::StreamPurpose,
         deadline: Instant,
-    ) -> Result<mpsc::Sender<Outbound>> {
+    ) -> Result<Lane> {
         let (cached, opening) = if purpose == crate::StreamPurpose::Ack {
             (&self.inner.ack_writer, &self.inner.ack_open)
         } else {
             (&self.inner.request_writer, &self.inner.request_open)
         };
-        if let Some(writer) = cached.lock().map_err(|_| Error::Closed)?.clone() {
+        if let Some(writer) = cached
+            .lock()
+            .map_err(|_| Error::Closed)?
+            .as_ref()
+            .filter(|lane| !lane.sender.is_closed())
+            .cloned()
+        {
             return Ok(writer);
         }
         let _opening = timeout_at(deadline, opening.lock())
@@ -659,7 +805,13 @@ impl RpcClient {
             .map_err(|_| Error::Deadline {
                 may_have_been_sent: false,
             })?;
-        if let Some(writer) = cached.lock().map_err(|_| Error::Closed)?.clone() {
+        if let Some(writer) = cached
+            .lock()
+            .map_err(|_| Error::Closed)?
+            .as_ref()
+            .filter(|lane| !lane.sender.is_closed())
+            .cloned()
+        {
             return Ok(writer);
         }
         let session = self.inner._session.as_ref().ok_or(Error::Configuration {
@@ -676,20 +828,16 @@ impl RpcClient {
         if self.is_closed() || self.inner.state.draining.load(Ordering::Acquire) {
             return Err(Error::Closed);
         }
-        let (sender, receiver) = stream.split();
-        let (tx, rx) = mpsc::channel(self.inner.max_pending_requests);
-        tasks.push(tokio::spawn(write_loop(
-            sender,
-            rx,
-            Arc::downgrade(&self.inner.state),
-        )));
-        tasks.push(tokio::spawn(read_loop(
-            receiver,
-            Arc::downgrade(&self.inner.state),
+        tasks.retain(|task| !task.is_finished());
+        let (lane, task) = lane_task(
+            stream,
+            &self.inner.state,
+            self.inner.max_pending_requests,
             self.inner.read_idle_timeout,
-        )));
-        *writer = Some(tx.clone());
-        Ok(tx)
+        );
+        tasks.push(task);
+        *writer = Some(lane.clone());
+        Ok(lane)
     }
 
     /// Waits only until the supplied deadline, then releases all tasks and waiters.
@@ -738,6 +886,54 @@ impl RpcClient {
             let _ = session.shutdown(deadline).await;
         }
     }
+}
+
+fn lane_task(
+    stream: FramedStream,
+    state: &Arc<State>,
+    capacity: usize,
+    idle: Duration,
+) -> (Lane, JoinHandle<()>) {
+    let purpose = stream.purpose();
+    let (mut sender, mut receiver) = stream.split();
+    let (tx, mut queue) = mpsc::channel(capacity);
+    let lane = Lane {
+        sender: tx,
+        identity: Arc::new(()),
+    };
+    let identity = lane.identity.clone();
+    let weak = Arc::downgrade(state);
+    let owner = state.protected.clone();
+    let task = tokio::spawn(async move {
+        let _owner = owner;
+        let result = tokio::select! {
+            result = write_loop(&mut sender, &mut queue) => result,
+            result = read_loop(&mut receiver, &weak, &identity, idle) => result,
+        };
+        // Reject enqueues before waking unknown callers; both stream halves stop together.
+        queue.close();
+        let _ = sender.reset();
+        drop((sender, receiver));
+        if let Some(state) = weak.upgrade() {
+            if purpose == crate::StreamPurpose::Request
+                && state.protected.is_none()
+                && !state.connection.as_ref().is_some_and(Connection::is_closed)
+                && matches!(
+                    result,
+                    Err(crate::Error::Memory {
+                        source: crate::budget::Error::Admission { .. }
+                    })
+                )
+            {
+                state.close_lane(&identity);
+            } else {
+                state.close();
+            }
+        }
+        // The pending lock above joined any granted send before the receiver drops.
+        drop(queue);
+    });
+    (lane, task)
 }
 
 fn control_capacity(
@@ -820,51 +1016,54 @@ impl Drop for Waiter {
 }
 
 async fn write_loop(
-    mut sender: FrameSender,
-    mut queue: mpsc::Receiver<Outbound>,
-    state: Weak<State>,
-) {
+    sender: &mut FrameSender,
+    queue: &mut mpsc::Receiver<Outbound>,
+) -> crate::Result<()> {
     while let Some(outbound) = queue.recv().await {
         if Instant::now() >= outbound.deadline {
             continue;
         }
-        if sender
-            .send_owned(outbound.frame, outbound.deadline)
-            .await
-            .is_err()
-        {
-            break;
-        }
+        sender.send_owned(outbound.frame, outbound.deadline).await?;
     }
-    if let Some(state) = state.upgrade() {
-        state.close();
-    }
+    Ok(())
 }
 
-async fn read_loop(mut receiver: FrameReceiver, state: Weak<State>, idle: Duration) {
+async fn read_loop(
+    receiver: &mut FrameReceiver,
+    weak: &Weak<State>,
+    lane: &Arc<()>,
+    idle: Duration,
+) -> crate::Result<()> {
     loop {
-        let Ok(Some(response)) = receiver.receive_next(idle).await else {
-            break;
+        let Some(response) = receiver.receive_next(idle).await? else {
+            return Ok(());
         };
-        let Ok(id) = Id::from_slice(&response.frame().request_id) else {
-            break;
+        let id = Id::from_slice(&response.frame().request_id)
+            .map_err(|source| crate::Error::Protocol { source })?;
+        let Some(state) = weak.upgrade() else {
+            return Ok(());
         };
-        let Some(state) = state.upgrade() else { break };
-        let waiter = state
-            .pending
-            .lock()
-            .ok()
-            .and_then(|mut pending| pending.remove(&id));
-        if let Some(waiter) = waiter {
-            if response.frame().operation_id.as_ref() != waiter.operation.as_bytes() {
-                state.close();
-                break;
+        let waiter = {
+            let mut pending = state.pending.lock().map_err(|_| crate::Error::Poisoned)?;
+            if let Some(request) = pending.get(&id).filter(|request| {
+                request
+                    .lane
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, lane))
+            }) {
+                if response.frame().operation_id.as_ref() != request.operation.as_bytes() {
+                    return Err(crate::Error::Authorization {
+                        reason: "RPC response differs from the pending operation identity",
+                    });
+                }
+                pending.remove(&id)
+            } else {
+                None
             }
+        };
+        if let Some(waiter) = waiter {
             let _ = waiter.result.send(response);
         }
-    }
-    if let Some(state) = state.upgrade() {
-        state.close();
     }
 }
 
@@ -882,6 +1081,10 @@ async fn watch_liveness(state: Weak<State>, timeout: Duration) {
         let Some(connection) = state.connection.as_ref() else {
             return;
         };
+        if connection.is_closed() {
+            state.close();
+            return;
+        }
         let pending = state
             .pending
             .lock()
@@ -959,6 +1162,8 @@ mod tests {
             connection: None,
             completion: None,
             core: None,
+            shared: None,
+            protected: None,
         });
         let id = Id::new_v7().unwrap();
         let old_ticket = Arc::new(state.slots.clone().try_acquire_owned().unwrap());
@@ -973,6 +1178,7 @@ mod tests {
             Pending {
                 result: oneshot::channel().0,
                 operation: id,
+                lane: None,
                 _slots: new_ticket,
                 _bytes: Arc::new(state.bytes.clone().try_acquire_owned().unwrap()),
             },

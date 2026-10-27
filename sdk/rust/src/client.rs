@@ -15,7 +15,7 @@ use tidemq_protocol::{
 use tidemq_transport::{
     ClientCredentials, ClientTls, PeerTarget, ReceivedFrame, TransportConfig,
     budget::{MemoryBudget, MemoryLimits},
-    rpc::{RpcClient, RpcConfig},
+    rpc::{RpcBudget, RpcClient, RpcConfig},
 };
 use tokio::{
     sync::{Mutex, Semaphore},
@@ -24,6 +24,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{Admin, Error, Metrics, Result};
+
+pub(crate) mod admission;
+pub(crate) mod protected;
 
 /// Queues, reconnects and native transport all have finite application-owned bounds.
 #[derive(Clone, Debug)]
@@ -277,6 +280,7 @@ pub(crate) struct Inner {
     server_name: String,
     dual_stack: bool,
     pool: Pool,
+    delivery_budget: std::sync::Mutex<Option<RpcBudget>>,
     pub bytes: Arc<Semaphore>,
     pub producer_bytes: Arc<Semaphore>,
     pub producer_requests: Arc<Semaphore>,
@@ -284,6 +288,7 @@ pub(crate) struct Inner {
     pub control_requests: Arc<Semaphore>,
     pub control_memory: Arc<Semaphore>,
     pub resource_memory: Arc<Semaphore>,
+    pub admission: admission::Admission,
     _reserved_memory: tokio::sync::OwnedSemaphorePermit,
     pub metrics: Arc<Metrics>,
     pub(crate) consumers: std::sync::Mutex<Vec<Arc<crate::group_consumer::Core>>>,
@@ -340,10 +345,20 @@ impl Client {
     }
 
     async fn connect_inner(
-        mut config: ClientConfig,
+        config: ClientConfig,
         trust_roots: Bytes,
         access_token: String,
         deadline: Instant,
+    ) -> Result<Self> {
+        let client = Self::unconnected(config, trust_roots, access_token)?;
+        client.rpc(TrafficClass::Control, deadline).await?;
+        Ok(client)
+    }
+
+    fn unconnected(
+        mut config: ClientConfig,
+        trust_roots: Bytes,
+        access_token: String,
     ) -> Result<Self> {
         let server_name = config
             .server_name
@@ -371,6 +386,7 @@ impl Client {
             })?;
         let control_requests = (config.max_pending_requests / 4).max(1);
         let inner = Arc::new(Inner {
+            admission: admission::Admission::new(&config),
             producer_bytes: Arc::new(Semaphore::new(config.producer_bytes()?)),
             producer_requests: Arc::new(Semaphore::new(config.producer_request_limit() as usize)),
             bytes,
@@ -398,6 +414,7 @@ impl Client {
                 delivery: Mutex::new(None),
                 bulk: Mutex::new(None),
             },
+            delivery_budget: std::sync::Mutex::new(None),
             metrics: Arc::new(Metrics::default()),
             consumers: std::sync::Mutex::new(Vec::new()),
             deletions: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -413,7 +430,6 @@ impl Client {
             _owner: Some(Arc::new(ClientOwner(Arc::downgrade(&inner)))),
             inner,
         };
-        client.rpc(TrafficClass::Control, deadline).await?;
         Ok(client)
     }
 
@@ -527,18 +543,49 @@ impl Client {
             session.close();
             return Err(Error::Closed);
         }
-        let result = RpcClient::from_session_with_lanes(
-            session.clone(),
-            RpcConfig {
-                max_pending_requests: self.inner.config.max_pending_requests as usize,
-                max_pending_bytes: self.inner.config.max_pending_bytes as u32,
-                read_idle_timeout: self.inner.config.transport.idle_timeout,
-                liveness_timeout: self.inner.config.liveness_timeout,
-            },
-            self.inner.config.request_lanes,
-            deadline,
-        )
-        .await;
+        let config = RpcConfig {
+            max_pending_requests: self.inner.config.max_pending_requests as usize,
+            max_pending_bytes: self.inner.config.max_pending_bytes as u32,
+            read_idle_timeout: self.inner.config.transport.idle_timeout,
+            liveness_timeout: self.inner.config.liveness_timeout,
+        };
+        let result = if class == TrafficClass::Delivery {
+            let budget = {
+                let mut stored = self
+                    .inner
+                    .delivery_budget
+                    .lock()
+                    .map_err(|_| Error::Closed)?;
+                match stored.as_ref() {
+                    Some(budget) => budget.clone(),
+                    None => {
+                        let budget = RpcBudget::for_connection(
+                            &config,
+                            &session.connection(),
+                            self.inner.config.request_lanes,
+                        )?;
+                        *stored = Some(budget.clone());
+                        budget
+                    }
+                }
+            };
+            RpcClient::from_session_with_lanes_and_budget(
+                session.clone(),
+                config,
+                self.inner.config.request_lanes,
+                budget,
+                deadline,
+            )
+            .await
+        } else {
+            RpcClient::from_session_with_lanes(
+                session.clone(),
+                config,
+                self.inner.config.request_lanes,
+                deadline,
+            )
+            .await
+        };
         match result {
             Ok(rpc) => Ok(rpc),
             Err(source) => {
@@ -607,6 +654,7 @@ impl Client {
             payload,
             deadline,
             None,
+            None,
         )
         .await
     }
@@ -630,6 +678,31 @@ impl Client {
             payload,
             deadline,
             Some(affinity),
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)] // An admitted attempt uses the same wire envelope without reserving twice.
+    pub(crate) async fn request_reserved<M: Message, R: Message + Default>(
+        &self,
+        kind: FrameKind,
+        response_kind: FrameKind,
+        class: TrafficClass,
+        operation: Id,
+        payload: &M,
+        deadline: Instant,
+        attempt: &admission::Attempt,
+    ) -> Result<R> {
+        self.request_inner(
+            kind,
+            response_kind,
+            class,
+            operation,
+            payload,
+            deadline,
+            None,
+            Some(attempt),
         )
         .await
     }
@@ -645,6 +718,7 @@ impl Client {
         payload: &M,
         deadline: Instant,
         affinity: Option<u64>,
+        admitted: Option<&admission::Attempt>,
     ) -> Result<R> {
         let _timer = self.inner.metrics.timer();
         let mut uncertain = false;
@@ -654,8 +728,28 @@ impl Client {
                 .and_then(|request| self.frame(kind, class, request, operation, payload, deadline))
                 .map_err(|error| error.preserve_uncertainty(uncertain))?;
             let read_only = read_only_request(&frame, &self.inner.config.protocol);
+            let critical = tidemq_protocol::framing::is_completion(kind)
+                || tidemq_protocol::framing::is_core_control(&frame, &self.inner.config.protocol)?;
+            let _execution = if admitted.is_none() && !critical {
+                Some(
+                    self.inner
+                        .admission
+                        .attempt(admission::frame_bytes(&self.inner.config, class), deadline)
+                        .await
+                        .map_err(|error| error.preserve_uncertainty(uncertain))?,
+                )
+            } else {
+                None
+            };
             self.inner.metrics.record_request();
-            let response = match self.rpc(class, deadline).await {
+            let rpc = if kind == FrameKind::GroupRead
+                && let Some(native) = admitted.and_then(|attempt| attempt.native.as_ref())
+            {
+                native.rpc(self, deadline).await
+            } else {
+                self.rpc(class, deadline).await
+            };
+            let response = match rpc {
                 Ok(rpc) => {
                     if !read_only {
                         crate::request::mark_sent();
@@ -702,6 +796,7 @@ impl Client {
                                     | FrameKind::GetTopic
                                     | FrameKind::GetTopicLayout
                             ))
+                        && kind != FrameKind::GroupWatch
                         && attempt + 1 < self.inner.config.max_reconnect_attempts =>
                 {
                     if attempt == 0
@@ -1026,6 +1121,23 @@ fn backoff_delay(base: Duration, operation: Id, attempt: u32) -> Duration {
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) fn test_client(config: ClientConfig) -> Client {
+    let key = rcgen::KeyPair::generate().unwrap();
+    let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let mut client = Client::unconnected(
+        config,
+        Bytes::from(certificate.pem()),
+        "test-token-with-at-least-32-characters".into(),
+    )
+    .unwrap();
+    client._owner = None;
+    client
+}
+
 async fn resolve(endpoint: &str, deadline: Instant) -> Result<Vec<SocketAddr>> {
     let addresses = timeout_at(deadline, tokio::net::lookup_host(endpoint))
         .await
@@ -1067,7 +1179,8 @@ fn read_only_request(frame: &Frame, limits: &ProtocolLimits) -> bool {
             | FrameKind::GetClusterRegistry
             | FrameKind::ConsoleRead
             | FrameKind::GetConsoleOperation
-            | FrameKind::ListIdentities,
+            | FrameKind::ListIdentities
+            | FrameKind::GroupWatch,
         ) => true,
         Ok(FrameKind::ConsumerControl) => {
             decode_payload::<public::ConsumerControl>(frame.payload.clone(), limits).is_ok_and(
@@ -1145,6 +1258,9 @@ mod console_query_tests {
             (FrameKind::ConsoleRead, true),
             (FrameKind::GetConsoleOperation, true),
             (FrameKind::ConsoleWrite, false),
+            (FrameKind::GroupWatch, true),
+            (FrameKind::GroupRead, false),
+            (FrameKind::GroupRetireRead, false),
         ] {
             let frame = Frame {
                 kind: kind.into(),

@@ -84,16 +84,46 @@ fn apply_entry<A: Application>(state: &mut Applied<A>, entry: LogEntry<A>) -> Re
             state.membership = StoredMembership::new(Some(entry.log_id), membership);
             A::Response::default()
         }
-        EntryPayload::Normal(command) => match state.application.try_apply(command) {
-            Ok(response) => response,
-            Err(source) => {
-                state.failed = true;
-                return Err(Error::io("application apply", source));
+        EntryPayload::Normal(command) => {
+            // Observation hooks are volatile and run only on committed apply, never staged clones.
+            let observation = watch_change(&state.application, &command);
+            match state.application.try_apply(command) {
+                Ok(response) => {
+                    if let Some(change) = observation
+                        && let Some(data) = (&state.application as &dyn std::any::Any)
+                            .downcast_ref::<crate::broker::DataApplication>()
+                    {
+                        #[cfg(feature = "test-hooks")]
+                        data.watch_hub().committed_command(change.partition);
+                        if !matches!(
+                            (&response as &dyn std::any::Any)
+                                .downcast_ref::<crate::broker::DataResponse>(),
+                            Some(crate::broker::DataResponse::Rejected(_))
+                        ) {
+                            data.watch_hub().applied(data, change);
+                        }
+                    }
+                    response
+                }
+                Err(source) => {
+                    state.failed = true;
+                    return Err(Error::io("application apply", source));
+                }
             }
-        },
+        }
     };
     state.last_applied = Some(entry.log_id);
     Ok(response)
+}
+
+fn watch_change<A: Application>(
+    application: &A,
+    command: &A::Command,
+) -> Option<crate::broker::WatchSignal> {
+    let data =
+        (application as &dyn std::any::Any).downcast_ref::<crate::broker::DataApplication>()?;
+    let command = (command as &dyn std::any::Any).downcast_ref::<crate::broker::DataCommand>()?;
+    Some(crate::broker::WatchHub::before(data, command))
 }
 
 impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {
@@ -275,6 +305,13 @@ impl<A: Application> DiskStateMachine<A> {
         if let Some(metrics) = &self.0.metrics {
             metrics.observe(Stage::Apply, start.elapsed().as_secs_f64());
         }
+        let observations = (&applied.application as &dyn std::any::Any)
+            .downcast_ref::<crate::broker::DataApplication>()
+            .map(|data| data.watch_hub());
+        drop(applied);
+        if let Some(observations) = observations {
+            observations.notify();
+        }
         Ok(responses)
     }
 }
@@ -447,6 +484,9 @@ impl<A: Application> DiskStateMachine<A> {
             });
         }
         self.publish_snapshot_bytes(bytes, checksum).await?;
+        let observations = (&applied.application as &dyn std::any::Any)
+            .downcast_ref::<crate::broker::DataApplication>()
+            .map(|data| data.watch_hub());
         *applied = Applied {
             application: envelope.application,
             last_applied: meta.last_log_id,
@@ -454,6 +494,10 @@ impl<A: Application> DiskStateMachine<A> {
             failed: false,
         };
         *self.0.snapshot_meta.write().await = Some(meta.clone());
+        drop(applied);
+        if let Some(observations) = observations {
+            observations.reset();
+        }
         tracing::info!(event = "raft_snapshot_installed", node_id = self.0.identity.node_id,
             group_id = %self.0.identity.group.group_id, snapshot_id = %meta.snapshot_id,
             "Installed a durable validated snapshot");

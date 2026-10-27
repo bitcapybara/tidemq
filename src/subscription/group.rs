@@ -2,6 +2,8 @@ use super::{Limits, Rejection, Result};
 #[path = "group_observation.rs"]
 mod observation;
 pub use observation::GroupProgress;
+#[path = "group_watch.rs"]
+mod watch;
 
 #[cfg(test)]
 #[path = "../../tests/scalable_support/consumer_memory.rs"]

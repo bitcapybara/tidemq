@@ -97,6 +97,10 @@ impl FrameReservation {
 }
 
 impl MemoryBudget {
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.total, &other.total)
+    }
+
     pub fn new(config: impl Into<MemoryLimits>) -> Result<Self> {
         let config = config.into();
         let data = config

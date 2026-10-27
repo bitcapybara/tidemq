@@ -54,6 +54,8 @@ pub fn is_core_control(frame: &Frame, limits: &ProtocolLimits) -> Result<bool> {
             FrameKind::ConsumerControlResult
             | FrameKind::PublisherControlResult
             | FrameKind::Cancel
+            | FrameKind::GroupWatchCancel
+            | FrameKind::GroupWatchCancelled
             | FrameKind::Diagnose
             | FrameKind::DiagnosticResult
             | FrameKind::GetTopic
@@ -396,7 +398,7 @@ fn validate_fields(bytes: &[u8], max_fields: u32) -> Result<()> {
     Ok(())
 }
 
-fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64> {
+pub(crate) fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64> {
     let mut value = 0_u64;
     for shift in (0..70).step_by(7) {
         let byte = *bytes.get(*cursor).ok_or(Error::Invalid {
@@ -425,6 +427,24 @@ fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64> {
 mod tests {
     use super::*;
     use crate::public::{LogicalTopic, Publish};
+
+    #[test]
+    fn watch_waits_use_normal_capacity_but_cancellation_keeps_core_reservation() {
+        let limits = ProtocolLimits::default();
+        for (kind, core) in [
+            (FrameKind::GroupWatch, false),
+            (FrameKind::GroupWatchResult, false),
+            (FrameKind::GroupWatchCancel, true),
+            (FrameKind::GroupWatchCancelled, true),
+        ] {
+            let frame = Frame {
+                kind: kind.into(),
+                ..Frame::default()
+            };
+            assert_eq!(is_core_control(&frame, &limits).unwrap(), core);
+            assert!(!is_completion(kind));
+        }
+    }
 
     #[test]
     fn bounded_frame_round_trip_and_class_binding() {

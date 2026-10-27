@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +30,16 @@ pub trait WireService: Send + Sync + 'static {
         order: Option<SubmissionOrder>,
     ) -> impl Future<Output = std::result::Result<Option<Frame>, Self::Error>> + Send;
 
+    /// Transfer a compact, independently admitted request out of ordinary handler ownership.
+    fn defer(
+        self: &Arc<Self>,
+        _peer: Authorization,
+        _request: &Frame,
+        _deadline: Instant,
+    ) -> Option<DeferredReply<Self::Error>> {
+        None
+    }
+
     /// Nested business envelopes must not occupy the control handlers they depend on.
     fn execution_purpose(
         &self,
@@ -57,6 +68,9 @@ pub trait WireService: Send + Sync + 'static {
     /// Called after a requested native flush; transport receipt does not establish business commit.
     fn response_sent(&self, _peer: &Authorization, _request: &Frame, _response: &Frame) {}
 }
+
+pub type DeferredReply<E> =
+    Pin<Box<dyn Future<Output = std::result::Result<Option<Frame>, E>> + Send>>;
 
 /// A producer lane retains order only until submission, then waits for its reply independently.
 pub struct SubmissionOrder {
@@ -363,6 +377,26 @@ async fn execute<S: WireService>(
         tenant,
     } = job;
     let deadline = frame.deadline();
+    if let Some(deferred) = service.defer(peer.clone(), frame.frame(), deadline) {
+        // The deferred owner charged its compact request and reply before this handoff.
+        drop((frame, _slot, memory, order, tenant, _active));
+        let result = tokio::select! {
+            result = timeout_at(deadline, deferred) => result,
+            _ = reply.closed() => return,
+        };
+        if let Ok(Ok(Some(response))) = result {
+            let _ = timeout_at(
+                deadline,
+                reply.send(Reply {
+                    frame: response,
+                    deadline,
+                    notification: None,
+                }),
+            )
+            .await;
+        }
+        return;
+    }
     let notification_peer = service
         .response_requires_flush(&peer, frame.frame())
         .then(|| peer.clone());

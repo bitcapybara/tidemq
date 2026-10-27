@@ -110,6 +110,20 @@ fn usage<'a>(mut cursors: impl Iterator<Item = &'a GroupCursor>) -> Result<Usage
 }
 
 impl DataApplication {
+    pub(crate) fn watch_capacities(&self) -> Result<(usize, usize, u64), DataRejection> {
+        let limits = self
+            .config
+            .as_ref()
+            .ok_or(DataRejection::Uninitialized)?
+            .subscription;
+        let usage = self.group_usage()?;
+        let maximum = limits.max_total_window_slots as usize;
+        Ok((
+            maximum.saturating_sub(usage.reads),
+            maximum.saturating_sub(usage.windows),
+            limits.max_total_in_flight_bytes.saturating_sub(usage.bytes),
+        ))
+    }
     pub(super) fn available_transfer_windows(
         &self,
         mut capacity: TransferCapacity,
@@ -548,7 +562,26 @@ fn read_group(
         u32::try_from((limits.max_total_window_slots as usize).saturating_sub(usage.reads))
             .map_err(|_| subscription::Rejection::WindowFull)?,
     );
-    cursor.read_admitted(request, &candidates, budget)
+    #[cfg(feature = "test-hooks")]
+    let trace = crate::runtime::read_trace_test_hooks::enabled(cursor.identity()).then(|| {
+        let mut event = cursor.trace_read_state(request, producer.committed_end());
+        event.budget_messages = budget.messages;
+        event.budget_bytes = budget.bytes;
+        event.budget_results = budget.results;
+        event.candidates = candidates.len();
+        event.candidate_min_bytes = candidates.iter().map(|candidate| candidate.bytes).min();
+        event.group_windows = usage.windows;
+        event.group_reads = usage.reads;
+        event.group_bytes = usage.bytes;
+        event
+    });
+    let result = cursor.read_admitted(request, &candidates, budget);
+    #[cfg(feature = "test-hooks")]
+    if let Some(mut event) = trace {
+        event.deliveries = result.as_ref().ok().map(|read| read.deliveries.len());
+        crate::runtime::read_trace_test_hooks::record(cursor.identity(), event);
+    }
+    result
 }
 
 fn read_candidates(

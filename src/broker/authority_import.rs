@@ -410,6 +410,7 @@ impl DataApplication {
                 .import_authority_slice(payload.lifecycle)
                 .map_err(|_| TransferDataRejection::InvalidPlan)?,
             authority: Default::default(),
+            watch: Default::default(),
         };
         candidate
             .validate_complete()

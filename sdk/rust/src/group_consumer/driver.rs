@@ -1,47 +1,123 @@
+use super::credit::{Credit, Pool};
 use super::*;
+use crate::client::admission::Attempt;
 use crate::message::{MessageId, ReceivedData};
-use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
+mod scheduling;
+#[cfg(test)]
+mod tests;
 
 pub(super) struct Domain {
-    shard: Id,
-    partition: u32,
-    sequence: u64,
-    assigned: bool,
-    busy: bool,
-    complete: bool,
-    empty_reads: u32,
-    next_poll: Instant,
-    read: Option<Arc<Mutex<ReadAttempt>>>,
+    pub(super) shard: Id,
+    pub(super) partition: u32,
+    pub(super) sequence: u64,
+    pub(super) assigned: bool,
+    pub(super) busy: bool,
+    pub(super) recovering: bool,
+    pub(super) complete: bool,
+    pub(super) empty_reads: u32,
+    pub(super) next_poll: Instant,
+    pub(super) next_fallback: Instant,
+    pub(super) token: Bytes,
+    pub(super) dirty: bool,
+    pub(super) watching: Option<Id>,
+    pub(super) next_watch: Instant,
+    pub(super) observed_at: Instant,
+    pub(super) read: Option<Arc<Mutex<ReadAttempt>>>,
+    pub(super) _memory: tokio::sync::OwnedSemaphorePermit,
 }
 
-struct Credit {
-    slots: OwnedSemaphorePermit,
-    memory: OwnedSemaphorePermit,
-    client: OwnedSemaphorePermit,
-    request: OwnedSemaphorePermit,
-}
-struct ReadAttempt {
+pub(super) struct ReadAttempt {
     request: public::GroupRead,
     operation: Id,
     applied: bool,
+    uncertain: bool,
+    pool: Pool,
     credit: Option<Credit>,
-    created: Instant,
+    deadline: Instant,
+    token: Bytes,
     progress: Option<ReadProgress>,
-    request_slot: Option<OwnedSemaphorePermit>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ReadProgress {
     empty: bool,
     complete: bool,
 }
 
+pub(super) fn diagnostics(core: &Core) -> Result<ConsumerDiagnostics> {
+    let state = core.state()?;
+    let counts = scheduling::counts(&state)?;
+    let (long_watches, immediate_probes) = watch::counts(&state);
+    Ok(ConsumerDiagnostics {
+        mode: core.credit.mode,
+        ordinary_reads: counts.ordinary,
+        protected_reads: counts.protected,
+        ordinary_unknown: counts.ordinary_unknown,
+        protected_unknown: counts.protected_unknown,
+        recovery_queue: counts.recovery_queue,
+        ordinary_rpc: (if core.credit.mode == ConsumerMode::Isolated {
+            7_usize
+        } else {
+            1
+        })
+        .saturating_sub(core.credit.read_rpc.available_permits()),
+        protected_rpc: usize::from(core.credit.mode == ConsumerMode::Isolated)
+            .saturating_sub(core.credit.protected_rpc.available_permits()),
+        recovery_rpc: (if core.credit.mode == ConsumerMode::Isolated {
+            2_usize
+        } else {
+            1
+        })
+        .saturating_sub(core.credit.recovery_rpc.available_permits()),
+        long_watches,
+        immediate_probes,
+        ready_targets: state
+            .domains
+            .values()
+            .filter(|domain| domain.dirty && domain.assigned && !domain.complete)
+            .count(),
+        assigned_targets: state
+            .domains
+            .values()
+            .filter(|domain| domain.assigned && !domain.complete)
+            .count(),
+        observed_targets: state
+            .domains
+            .values()
+            .filter(|domain| domain.assigned && !domain.complete && !domain.token.is_empty())
+            .count(),
+        fallback_overdue: state
+            .domains
+            .values()
+            .filter(|domain| {
+                domain.assigned && !domain.complete && domain.next_fallback <= Instant::now()
+            })
+            .count(),
+        observation_overdue: state
+            .domains
+            .values()
+            .filter(|domain| {
+                domain.assigned
+                    && !domain.complete
+                    && domain.observed_at.elapsed() >= Duration::from_secs(30)
+            })
+            .count(),
+        protected_blocked: core.credit.mode == ConsumerMode::Isolated
+            && (counts.protected > 0
+                || core.credit.protected_slots.available_permits() == 0
+                || core.credit.protected_bytes.available_permits() < core.credit.minimum as usize),
+        ordinary_slots_free: core.credit.ordinary_slots.available_permits(),
+        ordinary_bytes_free: core.credit.ordinary_bytes.available_permits(),
+        protected_slots_free: core.credit.protected_slots.available_permits(),
+        protected_bytes_free: core.credit.protected_bytes.available_permits(),
+    })
+}
+
 pub(super) async fn run(core: Arc<Core>) {
     let heartbeat = tokio::spawn(heartbeats(core.clone()));
-    let reads = tokio::spawn(reads(core.clone()));
+    let reads = tokio::spawn(scheduling::run(core.clone()));
     core.stop.cancelled().await;
     heartbeat.abort();
-    reads.abort();
     let _ = heartbeat.await;
     let _ = reads.await;
     let result = cleanup(&core, None).await;
@@ -87,6 +163,7 @@ fn publish_close(core: &Arc<Core>, mut result: CloseResult) {
 }
 
 fn release_local(core: &Core) {
+    core.client.inner.admission.forget(core.member);
     if let Ok(mut state) = core.state.lock() {
         for message in state.ledger.values().chain(state.queue.iter()) {
             let _ = message.data.release_credit();
@@ -98,6 +175,7 @@ fn release_local(core: &Core) {
         state.queue = VecDeque::new();
         state.ledger.clear();
         state.domains.clear();
+        state.watches.clear();
         state.ack_sequences.clear();
         state.claims.clear();
     }
@@ -109,10 +187,13 @@ fn release_local(core: &Core) {
     if let Ok(mut memory) = core.resource_memory.lock() {
         memory.take();
     }
+    if let Ok(mut shared) = core.credit.shared.lock() {
+        shared.take();
+    }
     core.changed.notify_waiters();
 }
 
-async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
+async fn cleanup(core: &Arc<Core>, mut failure: Option<Arc<Error>>) -> CloseResult {
     let deadline = core
         .close_deadline
         .lock()
@@ -120,11 +201,22 @@ async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
         .and_then(|deadline| *deadline)
         .unwrap_or_else(|| Instant::now() + core.client.inner.config.close_timeout);
     ack::drain(core, deadline).await;
+    if let Err(error) = core.credit.native.unregister(deadline).await {
+        failure.get_or_insert_with(|| Arc::new(error));
+    }
     let leave = leave(core, deadline).await;
     let mut report = CloseReport {
         local_cleanup_complete: true,
         ..CloseReport::default()
     };
+    report.unresolved_watches = watch::cleanup(core, deadline).await;
+    if report.unresolved_watches > 0 {
+        failure.get_or_insert_with(|| {
+            Arc::new(Error::Admission {
+                resource: "remote watch cleanup remains unresolved",
+            })
+        });
+    }
     if let Ok(state) = core.state() {
         for pending in state.pending.values() {
             if pending.is_complete() {
@@ -368,288 +460,83 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
     }
 }
 
-async fn reads(core: Arc<Core>) {
-    let mut jobs: JoinSet<(Id, u64, Result<ReadProgress>)> = JoinSet::new();
-    let mut timer = tokio::time::interval(Duration::from_millis(25));
-    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut refreshed = Instant::now()
-        .checked_sub(Duration::from_secs(5))
-        .unwrap_or_else(Instant::now);
-    let mut refresh_failure = None::<Instant>;
-    loop {
-        tokio::select! {
-            _ = core.stop.cancelled() => return,
-            _ = timer.tick() => {},
-            result = jobs.join_next(), if !jobs.is_empty() => {
-                match result {
-                    Some(Ok((domain, epoch, result))) => {
-                        if epoch == core.epoch.load(Ordering::Acquire) && let Ok(mut state) = core.state() && let Some(record) = state.domains.get_mut(&domain) {
-                            record.busy = false;
-                            match &result {
-                                Ok(progress) => {
-                                    record.read = None; record.sequence = record.sequence.saturating_add(1); record.complete = progress.complete;
-                                    record.empty_reads = if progress.empty { record.empty_reads.saturating_add(1).min(6) } else { 0 };
-                                    record.next_poll = Instant::now() + Duration::from_millis(10_u64 << record.empty_reads);
-                                }
-                                Err(_) => record.next_poll = Instant::now() + Duration::from_millis(250),
-                            }
-                        }
-                        if let Err(error) = result && !no_work(&error) { core.record_error(error); }
-                    }
-                    Some(Err(_)) => { core.record_error(Error::Closed); core.stop.cancel(); return; }
-                    None => {},
-                }
-            }
-        }
-        if refreshed.elapsed() >= Duration::from_secs(1) {
-            refreshed = Instant::now();
-            match refresh_domains(&core).await {
-                Ok(()) => refresh_failure = None,
-                Err(error) => {
-                    let failed_since = refresh_failure.get_or_insert_with(Instant::now);
-                    if !no_work(&error)
-                        || failed_since.elapsed()
-                            >= Duration::from_millis(core.client.inner.config.request_timeout_ms)
-                    {
-                        core.record_error(error);
-                        refresh_failure = Some(Instant::now());
-                    }
-                }
-            }
-        }
-        while jobs.len() < 8 {
-            match next_read(&core) {
-                Ok(Some((domain, read))) => {
-                    let core = core.clone();
-                    let epoch = read
-                        .lock()
-                        .map(|read| read.request.member_epoch)
-                        .unwrap_or(0);
-                    jobs.spawn(
-                        async move { (domain, epoch, poll_read(&core, domain, read).await) },
-                    );
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    core.record_error(error);
-                    break;
-                }
-            }
-        }
+async fn poll_read(
+    core: &Core,
+    domain: Id,
+    work: Arc<Mutex<ReadAttempt>>,
+    permit: Attempt,
+) -> Result<ReadProgress> {
+    let (request, operation, applied, original_deadline, uncertain) = {
+        let read = work.lock().map_err(|_| Error::Closed)?;
+        (
+            read.request.clone(),
+            read.operation,
+            read.applied,
+            read.deadline,
+            read.uncertain,
+        )
+    };
+    if Instant::now() >= original_deadline {
+        core.record_error(Error::SessionExpired.preserve_uncertainty(true));
+        core.stop.cancel();
+        return Err(Error::SessionExpired.preserve_uncertainty(true));
     }
-}
-
-async fn refresh_domains(core: &Core) -> Result<()> {
-    let layout = core.client.admin().topic_info(&core.topic).await?;
-    if layout.id != core.topic_id {
-        return Err(Error::TopicReplaced);
-    }
-    let work = core
-        .info
-        .lock()
-        .map_err(|_| Error::Closed)?
-        .work_shards
-        .clone();
-    let mut state = core.state()?;
-    for domain in state.domains.values_mut() {
-        domain.assigned = work.iter().any(|id| id.as_ref() == domain.shard.as_bytes());
-    }
-    for shard in layout.wire.active.iter().chain(&layout.wire.history) {
-        let id = Id::from_slice(&shard.shard_id)?;
-        let assigned = work.iter().any(|domain| domain == &shard.shard_id);
-        state.domains.entry(id).or_insert(Domain {
-            shard: id,
-            partition: shard.birth_partition,
-            sequence: 1,
-            assigned,
-            busy: false,
-            complete: false,
-            empty_reads: 0,
-            next_poll: Instant::now(),
-            read: None,
-        });
-    }
-    Ok(())
-}
-
-fn reserve(core: &Core) -> Result<Option<Credit>> {
-    let maximum = core
-        .client
-        .inner
-        .config
-        .protocol
-        .max_frame_bytes
-        .saturating_sub(8192) as usize;
-    let bytes = core
-        .memory
-        .available_permits()
-        .min(core.client.inner.bytes.available_permits())
-        .min(maximum);
-    let maximum_message = core.client.inner.config.protocol.max_message_bytes;
-    if (bytes as u64) < minimum_prefetch_bytes(maximum_message) {
-        return Ok(None);
-    }
-    let messages = core.slots.available_permits().min(32).min(
-        bytes
-            .saturating_sub(maximum_message as usize)
-            .saturating_sub(256)
-            / 256,
+    let deadline = original_deadline.min(
+        Instant::now()
+            + Duration::from_millis(core.client.inner.config.request_timeout_ms.min(1000)),
     );
-    if messages == 0 {
-        return Ok(None);
-    }
-    let request = match core.client.inner.requests.clone().try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => return Ok(None),
-    };
-    let slots = match core.slots.clone().try_acquire_many_owned(messages as u32) {
-        Ok(permit) => permit,
-        Err(_) => return Ok(None),
-    };
-    let memory = match core.memory.clone().try_acquire_many_owned(bytes as u32) {
-        Ok(permit) => permit,
-        Err(_) => return Ok(None),
-    };
-    let client = match core
-        .client
-        .inner
-        .bytes
-        .clone()
-        .try_acquire_many_owned(bytes as u32)
-    {
-        Ok(permit) => permit,
-        Err(_) => return Ok(None),
-    };
-    Ok(Some(Credit {
-        slots,
-        memory,
-        client,
-        request,
-    }))
-}
-
-fn next_read(core: &Core) -> Result<Option<(Id, Arc<Mutex<ReadAttempt>>)>> {
-    let lease_valid = *core.lease_until.lock().map_err(|_| Error::Closed)? > Instant::now()
-        && core.epoch.load(Ordering::Acquire) > 0;
-    let mut state = core.state()?;
-    let eligible = |domain: &&Domain| {
-        !domain.busy
-            && !domain.complete
-            && domain.next_poll <= Instant::now()
-            && (domain.assigned && lease_valid || domain.read.is_some())
-    };
-    let selected = state
-        .domains
-        .values()
-        .filter(eligible)
-        .find(|domain| state.read_after.is_none_or(|after| domain.shard > after))
-        .or_else(|| state.domains.values().find(eligible))
-        .map(|domain| domain.shard);
-    let Some(selected) = selected else {
-        return Ok(None);
-    };
-    state.read_after = Some(selected);
-    let domain = state.domains.get_mut(&selected).ok_or(Error::Closed)?;
-    if domain.sequence == u64::MAX {
-        return Err(Error::SessionExpired);
-    }
-    if domain.read.is_none() {
-        let Some(credit) = reserve(core)? else {
-            return Ok(None);
-        };
-        let request = public::GroupRead {
-            topic_id: bytes(core.topic_id),
-            partition_id: domain.partition,
-            subscription_id: bytes(core.subscription),
-            member_id: bytes(core.member),
-            member_epoch: core.epoch.load(Ordering::Acquire),
-            sequence: domain.sequence,
-            max_messages: credit.slots.num_permits() as u32,
-            max_bytes: credit
-                .memory
-                .num_permits()
-                .saturating_sub(credit.slots.num_permits().saturating_mul(256))
-                as u64,
-        };
-        domain.read = Some(Arc::new(Mutex::new(ReadAttempt {
-            request,
-            operation: Id::new_v7()?,
-            applied: false,
-            credit: Some(credit),
-            created: Instant::now(),
-            progress: None,
-            request_slot: None,
-        })));
-    }
-    let read = domain.read.as_ref().ok_or(Error::Closed)?.clone();
-    domain.busy = true;
-    Ok(Some((domain.shard, read)))
-}
-
-async fn poll_read(core: &Core, domain: Id, work: Arc<Mutex<ReadAttempt>>) -> Result<ReadProgress> {
-    let (request, operation, applied) = {
-        let work = work.lock().map_err(|_| Error::Closed)?;
-        if work.created.elapsed() > Duration::from_secs(600) {
-            core.stop.cancel();
-            return Err(Error::SessionExpired);
-        }
-        (work.request.clone(), work.operation, work.applied)
-    };
-    let work = &work;
-    let result = core
-        .client
-        .operation(|deadline| async move {
-            if !applied {
-                let result: public::GroupDeliveries = core
-                    .client
-                    .request(
-                        FrameKind::GroupRead,
-                        FrameKind::GroupDeliveries,
-                        TrafficClass::Delivery,
-                        operation,
-                        &request,
-                        deadline,
-                    )
-                    .await?;
-                accept_read(core, domain, work, &request, result)?;
-            }
-            let retire = public::GroupRetire {
-                topic_id: request.topic_id,
-                partition_id: request.partition_id,
-                subscription_id: request.subscription_id,
-                member_id: request.member_id,
-                member_epoch: request.member_epoch,
-                sequence: request.sequence,
-            };
-            let _: public::GroupRetired = core
+    let action = async {
+        if !applied {
+            let result: public::GroupDeliveries = core
                 .client
-                .request(
-                    FrameKind::GroupRetireRead,
-                    FrameKind::GroupRetired,
-                    TrafficClass::Control,
+                .request_reserved(
+                    FrameKind::GroupRead,
+                    FrameKind::GroupDeliveries,
+                    TrafficClass::Delivery,
                     operation,
-                    &retire,
+                    &request,
                     deadline,
+                    &permit,
                 )
                 .await?;
-            work.lock()
-                .map_err(|_| Error::Closed)?
-                .progress
-                .ok_or(Error::Closed)
-        })
-        .await;
-    if let Err(error) = &result
-        && error.outcome_unknown()
-        && work.lock().is_ok_and(|work| {
-            work.created.elapsed()
-                >= Duration::from_millis(core.client.inner.config.request_timeout_ms)
-        })
-    {
-        core.record_error(Error::Background {
-            source: Arc::new(Error::RequestUnknown {
-                source: Box::new(Error::Deadline),
-            }),
-        });
+            accept_read(core, domain, &work, &request, result)?;
+        }
+        let retire = public::GroupRetire {
+            topic_id: request.topic_id.clone(),
+            partition_id: request.partition_id,
+            subscription_id: request.subscription_id.clone(),
+            member_id: request.member_id.clone(),
+            member_epoch: request.member_epoch,
+            sequence: request.sequence,
+        };
+        let _: public::GroupRetired = core
+            .client
+            .request_reserved(
+                FrameKind::GroupRetireRead,
+                FrameKind::GroupRetired,
+                TrafficClass::Control,
+                operation,
+                &retire,
+                deadline,
+                &permit,
+            )
+            .await?;
+        work.lock()
+            .map_err(|_| Error::Closed)?
+            .progress
+            .ok_or(Error::Closed)
+    };
+    let result = tokio::time::timeout_at(deadline, action)
+        .await
+        .unwrap_or_else(|_| Err(Error::Deadline.preserve_uncertainty(true)))
+        .map_err(|error| error.preserve_uncertainty(uncertain));
+    if let Err(error) = &result {
+        let mut read = work.lock().map_err(|_| Error::Closed)?;
+        read.uncertain |= error.outcome_unknown()
+            || matches!(
+                error,
+                Error::ResponseMismatch { .. } | Error::Protocol { .. }
+            );
     }
     result
 }
@@ -670,12 +557,10 @@ fn no_work(error: &Error) -> bool {
         )
 }
 
-fn accept_read(
+fn validate_deliveries(
     core: &Core,
-    domain: Id,
-    work: &Mutex<ReadAttempt>,
     request: &public::GroupRead,
-    result: public::GroupDeliveries,
+    result: &public::GroupDeliveries,
 ) -> Result<()> {
     if result.sequence != request.sequence
         || result.assignment_version == 0
@@ -686,6 +571,7 @@ fn accept_read(
         });
     }
     let mut total = 0_usize;
+    let mut proofs = std::collections::BTreeSet::new();
     for delivery in &result.deliveries {
         if delivery
             .proof
@@ -696,11 +582,30 @@ fn accept_read(
                 reason: "read result omitted a valid confirmation proof".into(),
             });
         }
+        if let Some(proof) = &delivery.proof
+            && !proofs.insert((proof.offset, proof.attempt))
+        {
+            return Err(Error::ResponseMismatch {
+                reason: "read result repeats a delivery proof".into(),
+            });
+        }
         let charge = tidemq_protocol::topic::delivery_bytes(
             &delivery.key,
             &delivery.body,
             &delivery.properties,
         )?;
+        if charge
+            > u64::from(core.client.inner.config.protocol.max_message_bytes).saturating_add(256)
+            || delivery.properties.len() > 128
+            || delivery
+                .properties
+                .keys()
+                .any(|name| name.is_empty() || name.len() > 256)
+        {
+            return Err(Error::ResponseMismatch {
+                reason: "read delivery exceeds the message limits".into(),
+            });
+        }
         total = total
             .checked_add(usize::try_from(charge).map_err(|_| Error::Admission {
                 resource: "delivery bytes",
@@ -714,6 +619,18 @@ fn accept_read(
             reason: "read result exceeds its original byte credit".into(),
         });
     }
+    Ok(())
+}
+
+fn accept_read(
+    core: &Core,
+    domain: Id,
+    work: &Mutex<ReadAttempt>,
+    request: &public::GroupRead,
+    result: public::GroupDeliveries,
+) -> Result<()> {
+    validate_deliveries(core, request, &result)?;
+    let mut state = core.state()?;
     let mut attempt = work.lock().map_err(|_| Error::Closed)?;
     if attempt.applied {
         return Ok(());
@@ -727,70 +644,33 @@ fn accept_read(
         });
         return Ok(());
     }
+    if !state.domains.get(&domain).is_some_and(|domain| {
+        domain
+            .read
+            .as_ref()
+            .is_some_and(|read| std::ptr::eq(Arc::as_ptr(read), work))
+    }) {
+        return Err(Error::StaleDelivery);
+    }
+    let info = core.info.lock().map_err(|_| Error::Closed)?;
     let mut credit = attempt.credit.take().ok_or(Error::Closed)?;
-    attempt.request_slot = Some(credit.request);
     let progress = ReadProgress {
         empty: result.deliveries.is_empty(),
         complete: result.sealed_complete,
     };
-    let mut state = core.state()?;
-    let info = core.info.lock().map_err(|_| Error::Closed)?;
     for delivery in result.deliveries {
         if !delivery.current_attempt {
             continue;
         }
-        let length = usize::try_from(tidemq_protocol::topic::delivery_bytes(
-            &delivery.key,
-            &delivery.body,
-            &delivery.properties,
-        )?)
-        .ok()
-        .and_then(|bytes| bytes.checked_add(256))
-        .ok_or(Error::Admission {
-            resource: "delivery bytes",
-        })?;
-        let mut proof = delivery.proof.ok_or(Error::Closed)?;
-        proof.mac = Bytes::copy_from_slice(&proof.mac);
-        let data = ReceivedData {
-            _charge: core.client.inner.metrics.charge(
-                u32::try_from(length).map_err(|_| Error::Admission {
-                    resource: "retained consumer bytes",
-                })?,
-                true,
-            ),
-            id: MessageId {
-                topic: core.topic_id,
-                shard: domain,
-                offset: proof.offset,
-            },
-            hash: delivery.key_hash,
-            assignment_version: result.assignment_version,
-            acknowledgement: std::sync::OnceLock::new(),
-            key: Bytes::copy_from_slice(&delivery.key),
-            key_present: delivery.key_present,
-            properties: delivery
-                .properties
-                .into_iter()
-                .map(|(name, value)| (name, Bytes::copy_from_slice(&value)))
-                .collect(),
-            payload: Bytes::copy_from_slice(&delivery.body),
-            proof,
-            member: core.member,
-            epoch: request.member_epoch,
-            consumer: core.member,
-            partition: request.partition_id,
-            _memory: credit.memory.split(length).ok_or(Error::Closed)?,
-            _client_memory: credit.client.split(length).ok_or(Error::Closed)?,
-            slot: Mutex::new(Some(credit.slots.split(1).ok_or(Error::Closed)?)),
-        };
-        state.enqueue(
-            core.model,
-            &info,
-            ReceivedMessage {
-                data: Arc::new(data),
-                delivery_sequence: 0,
-            },
+        let message = materialize(
+            core,
+            domain,
+            request,
+            result.assignment_version,
+            delivery,
+            &mut credit,
         )?;
+        state.enqueue(core.model, &info, message)?;
     }
     state.release_revoked(&info)?;
     attempt.applied = true;
@@ -798,4 +678,63 @@ fn accept_read(
     drop(state);
     core.changed.notify_waiters();
     Ok(())
+}
+
+fn materialize(
+    core: &Core,
+    domain: Id,
+    request: &public::GroupRead,
+    assignment_version: u64,
+    delivery: public::GroupDelivery,
+    credit: &mut Credit,
+) -> Result<ReceivedMessage> {
+    let length = usize::try_from(tidemq_protocol::topic::delivery_bytes(
+        &delivery.key,
+        &delivery.body,
+        &delivery.properties,
+    )?)
+    .ok()
+    .and_then(|bytes| bytes.checked_add(256))
+    .ok_or(Error::Admission {
+        resource: "delivery bytes",
+    })?;
+    let mut proof = delivery.proof.ok_or(Error::Closed)?;
+    proof.mac = Bytes::copy_from_slice(&proof.mac);
+    let data = ReceivedData {
+        _protected: credit.protected.clone(),
+        _charge: core.client.inner.metrics.charge(
+            u32::try_from(length).map_err(|_| Error::Admission {
+                resource: "retained consumer bytes",
+            })?,
+            true,
+        ),
+        id: MessageId {
+            topic: core.topic_id,
+            shard: domain,
+            offset: proof.offset,
+        },
+        hash: delivery.key_hash,
+        assignment_version,
+        acknowledgement: std::sync::OnceLock::new(),
+        key: Bytes::copy_from_slice(&delivery.key),
+        key_present: delivery.key_present,
+        properties: delivery
+            .properties
+            .into_iter()
+            .map(|(name, value)| (name, Bytes::copy_from_slice(&value)))
+            .collect(),
+        payload: Bytes::copy_from_slice(&delivery.body),
+        proof,
+        member: core.member,
+        epoch: request.member_epoch,
+        consumer: core.member,
+        partition: request.partition_id,
+        _memory: credit.memory.split(length).ok_or(Error::Closed)?,
+        _client_memory: credit.client.split(length).ok_or(Error::Closed)?,
+        slot: Mutex::new(Some(credit.slots.split(1).ok_or(Error::Closed)?)),
+    };
+    Ok(ReceivedMessage {
+        data: Arc::new(data),
+        delivery_sequence: 0,
+    })
 }

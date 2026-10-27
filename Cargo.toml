@@ -56,6 +56,15 @@ required-features = ["test-hooks"]
 name = "runtime_consumer_reads"
 required-features = ["test-hooks"]
 
+[[test]]
+name = "runtime_group_watch"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "sdk_consumer_long_poll"
+path = "sdk/rust/tests/runtime/consumer_long_poll.rs"
+required-features = ["test-hooks"]
+
 [[example]]
 name = "deploy_validation"
 path = "tests/deployment/driver.rs"

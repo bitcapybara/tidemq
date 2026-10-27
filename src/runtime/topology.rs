@@ -190,6 +190,9 @@ impl Service {
             .await
             .map_err(|source| Error::operation("select registered topic capacity", source))?
             .ok_or_else(Error::unavailable)?;
+        let groups = vec![group];
+        #[cfg(feature = "test-hooks")]
+        let groups = super::watch_test_hooks::initial_topic_groups(self.cluster, &name, groups);
         let outcome = self
             .meta_write(
                 Command::create_topic(
@@ -197,7 +200,7 @@ impl Service {
                     self.metadata_request_revision(operation).await?,
                     operation,
                     name,
-                    vec![group],
+                    groups,
                 )
                 .bind_management(digest),
                 deadline,

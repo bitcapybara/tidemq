@@ -223,6 +223,33 @@ impl TenantQuotaState {
         })
     }
 
+    pub(super) fn watch_refill_due(
+        &self,
+        usage: QuotaCapacity,
+        bytes: u64,
+        now_ms: u64,
+    ) -> Option<u64> {
+        let capacity = self.grant.capacity;
+        let rate = capacity.consume_bytes_per_second;
+        if self.grant.frozen
+            || bytes > rate
+            || rate == 0
+            || capacity.inflight_bytes.saturating_sub(usage.inflight_bytes) < bytes
+            || capacity.inflight_messages <= usage.inflight_messages
+        {
+            return None;
+        }
+        let current = self.consume.refill(rate, now_ms);
+        if current.available >= bytes {
+            return None;
+        }
+        let needed = u128::from(bytes.checked_sub(current.available)?)
+            .checked_mul(1_000)?
+            .checked_sub(u128::from(current.remainder))?;
+        let delay = u64::try_from(needed.div_ceil(u128::from(rate))).ok()?;
+        current.last_ms.checked_add(delay.max(1))
+    }
+
     pub fn commit_consume(&mut self, bytes: u64, now_ms: u64) {
         self.consume = self
             .consume
@@ -428,5 +455,73 @@ impl DataApplication {
         .map_err(DataRejection::Quota)?;
         state.quota = Some(quota);
         Ok(DataResponse::QuotaInstalled(grant))
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+    use tidemq_protocol::Id;
+
+    #[test]
+    fn watch_rate_timer_uses_the_real_refill_boundary_and_not_periodic_polling() {
+        let id = Id::new_v7().unwrap();
+        let mut quota = TenantQuotaState::new(
+            QuotaGrant {
+                partition: PartitionKey {
+                    topic_id: id,
+                    partition: 0,
+                },
+                tenant: id,
+                namespace: id,
+                version: 1,
+                capacity: QuotaCapacity {
+                    consume_bytes_per_second: 3,
+                    inflight_bytes: 64,
+                    inflight_messages: 1,
+                    ..Default::default()
+                },
+                frozen: false,
+            },
+            100,
+        )
+        .unwrap();
+        quota.consume = RateState {
+            available: 0,
+            last_ms: 100,
+            remainder: 500,
+        };
+        let usage = QuotaCapacity::default();
+        let original = quota.clone();
+        assert_eq!(quota.watch_refill_due(usage, 1, 100), Some(267));
+        assert_eq!(quota.read_budget(usage, 266).unwrap().bytes, 0);
+        assert_eq!(quota.read_budget(usage, 267).unwrap().bytes, 1);
+        assert_eq!(quota.watch_refill_due(usage, 1, 267), None);
+        assert_eq!(quota.watch_refill_due(usage, 4, 100), None);
+        assert_eq!(
+            quota.watch_refill_due(
+                QuotaCapacity {
+                    inflight_messages: 1,
+                    ..usage
+                },
+                1,
+                100
+            ),
+            None
+        );
+        assert_eq!(
+            quota.watch_refill_due(
+                QuotaCapacity {
+                    inflight_bytes: 64,
+                    ..usage
+                },
+                1,
+                100
+            ),
+            None
+        );
+        assert_eq!(quota, original);
+        quota.grant.frozen = true;
+        assert_eq!(quota.watch_refill_due(usage, 1, 100), None);
     }
 }

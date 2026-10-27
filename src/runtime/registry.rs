@@ -40,6 +40,7 @@ pub(crate) struct Registry {
     directory: Mutex<Directory>,
     update: tokio::sync::Mutex<()>,
     pub trust: NodeAuthorizations,
+    changes: watch::Sender<()>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -192,6 +193,7 @@ impl Registry {
                     .collect(),
                 metadata_voters: config.runtime.metadata_voters.iter().copied().collect(),
             }),
+            changes: watch::channel(()).0,
         })
     }
 
@@ -219,6 +221,10 @@ impl Registry {
                 .get(&node)
                 .is_some_and(|node| !node.identity.retired && node.record.spec.schedulable)
         })
+    }
+
+    pub(super) fn subscribe(&self) -> watch::Receiver<()> {
+        self.changes.subscribe()
     }
 
     pub fn diagnostic(&self) -> Result<serde_json::Value> {
@@ -468,6 +474,7 @@ impl Service {
             .directory
             .lock()
             .map_err(|_| Error::unavailable())? = directory;
+        self.registry.changes.send_replace(());
         self.leaders.write().await.clear();
         self.groups.write().await.clear();
         Ok(())

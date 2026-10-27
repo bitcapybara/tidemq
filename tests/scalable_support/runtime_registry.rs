@@ -49,6 +49,7 @@ fn placement_windows_visit_all_registered_groups_and_candidates_with_fixed_bound
         metadata_voters: [1].into(),
     };
     let registry = Registry {
+        changes: watch::channel(()).0,
         directory: Mutex::new(directory),
         update: tokio::sync::Mutex::new(()),
         trust: NodeAuthorizations::new(Vec::new()).unwrap(),

@@ -39,8 +39,8 @@ pub use cluster::{
 pub use context::scope_traceparent;
 pub use error::{Error, ErrorKind, Result};
 pub use group_consumer::{
-    AckProgress, AckReceipt, PendingAck, QueueConsumer, QueueConsumerBuilder, StreamConsumer,
-    StreamConsumerBuilder,
+    AckProgress, AckReceipt, ConsumerDiagnostics, ConsumerMode, PendingAck, QueueConsumer,
+    QueueConsumerBuilder, StreamConsumer, StreamConsumerBuilder,
 };
 pub use identity::{
     AccessToken, CredentialId, NamespaceId, Permission, PrincipalBuilder, PrincipalId, TenantId,

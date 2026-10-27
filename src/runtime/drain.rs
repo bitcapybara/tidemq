@@ -93,6 +93,7 @@ pub(super) fn allows_completion(
         | FrameKind::GetTopic
         | FrameKind::GetTopicLayout
         | FrameKind::Cancel => true,
+        FrameKind::GroupWatchCancel => true,
         FrameKind::ConsumerControl => {
             let request: public::ConsumerControl = decode_payload(frame.payload.clone(), limits)
                 .map_err(|source| Error::operation("decode draining consumer action", source))?;

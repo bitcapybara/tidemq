@@ -790,13 +790,21 @@ impl Service {
             FrameKind::ConsumerControl => {
                 wire::id(&decode::<public::ConsumerControl>(self, frame)?.topic_id)?
             }
+            FrameKind::GroupWatch => {
+                let request =
+                    tidemq_protocol::watch::decode(frame.payload.clone(), &self.config.protocol)
+                        .map_err(|_| {
+                            Error::invalid("Group watch payload exceeds its bounded encoding")
+                        })?;
+                wire::id(&request.topic_id)?
+            }
             FrameKind::SubscriptionAdmin => {
                 wire::id(&decode::<public::SubscriptionAdmin>(self, frame)?.topic_id)?
             }
             FrameKind::PublisherControl => {
                 wire::id(&decode::<public::PublisherControl>(self, frame)?.topic_id)?
             }
-            FrameKind::Cancel => return Ok(AuthResource::Identity),
+            FrameKind::Cancel | FrameKind::GroupWatchCancel => return Ok(AuthResource::Identity),
             FrameKind::ConsoleRead => return Ok(AuthResource::Identity),
             FrameKind::ListIdentities => {
                 let request = decode::<public::ListIdentities>(self, frame)?;

@@ -12,10 +12,18 @@ mod consumer_control;
 mod consumer_data;
 mod consumer_delete;
 mod consumer_read;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub mod consumer_read_test_hooks;
+mod consumer_watch;
+mod consumer_watch_authority;
 mod data;
 mod drain;
 mod error;
 mod failover;
+#[cfg(all(test, feature = "test-hooks"))]
+#[path = "../../tests/runtime_support/group_watch_reply_pressure.rs"]
+mod group_watch_reply_pressure;
 mod identity;
 mod maintenance;
 mod management;
@@ -26,6 +34,8 @@ mod node_retirement;
 mod objects;
 pub(crate) mod physical;
 mod publishing;
+#[cfg(feature = "test-hooks")]
+pub(crate) mod read_trace_test_hooks;
 mod registry;
 mod resource_leases;
 mod retention_control;
@@ -40,6 +50,9 @@ pub mod test_hooks;
 mod topic_delete;
 mod topic_scaling;
 mod topology;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub mod watch_test_hooks;
 pub(crate) mod wire;
 
 use std::path::Path;

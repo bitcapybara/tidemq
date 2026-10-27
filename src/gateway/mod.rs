@@ -48,6 +48,8 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
             | FrameKind::Publish
             | FrameKind::RetirePublishes
             | FrameKind::GroupRead
+            | FrameKind::GroupWatch
+            | FrameKind::GroupWatchCancel
             | FrameKind::GroupAck
             | FrameKind::GroupRetireRead
             | FrameKind::GroupRetireAck

@@ -263,6 +263,15 @@ impl RunningNode {
             protocol: service.config.protocol.clone(),
             ..DispatchConfig::default()
         };
+        #[cfg(feature = "test-hooks")]
+        let dispatcher = DispatchConfig {
+            core_handlers: super::watch_test_hooks::core_handlers(
+                service.cluster,
+                service.config.node_id,
+                dispatcher.core_handlers,
+            ),
+            ..dispatcher
+        };
         auth_service
             .set(Arc::downgrade(&service))
             .map_err(|_| Error::invalid("Authentication service was installed twice"))?;
@@ -748,7 +757,13 @@ pub(crate) fn data_config(cluster: Id, group: &GroupConfig, config: &Config) -> 
                 .max(max_message_bytes),
             ..ProducerLimits::default()
         },
-        subscription: crate::subscription::Limits::default(),
+        subscription: {
+            let limits = crate::subscription::Limits::default();
+            #[cfg(feature = "test-hooks")]
+            let limits =
+                super::watch_test_hooks::subscription_limits(cluster, group.group_id, limits);
+            limits
+        },
         retention: config.runtime.retention,
     }
 }

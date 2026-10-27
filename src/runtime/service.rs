@@ -88,6 +88,8 @@ pub(crate) struct Service {
     pub(super) tenant_quota_serial: Mutex<()>,
     pub(super) retention_deferrals: std::sync::atomic::AtomicU64,
     cancellations: Arc<std::sync::Mutex<BTreeMap<CancelKey, watch::Sender<bool>>>>,
+    pub(super) watch_budget: crate::server::group_watch::Budget,
+    pub(super) watch_registry: Arc<crate::server::group_watch::Registry>,
 }
 
 impl Service {
@@ -147,7 +149,18 @@ impl Service {
         let retiring = retirement.is_some();
         let topic_scaling_diagnostic =
             super::topic_scaling::Diagnostic::configured(config.runtime.topic_scaling.is_some());
+        let watch_budget = crate::server::group_watch::Budget::new(budget.clone());
+        watch_budget.metrics().register(metrics.registry_mut());
+        let watch_registry = Arc::new(crate::server::group_watch::Registry::default());
+        let reaper_memory = watch_budget
+            .reserve(None, cluster, 0, 2_048, false)
+            .ok_or_else(|| Error::invalid("Normal memory cannot accommodate the Watch registry"))?;
+        watch_registry
+            .start(reaper_memory)
+            .map_err(|_| Error::unavailable())?;
         Ok(Self {
+            watch_budget,
+            watch_registry,
             config,
             cluster,
             instance: super::node::random_id()?,
@@ -202,8 +215,20 @@ impl Service {
     }
 
     pub async fn close(&self, deadline: Instant) -> Result<()> {
-        let mut failure = None;
+        self.watch_budget.close();
+        let mut failure = if self.watch_registry.close(deadline).await {
+            None
+        } else {
+            Some(Error::unavailable())
+        };
         for replica in self.data.values() {
+            if let Ok(hub) = replica
+                .state
+                .try_with_application(|state| state.watch_hub())
+                .await
+            {
+                hub.reset();
+            }
             if let Err(error) = Self::close_replica(replica, deadline).await {
                 failure.get_or_insert(error);
             }
@@ -412,6 +437,18 @@ impl Service {
         order: Option<SubmissionOrder>,
         hops: u32,
     ) -> Result<Frame> {
+        if frame.kind == i32::from(FrameKind::GroupWatchCancel) {
+            return self.group_watch_cancel(&access, frame);
+        }
+        if frame.kind == i32::from(FrameKind::GroupWatch) {
+            if self.draining.load(Ordering::Acquire) {
+                return Err(Error::unavailable());
+            }
+            drop(order);
+            return self
+                .group_watch_public(&access, frame, deadline, hops)
+                .await;
+        }
         if self.draining.load(Ordering::Acquire)
             && !super::drain::allows_completion(frame, &self.config.protocol)?
         {
@@ -539,7 +576,7 @@ impl Service {
 
     // Explicit routing and deadline fields prevent accidental loss at a trust boundary.
     #[allow(clippy::too_many_arguments)]
-    async fn forward(
+    pub(super) async fn forward(
         &self,
         target: u64,
         group: u64,
@@ -549,6 +586,7 @@ impl Service {
         order: Option<SubmissionOrder>,
         hops: u32,
     ) -> Result<Frame> {
+        let _watch_pending = self.reserve_watch_forward(&access, frame)?;
         if hops > 2 {
             return Err(Error::invalid("Forwarding hop budget is exhausted"));
         }
@@ -686,6 +724,16 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::consumer_watch_authority::AUTHORIZE => {
+                drop(order);
+                if group != self.config.runtime.metadata_group
+                    || frame.traffic_class != i32::from(TrafficClass::Control)
+                {
+                    return Err(forbidden());
+                }
+                self.watch_authority_command(&request.body, deadline)
+                    .await?
+            }
             super::console_read::DATA_QUERY => {
                 drop(order);
                 if frame.traffic_class != i32::from(TrafficClass::Bulk)
@@ -973,15 +1021,35 @@ impl Service {
                     .ok_or_else(forbidden)?
                     .parse()
                     .map_err(|_| forbidden())?;
-                let (access, expires) = self
-                    .dynamic_access(
-                        credential,
-                        wire::id(&request.client_session)?,
-                        &inner,
+                let (access, deadline) = if matches!(
+                    frame_kind(&inner)?,
+                    FrameKind::GroupWatch | FrameKind::GroupWatchCancel
+                ) {
+                    // The Watch authority reply binds the current tenant and permission without a Core query.
+                    (
+                        Access {
+                            principal: Arc::from(format!("credential:{credential}")),
+                            scope: Arc::from("*"),
+                            session: Some(wire::id(&request.client_session)?),
+                            tenant: if request.tenant.is_empty() {
+                                None
+                            } else {
+                                Some(wire::id(&request.tenant)?)
+                            },
+                        },
                         deadline,
                     )
-                    .await?;
-                let deadline = super::auth::admit_deadline(deadline, expires)?;
+                } else {
+                    let (access, expires) = self
+                        .dynamic_access(
+                            credential,
+                            wire::id(&request.client_session)?,
+                            &inner,
+                            deadline,
+                        )
+                        .await?;
+                    (access, super::auth::admit_deadline(deadline, expires)?)
+                };
                 if request.tenant
                     != access
                         .tenant
@@ -990,7 +1058,12 @@ impl Service {
                 {
                     return Err(forbidden());
                 }
-                if request.hops == 2 {
+                if request.hops == 2
+                    && !matches!(
+                        frame_kind(&inner)?,
+                        FrameKind::GroupWatch | FrameKind::GroupWatchCancel
+                    )
+                {
                     let partition = super::data::partition(&inner, &self.config.protocol)?;
                     let mut route = self
                         .authorize_partition(&access, partition, deadline)
@@ -1008,9 +1081,14 @@ impl Service {
                         return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
                     }
                 }
-                let reply = self
-                    .public(access, &inner, deadline, order, request.hops)
-                    .await?;
+                let response = self.public(access, &inner, deadline, order, request.hops);
+                let reply = if request.hops == 2 && inner.kind == i32::from(FrameKind::GroupWatch) {
+                    super::consumer_watch::DELEGATION
+                        .scope((peer.node_id, group), response)
+                        .await?
+                } else {
+                    response.await?
+                };
                 encode_payload(&reply, frame_limit(class, &self.config.protocol))
                     .map_err(|source| Error::operation("encode delegated public result", source))?
             }
@@ -1062,6 +1140,15 @@ impl Service {
 }
 
 impl WireService for Service {
+    fn defer(
+        self: &Arc<Self>,
+        peer: Authorization,
+        request: &Frame,
+        deadline: Instant,
+    ) -> Option<crate::server::DeferredReply<Error>> {
+        self.defer_watch(peer.clone(), request, deadline)
+            .or_else(|| self.defer_watch_authority(peer, request, deadline))
+    }
     fn scheduling_key(&self, peer: &Authorization, request: &Frame) -> Option<[u8; 16]> {
         super::auth::scheduling_key(peer, request, &self.config.protocol)
     }
@@ -1115,7 +1202,15 @@ impl WireService for Service {
         let result = match &peer {
             Authorization::External { .. } | Authorization::Credential { .. } => {
                 let kind = frame_kind(frame)?;
-                let Authorization::Credential { credential, session_id, .. } = &peer else { return Err(forbidden()); };
+                let Authorization::Credential { credential, session_id, tenant, .. } = &peer else { return Err(forbidden()); };
+                if matches!(kind, FrameKind::GroupWatch | FrameKind::GroupWatchCancel) {
+                    // Watch performs the current permission/member check in its bounded AUTHORIZE path.
+                    let access = Access {
+                        principal: Arc::from(format!("credential:{credential}")),
+                        scope: Arc::from("*"), session: Some(*session_id), tenant: *tenant,
+                    };
+                    return self.public(access, frame, deadline, order, 0).await.map(Some);
+                }
                 let (access, expires) = self.dynamic_access(*credential, *session_id, frame, deadline).await?;
                 let deadline = super::auth::admit_deadline(deadline, expires)?;
                 if kind == FrameKind::Cancel {

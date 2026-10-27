@@ -17,8 +17,11 @@ use crate::subscription::{self, DataContext, SubscriptionState};
 
 #[path = "authority_data.rs"]
 mod authority_data;
+#[path = "group_watch.rs"]
+mod group_watch;
 #[path = "groups.rs"]
 mod groups;
+pub(crate) use group_watch::{WatchHub, WatchKey, WatchSample, WatchSignal};
 #[path = "load.rs"]
 mod load;
 pub use load::{ShardLoad, ShardLoadReport};
@@ -335,6 +338,8 @@ pub struct DataApplication {
     hot_messages: usize,
     lifecycle: crate::lifecycle::DataState,
     authority: authority_data::AuthorityDataState,
+    #[serde(skip)]
+    watch: std::sync::Arc<WatchHub>,
 }
 
 impl fmt::Debug for DataApplication {

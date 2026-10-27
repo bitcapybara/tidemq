@@ -1,6 +1,9 @@
 mod ack;
 mod assignment;
+mod credit;
 mod driver;
+mod watch;
+pub use credit::ConsumerMode;
 
 #[cfg(test)]
 #[path = "../../../tests/scalable_support/consumer_views.rs"]
@@ -40,6 +43,32 @@ use crate::{
     message::ReceivedData,
 };
 pub use ack::{AckProgress, AckReceipt, PendingAck};
+
+/// Bounded local scheduling state; saturation is also reported by receive().
+#[derive(Clone, Copy, Debug)]
+pub struct ConsumerDiagnostics {
+    pub mode: ConsumerMode,
+    pub ordinary_reads: usize,
+    pub protected_reads: usize,
+    pub ordinary_unknown: usize,
+    pub protected_unknown: bool,
+    pub recovery_queue: usize,
+    pub ordinary_rpc: usize,
+    pub protected_rpc: usize,
+    pub recovery_rpc: usize,
+    pub long_watches: usize,
+    pub immediate_probes: usize,
+    pub ready_targets: usize,
+    pub assigned_targets: usize,
+    pub observed_targets: usize,
+    pub fallback_overdue: usize,
+    pub observation_overdue: usize,
+    pub protected_blocked: bool,
+    pub ordinary_slots_free: usize,
+    pub ordinary_bytes_free: usize,
+    pub protected_slots_free: usize,
+    pub protected_bytes_free: usize,
+}
 
 struct Builder {
     client: Client,
@@ -106,6 +135,12 @@ struct State {
     next_delivery: u64,
     domains: BTreeMap<Id, driver::Domain>,
     read_after: Option<Id>,
+    recovery_after: Option<Id>,
+    watch_after: Option<Id>,
+    watches: BTreeMap<Id, watch::Watch>,
+    next_watch: Instant,
+    saturated_since: Option<Instant>,
+    last_saturation_error: Option<Instant>,
     pending: BTreeMap<Id, PendingAck>,
     claims: BTreeMap<u64, std::sync::Weak<ack::Work>>,
     ack_sequences: BTreeMap<(Id, u64), u64>,
@@ -126,8 +161,7 @@ pub(crate) struct Core {
     info: Mutex<public::ConsumerControlResult>,
     state: Mutex<State>,
     changed: Notify,
-    slots: Arc<Semaphore>,
-    memory: Arc<Semaphore>,
+    credit: credit::Pools,
     stop: CancellationToken,
     close_deadline: Mutex<Option<Instant>>,
     lease_until: Mutex<Instant>,
@@ -204,6 +238,15 @@ impl Builder {
 
     async fn build_until(self, deadline: Instant) -> Result<Arc<Owner>> {
         let resource_memory = self.client.reserve_resource(deadline).await?;
+        let credit = credit::Pools::new(&self.client, self.messages, self.bytes)?;
+        if credit.mode == ConsumerMode::Isolated {
+            credit.native.register(&self.client, deadline).await?;
+        }
+        if credit.mode == ConsumerMode::Serial {
+            tracing::warn!(target: "tidemq_sdk::consumer", event_code = "consumer_serial_degradation",
+                "Consumer credit or client request capacity permits only one original read; an unknown result blocks further reads");
+        }
+        watch::validate_minimum(&self.client)?;
         let info = self.client.admin().topic_info(&self.topic).await?;
         let mut request = public::ConsumerControl {
             topic_id: bytes(info.id),
@@ -266,6 +309,12 @@ impl Builder {
                 next_delivery: 1,
                 domains: BTreeMap::new(),
                 read_after: None,
+                recovery_after: None,
+                watch_after: None,
+                watches: BTreeMap::new(),
+                next_watch: Instant::now(),
+                saturated_since: None,
+                last_saturation_error: None,
                 pending: BTreeMap::new(),
                 claims: BTreeMap::new(),
                 ack_sequences: BTreeMap::new(),
@@ -273,8 +322,7 @@ impl Builder {
                 closed: None,
             }),
             changed: Notify::new(),
-            slots: Arc::new(Semaphore::new(self.messages as usize)),
-            memory: Arc::new(Semaphore::new(self.bytes as usize)),
+            credit,
             stop: CancellationToken::new(),
             close_deadline: Mutex::new(None),
             lease_until: Mutex::new(Instant::now()),
@@ -641,6 +689,9 @@ impl Core {
 macro_rules! consumer {
     ($ty:ident) => {
         impl $ty {
+            pub fn diagnostics(&self) -> Result<ConsumerDiagnostics> {
+                driver::diagnostics(&self.owner.core)
+            }
             pub async fn receive(&self) -> Result<ReceivedMessage> {
                 self.owner.core.receive().await
             }

@@ -1140,6 +1140,11 @@ impl Service {
         }
         let deliveries = deliveries?;
         #[cfg(feature = "test-hooks")]
+        if super::consumer_read_test_hooks::suppress(self.cluster, route.partition, frame, &request)
+        {
+            return Err(Error::unknown());
+        }
+        #[cfg(feature = "test-hooks")]
         if super::test_hooks::lose_consumer_reply(route.partition) {
             return Err(Error::unknown());
         }

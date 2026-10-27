@@ -123,6 +123,7 @@ pub(crate) struct ReceivedData {
     pub _memory: OwnedSemaphorePermit,
     pub _client_memory: OwnedSemaphorePermit,
     pub slot: std::sync::Mutex<Option<OwnedSemaphorePermit>>,
+    pub _protected: Option<Arc<crate::client::admission::Protected>>,
 }
 
 impl ReceivedData {
@@ -173,6 +174,7 @@ mod credit_tests {
         let id = Id::new_v7().unwrap();
         let metrics = Arc::new(crate::Metrics::default());
         let data = Arc::new(ReceivedData {
+            _protected: None,
             _charge: metrics.charge(512, true),
             id: MessageId {
                 topic: id,
