@@ -551,6 +551,311 @@ async fn an_unknown_native_completion_is_not_automatically_resubmitted() {
     prepared.fixture.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_native_publisher_session_table_is_rejected_without_retries() {
+    let prepared = prepared().await;
+    let capacity = crate::producer::ProducerLimits::default().max_sessions;
+    let mut clients = Vec::new();
+    for _ in 0..capacity.div_ceil(16) {
+        clients.push(prepared.fixture.client(1).await);
+    }
+    let mut producers = Vec::new();
+    for index in 0..capacity {
+        let producer = clients
+            .get(index / 16)
+            .unwrap()
+            .new_producer("quota-race/app/events")
+            .build()
+            .await
+            .unwrap();
+        producer.send("occupied-session").await.unwrap();
+        producers.push(producer);
+    }
+    assert_eq!(committed_end(&prepared).await, capacity as u64);
+    let pause = InstalledPause::new(prepared.request.operation_id);
+    let before = prepared
+        .service
+        .producer_metrics
+        .snapshot()
+        .quota_retries_total;
+    let until = deadline();
+    let client = prepared.client.clone();
+    let request = prepared.request.clone();
+    let pending = tokio::spawn(async move { client.console_write(&request).await });
+    tokio::time::timeout_at(until, pause.state.ready.notified())
+        .await
+        .unwrap();
+    // Keep admission stable so only the real publisher table limit decides this attempt.
+    let serial = prepared.service.tenant_quota_serial.lock().await;
+    prepared
+        .service
+        .data_lease_for(2, prepared.partition, until, Duration::from_secs(1))
+        .await
+        .unwrap();
+    pause.state.resume.notify_one();
+    let result = pending.await.unwrap().unwrap();
+    drop(serial);
+    let attempts = pause.state.requests.lock().unwrap().clone();
+    let writes = pause.state.writers.lock().unwrap().len();
+    let failures = pause.state.failures.lock().unwrap().clone();
+    let retries = prepared
+        .service
+        .producer_metrics
+        .snapshot()
+        .quota_retries_total
+        - before;
+    let end = committed_end(&prepared).await;
+    eprintln!(
+        "Real native publisher capacity: live_sessions={capacity}, native_attempts={writes}, quota_retries_delta={retries}, status={:?}, committed_end={end}",
+        result.status
+    );
+    while let Some(producer) = producers.pop() {
+        producer.close().await.unwrap();
+    }
+    let replay = prepared
+        .client
+        .console_write(&prepared.request)
+        .await
+        .unwrap();
+    assert_eq!(replay.status, result.status);
+    assert_eq!(replay.reason, result.reason);
+    assert_eq!(replay.id, result.id);
+    assert_eq!(pause.state.writers.lock().unwrap().len(), writes);
+    assert_eq!(
+        prepared
+            .service
+            .producer_metrics
+            .snapshot()
+            .quota_retries_total
+            - before,
+        retries
+    );
+    drop(pause);
+    for client in clients {
+        client.close().await.unwrap();
+    }
+    prepared.client.close().await.unwrap();
+    prepared.fixture.close().await;
+    assert_eq!(result.status, Status::Rejected);
+    assert_eq!(result.reason.as_deref(), Some("quota_exceeded"));
+    assert_eq!(end, capacity as u64);
+    assert_eq!(
+        failures.first().unwrap().message,
+        crate::producer::Rejection::SessionCapacity.to_string()
+    );
+    assert!(
+        attempts
+            .iter()
+            .all(|attempt| attempt == attempts.first().unwrap())
+    );
+    assert_eq!(
+        writes, 1,
+        "A real publisher capacity refusal must not resubmit the original intent"
+    );
+    assert_eq!(retries, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn real_hot_data_capacity_is_rejected_once_without_quota_retries() {
+    let mut prepared = prepared().await;
+    prepared
+        .client
+        .admin()
+        .set_tenant_limits(
+            prepared.tenant,
+            ResourceLimits::builder()
+                .publish_bytes_per_second(128 * 1024 * 1024)
+                .consume_bytes_per_second(16 * 1024 * 1024)
+                .backlog_bytes(128 * 1024 * 1024)
+                .build()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let target_bytes = prepared
+        .service
+        .config
+        .protocol
+        .max_message_bytes
+        .min(1024 * 1024) as usize;
+    prepared.request.command = WriteCommand::Send {
+        topic: prepared.partition.topic_id,
+        payload_base64: STANDARD.encode(vec![b'c'; target_bytes]),
+        key_base64: None,
+        properties_base64: BTreeMap::new(),
+    };
+    let consumer = prepared
+        .client
+        .new_stream_consumer("quota-race/app/events", "retain-hot")
+        .prefetch_messages(1)
+        .build()
+        .await
+        .unwrap();
+    let mut producers = Vec::new();
+    for _ in 0..16 {
+        producers.push(
+            prepared
+                .client
+                .new_producer("quota-race/app/events")
+                .build()
+                .await
+                .unwrap(),
+        );
+    }
+    let chunk = Bytes::from(vec![b'h'; target_bytes / 4]);
+    producers
+        .first()
+        .unwrap()
+        .send(tidemq_sdk::Message::new(chunk.clone()))
+        .await
+        .unwrap();
+    let held = tokio::time::timeout(Duration::from_secs(15), consumer.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let replica = prepared.service.data.get(&2).unwrap();
+    let maximum = replica
+        .state
+        .try_with_application(|state| state.config().unwrap().max_hot_bytes)
+        .await
+        .unwrap();
+    let mut remaining = maximum;
+    for index in 1..=maximum as usize / chunk.len() {
+        remaining = replica
+            .state
+            .try_with_application(|state| {
+                maximum.saturating_sub(state.hot_bytes()).saturating_sub(
+                    state
+                        .producer(prepared.partition)
+                        .unwrap()
+                        .publish_state_bytes(),
+                )
+            })
+            .await
+            .unwrap();
+        if remaining < target_bytes as u64 {
+            break;
+        }
+        producers
+            .get(index % producers.len())
+            .unwrap()
+            .send(tidemq_sdk::Message::new(chunk.clone()))
+            .await
+            .unwrap();
+    }
+    assert!(
+        remaining < target_bytes as u64,
+        "The fixture did not reach native hot capacity"
+    );
+    let before_end = committed_end(&prepared).await;
+    let before = prepared
+        .service
+        .producer_metrics
+        .snapshot()
+        .quota_retries_total;
+    let pause = InstalledPause::new(prepared.request.operation_id);
+    let client = prepared.client.clone();
+    let request = prepared.request.clone();
+    let until = deadline();
+    let pending = tokio::spawn(async move { client.console_write(&request).await });
+    tokio::time::timeout_at(until, pause.state.ready.notified())
+        .await
+        .unwrap();
+    let serial = prepared.service.tenant_quota_serial.lock().await;
+    prepared
+        .service
+        .data_lease_for(2, prepared.partition, until, Duration::from_secs(1))
+        .await
+        .unwrap();
+    pause.state.resume.notify_one();
+    let result = pending.await.unwrap().unwrap();
+    drop(serial);
+    let writes = pause.state.writers.lock().unwrap().len();
+    let failure = pause
+        .state
+        .failures
+        .lock()
+        .unwrap()
+        .first()
+        .unwrap()
+        .clone();
+    let retries = prepared
+        .service
+        .producer_metrics
+        .snapshot()
+        .quota_retries_total
+        - before;
+    let end = committed_end(&prepared).await;
+    eprintln!(
+        "Real native hot capacity: maximum={maximum}, remaining_upper_bound={remaining}, message_bytes={target_bytes}, native_attempts={writes}, quota_retries_delta={retries}"
+    );
+    drop(pause);
+    consumer.ack_cumulative(&held).await.unwrap();
+    consumer.close().await.unwrap();
+    for producer in producers {
+        producer.close().await.unwrap();
+    }
+    prepared.client.close().await.unwrap();
+    prepared.fixture.close().await;
+    assert_eq!(result.status, Status::Rejected);
+    assert_eq!(result.reason.as_deref(), Some("quota_exceeded"));
+    assert_eq!(
+        failure.message,
+        crate::producer::Rejection::DataCapacity.to_string()
+    );
+    assert_eq!(end, before_end);
+    assert_eq!(writes, 1);
+    assert_eq!(retries, 0);
+}
+
+#[test]
+fn retry_eligibility_keeps_the_exact_tenant_source_and_original_failure_contract() {
+    use crate::broker::{DataRejection as D, QuotaRejection as Q};
+    let exhausted = super::super::data::data_rejection(D::Quota(Q::Exhausted));
+    assert!(unrecorded_tenant_grant_refusal(&exhausted));
+    let external = Error::reject_with(
+        ErrorCode::QuotaExceeded,
+        Outcome::Rejected,
+        true,
+        Q::Exhausted.to_string(),
+    );
+    let expected = serde_json::to_value(external.failure()).unwrap();
+    assert_eq!(serde_json::to_value(exhausted.failure()).unwrap(), expected);
+    assert_eq!(exhausted.to_string(), external.to_string());
+    for reason in [
+        D::Quota(Q::Occupied),
+        D::PartitionCapacity,
+        D::Producer(crate::producer::Rejection::SessionCapacity),
+        D::Producer(crate::producer::Rejection::DataCapacity),
+        D::Transfer(crate::broker::TransferDataRejection::Capacity),
+    ] {
+        let error = super::super::data::data_rejection(reason);
+        assert_eq!(error.failure().code, i32::from(ErrorCode::QuotaExceeded));
+        assert!(!unrecorded_tenant_grant_refusal(&error));
+    }
+    assert!(!unrecorded_tenant_grant_refusal(&external));
+    for field in ["known", "unknown", "permanent"] {
+        let mut error = super::super::data::data_rejection(D::Quota(Q::Exhausted));
+        let Error::TenantGrantExhausted { failure } = &mut error else {
+            panic!("Tenant grant provenance was lost");
+        };
+        match field {
+            "known" => failure.original_outcome_known = true,
+            "unknown" => failure.outcome = i32::from(Outcome::Unknown),
+            "permanent" => failure.retryable = false,
+            _ => unreachable!(),
+        }
+        assert!(!unrecorded_tenant_grant_refusal(&error));
+    }
+    let admitted = super::super::data::data_rejection(D::Quota(Q::Exhausted)).admitted();
+    assert!(!unrecorded_tenant_grant_refusal(&admitted));
+    assert_eq!(admitted.failure().outcome, i32::from(Outcome::Unknown));
+    let forwarded: super::super::Failure = serde_json::from_value(expected).unwrap();
+    assert!(!unrecorded_tenant_grant_refusal(&Error::Rejected {
+        failure: forwarded
+    }));
+}
+
 #[test]
 fn quota_retry_events_keep_the_parent_span_and_only_fixed_safe_fields() {
     let buffer = crate::observability::logging::tests::Buffer(Arc::default());
