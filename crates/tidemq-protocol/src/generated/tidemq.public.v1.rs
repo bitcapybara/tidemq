@@ -716,6 +716,67 @@ pub struct GroupRetire {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GroupRetired {}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GroupWatch {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub subscription_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub member_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub member_epoch: u64,
+    #[prost(uint64, tag = "5")]
+    pub assignment_version: u64,
+    #[prost(uint64, tag = "6")]
+    pub attempt: u64,
+    #[prost(uint32, tag = "7")]
+    pub wait_ms: u32,
+    #[prost(message, repeated, tag = "8")]
+    pub targets: ::prost::alloc::vec::Vec<WatchTarget>,
+    #[prost(bytes = "bytes", tag = "9")]
+    pub root_operation_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "10")]
+    pub parent_operation_id: ::prost::bytes::Bytes,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchTarget {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "2")]
+    pub birth_partition: u32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub observed_token: ::prost::bytes::Bytes,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct GroupWatchResult {
+    #[prost(message, repeated, tag = "1")]
+    pub targets: ::prost::alloc::vec::Vec<WatchResult>,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WatchResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(enumeration = "WatchStatus", tag = "2")]
+    pub status: i32,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub observed_token: ::prost::bytes::Bytes,
+    #[prost(enumeration = "super::super::common::v1::ErrorCode", tag = "4")]
+    pub error_code: i32,
+    #[prost(bool, tag = "5")]
+    pub retryable: bool,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupWatchCancel {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub root_operation_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub operation_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "3")]
+    pub attempt: u64,
+}
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GroupWatchCancelled {}
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RemoveTopic {
     #[prost(bytes = "bytes", tag = "1")]
@@ -1029,6 +1090,47 @@ impl PublisherAction {
             "HEARTBEAT_PUBLISHER" => Some(Self::HeartbeatPublisher),
             "CLOSE_PUBLISHER" => Some(Self::ClosePublisher),
             "PUBLISHER_STATUS" => Some(Self::PublisherStatus),
+            _ => None,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum WatchStatus {
+    Unspecified = 0,
+    WatchSync = 1,
+    WatchChanged = 2,
+    WatchUnchanged = 3,
+    WatchReset = 4,
+    WatchRetry = 5,
+    WatchRejected = 6,
+}
+impl WatchStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "WATCH_STATUS_UNSPECIFIED",
+            Self::WatchSync => "WATCH_SYNC",
+            Self::WatchChanged => "WATCH_CHANGED",
+            Self::WatchUnchanged => "WATCH_UNCHANGED",
+            Self::WatchReset => "WATCH_RESET",
+            Self::WatchRetry => "WATCH_RETRY",
+            Self::WatchRejected => "WATCH_REJECTED",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "WATCH_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "WATCH_SYNC" => Some(Self::WatchSync),
+            "WATCH_CHANGED" => Some(Self::WatchChanged),
+            "WATCH_UNCHANGED" => Some(Self::WatchUnchanged),
+            "WATCH_RESET" => Some(Self::WatchReset),
+            "WATCH_RETRY" => Some(Self::WatchRetry),
+            "WATCH_REJECTED" => Some(Self::WatchRejected),
             _ => None,
         }
     }

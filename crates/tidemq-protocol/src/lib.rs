@@ -9,6 +9,7 @@ pub mod limits;
 pub mod producer;
 pub mod state;
 pub mod topic;
+pub mod watch;
 
 pub use error::{Error, Result};
 pub use identity::Id;

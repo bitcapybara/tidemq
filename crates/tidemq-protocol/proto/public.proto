@@ -390,6 +390,47 @@ message GroupRetire {
 }
 message GroupRetired {}
 
+message GroupWatch {
+  bytes topic_id = 1;
+  bytes subscription_id = 2;
+  bytes member_id = 3;
+  uint64 member_epoch = 4;
+  uint64 assignment_version = 5;
+  uint64 attempt = 6;
+  uint32 wait_ms = 7;
+  repeated WatchTarget targets = 8;
+  bytes root_operation_id = 9;
+  bytes parent_operation_id = 10;
+}
+message WatchTarget {
+  bytes shard_id = 1;
+  uint32 birth_partition = 2;
+  bytes observed_token = 3;
+}
+message GroupWatchResult { repeated WatchResult targets = 1; }
+enum WatchStatus {
+  WATCH_STATUS_UNSPECIFIED = 0;
+  WATCH_SYNC = 1;
+  WATCH_CHANGED = 2;
+  WATCH_UNCHANGED = 3;
+  WATCH_RESET = 4;
+  WATCH_RETRY = 5;
+  WATCH_REJECTED = 6;
+}
+message WatchResult {
+  bytes shard_id = 1;
+  WatchStatus status = 2;
+  bytes observed_token = 3;
+  tidemq.common.v1.ErrorCode error_code = 4;
+  bool retryable = 5;
+}
+message GroupWatchCancel {
+  bytes root_operation_id = 1;
+  bytes operation_id = 2;
+  uint64 attempt = 3;
+}
+message GroupWatchCancelled {}
+
 message RemoveTopic { bytes topic_id = 1; }
 message TopicRemoved {
   bytes topic_id = 1;

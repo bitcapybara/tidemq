@@ -308,6 +308,10 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::GroupRetireRead
         | FrameKind::GroupRetireAck
         | FrameKind::GroupRetired
+        | FrameKind::GroupWatch
+        | FrameKind::GroupWatchResult
+        | FrameKind::GroupWatchCancel
+        | FrameKind::GroupWatchCancelled
         | FrameKind::RaftVote
         | FrameKind::Diagnose
         | FrameKind::DiagnosticResult => class == TrafficClass::Control,

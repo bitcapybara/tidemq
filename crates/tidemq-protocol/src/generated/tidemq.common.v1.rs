@@ -134,6 +134,10 @@ pub enum FrameKind {
     ConsoleWrite = 95,
     ConsoleOperationResult = 96,
     GetConsoleOperation = 97,
+    GroupWatch = 98,
+    GroupWatchResult = 99,
+    GroupWatchCancel = 100,
+    GroupWatchCancelled = 101,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -193,6 +197,10 @@ impl FrameKind {
             Self::ConsoleWrite => "CONSOLE_WRITE",
             Self::ConsoleOperationResult => "CONSOLE_OPERATION_RESULT",
             Self::GetConsoleOperation => "GET_CONSOLE_OPERATION",
+            Self::GroupWatch => "GROUP_WATCH",
+            Self::GroupWatchResult => "GROUP_WATCH_RESULT",
+            Self::GroupWatchCancel => "GROUP_WATCH_CANCEL",
+            Self::GroupWatchCancelled => "GROUP_WATCH_CANCELLED",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -249,6 +257,10 @@ impl FrameKind {
             "CONSOLE_WRITE" => Some(Self::ConsoleWrite),
             "CONSOLE_OPERATION_RESULT" => Some(Self::ConsoleOperationResult),
             "GET_CONSOLE_OPERATION" => Some(Self::GetConsoleOperation),
+            "GROUP_WATCH" => Some(Self::GroupWatch),
+            "GROUP_WATCH_RESULT" => Some(Self::GroupWatchResult),
+            "GROUP_WATCH_CANCEL" => Some(Self::GroupWatchCancel),
+            "GROUP_WATCH_CANCELLED" => Some(Self::GroupWatchCancelled),
             _ => None,
         }
     }
