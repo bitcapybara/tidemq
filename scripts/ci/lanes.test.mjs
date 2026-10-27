@@ -21,5 +21,6 @@ test('parallel integration lanes select every suite once and keep reports separa
     const calls = fs.readFileSync(path.join(root, 'calls'), 'utf8');
     assert.equal(calls.includes('--workspace'), mode !== 'faults');
     assert.equal(calls.includes('test-hooks'), mode !== 'normal');
+    assert.equal(calls.includes('--test runtime_group_watch'), mode !== 'normal');
   }
 });

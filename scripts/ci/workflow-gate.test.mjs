@@ -6,7 +6,7 @@ import test from 'node:test';
 const workflow = fs.readFileSync(new URL('../../.github/workflows/rust.yml', import.meta.url), 'utf8');
 const gate = workflow.match(/node -e '([^'\n]+)'/)?.[1];
 assert(gate, 'The workflow must contain its final executable gate');
-const jobs = ['validate', 'faults', 'coverage', 'untrusted', 'console', 'console-browser', 'console-browser-live'];
+const jobs = ['validate', 'faults', 'coverage', 'untrusted', 'console', 'console-browser', 'console-browser-live', 'documentation'];
 
 function evaluate(fork, patch = {}) {
   const results = Object.fromEntries(jobs.map((job) => [job, { result: 'success' }]));
@@ -27,7 +27,7 @@ test('the main gate requires coverage, real backend browsers and every trusted R
 test('forks require unit, coverage and browser gates without accessing shared services', () => {
   const skipped = { validate: 'skipped', faults: 'skipped', coverage: 'skipped', 'console-browser-live': 'skipped' };
   assert.equal(evaluate(true, skipped), 0);
-  for (const job of ['untrusted', 'console', 'console-browser']) {
+  for (const job of ['untrusted', 'console', 'console-browser', 'documentation']) {
     assert.notEqual(evaluate(true, { ...skipped, [job]: 'failure' }), 0, job);
   }
 });
