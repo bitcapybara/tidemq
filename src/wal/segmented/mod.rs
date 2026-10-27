@@ -25,7 +25,6 @@ pub use format::{
     SnapshotRef, segmented_file_kind,
 };
 pub use recovery::Recovery;
-pub type SegmentedStatistics = JournalStatistics;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
 pub struct SegmentedInspection {
@@ -82,7 +81,7 @@ enum Request {
     Shutdown(Completion),
 }
 struct Shared {
-    stats: Mutex<SegmentedStatistics>,
+    stats: Mutex<JournalStatistics>,
     snapshot: Mutex<Option<SnapshotRef>>,
     next_record_id: AtomicU64,
     retained_count: Arc<AtomicUsize>,
@@ -116,9 +115,6 @@ pub struct SegmentedJournal {
     metrics: Option<Arc<OperationMetrics>>,
 }
 impl JournalOptions {
-    pub fn validate(&self) -> Result<()> {
-        self.validate_segmented()
-    }
     pub fn validate_segmented(&self) -> Result<()> {
         self.validate_basic()?;
         let publication = self.publication_reserve()?;
@@ -236,7 +232,7 @@ impl SegmentedJournal {
         )
         .await?;
         let shared = Arc::new(Shared {
-            stats: Mutex::new(SegmentedStatistics::default()),
+            stats: Mutex::new(JournalStatistics::default()),
             snapshot: Mutex::new(loaded.manifest.snapshot.clone()),
             next_record_id: AtomicU64::new(loaded.next_record_id),
             retained_count: Arc::new(AtomicUsize::new(loaded.index.len())),
@@ -466,7 +462,7 @@ impl SegmentedJournal {
             reason: "Segmented writer has stopped".to_owned(),
         })
     }
-    pub fn statistics(&self) -> SegmentedStatistics {
+    pub fn statistics(&self) -> JournalStatistics {
         let mut result = lock(&self.shared.stats).clone();
         result.available_pending_bytes = self.bytes.available_permits();
         result.available_pending_records = self.requests.available_permits();
