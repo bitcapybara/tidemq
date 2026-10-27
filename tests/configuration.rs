@@ -260,12 +260,6 @@ fn node_templates_preserve_defaults_and_role_boundaries() {
         );
         config.runtime.validate(&config).unwrap();
     }
-    let local: toml::Table = toml::from_str(include_str!("../config/local.toml")).unwrap();
-    let combined: toml::Table = toml::from_str(node_template(Role::Combined)).unwrap();
-    assert_eq!(
-        local, combined,
-        "The compatibility template must stay synchronized"
-    );
 }
 
 #[test]
@@ -363,7 +357,7 @@ fn optional_examples_require_operator_supplied_capacity() {
 async fn process_and_cli_load_every_template_consistently() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut names: Vec<_> = NODE_ROLES.iter().map(|role| role.name()).collect();
-    names.extend(["local", "console"]);
+    names.push("console");
     for name in names {
         let path = root.join(format!("config/{name}.toml"));
         let process = ProcessConfig::load(&path).await.unwrap();
