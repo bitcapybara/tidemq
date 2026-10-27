@@ -89,7 +89,7 @@ Client、Producer、StreamConsumer 和 QueueConsumer 的 clone 共享同一逻�
 
 Client 和各逻辑实例分别限制消息数、字节、请求、结果、连接与任务。Consumer 的 prefetch_bytes 至少容纳一条最大消息和 512 字节交付元数据；当前 SDK 最低为 262656 字节，小于该值会在 build 时明确拒绝。Read 预留保持一条最大消息的余量，应用持有正文导致剩余额度不足时暂停预取，释放正文后继续。Consumer prefetch 覆盖 Read 预留、本地队列及应用持有的正文，不能按分片放大额度。ACK 释放逻辑交付额度后，应用仍持有的正文继续计费。传输、控制和恢复额度单独受限；逻辑计费不能当作进程 RSS 上限。
 
-close 使用独立 close_timeout，返回 CloseReport，失败返回携带报告的 CloseError。报告区分本地清理、成员退出、未决 Read/发送/ACK/订阅删除/管理操作和未领取结果。Consumer 关闭在成员 fencing 完成后退休已接受或结果未知的 Read，未完成的退休通过 `unresolved_reads()` 报告。close 不替应用 ACK，不删除持久订阅；调用前应收束应用自身的发送和业务任务。
+close 使用独立 close_timeout，返回 CloseReport，失败返回携带报告的 CloseError。报告区分本地清理、成员退出、未决 Join/Read/发送/ACK/订阅删除/管理操作和未领取结果。Consumer 关闭先解决已发出的原 Join 身份，确认对应 member epoch 后退出；Join 无法在原关闭预算内确认时，通过 CloseError 和 `unresolved_joins()` 明确报告未决，不将未知重加入当作已离开。成员 fencing 完成后退休已接受或结果未知的 Read，未完成的退休通过 `unresolved_reads()` 报告。close 不替应用 ACK，不删除持久订阅；调用前应收束应用自身的发送和业务任务。
 
 ## 总期限、取消和恢复
 

@@ -6,6 +6,10 @@ mod driver;
 #[path = "../../../tests/scalable_support/consumer_views.rs"]
 mod view_tests;
 
+#[cfg(test)]
+mod close_rejoin_tests;
+
+#[derive(Clone)]
 struct JoinAttempt {
     operation: Id,
     request: public::ConsumerControl,
@@ -107,6 +111,7 @@ struct State {
     domains: BTreeMap<Id, driver::Domain>,
     read_after: Option<Id>,
     pending: BTreeMap<Id, PendingAck>,
+    pending_join: Option<JoinAttempt>,
     claims: BTreeMap<u64, std::sync::Weak<ack::Work>>,
     ack_sequences: BTreeMap<(Id, u64), u64>,
     error: Option<Arc<Error>>,
@@ -248,6 +253,11 @@ impl Builder {
         request.action = public::ConsumerAction::JoinConsumer.into();
         let member = Id::from_slice(&request.member_id)?;
         let operation = Id::new_v7()?;
+        let joining = JoinAttempt {
+            operation,
+            request,
+            heartbeat: None,
+        };
         let core = Arc::new(Core {
             client: self.client.background(),
             topic: self.topic,
@@ -255,7 +265,7 @@ impl Builder {
             subscription: Id::from_slice(&status.subscription_id)?,
             model: self.model,
             member,
-            epoch: AtomicU64::new(request.member_epoch),
+            epoch: AtomicU64::new(joining.request.member_epoch),
             max_messages: self.messages,
             max_bytes: self.bytes,
             info: Mutex::new(status),
@@ -267,6 +277,7 @@ impl Builder {
                 domains: BTreeMap::new(),
                 read_after: None,
                 pending: BTreeMap::new(),
+                pending_join: Some(joining.clone()),
                 claims: BTreeMap::new(),
                 ack_sequences: BTreeMap::new(),
                 error: None,
@@ -292,17 +303,16 @@ impl Builder {
         let worker = core.clone();
         let task = tokio::spawn(async move {
             let core = worker;
-            let mut joining = JoinAttempt {
-                operation,
-                request,
-                heartbeat: None,
-            };
+            let mut joining = joining;
             let result = join_control(&core.client, &mut joining, deadline).await;
             core.epoch
                 .store(joining.request.member_epoch, Ordering::Release);
             match result {
                 Ok((status, started)) => {
                     core.epoch.store(status.member_epoch, Ordering::Release);
+                    if let Ok(mut state) = core.state() {
+                        state.pending_join = None;
+                    }
                     if let Err(error) = core.update_info(status, started) {
                         core.record_error(error);
                         core.stop.cancel();
@@ -313,7 +323,7 @@ impl Builder {
                 Err(error) => {
                     let error = Arc::new(error);
                     let _ = ready.send(Err(error.clone()));
-                    driver::finish(core, Some(error)).await;
+                    driver::finish(core, Some(error), joining).await;
                 }
             }
         });
@@ -558,9 +568,16 @@ impl Core {
                 return self.join_closed(result, deadline).await;
             }
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                let unresolved_joins = self
+                    .state()
+                    .map(|state| usize::from(state.pending_join.is_some()))
+                    .unwrap_or(1);
                 return Err(CloseError {
-                    report: CloseReport::default(),
-                    source: Arc::new(Error::Deadline),
+                    report: CloseReport {
+                        unresolved_joins,
+                        ..CloseReport::default()
+                    },
+                    source: Arc::new(Error::Deadline.preserve_uncertainty(unresolved_joins > 0)),
                 });
             }
         }

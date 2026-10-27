@@ -39,6 +39,8 @@ npm --prefix console/web run test:e2e:live
 
 千分片回归通过公开管理接口建立 1000 个真实 shard 及读取游标，测试内部总预算为 900 秒，包含初始化、测量与清理；CI 只为该用例设置 18 分钟的进程终止边界，给失败后的清理留余量。其余用例保留原单例限制，整个集成 lane 最长 40 分钟；这些是测试资源边界，生产 Watch 仍最多等待 1 秒。
 
+`runtime_consumer_close` 在 test-hooks 故障流程中运行真实 RF1/QUIC/Raft 关闭回归，覆盖重加入提交与回复之间关闭的边界，校验原 Join 身份、正确 member epoch、有限关闭预算和未决 Join 报告；它与长轮询、成员故障用例一起运行并纳入同一份 JUnit。
+
 ## CI 与覆盖率
 
 [Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 使用 ssh dev 的 runner VM 及其中新增的一个容器 runner，macOS 使用 GitHub-hosted runner。workflow 负责调度与制品，执行步骤位于 [scripts/ci](https://github.com/bitcapybara/tidemq/tree/main/scripts/ci)。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。

@@ -40,17 +40,20 @@ pub(super) async fn run(core: Arc<Core>) {
     let heartbeat = tokio::spawn(heartbeats(core.clone()));
     let reads = tokio::spawn(reads(core.clone()));
     core.stop.cancelled().await;
-    heartbeat.abort();
     reads.abort();
-    let _ = heartbeat.await;
+    let (joining, failure) = match heartbeat.await {
+        Ok(Ok(mut lease)) => (lease.join.take(), None),
+        Ok(Err(error)) => (None, Some(Arc::new(error))),
+        Err(source) => (None, Some(Arc::new(Error::Task { source }))),
+    };
     let _ = reads.await;
-    let result = cleanup(&core, None).await;
+    let result = cleanup(&core, failure, joining).await;
     ack::stop_tasks(&core).await;
     publish_close(&core, result);
 }
 
-pub(super) async fn finish(core: Arc<Core>, error: Option<Arc<Error>>) {
-    let result = cleanup(&core, error).await;
+pub(super) async fn finish(core: Arc<Core>, error: Option<Arc<Error>>, joining: JoinAttempt) {
+    let result = cleanup(&core, error, Some(joining)).await;
     publish_close(&core, result);
 }
 
@@ -98,6 +101,7 @@ fn release_local(core: &Core) {
         state.queue = VecDeque::new();
         state.ledger.clear();
         state.domains.clear();
+        state.pending_join = None;
         state.ack_sequences.clear();
         state.claims.clear();
     }
@@ -112,20 +116,33 @@ fn release_local(core: &Core) {
     core.changed.notify_waiters();
 }
 
-async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
+async fn cleanup(
+    core: &Core,
+    mut failure: Option<Arc<Error>>,
+    joining: Option<JoinAttempt>,
+) -> CloseResult {
     let deadline = core
         .close_deadline
         .lock()
         .ok()
         .and_then(|deadline| *deadline)
         .unwrap_or_else(|| Instant::now() + core.client.inner.config.close_timeout);
+    if let Some(joining) = joining
+        && let Ok(mut state) = core.state()
+    {
+        state.pending_join = Some(joining);
+    }
     ack::drain(core, deadline).await;
-    let leave = leave(core, deadline).await;
+    let leave = match resolve_join(core, deadline).await {
+        Ok(()) => leave(core, deadline).await,
+        Err(error) => Err(error),
+    };
     let mut report = CloseReport {
         local_cleanup_complete: true,
         ..CloseReport::default()
     };
     if let Ok(state) = core.state() {
+        report.unresolved_joins = usize::from(state.pending_join.is_some());
         for pending in state.pending.values() {
             if pending.is_complete() {
                 report.unclaimed_results = report.unclaimed_results.saturating_add(1);
@@ -155,6 +172,53 @@ async fn cleanup(core: &Core, mut failure: Option<Arc<Error>>) -> CloseResult {
         Some(source) => Err(CloseError { report, source }),
         None => Ok(report),
     }
+}
+
+async fn resolve_join(core: &Core, deadline: Instant) -> Result<()> {
+    let pending = core.state()?.pending_join.clone();
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+    let after = deadline
+        .checked_add(Duration::from_secs(15))
+        .ok_or(Error::Deadline)?;
+    {
+        let mut fence = core.lease_fence_after.lock().map_err(|_| Error::Closed)?;
+        *fence = (*fence).max(after);
+    }
+    let result = crate::request::retry_cleanup(deadline, || {
+        control(&core.client, pending.operation, &pending.request, deadline)
+    })
+    .await
+    .map_err(|error| error.preserve_uncertainty(true));
+    let status = result.inspect_err(|_error| {
+        tracing::debug!(target: "tidemq_sdk::consumer", event_code = "consumer_close_join_unresolved",
+            stage = "resolve_original_join",
+            operation_id = %pending.operation, member_id = %core.member,
+            member_epoch = pending.request.member_epoch, "Original consumer Join remains unresolved at close");
+    })?;
+    if status.subscription_id.as_ref() != core.subscription.as_bytes()
+        || status.member_epoch == 0
+        || status.member_epoch != pending.request.member_epoch
+        || !(1..=7).contains(&status.member_status)
+    {
+        tracing::debug!(target: "tidemq_sdk::consumer", event_code = "consumer_close_join_unresolved",
+            stage = "validate_join_status", operation_id = %pending.operation,
+            member_id = %core.member, member_epoch = pending.request.member_epoch,
+            "Close received a status outside the original consumer Join identity");
+        return Err(Error::ResponseMismatch {
+            reason: "close Join status differs from the original member identity".into(),
+        }
+        .preserve_uncertainty(true));
+    }
+    // Joining is authoritative enough for Leave; closing must not renew it to become Active.
+    core.epoch.store(status.member_epoch, Ordering::Release);
+    core.state()?.pending_join = None;
+    tracing::debug!(target: "tidemq_sdk::consumer", event_code = "consumer_close_join_resolved",
+        operation_id = %pending.operation, member_id = %core.member,
+        member_epoch = status.member_epoch, member_status = status.member_status,
+        "Original consumer Join resolved before closing its confirmed epoch");
+    Ok(())
 }
 
 async fn retire_member(core: &Core, deadline: Instant) -> Result<()> {
@@ -235,13 +299,13 @@ async fn leave(core: &Core, deadline: Instant) -> Result<()> {
     }
 }
 
-async fn heartbeats(core: Arc<Core>) {
+async fn heartbeats(core: Arc<Core>) -> Result<LeaseDriver> {
     let operation = match Id::new_v7() {
         Ok(operation) => operation,
         Err(error) => {
             core.record_error(error.into());
             core.stop.cancel();
-            return;
+            return Err(Error::Closed);
         }
     };
     let mut lease = LeaseDriver {
@@ -257,8 +321,16 @@ async fn heartbeats(core: Arc<Core>) {
     let mut timer = tokio::time::interval(Duration::from_secs(3));
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        tokio::select! { _ = core.stop.cancelled() => return, _ = timer.tick() => {} }
-        if let Err(error) = maintain_lease(&core, &mut lease).await {
+        tokio::select! { biased; _ = core.stop.cancelled() => return Ok(lease), _ = timer.tick() => {} }
+        let result = tokio::select! {
+            biased;
+            _ = core.stop.cancelled() => None,
+            result = maintain_lease(&core, &mut lease) => Some(result),
+        };
+        let Some(result) = result else {
+            return Ok(lease);
+        };
+        if let Err(error) = result {
             let terminal = error.permission_denied() || lease.rejoins > 16;
             let live = core
                 .lease_until
@@ -269,7 +341,7 @@ async fn heartbeats(core: Arc<Core>) {
             }
             if terminal {
                 core.stop.cancel();
-                return;
+                return Ok(lease);
             }
         }
     }
@@ -300,6 +372,7 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
         lease.sequence = status.next_heartbeat_sequence;
         core.update_info(status, observed)?;
         lease.join = None;
+        core.state()?.pending_join = None;
         lease.operation = Id::new_v7()?;
         return Ok(());
     }
@@ -362,6 +435,7 @@ async fn maintain_lease(core: &Core, lease: &mut LeaseDriver) -> Result<()> {
                     request,
                     heartbeat: None,
                 });
+                core.state()?.pending_join = lease.join.clone();
             }
             Err(error)
         }

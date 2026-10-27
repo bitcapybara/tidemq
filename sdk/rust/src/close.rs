@@ -4,6 +4,7 @@ use std::{fmt, sync::Arc};
 pub struct CloseReport {
     pub(crate) local_cleanup_complete: bool,
     pub(crate) members_left: usize,
+    pub(crate) unresolved_joins: usize,
     pub(crate) unresolved_sends: usize,
     pub(crate) unresolved_acks: usize,
     pub(crate) unresolved_reads: usize,
@@ -16,6 +17,7 @@ impl CloseReport {
     pub(crate) fn merge(&mut self, other: &Self) {
         self.local_cleanup_complete &= other.local_cleanup_complete;
         self.members_left = self.members_left.saturating_add(other.members_left);
+        self.unresolved_joins = self.unresolved_joins.saturating_add(other.unresolved_joins);
         self.unresolved_sends = self.unresolved_sends.saturating_add(other.unresolved_sends);
         self.unresolved_acks = self.unresolved_acks.saturating_add(other.unresolved_acks);
         self.unresolved_reads = self.unresolved_reads.saturating_add(other.unresolved_reads);
@@ -34,6 +36,9 @@ impl CloseReport {
     }
     pub fn members_left(&self) -> usize {
         self.members_left
+    }
+    pub fn unresolved_joins(&self) -> usize {
+        self.unresolved_joins
     }
     pub fn unresolved_sends(&self) -> usize {
         self.unresolved_sends
