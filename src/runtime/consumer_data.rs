@@ -925,7 +925,9 @@ impl Service {
                     if kind == FrameKind::GroupRetireRead
                         && matches!(
                             ErrorCode::try_from(error.failure().code),
-                            Ok(ErrorCode::NotFound | ErrorCode::Forbidden)
+                            Ok(ErrorCode::NotFound
+                                | ErrorCode::StaleGeneration
+                                | ErrorCode::Forbidden)
                         )
                         && self
                             .closed_read_is_absent(access, &route, &request, deadline)
@@ -995,6 +997,12 @@ impl Service {
                 let cursor = state
                     .consumer_group_cursor(route.partition, subscription)
                     .ok_or_else(super::metadata::not_found)?;
+                // A fenced member can be reaped before the original SDK handle rejoins.
+                if !cursor.contains_member(member, epoch) {
+                    return Err(super::data::subscription_error(
+                        subscription::Rejection::SessionMismatch,
+                    ));
+                }
                 if !cursor.authorize_member(member, epoch, client, credential) {
                     return Err(forbidden());
                 }

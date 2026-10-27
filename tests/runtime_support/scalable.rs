@@ -670,6 +670,80 @@ async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() 
     fixture.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_expired_queue_member_rejoins_after_restart_without_permission_denial() {
+    let nodes = [
+        (1, Role::Combined),
+        (2, Role::Metadata),
+        (3, Role::Metadata),
+        (4, Role::Storage),
+        (5, Role::Storage),
+        (6, Role::Storage),
+        (7, Role::Gateway),
+    ];
+    let mut fixture = Fixture::new(&nodes, &[1, 2, 3], &[4, 5, 6]).await;
+    fixture.start_all().await;
+    let client = fixture.client(7).await;
+    let tenant = client.admin().create_tenant("acme").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = "acme/app/idle-recovery";
+    client.admin().create_topic(topic).await.unwrap();
+    let queue = client
+        .new_queue_consumer(topic, "workers")
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(topic).build().await.unwrap();
+    producer.send("before-outage").await.unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(15), queue.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    queue.ack(&first).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    for node in [2, 3, 5, 6] {
+        fixture.stop(node).await;
+    }
+    tokio::time::sleep(Duration::from_secs(16)).await;
+    for node in [2, 3, 5, 6] {
+        fixture.running.insert(
+            node,
+            RunningNode::start(fixture.configs.get(&node).unwrap().clone())
+                .await
+                .unwrap(),
+        );
+    }
+    fixture.wait_ready().await;
+    let sent = producer.send("after-outage").await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let recovered = loop {
+        match tokio::time::timeout_at(deadline, queue.receive())
+            .await
+            .unwrap()
+        {
+            Ok(message) => break message,
+            Err(error) => {
+                assert!(
+                    recoverable_member_error(&error),
+                    "Unexpected idle member recovery failure: {:#}",
+                    anyhow::Error::new(error)
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    assert_eq!(recovered.message_id(), sent.message_id());
+    queue.ack(&recovered).await.unwrap();
+    queue.close().await.unwrap();
+    producer.close().await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
 fn recoverable_member_error(error: &tidemq_sdk::Error) -> bool {
     use tidemq_protocol::common::ErrorCode;
     use tidemq_sdk::Error;
