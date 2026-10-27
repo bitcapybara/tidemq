@@ -23,15 +23,36 @@ pub fn is_completion(kind: FrameKind) -> bool {
     )
 }
 
+/// Classify Core candidates without imposing their payload bound on ordinary frames.
 pub fn is_core_control(frame: &Frame, limits: &ProtocolLimits) -> Result<bool> {
     use crate::public;
-    if frame.payload.len() > limits.max_control_frame_bytes as usize {
-        return Err(Error::Limit {
-            name: "core control payload bytes",
-        });
-    }
+    let check_payload = || {
+        if frame.payload.len() > limits.max_control_frame_bytes as usize {
+            return Err(Error::Limit {
+                name: "core control payload bytes",
+            });
+        }
+        Ok(())
+    };
     Ok(match FrameKind::try_from(frame.kind) {
+        Ok(FrameKind::RaftAppend)
+            if frame.traffic_class == i32::from(TrafficClass::Replication) =>
+        {
+            false
+        }
+        Ok(FrameKind::RaftResult)
+            if matches!(
+                TrafficClass::try_from(frame.traffic_class),
+                Ok(TrafficClass::Produce
+                    | TrafficClass::Delivery
+                    | TrafficClass::Bulk
+                    | TrafficClass::Replication)
+            ) =>
+        {
+            false
+        }
         Ok(FrameKind::ConsumerControl) => {
+            check_payload()?;
             let request: public::ConsumerControl = decode_payload(frame.payload.clone(), limits)?;
             matches!(
                 public::ConsumerAction::try_from(request.action),
@@ -42,6 +63,7 @@ pub fn is_core_control(frame: &Frame, limits: &ProtocolLimits) -> Result<bool> {
             )
         }
         Ok(FrameKind::PublisherControl) => {
+            check_payload()?;
             let request: public::PublisherControl = decode_payload(frame.payload.clone(), limits)?;
             matches!(
                 public::PublisherAction::try_from(request.action),
@@ -67,7 +89,10 @@ pub fn is_core_control(frame: &Frame, limits: &ProtocolLimits) -> Result<bool> {
             | FrameKind::RaftVote
             | FrameKind::RaftAppend
             | FrameKind::RaftResult,
-        ) => true,
+        ) => {
+            check_payload()?;
+            true
+        }
         _ => false,
     })
 }
@@ -422,6 +447,9 @@ pub(crate) fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64> {
         reason: "protobuf varint overflow",
     })
 }
+
+#[cfg(test)]
+mod core_tests;
 
 #[cfg(test)]
 mod tests {
