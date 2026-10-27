@@ -31,7 +31,9 @@ cargo build --locked -p tidemq -j2
 npm --prefix console/web run test:e2e:live
 ```
 
-真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。PR 运行 Chromium，main 运行 Chromium/Firefox/WebKit；Rust 最终 gate 同时要求前端覆盖率、mock 浏览器和真实后端浏览器 job 成功。真实后端 job 校验同一次 Linux 构建制品的源码提交与二进制 SHA256，fork PR 不访问自托管服务。未实际运行的检查不计作该版本验收结果。
+真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。PR 运行 Chromium，main 和手动候选验收运行 Chromium/Firefox/WebKit；Rust 最终 gate 同时要求前端覆盖率、mock 浏览器、真实后端浏览器和文档构建/链接检查 job 成功。真实后端 job 校验同一次 Linux 构建制品的源码提交与二进制 SHA256，fork PR 不访问自托管服务。未实际运行的检查不计作该版本验收结果。
+
+合入 main 前，按根目录 [AGENTS.md](https://github.com/bitcapybara/tidemq/blob/main/AGENTS.md) 完成独立 agent review 和候选分支 CI；偶发失败也要定位原因并修复。新功能的检查同时包含正确性、log/trace/metrics 和相应层次测试。长轮询真实 QUIC/Raft 回归由 `runtime_group_watch` 在 test-hooks 故障流程执行，原生保护帧与 RPC 隔离测试随 transport 单元流程执行；测试配置不代替实际运行结果。
 
 ## CI 与覆盖率
 

@@ -23,6 +23,16 @@
 
 ## 指标与阶段口径
 
+### Watch 与实际读取
+
+`tidemq_watch_{sync,changed,unchanged,reset,retry,rejected}_total` 分别统计观察结果，`tidemq_watch_wait_seconds` 统计观察耗时。`UNCHANGED` 仅表示该次有效观察没有变化；错误、过期授权和容量拒绝不能计作空闲结果。
+
+`tidemq_watch_bytes`、`tidemq_watch_targets` 反映已计费观察占用，`tidemq_watch_rechecks_total` 和 `tidemq_watch_dirty_total` 区分复查与实际就绪版本变化。`tidemq_watch_result_capacity_releases_total` 统计数据组结果槽的实际释放；消息已 ACK 不代表对应原 Read 结果已经退休。`tidemq_watch_cleanup_unknown_total` 增长说明下游取消尚未获得清理确认，应关联有限 deadline、断连和关闭结果排查。
+
+`tidemq_watch_group_reads_total`、`tidemq_watch_group_retires_total`、`tidemq_watch_empty_reads_total` 记录观察启用后实际应用的读取、退休及空读。比较空闲开销时，固定同一业务窗口、版本与负载，核对计数启用时点；不能用全部 Raft index 增量直接代替细分命令次数。CPU 火焰图、无采样吞吐和尾延迟也应分别测量。
+
+这些指标使用固定系列；Topic、订阅、root/parent operation 和 attempt 用于受限 trace 或诊断关联，不作为指标 label。访问令牌、观察 token、权限 proof 和消息正文不得写入日志或 trace。
+
 纯状态机不读取时钟或初始化全局 exporter。运行时在边界计时并使用缓存的有限标签句柄：投递准入、attempt 持久完成、正文读取、发送、SDK 接收、业务等待、ACK 持久完成应分别统计。手动 ACK API 只能观测交付到 ACK 调用的等待，不能宣称它就是 handler duration。`accepted` 与 `already_acknowledged` 的持久成功计数在 Raft 返回后增加；纯 apply 次数不是成功提交数，重试可能产生多个请求但只有一个逻辑 ACK。
 
 建议公共 registry 的有限增量如下；接入运行时前这些是指标契约，不是当前导出端点已经提供的名称：
