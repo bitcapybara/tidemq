@@ -7,7 +7,7 @@
 Linux 需要项目指定 Rust、C/C++ 构建工具、OpenSSL、Git、jq、curl、util-linux、Linux perf 和 Perl。先在独立的源码目录准备基线版本，不能在构建或测量过程中修改源码。使用同一组编译选项构建待比较版本，分开放置二进制，保留基线。
 
 ```sh
-rtk proxy env CARGO_BUILD_JOBS=4 bash scripts/perf/build.sh /private/path/baseline-bin
+env CARGO_BUILD_JOBS=4 bash scripts/perf/build.sh /private/path/baseline-bin
 ```
 
 源码由 `git archive` 复制、没有 `.git` 时，必须通过 `TIDEMQ_PERF_REVISION` 提供完整源版本。`build.sh` 保留 release 默认 mimalloc、行号信息，并对 Rust/C 开启 frame pointer；构建日志、编译器、Cargo 版本、参数、二进制 SHA256 和工具源码 SHA256 都保存在输出目录。
@@ -17,8 +17,8 @@ rtk proxy env CARGO_BUILD_JOBS=4 bash scripts/perf/build.sh /private/path/baseli
 以下目录必须不存在，父目录必须已存在。脚本先以非阻塞方式获取 `/var/lock/tidemq-lab.lock`，锁忙时返回 75，且不启动服务。租约一直持有到服务、采样器和私有数据清理完成。脚本不操作公共服务、runner 或现有 fixture。
 
 ```sh
-rtk proxy bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baseline-bin/single_node_bench /private/path/run-traffic traffic
-rtk proxy bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baseline-bin/single_node_bench /private/path/run-idle idle
+bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baseline-bin/single_node_bench /private/path/run-traffic traffic
+bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baseline-bin/single_node_bench /private/path/run-idle idle
 ```
 
 每次新建一套 `deploy/local/generate.sh rf1` 私有 TLS/令牌和数据目录，独立服务监听默认 17410/17411/18410，先做 32 条消息预热。负载程序准备好 topic、原始 producer 和 Queue consumer 后，与脚本通过文件握手；服务 CPU 和指标快照排除初始化、预热和消费者关闭操作。
@@ -33,13 +33,15 @@ rtk proxy bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/pa
 | `TIDEMQ_PERF_MESSAGE_BYTES` | 1024 | 32–65536，总 payload 不超过 512 MiB |
 | `TIDEMQ_PERF_CONCURRENCY` | 4 | 1–32，不超过消息数 |
 | `TIDEMQ_PERF_IDLE_SECONDS` | 10 | 1–60 |
+| `TIDEMQ_PERF_REQUEST_TIMEOUT_SECONDS` | 10 | 1–120，必须小于总 deadline |
+| `TIDEMQ_PERF_TIMEOUT_SECONDS` | 120 | 15–600，必须大于请求预算和 idle 时长 |
 | `TIDEMQ_PERF_SERVICE_CPUS` | 2-5 | taskset CPU 列表 |
 | `TIDEMQ_PERF_CLIENT_CPUS` | 6-7 | taskset CPU 列表 |
 | `TIDEMQ_PERF_PORT` | 17410 | 1024–55500；内部端口 +1，管理端口 +1000 |
 
 每个发送/消费 worker 共享同一原始 SDK handle。payload 包含本轮 ID、业务序号和校验内容；ledger 保存每条消息的 SDK receipt ID、delivery ID、提交/接收/持久 ACK 单调时间。允许接收先于发送 receipt 返回，最终要求同一身份逐条一致、无重复、无遗漏。收齐后额外观察 500 ms 捕获已排队的额外消息；不证明窗口之后永不出现重复。
 
-任何 SDK 错误或 Unknown 都使测量失败，不重新提交新身份，也不执行应用层重试。失败报告、部分 ledger 和原始 Pending 的诊断状态被保留。总 deadline 默认 120 秒，SDK 关闭另有 5 秒。输出目录已存在时拒绝复用。
+任何 SDK 错误或 Unknown 都使测量失败，不重新提交新身份，也不执行应用层重试。失败报告、部分 ledger 和原始 Pending 的诊断状态被保留。总 deadline 默认 120 秒，SDK 请求预算默认 10 秒，SDK 关闭另有 5 秒。调大 SDK 请求预算不会延长服务端控制 lease，Unknown 仍使测量失败。输出目录已存在时拒绝复用。
 
 `measurement/report.json` 中吞吐为发送开始到最后一条持久 ACK 的消息数/秒；提交延迟为每次 `send` 调用前到 receipt 返回，端到端延迟为同一次发送开始到接收。p50/p95/p99 使用最近秩，不插值。统计包括 SDK 排队和 RPC，排除本地 payload 构造。idle 模式不计算吞吐和延迟。
 
@@ -50,7 +52,7 @@ rtk proxy bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/pa
 ## 独立采样运行
 
 ```sh
-rtk proxy env TIDEMQ_PERF_MESSAGES=512 bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baseline-bin/single_node_bench /private/path/run-profile profile
+env TIDEMQ_PERF_MESSAGES=512 bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baseline-bin/single_node_bench /private/path/run-profile profile
 ```
 
 仅对本次服务 PID 使用 `perf record -e cpu-clock -F 499 --call-graph fp`，最多 15 秒。构建已强制启用 frame pointer。保留 `perf.data`、`perf script`、`perf report` 和折叠栈，使用 [官方 FlameGraph](https://github.com/brendangregg/FlameGraph) 的 Perl 脚本生成 SVG，固定提交 `41fee1f99f9276008b7cd112fca19dc3ea84ac32`。方法依据 [CPU Flame Graphs](https://www.brendangregg.com/FlameGraphs/cpuflamegraphs.html)。
@@ -64,10 +66,10 @@ profile 报告保留完整性检查，明确标记采样，并省略吞吐/延�
 ## 校验
 
 ```sh
-rtk cargo fmt --all
-rtk proxy cargo clippy -p tidemq --tests --example single_node_bench --no-deps
-rtk proxy cargo test -p tidemq --example single_node_bench
-rtk proxy bash -n scripts/perf/build.sh scripts/perf/run.sh
+cargo fmt --all
+cargo clippy -p tidemq --tests --example single_node_bench --no-deps
+cargo test -p tidemq --example single_node_bench
+bash -n scripts/perf/build.sh scripts/perf/run.sh
 ```
 
 CLI 单元测试覆盖边界、最近秩计算、业务身份/消息身份校验、乱序 receipt、重复和缺失消息。交付前还需用独立服务实跑小 traffic、idle、profile，并验证失败退出、锁忙退出和清理回执。

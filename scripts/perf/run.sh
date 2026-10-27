@@ -15,13 +15,16 @@ messages=${TIDEMQ_PERF_MESSAGES:-2048}
 size=${TIDEMQ_PERF_MESSAGE_BYTES:-1024}
 concurrency=${TIDEMQ_PERF_CONCURRENCY:-4}
 idle_seconds=${TIDEMQ_PERF_IDLE_SECONDS:-10}
+request_seconds=${TIDEMQ_PERF_REQUEST_TIMEOUT_SECONDS:-10}
+timeout_seconds=${TIDEMQ_PERF_TIMEOUT_SECONDS:-120}
 port=${TIDEMQ_PERF_PORT:-17410}
 service_cpus=${TIDEMQ_PERF_SERVICE_CPUS:-2-5}
 client_cpus=${TIDEMQ_PERF_CLIENT_CPUS:-6-7}
-for number in "$messages" "$size" "$concurrency" "$idle_seconds" "$port"; do
+for number in "$messages" "$size" "$concurrency" "$idle_seconds" "$request_seconds" "$timeout_seconds" "$port"; do
   [[ $number =~ ^[1-9][0-9]{0,6}$ ]] || usage
 done
 (( messages <= 200000 && size >= 32 && size <= 65536 && concurrency <= 32 && concurrency <= messages && messages * size <= 536870912 && idle_seconds <= 60 && port >= 1024 && port <= 55500 )) || usage
+(( request_seconds <= 120 && timeout_seconds >= 15 && timeout_seconds <= 600 && request_seconds < timeout_seconds && idle_seconds < timeout_seconds )) || usage
 [[ $service_cpus =~ ^[0-9,-]+$ && $client_cpus =~ ^[0-9,-]+$ ]] || usage
 for command in flock curl jq taskset perf perl openssl sha256sum timeout; do command -v "$command" >/dev/null; done
 # All shared-host service execution and cleanup stay within the same lab lease.
@@ -80,28 +83,31 @@ cat /proc/loadavg > "$output/host-load.before.txt"
 perf --version > "$output/perf-version.txt"
 jq -n --arg mode "$mode" --arg service_cpus "$service_cpus" --arg client_cpus "$client_cpus" \
   --argjson messages "$messages" --argjson payload "$size" --argjson concurrency "$concurrency" --argjson port "$port" \
-  '{mode:$mode,profiled:($mode=="profile"),replication_factor:1,service_cpus:$service_cpus,client_cpus:$client_cpus,messages:$messages,payload_bytes:$payload,concurrency:$concurrency,gateway_port:$port,fixture:"deploy/local/generate.sh rf1",profile_event:"cpu-clock",profile_call_graph:"fp",profile_hz:499,profile_max_seconds:15,measurement_timeout_seconds:120}' > "$output/metadata.json"
-taskset -c "$service_cpus" "$service" serve --config "$fixture/node-1.toml" > "$output/service.log" 2>&1 &
+  --argjson request_seconds "$request_seconds" --argjson timeout_seconds "$timeout_seconds" \
+  '{mode:$mode,profiled:($mode=="profile"),replication_factor:1,service_cpus:$service_cpus,client_cpus:$client_cpus,messages:$messages,payload_bytes:$payload,concurrency:$concurrency,gateway_port:$port,fixture:"deploy/local/generate.sh rf1",profile_event:"cpu-clock",profile_call_graph:"fp",profile_hz:499,profile_max_seconds:15,request_timeout_seconds:$request_seconds,measurement_timeout_seconds:$timeout_seconds}' > "$output/metadata.json"
+# Only this shell owns the lease; child timers must not retain it after cleanup.
+taskset -c "$service_cpus" "$service" serve --config "$fixture/node-1.toml" 9>&- > "$output/service.log" 2>&1 &
 service_pid=$!
+printf '%s\n' "$service_pid" > "$output/service.pid"
 for ((attempt=0; attempt<200; attempt++)); do
   kill -0 "$service_pid" 2>/dev/null || { printf 'Owned service exited during startup\n' >&2; exit 1; }
   if curl --fail --silent --max-time 1 "http://127.0.0.1:$management/readyz" > "$output/ready.json"; then break; fi
   sleep 0.1
 done
 curl --fail --silent --max-time 2 "http://127.0.0.1:$management/readyz" > "$output/ready.json"
-args=(--endpoint "127.0.0.1:$port" --ca "$fixture/ca.pem" --token-file "$fixture/access.token")
-taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/warmup" --messages 32 --concurrency 4 > "$output/warmup.log" 2>&1
+args=(--endpoint "127.0.0.1:$port" --ca "$fixture/ca.pem" --token-file "$fixture/access.token" --request-timeout-seconds "$request_seconds" --timeout-seconds "$timeout_seconds")
+taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/warmup" --messages 32 --concurrency "$concurrency" > "$output/warmup.log" 2>&1
 extra=()
 [[ $mode != profile ]] || extra+=(--profiled)
 case_name=traffic
 [[ $mode != idle ]] || case_name=idle
 taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/measurement" \
   --case "$case_name" --messages "$messages" --message-bytes "$size" --concurrency "$concurrency" \
-  --idle-seconds "$idle_seconds" --wait-for-start "${extra[@]}" > "$output/loadgen.log" 2>&1 &
+  --idle-seconds "$idle_seconds" --wait-for-start "${extra[@]}" 9>&- > "$output/loadgen.log" 2>&1 &
 client_pid=$!
 wait_marker() {
   local name=$1
-  for ((attempt=0; attempt<1250; attempt++)); do
+  for ((attempt=0; attempt<timeout_seconds*10+50; attempt++)); do
     [[ ! -f $output/measurement/$name ]] || return 0
     kill -0 "$client_pid" 2>/dev/null || return 1
     sleep 0.1
@@ -126,7 +132,7 @@ if [[ $mode == profile ]]; then
   git -C "$output/FlameGraph" rev-parse HEAD > "$output/flamegraph-commit.txt"
   [[ $(cat "$output/flamegraph-commit.txt") == "$pin" ]]
   perf record -e cpu-clock -F 499 --call-graph fp -p "$service_pid" \
-    -o "$output/perf.data" -- sleep 15 > "$output/perf-record.log" 2>&1 &
+    -o "$output/perf.data" -- sleep 15 9>&- > "$output/perf-record.log" 2>&1 &
   profile_pid=$!
   sleep 0.3
   kill -0 "$profile_pid"
@@ -137,7 +143,7 @@ snapshot before
     ps -p "$service_pid" -o pid=,pcpu=,rss=,nlwp=,etimes=
     sleep 0.2
   done
-) > "$output/service-samples.txt" &
+) 9>&- > "$output/service-samples.txt" &
 monitor_pid=$!
 touch "$output/measurement/start"
 measurement_status=0
