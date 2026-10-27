@@ -28,8 +28,10 @@ mod quota_tests;
 
 const MAX_PUBLISH_QUOTA_ATTEMPTS: usize = 8;
 
-fn unrecorded_quota_refusal(error: &Error) -> bool {
-    let failure = error.failure();
+fn unrecorded_tenant_grant_refusal(error: &Error) -> bool {
+    let Error::TenantGrantExhausted { failure } = error else {
+        return false;
+    };
     failure.code == i32::from(ErrorCode::QuotaExceeded)
         && failure.outcome == i32::from(Outcome::Rejected)
         && failure.retryable
@@ -417,7 +419,8 @@ impl Service {
             };
             match result {
                 Err(error)
-                    if attempt < MAX_PUBLISH_QUOTA_ATTEMPTS && unrecorded_quota_refusal(&error) =>
+                    if attempt < MAX_PUBLISH_QUOTA_ATTEMPTS
+                        && unrecorded_tenant_grant_refusal(&error) =>
                 {
                     // A rejected intent has no committed result; admission must be checked again.
                     let Some(wake) = Instant::now()

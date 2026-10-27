@@ -183,13 +183,51 @@ async fn a_stream_handoff_stops_disconnected_members_from_delivering_old_prefetc
         !old_prefetch.contains(&handed_off.message_id()),
         "A disconnected member delivered a message after another member acquired its range"
     );
-    proxy.set_mtu(1200);
     second.ack_cumulative(&handed_off).await.unwrap();
     producer.close().await.unwrap();
-    let _ = first.close().await;
-    second.close().await.unwrap();
-    let _ = client.close().await;
-    admin.close().await.unwrap();
+    // Stop the disconnected handle before restoring its transport, which could start a new join.
+    let disconnected = first.close().await.unwrap_err();
+    assert_eq!(disconnected.report().members_left(), 0);
+    assert_eq!(disconnected.report().unresolved_sends(), 0);
+    assert_eq!(disconnected.report().unresolved_acks(), 0);
+    let disconnected_client = client.close().await.unwrap_err();
+    for error in [&disconnected, &disconnected_client] {
+        let source = std::error::Error::source(error)
+            .unwrap()
+            .downcast_ref::<tidemq_sdk::Error>()
+            .unwrap();
+        assert!(
+            matches!(
+                source.kind(),
+                tidemq_sdk::ErrorKind::DeadlineExceeded
+                    | tidemq_sdk::ErrorKind::Unavailable
+                    | tidemq_sdk::ErrorKind::OutcomeUnknown
+            ),
+            "Unexpected disconnected cleanup failure: {error:?}"
+        );
+    }
+    let report = disconnected_client.report();
+    assert!(
+        report.local_cleanup_complete(),
+        "The disconnected client's native cleanup did not finish: {disconnected_client:?}"
+    );
+    assert_eq!(report.members_left(), 0);
+    assert_eq!(report.unresolved_sends(), 0);
+    assert_eq!(report.unresolved_acks(), 0);
+    assert_eq!(report.unresolved_deletions(), 0);
+    assert_eq!(report.unresolved_administrations(), 0);
+    // The original single-shard read can remain unknown after the disconnected member expires.
+    assert!(report.unresolved_reads() <= 1);
+    assert_eq!(report.unclaimed_results(), 0);
+    assert_eq!(client.transport_metrics().snapshot().active_connections, 0);
+    eprintln!("Disconnected client cleanup: {disconnected_client:?}");
+    proxy.set_mtu(1200);
+    let current = second.close().await.unwrap();
+    assert!(current.local_cleanup_complete());
+    assert_eq!(current.members_left(), 1);
+    let admin_closed = admin.close().await.unwrap();
+    assert!(admin_closed.local_cleanup_complete());
+    assert_eq!(admin.transport_metrics().snapshot().active_connections, 0);
     proxy.close().await;
     fixture.close().await;
 }
