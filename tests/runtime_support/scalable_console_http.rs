@@ -8,6 +8,10 @@ use tidemq_protocol::console::{Query, Reply};
 use tidemq_protocol::console_operation::Status as ConsoleStatus;
 use tidemq_sdk::{AccessToken, Permission, PrincipalId};
 
+#[path = "scalable_console_delegation.rs"]
+mod delegation;
+#[path = "scalable_console_regressions.rs"]
+mod regressions;
 #[path = "console_udp_relay.rs"]
 mod udp_relay;
 
@@ -1461,7 +1465,7 @@ async fn assert_original_console_receipt(
         assert_eq!(
             recovered.get(field),
             expected.get(field),
-            "The original Console operation changed its {field} after Topic retirement"
+            "The original Console operation changed its {field} during result recovery"
         );
     }
     assert!(recovered.get("secret").is_none());

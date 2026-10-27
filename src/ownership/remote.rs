@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant as MonoInstant;
 
 use serde::{Deserialize, Serialize};
@@ -122,6 +123,7 @@ pub(crate) struct RemoteMetadataAuthority {
     cluster: Id,
     group: u64,
     voters: std::sync::RwLock<BTreeSet<u64>>,
+    preferred: AtomicU64,
     policy: ControlPolicy,
     finalizations: Arc<Semaphore>,
 }
@@ -145,6 +147,7 @@ impl RemoteMetadataAuthority {
             cluster,
             group,
             voters: std::sync::RwLock::new(voters),
+            preferred: AtomicU64::new(0),
             policy,
             finalizations: Arc::new(Semaphore::new(policy.max_finalizations)),
         })
@@ -173,13 +176,20 @@ impl RemoteMetadataAuthority {
             .read()
             .map_err(|_| Error::unavailable())?
             .clone();
-        for node in &voters {
+        // A verified responder is a routing hint; every reply still needs a fresh quorum proof.
+        let preferred = self.preferred.load(Ordering::Relaxed);
+        let candidates = voters
+            .get(&preferred)
+            .copied()
+            .into_iter()
+            .chain(voters.iter().copied().filter(|node| *node != preferred));
+        for node in candidates {
             let request = Request::control(wire::AUTHORITY, &query)?;
             let attempt_deadline =
                 deadline.min(Instant::now() + std::time::Duration::from_millis(500));
             let result = self
                 .rpc
-                .call(*node, self.group, request, attempt_deadline)
+                .call(node, self.group, request, attempt_deadline)
                 .await;
             let bytes = match result {
                 Ok(bytes) => bytes,
@@ -188,6 +198,7 @@ impl RemoteMetadataAuthority {
             };
             let proof: Proof = wire::decode_json(&bytes)?;
             proof.validate(self.cluster, self.group, &voters, started, self.policy.ttl)?;
+            self.preferred.store(node, Ordering::Relaxed);
             return Ok((proof.value, started));
         }
         Err(Error::unavailable())

@@ -18,6 +18,7 @@ use tokio::time::Instant;
 
 use super::{
     Error, Result,
+    console_operation::DelegatedConsoleSend,
     service::Service,
     wire::{self, Request},
 };
@@ -109,6 +110,7 @@ enum AuthResource {
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthQuery {
+    ConsoleSend(DelegatedConsoleSend),
     PublisherRecovery {
         topic: Id,
         producer: Id,
@@ -365,7 +367,10 @@ impl Service {
         query: AuthQuery,
         deadline: Instant,
     ) -> Result<(AuthReply, Instant)> {
-        let cacheable = !matches!(query, AuthQuery::ConsumerDeletion { .. });
+        let cacheable = !matches!(
+            query,
+            AuthQuery::ConsumerDeletion { .. } | AuthQuery::ConsoleSend(_)
+        );
         if cacheable
             && let Some((reply, expires)) = self
                 .auth_cache
@@ -429,6 +434,16 @@ impl Service {
         let reply = replica
             .state
             .try_with_application(|state| match query {
+                AuthQuery::ConsoleSend(proof) => {
+                    let (tenant, expires_ms) = proof.authorize(state, now)?;
+                    Ok(AuthReply {
+                        credential: Some(proof.credential),
+                        tenant,
+                        expires_ms,
+                        now_ms: now,
+                        ..Default::default()
+                    })
+                }
                 AuthQuery::ConsumerDeletion {
                     subscription,
                     deletion,
@@ -677,6 +692,29 @@ impl Service {
             .await
             .map_err(|source| Error::operation("read credential authority", source))??;
         wire::json(&reply)
+    }
+
+    pub(super) async fn console_send_access(
+        &self,
+        credential: Id,
+        session: Id,
+        frame: &Frame,
+        deadline: Instant,
+    ) -> Result<(Access, Instant)> {
+        let proof =
+            DelegatedConsoleSend::from_frame(credential, session, frame, &self.config.protocol)?;
+        let (reply, expires) = self
+            .auth_query(AuthQuery::ConsoleSend(proof), deadline)
+            .await?;
+        Ok((
+            Access {
+                principal: Arc::from(format!("credential:{credential}")),
+                scope: Arc::from("*"),
+                session: Some(session),
+                tenant: reply.tenant,
+            },
+            expires,
+        ))
     }
 
     pub(super) async fn dynamic_access(

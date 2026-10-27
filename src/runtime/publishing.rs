@@ -1,10 +1,11 @@
 use bytes::Bytes;
+use std::time::Duration;
 use tidemq_protocol::{
     Id,
-    common::{Frame, FrameKind},
+    common::{ErrorCode, Frame, FrameKind, Outcome},
     framing::decode_payload,
     public,
-    topic::SendIdentity,
+    topic::{HashRange, SendIdentity},
 };
 use tokio::time::Instant;
 
@@ -18,8 +19,33 @@ use crate::{
     gateway::Access,
     metadata::{Command, Permission, PublisherCommand, Route},
     ownership::{FinalizationKind, Work},
-    producer::{MessageData, PublishRequest},
+    producer::{MessageData, PublishRequest, PublisherPermit},
 };
+
+#[cfg(test)]
+#[path = "../../tests/runtime_support/publish_quota.rs"]
+mod quota_tests;
+
+const MAX_PUBLISH_QUOTA_ATTEMPTS: usize = 8;
+
+fn unrecorded_quota_refusal(error: &Error) -> bool {
+    let failure = error.failure();
+    failure.code == i32::from(ErrorCode::QuotaExceeded)
+        && failure.outcome == i32::from(Outcome::Rejected)
+        && failure.retryable
+        && !failure.original_outcome_known
+}
+
+fn quota_retry_event(attempt: usize, backoff_ms: u64, stage: &'static str) {
+    tracing::debug!(
+        event_code = "producer_quota_retry",
+        attempt,
+        max_attempts = MAX_PUBLISH_QUOTA_ATTEMPTS,
+        backoff_ms,
+        stage,
+        "Reconfirming quota for the original Publish intent"
+    );
+}
 
 impl Service {
     pub(super) async fn publisher_control_public(
@@ -150,11 +176,13 @@ impl Service {
                 )
                 .await?;
             permit.live &= !request.close;
-            self.publish_commit(&route, deadline, |writer| DataCommand::RetirePublishes {
-                partition: route.partition,
-                writer,
-                permit,
-                before: request.before,
+            self.publish_commit(&route, deadline, |writer| {
+                Ok(DataCommand::RetirePublishes {
+                    partition: route.partition,
+                    writer,
+                    permit,
+                    before: request.before,
+                })
             })
             .await?;
             return wire::response(
@@ -264,32 +292,8 @@ impl Service {
                     .into(),
             },
         };
-        let demand_now_ms = super::data::unix_millis()?;
-        let demand = self
-            .data
-            .get(&route.group_id)
-            .ok_or_else(Error::unavailable)?
-            .state
-            .try_with_application(|state| {
-                state.publish_quota_demand(route.partition, &publish, demand_now_ms)
-            })
-            .await
-            .map_err(|source| Error::operation("read tenant publish quota demand", source))?
-            .map_err(super::data::data_rejection)?;
-        if let Some(demand) = demand {
-            self.ensure_tenant_quota(route.group_id, route.partition, demand, deadline)
-                .await?;
-        }
-        let now_ms = super::data::unix_millis()?;
         let result = self
-            .publish_commit(&route, deadline, |writer| DataCommand::Publish {
-                partition: route.partition,
-                writer,
-                birth: (shard, birth),
-                permit,
-                request: publish,
-                now_ms,
-            })
+            .publish_with_quota(&route, (shard, birth), permit, &publish, deadline)
             .await?;
         use crate::broker::AttemptOutcome;
         let (offset, permanent_seal, sealed_end, permanently_closed, outcome) = match result {
@@ -342,11 +346,108 @@ impl Service {
         Ok((frame, outcome))
     }
 
+    async fn ensure_publish_quota(
+        &self,
+        route: &Route,
+        publish: &PublishRequest,
+        deadline: Instant,
+    ) -> Result<()> {
+        let now_ms = super::data::unix_millis()?;
+        let demand = self
+            .data
+            .get(&route.group_id)
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| {
+                state.publish_quota_demand(route.partition, publish, now_ms)
+            })
+            .await
+            .map_err(|source| Error::operation("read tenant publish quota demand", source))?
+            .map_err(super::data::data_rejection)?;
+        if let Some(demand) = demand {
+            self.ensure_tenant_quota(route.group_id, route.partition, demand, deadline)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn publish_with_quota(
+        &self,
+        route: &Route,
+        birth: (Id, HashRange),
+        permit: PublisherPermit,
+        publish: &PublishRequest,
+        deadline: Instant,
+    ) -> Result<DataResponse> {
+        let mut delay_ms = 10_u64;
+        let mut previous_delay_ms = 0;
+        let mut original_writer = None;
+        for attempt in 1..=MAX_PUBLISH_QUOTA_ATTEMPTS {
+            self.ensure_publish_quota(route, publish, deadline).await?;
+            #[cfg(test)]
+            quota_tests::before_publish(publish, deadline).await;
+            let now_ms = super::data::unix_millis()?;
+            let result = self
+                .publish_commit(route, deadline, |writer| {
+                    let identity = (writer.node_id, writer.owner_epoch);
+                    if original_writer.is_some_and(|original| original != identity) {
+                        return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
+                    }
+                    original_writer = Some(identity);
+                    #[cfg(test)]
+                    quota_tests::writer_for_publish(publish, identity);
+                    if attempt > 1 {
+                        self.producer_metrics.quota_retry();
+                        quota_retry_event(attempt, previous_delay_ms, "commit");
+                    }
+                    Ok(DataCommand::Publish {
+                        partition: route.partition,
+                        writer,
+                        birth,
+                        permit: permit.clone(),
+                        request: publish.clone(),
+                        now_ms,
+                    })
+                })
+                .await;
+            #[cfg(test)]
+            let result = match quota_tests::after_publish(publish, &result) {
+                Some(error) => Err(error),
+                None => result,
+            };
+            match result {
+                Err(error)
+                    if attempt < MAX_PUBLISH_QUOTA_ATTEMPTS && unrecorded_quota_refusal(&error) =>
+                {
+                    // A rejected intent has no committed result; admission must be checked again.
+                    let Some(wake) = Instant::now()
+                        .checked_add(Duration::from_millis(delay_ms))
+                        .filter(|wake| *wake < deadline)
+                    else {
+                        return Err(error);
+                    };
+                    quota_retry_event(attempt + 1, delay_ms, "backoff");
+                    if tokio::time::timeout_at(deadline, tokio::time::sleep_until(wake))
+                        .await
+                        .is_err()
+                        || Instant::now() >= deadline
+                    {
+                        return Err(error);
+                    }
+                    previous_delay_ms = delay_ms;
+                    delay_ms = delay_ms.saturating_mul(2).min(50);
+                }
+                result => return result,
+            }
+        }
+        Err(Error::unavailable())
+    }
+
     async fn publish_commit(
         &self,
         route: &Route,
         deadline: Instant,
-        command: impl FnOnce(WriterFence) -> DataCommand,
+        command: impl FnOnce(WriterFence) -> Result<DataCommand>,
     ) -> Result<DataResponse> {
         let lease = self
             .data_lease(route.group_id, route.partition, deadline)
@@ -376,7 +477,7 @@ impl Service {
         let command = command(WriterFence {
             node_id: lease.grant().owner_node,
             owner_epoch: lease.grant().epoch,
-        });
+        })?;
         let result = self.data_write(route.group_id, command, deadline).await?;
         let current = replica
             .state
