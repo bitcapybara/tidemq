@@ -10,8 +10,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::observability::metrics::OperationMetrics;
 use crate::wal::{
-    self, Error, FRAME_HEADER_BYTES, JournalOptions, RecordId, Result, SegmentedInspection,
-    SegmentedJournal, SegmentedStatistics,
+    self, Error, FRAME_HEADER_BYTES, JournalOptions, JournalStatistics, RecordId, Result,
+    SegmentedInspection, SegmentedJournal,
 };
 
 use super::snapshot_registry::{SnapshotDiagnostics, SnapshotRegistry};
@@ -247,7 +247,7 @@ pub struct StorageDiagnostics {
     pub replica_file_limit_bytes: u64,
     pub snapshots: SnapshotDiagnostics,
     pub journal_recovery: SegmentedInspection,
-    pub journal_runtime: SegmentedStatistics,
+    pub journal_runtime: JournalStatistics,
 }
 
 impl<A: Application> DiskStore<A> {
