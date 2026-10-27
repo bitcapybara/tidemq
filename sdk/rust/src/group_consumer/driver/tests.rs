@@ -311,8 +311,8 @@ async fn protected_unknown_blocks_only_its_own_share_and_recovery_has_two_attemp
     assert!(diagnostics(&core).unwrap().protected_blocked);
     assert!(core.try_receive().unwrap().is_none());
     for domain in core.state().unwrap().domains.values_mut() {
-        if let Some(read) = &domain.read {
-            read.lock().unwrap().failed_since = Some(Instant::now() - Duration::from_secs(31));
+        if domain.read.is_some() {
+            domain.failed_since = Some(Instant::now() - Duration::from_secs(31));
         }
     }
     scheduling::report_saturation(&core).unwrap();
@@ -548,6 +548,13 @@ async fn late_epoch_response_and_old_completion_cannot_change_current_delivery()
     assert_eq!(core.state().unwrap().queue.len(), 0);
     assert!(read.lock().unwrap().credit.is_none());
     core.state().unwrap().domains.get_mut(&id).unwrap().read = None;
+    let failed_since = Instant::now();
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .failed_since = Some(failed_since);
     let sequence = core.state().unwrap().domains.get(&id).unwrap().sequence;
     drop(permit);
     scheduling::finish_read(
@@ -565,6 +572,10 @@ async fn late_epoch_response_and_old_completion_cannot_change_current_delivery()
         sequence
     );
     assert!(!core.state().unwrap().domains.get(&id).unwrap().complete);
+    assert_eq!(
+        core.state().unwrap().domains.get(&id).unwrap().failed_since,
+        Some(failed_since)
+    );
 }
 
 #[tokio::test]
@@ -1091,6 +1102,168 @@ async fn native_admission_refusal_rolls_back_only_an_original_that_was_never_sub
         &original
     ));
     assert!(original.lock().unwrap().credit.is_some());
+}
+
+fn observe_healthy_watch(core: &Core) {
+    core.state().unwrap().next_watch = Instant::now();
+    let (id, request, _, _, permit) = watch::next(core).unwrap().unwrap();
+    let targets = request
+        .targets
+        .iter()
+        .map(|target| public::WatchResult {
+            shard_id: target.shard_id.clone(),
+            status: public::WatchStatus::WatchUnchanged.into(),
+            observed_token: target.observed_token.clone(),
+            ..Default::default()
+        })
+        .collect();
+    watch::finish(
+        core,
+        id,
+        request.attempt,
+        Ok(public::GroupWatchResult { targets }),
+    )
+    .unwrap();
+    drop(permit);
+}
+
+#[tokio::test]
+async fn healthy_watches_cannot_hide_repeated_unsubmitted_read_refusals() {
+    let client = client();
+    let core = core(&client, 1, 256, 8 * 1024 * 1024);
+    let id = *core.state().unwrap().domains.keys().next().unwrap();
+    core.state().unwrap().domains.get_mut(&id).unwrap().token =
+        Bytes::from_static(b"healthy-token");
+    let (_, first, permit) = scheduling::next_read(&core, false).unwrap().unwrap();
+    let short_stall = Instant::now() - Duration::from_secs(5);
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .failed_since = Some(short_stall);
+    drop(permit);
+    scheduling::finish_read(
+        &core,
+        id,
+        &first,
+        Err(Error::Admission {
+            resource: "native pending",
+        }),
+    )
+    .unwrap();
+    drop(first);
+
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .next_poll = Instant::now();
+    let (_, second, permit) = scheduling::next_read(&core, false).unwrap().unwrap();
+    observe_healthy_watch(&core);
+    assert_eq!(
+        core.state().unwrap().domains.get(&id).unwrap().failed_since,
+        Some(short_stall)
+    );
+    scheduling::report_saturation(&core).unwrap();
+    assert!(
+        core.try_receive().unwrap().is_none(),
+        "A short admission refusal was published"
+    );
+    let long_stall = Instant::now() - Duration::from_secs(30);
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .failed_since = Some(long_stall);
+    drop(permit);
+    scheduling::finish_read(
+        &core,
+        id,
+        &second,
+        Err(Error::Rpc {
+            source: tidemq_transport::rpc::Error::Admission {
+                resource: "native pending",
+            },
+        }),
+    )
+    .unwrap();
+    drop(second);
+
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .next_poll = Instant::now();
+    let (_, third, permit) = scheduling::next_read(&core, false).unwrap().unwrap();
+    observe_healthy_watch(&core);
+    assert_eq!(
+        core.state().unwrap().domains.get(&id).unwrap().failed_since,
+        Some(long_stall)
+    );
+    scheduling::report_saturation(&core).unwrap();
+    assert_eq!(
+        core.try_receive().unwrap_err().kind(),
+        crate::ErrorKind::ResourceExhausted
+    );
+    scheduling::report_saturation(&core).unwrap();
+    assert!(
+        core.try_receive().unwrap().is_none(),
+        "The shared reporting throttle was bypassed"
+    );
+    drop(permit);
+    scheduling::finish_read(
+        &core,
+        id,
+        &third,
+        Err(Error::Rpc {
+            source: tidemq_transport::rpc::Error::Deadline {
+                may_have_been_sent: false,
+            },
+        }),
+    )
+    .unwrap();
+    drop(third);
+
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .next_poll = Instant::now();
+    let (_, recovered, permit) = scheduling::next_read(&core, false).unwrap().unwrap();
+    assert_eq!(
+        core.state().unwrap().domains.get(&id).unwrap().failed_since,
+        Some(long_stall)
+    );
+    drop(permit);
+    scheduling::finish_read(
+        &core,
+        id,
+        &recovered,
+        Ok(ReadProgress {
+            empty: true,
+            complete: false,
+        }),
+    )
+    .unwrap();
+    drop(recovered);
+    scheduling::report_saturation(&core).unwrap();
+    assert!(core.try_receive().unwrap().is_none());
+    assert!(core.state().unwrap().saturated_since.is_none());
+    assert!(
+        core.state()
+            .unwrap()
+            .domains
+            .get(&id)
+            .unwrap()
+            .failed_since
+            .is_none()
+    );
+    assert_credit_ledger(&core, &[]);
 }
 
 #[tokio::test]

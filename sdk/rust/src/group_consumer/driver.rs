@@ -22,6 +22,7 @@ pub(super) struct Domain {
     pub(super) watching: Option<Id>,
     pub(super) next_watch: Instant,
     pub(super) observed_at: Instant,
+    pub(super) failed_since: Option<Instant>,
     pub(super) read: Option<Arc<Mutex<ReadAttempt>>>,
     pub(super) _memory: tokio::sync::OwnedSemaphorePermit,
 }
@@ -36,7 +37,6 @@ pub(super) struct ReadAttempt {
     deadline: Instant,
     token: Bytes,
     progress: Option<ReadProgress>,
-    failed_since: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]

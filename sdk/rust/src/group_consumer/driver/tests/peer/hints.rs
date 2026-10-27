@@ -182,6 +182,12 @@ async fn temporary_layout_unassignment_preserves_retired_sequence_on_reassignmen
     let progress = poll_read(&core, id, read.clone(), permit).await.unwrap();
     scheduling::finish_read(&core, id, &read, Ok(progress)).unwrap();
     assert_eq!(core.state().unwrap().domains.get(&id).unwrap().sequence, 2);
+    core.state()
+        .unwrap()
+        .domains
+        .get_mut(&id)
+        .unwrap()
+        .failed_since = Some(Instant::now() - Duration::from_secs(31));
 
     core.info.lock().unwrap().work_shards.clear();
     scheduling::refresh_domains(&core).await.unwrap();
@@ -193,9 +199,27 @@ async fn temporary_layout_unassignment_preserves_retired_sequence_on_reassignmen
             .expect("An unassigned domain lost its retired Read identity");
         assert!(!domain.assigned);
         assert_eq!(domain.sequence, 2);
+        assert!(domain.failed_since.is_none());
+    }
+    {
+        let mut state = core.state().unwrap();
+        let domain = state.domains.get_mut(&id).unwrap();
+        domain.observed_at = Instant::now() - Duration::from_secs(120);
+        domain.next_fallback = Instant::now() - Duration::from_secs(120);
     }
     core.info.lock().unwrap().work_shards.push(bytes(id));
     scheduling::refresh_domains(&core).await.unwrap();
+    scheduling::report_saturation(&core).unwrap();
+    assert!(core.state().unwrap().error.is_none());
+    assert!(
+        core.state()
+            .unwrap()
+            .domains
+            .get(&id)
+            .unwrap()
+            .failed_since
+            .is_none()
+    );
     let (_, next, permit) = scheduling::next_read(&core, false).unwrap().unwrap();
     assert_eq!(next.lock().unwrap().request.sequence, 2);
     assert_ne!(next.lock().unwrap().operation, first_operation);

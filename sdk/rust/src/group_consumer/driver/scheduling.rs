@@ -111,11 +111,22 @@ pub(super) async fn refresh_domains(core: &Core) -> Result<()> {
     }
     let mut state = core.state()?;
     let info = core.info.lock().map_err(|_| Error::Closed)?;
+    let now = Instant::now();
     for domain in state.domains.values_mut() {
-        domain.assigned = info
+        let assigned = info
             .work_shards
             .iter()
             .any(|id| id.as_ref() == domain.shard.as_bytes());
+        if domain.assigned != assigned {
+            domain.failed_since = None;
+            if assigned {
+                domain.observed_at = now;
+                domain.next_fallback = now + fallback_delay(domain.shard);
+                domain.next_poll = now;
+                domain.dirty = true;
+            }
+        }
+        domain.assigned = assigned;
     }
     // A temporary assignment loss must not reset a birth domain's retired Read sequence.
     state.domains.retain(|id, domain| {
@@ -171,6 +182,7 @@ impl Domain {
             watching: None,
             next_watch: Instant::now(),
             observed_at: Instant::now(),
+            failed_since: None,
             read: None,
             _memory: memory,
         }
@@ -392,7 +404,6 @@ fn start_read(
         deadline: Instant::now() + Duration::from_secs(600),
         token: domain.token.clone(),
         progress: None,
-        failed_since: None,
     })));
     domain.dirty = false;
     domain.next_fallback = Instant::now() + fallback_delay(domain.shard);
@@ -427,6 +438,7 @@ pub(super) fn finish_read(
                 .sequence
                 .checked_add(1)
                 .ok_or(Error::SessionExpired)?;
+            domain.failed_since = None;
             domain.complete = progress.complete;
             domain.empty_reads = if progress.empty {
                 domain.empty_reads.saturating_add(1).min(6)
@@ -442,6 +454,10 @@ pub(super) fn finish_read(
         }
         Err(error) => {
             domain.next_poll = Instant::now() + Duration::from_millis(250);
+            if domain.assigned {
+                // A never-enqueued attempt can be replaced without erasing the domain's stall.
+                domain.failed_since.get_or_insert(Instant::now());
+            }
             let mut read = work.lock().map_err(|_| Error::Closed)?;
             if !read.applied && !read.uncertain && unsubmitted(&error) {
                 // Native admission refused before enqueue; no original result can exist.
@@ -455,7 +471,6 @@ pub(super) fn finish_read(
                 return Ok(());
             }
             read.uncertain |= error.outcome_unknown();
-            read.failed_since.get_or_insert(Instant::now());
             drop(read);
             if !no_work(&error) {
                 drop(state);
@@ -482,31 +497,17 @@ fn unsubmitted(error: &Error) -> bool {
 pub(super) fn report_saturation(core: &Core) -> Result<()> {
     let mut state = core.state()?;
     let now = Instant::now();
-    let mut overdue_progress = state
-        .domains
-        .values()
-        .filter(|domain| {
-            domain.assigned
-                && !domain.complete
-                && now.saturating_duration_since(domain.observed_at) >= Duration::from_secs(30)
-        })
-        .map(|domain| domain.observed_at)
-        .min();
-    for domain in state
+    let overdue_progress = state
         .domains
         .values()
         .filter(|domain| domain.assigned && !domain.complete)
-    {
-        if let Some(read) = &domain.read {
-            let read = read.lock().map_err(|_| Error::Closed)?;
-            if let Some(since) = read
+        .map(|domain| {
+            domain
                 .failed_since
-                .filter(|since| now.saturating_duration_since(*since) >= Duration::from_secs(30))
-            {
-                overdue_progress = Some(overdue_progress.map_or(since, |old| old.min(since)));
-            }
-        }
-    }
+                .map_or(domain.observed_at, |since| since.min(domain.observed_at))
+        })
+        .filter(|since| now.saturating_duration_since(*since) >= Duration::from_secs(30))
+        .min();
     let blocked = overdue_progress.is_some()
         || state.domains.values().any(|domain| {
             domain.assigned
