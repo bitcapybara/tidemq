@@ -29,10 +29,12 @@ exec 9>/var/lock/tidemq-lab.lock
 flock -n 9 || { printf 'Lab lease is busy; no service was started\n' >&2; exit 75; }
 mkdir -- "$3"
 output=$(cd -- "$3" && pwd -P)
-fixture=$output/.private
+private_directory=$(mktemp -d "$(dirname -- "$output")/.tidemq-perf.XXXXXXXX")
+fixture=$private_directory/core
+raw_logs=$private_directory/logs
 service_pid= client_pid= monitor_pid= profile_pid=
 cleanup() {
-  local status=$? pid
+  local status=$? pid log cleanup_failed=0 redaction_complete=false private_fixture_removed=false
   trap - EXIT INT TERM
   for pid in "$client_pid" "$profile_pid" "$monitor_pid"; do
     if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then kill -TERM "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
@@ -43,22 +45,51 @@ cleanup() {
     if kill -0 "$service_pid" 2>/dev/null; then kill -KILL "$service_pid" 2>/dev/null || true; fi
     wait "$service_pid" 2>/dev/null || true
   fi
-  if [[ -f $fixture/access.token ]]; then
-    perl -i -pe 'BEGIN { my $path = shift @ARGV; open my $file, "<", $path or die "Cannot open redaction material"; chomp(our $secret = <$file>); } s/\Q$secret\E/[REDACTED]/g' \
-      "$fixture/access.token" "$output"/*.log
+  # Raw logs stay outside the evidence directory until every file is sanitized.
+  if [[ -f $fixture/access.token ]] && perl -e '
+    my $token_path = shift @ARGV;
+    open my $token_file, "<", $token_path or die "Cannot read redaction material";
+    chomp(my $secret = <$token_file> // "");
+    close $token_file or die "Cannot close redaction material";
+    $secret =~ /\A[0-9a-f]{64}\z/ or die "Invalid redaction material";
+    @ARGV or die "No private logs to sanitize";
+    for my $path (@ARGV) {
+      open my $input, "<", $path or die "Cannot read private log";
+      open my $sanitized, ">", "$path.sanitized" or die "Cannot create sanitized log";
+      while (my $line = <$input>) {
+        $line =~ s/\Q$secret\E/[REDACTED]/g;
+        print {$sanitized} $line or die "Cannot write sanitized log";
+      }
+      eof($input) or die "Cannot finish reading private log";
+      close $input or die "Cannot close private log";
+      close $sanitized or die "Cannot close sanitized log";
+    }
+  ' "$fixture/access.token" "$raw_logs"/*.log 2> "$private_directory/redaction-error.log"; then
+    redaction_complete=true
+    for log in "$raw_logs"/*.log; do
+      cp -- "$log.sanitized" "$output/${log##*/}" || cleanup_failed=1
+    done
+  else
+    cleanup_failed=1
   fi
-  # Only the generator-created private fixture is removed; evidence is retained on failure.
-  if [[ -d $fixture ]]; then rm -rf -- "$fixture"; fi
+  if rm -rf -- "$private_directory" && [[ ! -e $private_directory ]]; then
+    private_fixture_removed=true
+  else
+    cleanup_failed=1
+  fi
+  if (( status == 0 && cleanup_failed != 0 )); then status=1; fi
   jq -n --argjson exit_status "$status" --arg service_pid "$service_pid" \
-    '{exit_status:$exit_status,owned_service_pid:$service_pid,private_fixture_removed:true,lease_held_through_cleanup:true}' > "$output/cleanup.json"
+    --argjson redaction_complete "$redaction_complete" --argjson private_fixture_removed "$private_fixture_removed" \
+    '{exit_status:$exit_status,owned_service_pid:$service_pid,redaction_complete:$redaction_complete,private_fixture_removed:$private_fixture_removed,lease_held_through_cleanup:true}' > "$output/cleanup.json"
   exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+mkdir -- "$raw_logs"
 ulimit -f 524288
-bash "$repo/deploy/local/generate.sh" rf1 "$fixture" > "$output/generate.log" 2>&1
+bash "$repo/deploy/local/generate.sh" rf1 "$fixture" > "$raw_logs/generate.log" 2>&1
 management=$((port + 1000))
 internal=$((port + 1))
 sed -i -e "s/127.0.0.1:7410/127.0.0.1:$port/g" -e "s/127.0.0.1:7411/127.0.0.1:$internal/g" \
@@ -81,7 +112,7 @@ perf --version > "$output/perf-version.txt"
 jq -n --arg mode "$mode" --arg service_cpus "$service_cpus" --arg client_cpus "$client_cpus" \
   --argjson messages "$messages" --argjson payload "$size" --argjson concurrency "$concurrency" --argjson port "$port" \
   '{mode:$mode,profiled:($mode=="profile"),replication_factor:1,service_cpus:$service_cpus,client_cpus:$client_cpus,messages:$messages,payload_bytes:$payload,concurrency:$concurrency,gateway_port:$port,fixture:"deploy/local/generate.sh rf1",profile_event:"cpu-clock",profile_call_graph:"fp",profile_hz:499,profile_max_seconds:15,measurement_timeout_seconds:120}' > "$output/metadata.json"
-taskset -c "$service_cpus" "$service" serve --config "$fixture/node-1.toml" > "$output/service.log" 2>&1 &
+taskset -c "$service_cpus" "$service" serve --config "$fixture/node-1.toml" > "$raw_logs/service.log" 2>&1 &
 service_pid=$!
 for ((attempt=0; attempt<200; attempt++)); do
   kill -0 "$service_pid" 2>/dev/null || { printf 'Owned service exited during startup\n' >&2; exit 1; }
@@ -90,14 +121,14 @@ for ((attempt=0; attempt<200; attempt++)); do
 done
 curl --fail --silent --max-time 2 "http://127.0.0.1:$management/readyz" > "$output/ready.json"
 args=(--endpoint "127.0.0.1:$port" --ca "$fixture/ca.pem" --token-file "$fixture/access.token")
-taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/warmup" --messages 32 --concurrency 4 > "$output/warmup.log" 2>&1
+taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/warmup" --messages 32 --concurrency 4 > "$raw_logs/warmup.log" 2>&1
 extra=()
 [[ $mode != profile ]] || extra+=(--profiled)
 case_name=traffic
 [[ $mode != idle ]] || case_name=idle
 taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/measurement" \
   --case "$case_name" --messages "$messages" --message-bytes "$size" --concurrency "$concurrency" \
-  --idle-seconds "$idle_seconds" --wait-for-start "${extra[@]}" > "$output/loadgen.log" 2>&1 &
+  --idle-seconds "$idle_seconds" --wait-for-start "${extra[@]}" > "$raw_logs/loadgen.log" 2>&1 &
 client_pid=$!
 wait_marker() {
   local name=$1
@@ -126,7 +157,7 @@ if [[ $mode == profile ]]; then
   git -C "$output/FlameGraph" rev-parse HEAD > "$output/flamegraph-commit.txt"
   [[ $(cat "$output/flamegraph-commit.txt") == "$pin" ]]
   perf record -e cpu-clock -F 499 --call-graph fp -p "$service_pid" \
-    -o "$output/perf.data" -- sleep 15 > "$output/perf-record.log" 2>&1 &
+    -o "$output/perf.data" -- sleep 15 > "$raw_logs/perf-record.log" 2>&1 &
   profile_pid=$!
   sleep 0.3
   kill -0 "$profile_pid"
@@ -169,9 +200,9 @@ awk -v ticks="$ticks" 'NR==1 {user_ticks=$14;system_ticks=$15;next} {printf "{\"
 awk '!/^#/ && NF >= 2 {if (NR == FNR) before[$1]=$2; else printf "%s\t%.9g\n",$1,$2-before[$1]}' \
   "$output/metrics.before.prom" "$output/metrics.after.prom" > "$output/metrics.delta.tsv"
 if [[ $mode == profile ]]; then
-  perf script -i "$output/perf.data" > "$output/perf.script" 2> "$output/perf-script.log"
+  perf script -i "$output/perf.data" > "$output/perf.script" 2> "$raw_logs/perf-script.log"
   awk '/^\t/ {frames=1} END {exit !frames}' "$output/perf.script" || { printf 'No service stack frames were resolved\n' >&2; exit 1; }
-  perf report --stdio --no-children -i "$output/perf.data" > "$output/perf-report.txt" 2> "$output/perf-report.log"
+  perf report --stdio --no-children -i "$output/perf.data" > "$output/perf-report.txt" 2> "$raw_logs/perf-report.log"
   perl "$output/FlameGraph/stackcollapse-perf.pl" "$output/perf.script" > "$output/perf.folded"
   [[ -s $output/perf.folded ]] || { printf 'No service stack samples were collected\n' >&2; exit 1; }
   validation=$(jq -er .status "$output/measurement/report.json")

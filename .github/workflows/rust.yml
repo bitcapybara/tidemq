@@ -183,10 +183,7 @@ jobs:
         if: always()
         with:
           name: console-browser-live-${{ matrix.browser }}
-          path: |
-            console/web/playwright-report/live
-            console/web/test-results/live
-            target/ci/console-browser-live
+          path: target/ci/console-browser-live
           retention-days: 14
 
   faults:

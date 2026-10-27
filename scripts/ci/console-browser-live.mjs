@@ -10,6 +10,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { PassThrough, Transform } from 'node:stream';
+import { finished, pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -66,22 +68,54 @@ async function hashFile(file) {
   return digest.digest('hex');
 }
 
-function startChild(state, name, command, args, cwd, env = process.env) {
+export function redactToken(token) {
+  if (!token) return new PassThrough();
+  const secret = Buffer.from(token);
+  let pending = Buffer.alloc(0);
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      pending = Buffer.concat([pending, chunk]);
+      let at;
+      while ((at = pending.indexOf(secret)) !== -1) {
+        this.push(pending.subarray(0, at));
+        this.push('[REDACTED]');
+        pending = pending.subarray(at + secret.length);
+      }
+      // Retain a possible token prefix until the next chunk of this stream arrives.
+      const safe = Math.max(0, pending.length - secret.length + 1);
+      this.push(pending.subarray(0, safe));
+      pending = pending.subarray(safe);
+      callback();
+    },
+    flush(callback) {
+      this.push(pending);
+      callback();
+    },
+  });
+}
+
+export function startChild(state, name, command, args, cwd, env = process.env) {
   const output = createWriteStream(path.join(state.artifacts, `${name}.log`), { flags: 'wx', mode: 0o600 });
   const child = spawn(command, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
-  child.stdout.pipe(output, { end: false });
-  child.stderr.pipe(output, { end: false });
   const managed = { name, child, output, result: null };
+  let error;
+  const logFailed = () => {
+    error = 'Fixture log write failed';
+    try { signalChild(managed, 'SIGTERM'); } catch { /* Cleanup retries every owned process. */ }
+  };
+  // Redact independently so stderr cannot interrupt a token split across stdout chunks.
+  const logging = Promise.all([child.stdout, child.stderr].map((source) =>
+    pipeline(source, redactToken(state.token), output, { end: false }).catch(logFailed),
+  )).then(() => {
+    output.end();
+    return finished(output);
+  }).catch(logFailed);
   managed.done = new Promise((resolve) => {
-    const finish = (result) => {
-      if (managed.result) return;
-      managed.result = result;
-      resolve(result);
-    };
-    child.once('error', (error) => finish({ error: error.message }));
-    child.once('close', (code, signal) => {
-      output.end();
-      finish({ code, signal });
+    child.once('error', () => { error = 'Fixture process could not start'; });
+    child.once('close', async (code, signal) => {
+      await logging;
+      managed.result = { code, signal, ...(error ? { error } : {}) };
+      resolve(managed.result);
     });
   });
   state.children.push(managed);
@@ -111,6 +145,8 @@ async function startCore(state, binary, signal) {
     path.join(repository, 'deploy/local/generate.sh'), 'rf1', generated,
   ], repository);
   assert.deepEqual(await generator.done, { code: 0, signal: null }, 'RF1 configuration generation failed');
+  state.token = (await fs.readFile(path.join(generated, 'access.token'), 'utf8')).trim();
+  assert(/^[0-9a-f]{64}$/.test(state.token), 'The fixture requires a generated bootstrap token');
   const ports = { external: await freePort(true), internal: await freePort(true), management: await freePort() };
   assert.notEqual(ports.external, ports.internal, 'The test QUIC listeners require distinct ports');
   const configuration = path.join(generated, 'node-1.toml');
@@ -167,30 +203,40 @@ function signalChild(managed, signal) {
   }
 }
 
-async function stopChild(managed) {
+export async function stopChild(managed) {
   if (!managed.result) signalChild(managed, 'SIGTERM');
   const result = await Promise.race([managed.done, delay(8_000, null, { ref: false })]);
   if (!result) {
     signalChild(managed, 'SIGKILL');
     const killed = await Promise.race([managed.done, delay(5_000, null, { ref: false })]);
-    assert(killed, `${managed.name} did not exit after forced cleanup`);
-    return { name: managed.name, graceful: false, result: managed.result };
+    return { name: managed.name, graceful: false, result: killed };
   }
-  return { name: managed.name, graceful: !result.error, result };
+  return { name: managed.name, graceful: !result.error && result.code === 0 && result.signal === null, result };
 }
 
-async function cleanup(state) {
+export async function cleanup(state) {
+  const failures = [];
   if (state.proxy) {
-    state.proxy.closeAllConnections();
-    await new Promise((resolve) => state.proxy.close(resolve));
+    try {
+      state.proxy.closeAllConnections();
+      await new Promise((resolve, reject) => state.proxy.close((error) => error ? reject(error) : resolve()));
+    } catch { failures.push('The HTTPS proxy did not close'); }
   }
   const children = [];
-  for (const managed of [...state.children].reverse()) children.push(await stopChild(managed));
-  await fs.rm(state.privateDirectory, { recursive: true, force: true });
+  for (const managed of [...state.children].reverse()) {
+    try { children.push(await stopChild(managed)); }
+    catch { children.push({ name: managed.name, graceful: false, error: 'Fixture process cleanup failed' }); }
+  }
+  let privateMaterialRemoved = false;
+  try {
+    await fs.rm(state.privateDirectory, { recursive: true, force: true });
+    privateMaterialRemoved = true;
+  } catch { failures.push('Private fixture removal failed'); }
+  const passed = privateMaterialRemoved && failures.length === 0 && children.every((child) => child.graceful);
   await fs.writeFile(path.join(state.artifacts, 'cleanup.json'), JSON.stringify({
-    private_material_removed: true, children,
+    passed, private_material_removed: privateMaterialRemoved, children, failures,
   }, null, 2));
-  assert(children.every((child) => child.graceful), 'A browser fixture process required forced cleanup');
+  assert(passed, 'Browser fixture cleanup or a child exit failed; inspect cleanup.json');
 }
 
 export async function run(args = process.argv.slice(2)) {
@@ -219,6 +265,7 @@ export async function run(args = process.argv.slice(2)) {
     console.log(`Running real Console browser tests at ${baseURL}; evidence: ${artifacts}`);
     const browser = startChild(state, 'playwright', 'npx', [
       '--no-install', 'playwright', 'test', '--config', 'playwright.live.config.ts', ...args,
+      '--reporter=line', '--trace=off', '--output', path.join(privateDirectory, 'playwright-output'),
     ], web, { ...process.env, TIDEMQ_LIVE_BASE_URL: baseURL, TIDEMQ_LIVE_TOKEN_FILE: core.tokenFile });
     const abortBrowser = () => signalChild(browser, 'SIGTERM');
     cancellation.signal.addEventListener('abort', abortBrowser, { once: true });

@@ -8,11 +8,8 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   workers: 1,
   retries: 0,
-  reporter: [
-    ["list"],
-    ["html", { outputFolder: "playwright-report/live", open: "never" }],
-    ["json", { outputFile: "playwright-report/live/results.json" }],
-  ],
+  // HTML steps include fill values even with tracing disabled.
+  reporter: "line",
   outputDir: "test-results/live",
   use: {
     baseURL: process.env.TIDEMQ_LIVE_BASE_URL,
