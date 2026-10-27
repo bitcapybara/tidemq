@@ -179,7 +179,13 @@ pub(crate) fn data_rejection(reason: DataRejection) -> Error {
                 R::InvalidGrant => (ErrorCode::InvalidRequest, false),
                 R::Arithmetic => (ErrorCode::InternalError, false),
             };
-            Error::reject_with(code, Outcome::Rejected, retryable, reason.to_string())
+            let error = Error::reject_with(code, Outcome::Rejected, retryable, reason.to_string());
+            match (reason, error) {
+                (R::Exhausted, Error::Rejected { failure }) => {
+                    Error::TenantGrantExhausted { failure }
+                }
+                (_, error) => error,
+            }
         }
         DataRejection::Transfer(reason) => {
             use crate::broker::TransferDataRejection as R;

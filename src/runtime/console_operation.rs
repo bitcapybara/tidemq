@@ -213,7 +213,7 @@ fn observe_console_failure(record: &ConsoleRecord, stage: &'static str, error: &
         Error::Invalid { .. } => "invalid",
         Error::Operation { .. } => "operation",
         Error::CommittedConsumerWriter { .. } => "committed_writer",
-        Error::Rejected { .. } => "rejected",
+        Error::Rejected { .. } | Error::TenantGrantExhausted { .. } => "rejected",
     };
     tracing::warn!(event_code = "console_native_operation_failed", operation_id = %record.id,
         stage, native_kind, error_kind, error_code = failure.code, outcome = failure.outcome,

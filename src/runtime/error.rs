@@ -21,6 +21,8 @@ pub enum Error {
     },
     #[snafu(display("Runtime operation was rejected: {}", failure.message))]
     Rejected { failure: Failure },
+    #[snafu(display("Runtime operation was rejected: {}", failure.message))]
+    TenantGrantExhausted { failure: Failure },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,7 +89,7 @@ impl Error {
                 failure.original_outcome_known = false;
                 failure
             }
-            Self::Rejected { failure } => failure.clone(),
+            Self::Rejected { failure } | Self::TenantGrantExhausted { failure } => failure.clone(),
             Self::Invalid { reason } => {
                 let mut failure = Failure::new(ErrorCode::InvalidRequest, Outcome::Rejected, false);
                 failure.message = reason.clone();
