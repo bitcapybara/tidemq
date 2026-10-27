@@ -5,6 +5,7 @@ use std::time::Duration;
 use opentelemetry::Context;
 use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
 use tidemq::observability::tracing::{Tracing, TracingConfig};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
 use tracing::Dispatch;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -159,6 +160,49 @@ async fn real_otlp_decode_preserves_parent_and_keeps_host_subscriber() {
         assert!(request.bytes.len() <= 65_536);
         assert!(!request.bytes.windows(6).any(|bytes| bytes == b"secret"));
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn collector_retains_later_spans_after_startup_traffic() {
+    let collector = Collector::new().await;
+    let mut pipeline = Tracing::start(&config(&collector)).unwrap();
+    let dispatch = Dispatch::new(tracing_subscriber::registry().with(pipeline.layer()));
+    emit(&dispatch, 1);
+    wait(|| !collector.spans().is_empty()).await;
+    let body = collector
+        .requests
+        .lock()
+        .unwrap()
+        .first()
+        .unwrap()
+        .bytes
+        .clone();
+    for _ in 0..127 {
+        let mut stream = tokio::net::TcpStream::connect(collector.address)
+            .await
+            .unwrap();
+        let header = format!(
+            "POST /v1/traces HTTP/1.1\r\nHost: {}\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            collector.address,
+            body.len()
+        );
+        stream.write_all(header.as_bytes()).await.unwrap();
+        stream.write_all(&body).await.unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 OK\r\n"));
+    }
+    emit(&dispatch, 1);
+    pipeline
+        .shutdown(Instant::now() + Duration::from_secs(2))
+        .await
+        .unwrap();
+    let spans = collector.spans();
+    assert_eq!(spans.len(), 129);
+    assert_ne!(
+        spans.first().unwrap().span_id,
+        spans.last().unwrap().span_id
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

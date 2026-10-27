@@ -118,39 +118,43 @@ async fn serve(mut stream: TcpStream, mode: Arc<AtomicU8>, records: Arc<Mutex<Ve
     };
     {
         let mut records = records.lock().unwrap();
-        if records.len() < 128 {
-            let decoded = ExportTraceServiceRequest::decode(bytes.clone()).unwrap();
-            let instance = decoded
-                .resource_spans
-                .first()
-                .unwrap()
-                .resource
-                .as_ref()
-                .unwrap()
-                .attributes
-                .iter()
-                .find_map(|attribute| {
-                    match attribute
-                        .value
-                        .as_ref()
-                        .and_then(|value| value.value.as_ref())
-                    {
-                        Some(
-                            opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
-                                value,
-                            ),
-                        ) if attribute.key == "service.instance.id" => Some(value.clone()),
-                        _ => None,
-                    }
-                })
-                .expect("Exporter resource must identify its one process instance");
-            assert!(instance.len() <= 64);
-            records.push(Recorded {
-                at: Instant::now(),
-                bytes,
-                instance,
-            });
-        }
+        let retained_bytes: usize = records.iter().map(|record| record.bytes.len()).sum();
+        // Preserve the old maximum payload budget without dropping later business traces.
+        assert!(
+            retained_bytes.saturating_add(bytes.len()) <= 128 * 65_536,
+            "Trace collector exceeded its retained payload budget"
+        );
+        let decoded = ExportTraceServiceRequest::decode(bytes.clone()).unwrap();
+        let instance = decoded
+            .resource_spans
+            .first()
+            .unwrap()
+            .resource
+            .as_ref()
+            .unwrap()
+            .attributes
+            .iter()
+            .find_map(|attribute| {
+                match attribute
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.value.as_ref())
+                {
+                    Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            value,
+                        ),
+                    ) if attribute.key == "service.instance.id" => Some(value.clone()),
+                    _ => None,
+                }
+            })
+            .expect("Exporter resource must identify its one process instance");
+        assert!(instance.len() <= 64);
+        records.push(Recorded {
+            at: Instant::now(),
+            bytes,
+            instance,
+        });
     }
     let mode = mode.load(Ordering::Relaxed);
     if mode == SLOW {
