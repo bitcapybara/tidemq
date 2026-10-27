@@ -32,7 +32,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
       - uses: dtolnay/rust-toolchain@1.99.1
         if: runner.os == 'macOS'
@@ -48,7 +48,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           TIDEMQ_REQUIRE_EXTERNAL: '0'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: tests-${{ matrix.os }}
@@ -58,7 +58,7 @@ jobs:
             !target/ci/coverage-inputs
             !target/ci/lab-report
           retention-days: 14
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success() && runner.os == 'Linux'
         with: {name: coverage-inputs-native, path: target/ci/coverage-inputs, compression-level: 6, retention-days: 3}
 
@@ -68,13 +68,13 @@ jobs:
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/lab/with-lease.sh bash scripts/ci/faults.sh
         env:
           TIDEMQ_REQUIRE_EXTERNAL: '1'
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: tests-Linux-faults
@@ -83,10 +83,10 @@ jobs:
             !target/ci/coverage-inputs
             !target/ci/lab-report
           retention-days: 14
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success()
         with: {name: coverage-inputs-lab, path: target/ci/coverage-inputs, compression-level: 6, retention-days: 3}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: kubernetes-lab
@@ -100,15 +100,15 @@ jobs:
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {fetch-depth: 0, persist-credentials: false}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: trusted
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: {pattern: coverage-inputs-*, path: coverage-inputs}
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/coverage-report.sh
       - run: node --test trusted/scripts/coverage/*.test.mjs
@@ -118,7 +118,7 @@ jobs:
           --run-id "$GITHUB_RUN_ID" --output target/ci/coverage/summary.json $COVERAGE_GATE_MODE
         env:
           COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
 
@@ -128,7 +128,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
       - uses: dtolnay/rust-toolchain@1.99.1
         with: {components: 'rustfmt, clippy'}

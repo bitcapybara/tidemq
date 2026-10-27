@@ -44,6 +44,7 @@ CARGO_PROFILE_TEST_DEBUG=0
 TIDEMQ_TEST_RUSTFS_BIN=/srv/tidemq/tools/rustfs
 TIDEMQ_OTELCOL_BIN=/srv/tidemq/tools/collectorTest
 TIDEMQ_LAB_HOME=/home/actions/.config/tidemq-lab
+ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/srv/tidemq/action-archives
 TMPDIR=/srv/tidemq/tmp
 EOF
 printf '%s\n' '/opt/tidemq-rust/cargo/bin:/srv/tidemq/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' > /srv/tidemq/actions-runner/.path

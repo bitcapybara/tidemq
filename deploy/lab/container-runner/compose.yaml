@@ -14,11 +14,14 @@ services:
     pids_limit: 1024
     cap_drop: [ALL]
     security_opt: ['no-new-privileges:true']
-    environment: {RUNNER_MANUALLY_TRAP_SIG: '1'}
+    environment:
+      RUNNER_MANUALLY_TRAP_SIG: '1'
+      ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE: /srv/tidemq/action-archives
     tmpfs:
       - /home/actions:rw,exec,uid=1001,gid=1001,mode=0700,size=1536m
       - /tmp:rw,noexec,uid=1001,gid=1001,mode=0700,size=64m
     volumes:
+      - /srv/tidemq/action-archives:/srv/tidemq/action-archives:ro
       - /srv/tidemq/container-runner/state:/state:${TIDEMQ_RUNNER_STATE_MODE:-ro}
       - /srv/tidemq/container-runner/diag:/diag
       - /srv/tidemq/container-runner/work:/srv/tidemq/work

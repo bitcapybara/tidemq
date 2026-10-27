@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/guest.sh"
+mode=${1:-all}
+[[ $# -le 1 && "$mode" =~ ^(all|actions)$ ]] || { printf 'Usage: download-tools.sh [all|actions]\n' >&2; exit 2; }
+verify_archive() {
+  if command -v sha256sum >/dev/null; then
+    printf '%s  %s\n' "$1" "$2" | sha256sum -c - >/dev/null
+  else
+    printf '%s  %s\n' "$1" "$2" | shasum -a 256 -c - >/dev/null
+  fi
+}
 install -d -m 0755 "$lab_state/tools"
 while IFS=$'\t' read -r name url digest member raw; do
   archive="$lab_state/tools/$name.archive"
@@ -12,10 +21,10 @@ while IFS=$'\t' read -r name url digest member raw; do
     else
       curl --fail --location --retry 3 --proto '=https' "$url" -o "$archive.part"
     fi
-    printf '%s  %s\n' "$digest" "$archive.part" | sha256sum --check --status
+    verify_archive "$digest" "$archive.part"
     mv "$archive.part" "$archive"
   fi
-  printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+  verify_archive "$digest" "$archive"
   if [[ "$member" != - ]]; then
     if [[ "$url" == *.zip ]]; then unzip -p "$archive" "$member" > "$lab_state/tools/$name";
     else tar -xOf "$archive" "$member" > "$lab_state/tools/$name"; fi
@@ -24,4 +33,4 @@ while IFS=$'\t' read -r name url digest member raw; do
     install -m 0755 "$archive" "$lab_state/tools/$name"
   fi
   printf 'Verified pinned binary archive: %s\n' "$name"
-done < <(jq -r 'to_entries[] | [.key,.value.url,.value.sha256,(.value.member // "-"),(.value.raw // false)] | @tsv' "$lab_repo/deploy/lab/binaries.json")
+done < <(jq -r --arg mode "$mode" 'to_entries[] | select($mode == "all" or .value.action) | [.key,.value.url,.value.sha256,(.value.member // "-"),(.value.raw // false)] | @tsv' "$lab_repo/deploy/lab/binaries.json")

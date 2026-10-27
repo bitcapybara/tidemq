@@ -25,6 +25,7 @@ lab_ssh tidemq-runner sudo bash /tmp/tidemq-bootstrap-runner.sh /tmp/tidemq-runn
 lab_ssh tidemq-runner bash -c 'rm -rf /tmp/tidemq-runner /tmp/tidemq-runner.tar.gz'
 fi
 if [[ "$mode" != access ]]; then
+  bash "$lab_repo/scripts/lab/deploy-action-cache.sh"
   maintenance_bundle="$lab_state/private/runner-maintenance.tar.gz"
   tar -czf "$maintenance_bundle" -C "$lab_repo" deploy/lab/inventory.json deploy/lab/runner-maintenance.env \
     scripts/lab/runner-maintenance.sh scripts/lab/install-runner-maintenance.sh scripts/lab/with-lease.sh scripts/lab/cleanup-ci.sh scripts/lab/guest.sh

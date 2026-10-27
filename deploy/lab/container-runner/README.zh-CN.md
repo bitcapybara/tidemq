@@ -17,10 +17,21 @@ runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 run
 | `/srv/tidemq/rust/rustup` | `/opt/tidemq-rust/rustup:ro`，固定 Rust 1.99.1 工具链 |
 | 原生 runner 的 bin / externals、固定 nextest / llvm-cov | 只读工具，不包含原生 runner 的注册状态 |
 | `/srv/tidemq/maintenance/cargo-cache.lock` | 同路径文件挂载，协调 Cargo 流程与缓存回收 |
+| `/srv/tidemq/action-archives` | 同路径只读挂载，供两个 runner 读取固定 SHA 的官方 action 归档 |
 
 容器不发布端口，不挂载 Docker socket、libvirt、kubeconfig、SSH key 或原生 runner 的 `.credentials`。根文件系统只读，runner 的工作安装副本位于有界 HOME tmpfs；重启从镜像重建，注册状态从 `/state` 读取。日志、checkout、target 和 tmp 位于持久数据盘，不依赖容器可写层。`RUNNER_MANUALLY_TRAP_SIG=1` 使用上游 `run.sh` 自带的信号转发，把停止信号传给 Listener 并释放 GitHub 会话；以 GitHub online 状态和 `Listening for Jobs` 日志确认恢复，不能只看容器 running。
 
 两个 runner 共享下载缓存可避免重复下载；各自 target 仍需编译。独立构建可以同时进行，Cargo 自身的包锁保护下载/解压。[with-cargo-cache.sh](../../../scripts/ci/with-cargo-cache.sh) 在整个流程持有共享 flock，清理取得非阻塞独占锁后才删除 registry/git。手动 Cargo 命令也必须通过该入口；不可绕过锁清理共享目录。
+
+action 缓存使用 runner 2.338.1 的 `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`。仅保存 checkout、upload-artifact、download-artifact 三个固定提交的归档，提交及 SHA-256 见 [binaries.json](../binaries.json)，workflow 使用相同提交。缓存由 root 安装，两个 runner 只读；重建时先验证全部下载，再替换带所有权标记的旧缓存，因此只保留三个当前归档，总量上限 64 MiB。篡改或不完整的下载不会覆盖有效缓存。action 更新需一起更新 workflow、提交和归档校验值，再重新部署缓存。
+
+dev 下载缓慢时，可先在本机执行下列命令，复制生成的 `tools/action*.archive` 到宿主 `/var/lib/tidemq-lab/tools/`，然后在两个 runner 空闲时安装并重新创建容器。归档来源始终为官方 codeload，完整性在安装时再次校验。
+
+```bash
+TIDEMQ_LAB_STATE="$HOME/.cache/tidemq-lab" bash scripts/lab/download-tools.sh actions
+scp "$HOME/.cache/tidemq-lab"/tools/action*.archive dev:/var/lib/tidemq-lab/tools/
+ssh dev 'cd /root/tidemq-lab-source && bash scripts/lab/deploy-action-cache.sh && bash scripts/lab/deploy-container-runner.sh start'
+```
 
 每边 target 空闲保留上限 12 GiB、7 天，共享 registry/git 各 2 GiB；数据盘至少保留 12 GiB 可用量。大于额度的 target 在制品上传后的钩子清空。原生小时定时器还回收空闲容器的取消任务残留，规则见 [资源清理](../runner-maintenance.zh-CN.md)。Docker 日志限制 10 MiB × 3；近期诊断日志保留，软额度 128 MiB。
 
