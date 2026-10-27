@@ -1,32 +1,63 @@
+# TideMQ stateless Console process, separate from MQ/Raft roles.
+# From the repository root: tidemq validate-config --config config/console.toml
+# After provisioning: tidemq serve --config config/console.toml
+# Relative paths resolve from the process working directory, not this file.
+# Required fields below are operational examples, not implicit defaults.
+# Lines prefixed "#? " are disabled optional examples; remove the prefix to enable.
 role = "console"
+# HTTP behind a TLS reverse proxy; the browser's public HTTPS origin is in session.
 listen = "127.0.0.1:8080"
+# Management must stay on loopback and differ from listen.
 management_listen = "127.0.0.1:9420"
+# Build/provision the Console web assets and Vite manifest separately.
 static_dir = "console/web/dist"
 
+# Required fixed gateway endpoint and TLS name; use one cluster for all replicas.
 [cluster]
 address = "gateway.tidemq.local:7443"
 server_name = "gateway.tidemq.local"
+# Required provisioned PEM CA file, not a bundled certificate.
 trust_roots = "private/ca.pem"
 
 [session]
-# Provision 32 random raw bytes; allow only owner access or a read-only service group.
+# Required: exactly 32 random raw bytes (not hex text), shared by replicas.
+# Allow owner access or a read-only service group; never commit the key.
 key_file = "private/console-session.key"
-# Shared verification-only keys allow a staged rotation across stateless replicas.
+# Code default: empty. At most two distinct verification-only files support
+# staged rotation across stateless replicas; never reuse the current path.
 previous_key_files = []
+# Required HTTPS origin only (no path/query); replace this deployment placeholder.
 public_origin = "https://console.example.test"
+# Code default in seconds; accepted range: 60..3600.
 max_age_seconds = 1800
 
+# All observability sources default to absent. No user credentials are forwarded.
 [observability]
-components = []
-# Optional fixed Prometheus endpoint; missing or failed sources remain partial.
-# alerts_url = "http://prometheus:9090/api/v1/alerts"
-# alerts_detail_url = "https://metrics.example.test/alerts"
-# Configure health endpoints using [[observability.components]] entries with
-# id, name, probe_url, and an optional HTTPS detail_url. No user credentials are sent.
+# Code default: empty list. A component needs id, name, probe_url; detail_url is
+# optional and requires HTTPS. IDs must be distinct and cannot be console,
+# metadata, storage, broker, or gateway.
+components = [
+    #? { id = "prometheus-1", name = "Prometheus", probe_url = "http://127.0.0.1:9090/-/ready", detail_url = "https://metrics.example.test" },
+]
+# Neither URL has a default. Missing/failed sources remain partial.
+# Probe URLs cannot contain credentials or queries.
+#? alerts_url = "http://127.0.0.1:9090/api/v1/alerts"
+#? alerts_detail_url = "https://metrics.example.test/alerts"
 
+# Code defaults shared with MQ processes.
 [logging]
 filter = "warn,tidemq=info"
 json = true
+queue_events = 1024
+max_event_bytes = 16384
 
+# Code defaults. Remote endpoints require HTTPS and a literal IP address.
 [tracing]
 enabled = false
+endpoint = "http://127.0.0.1:4318/v1/traces"
+sample_per_mille = 10
+spans_per_second = 128
+queue_spans = 256
+batch_spans = 32
+export_interval_ms = 500
+export_timeout_ms = 500
