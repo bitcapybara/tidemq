@@ -23,5 +23,6 @@ test('parallel integration lanes select every suite once and keep reports separa
     assert.equal(calls.includes('test-hooks'), mode !== 'normal');
     assert.equal(calls.includes('--test runtime_group_watch'), mode !== 'normal');
     assert.equal(calls.includes('--test sdk_consumer_long_poll'), mode !== 'normal');
+    assert.equal(calls.includes('--lib --test runtime_queue'), mode !== 'normal');
   }
 });

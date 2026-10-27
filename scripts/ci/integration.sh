@@ -25,7 +25,7 @@ cargo nextest run --workspace --all-targets --locked --features "$features" --pr
 cp target/nextest/ci/junit.xml target/ci/integration-junit.xml
 fi
 if [[ "$mode" != normal ]]; then
-cargo nextest run -p tidemq --test runtime_queue --test runtime_consumer_reads --test runtime_reclamation --test runtime_group_watch --test sdk_consumer_long_poll \
+cargo nextest run -p tidemq --lib --test runtime_queue --test runtime_consumer_reads --test runtime_reclamation --test runtime_group_watch --test sdk_consumer_long_poll \
   --locked --features "$features,test-hooks" --profile ci
 cp target/nextest/ci/junit.xml target/ci/runtime-faults-junit.xml
 if [[ ${TIDEMQ_REQUIRE_EXTERNAL:-0} == 1 ]]; then
