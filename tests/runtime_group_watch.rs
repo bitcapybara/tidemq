@@ -174,18 +174,20 @@ async fn stale_attempt_cancellation_cannot_remove_a_replacement_waiter() {
     };
     let second = fixture.wire.submit(&replacement).await;
     pause.wait(deadline()).await.unwrap();
+    let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
+    assert_eq!(observer.snapshot().await.active_requests, 1);
     fixture.wire.cancel(&original).await;
+    assert_stale_cancel_unmatched(&observer, &original);
+    assert_eq!(
+        observer.snapshot().await.active_requests,
+        1,
+        "A stale cancellation removed the live replacement"
+    );
     producer.send("new-attempt").await.unwrap();
     pause.resume();
     let result = receive(second).await;
     target(&replacement, &result, public::WatchStatus::WatchChanged);
-    let old = receive(first).await;
-    assert!(
-        old.targets
-            .iter()
-            .all(|target| target.status != i32::from(public::WatchStatus::WatchUnchanged)),
-        "A replaced attempt falsely completed an unchanged observation"
-    );
+    receive_replaced(first, &original).await;
     drop(pause);
     producer.close().await.unwrap();
     fixture.close().await;

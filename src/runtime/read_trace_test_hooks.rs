@@ -52,7 +52,7 @@ struct Trace {
     partition: PartitionKey,
     events: Mutex<Events>,
 }
-type Key = (Id, Id);
+type Key = (Id, PartitionKey, Id);
 static TRACES: Mutex<BTreeMap<Key, Arc<Trace>>> = Mutex::new(BTreeMap::new());
 
 pub struct ReadTrace {
@@ -61,7 +61,7 @@ pub struct ReadTrace {
 }
 impl ReadTrace {
     pub fn install(cluster: Id, partition: PartitionKey, shard: Id) -> io::Result<Self> {
-        let key = (partition.topic_id, shard);
+        let key = (cluster, partition, shard);
         let mut traces = TRACES
             .lock()
             .map_err(|_| io::Error::other("Read trace registry is poisoned"))?;
@@ -110,17 +110,21 @@ impl Drop for ReadTrace {
     }
 }
 
-pub(crate) fn enabled(identity: GroupIdentity) -> bool {
-    TRACES
-        .lock()
-        .is_ok_and(|traces| traces.contains_key(&(identity.topic, identity.shard)))
+pub(crate) fn enabled(scope: (Id, PartitionKey), identity: GroupIdentity) -> bool {
+    identity.topic == scope.1.topic_id
+        && TRACES
+            .lock()
+            .is_ok_and(|traces| traces.contains_key(&(scope.0, scope.1, identity.shard)))
 }
 
-pub(crate) fn record(identity: GroupIdentity, event: ReadTraceEvent) {
+pub(crate) fn record(scope: (Id, PartitionKey), identity: GroupIdentity, event: ReadTraceEvent) {
+    if identity.topic != scope.1.topic_id {
+        return;
+    }
     let trace = TRACES
         .lock()
         .ok()
-        .and_then(|traces| traces.get(&(identity.topic, identity.shard)).cloned());
+        .and_then(|traces| traces.get(&(scope.0, scope.1, identity.shard)).cloned());
     if let Some(trace) = trace
         && let Ok(mut events) = trace.events.lock()
     {
@@ -129,5 +133,107 @@ pub(crate) fn record(identity: GroupIdentity, event: ReadTraceEvent) {
         } else {
             events.rows.push_back(event);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(identity: GroupIdentity, sequence: u64) -> ReadTraceEvent {
+        ReadTraceEvent {
+            subscription: identity.subscription,
+            member: identity.subscription,
+            epoch: 1,
+            sequence,
+            now_ms: 1,
+            budget_messages: 1,
+            budget_bytes: 1,
+            budget_results: 1,
+            cursor_next: 0,
+            producer_next: 0,
+            cursor_windows: 0,
+            ready: 0,
+            eligible_ready: 0,
+            candidates: 0,
+            candidate_min_bytes: None,
+            group_windows: 0,
+            group_reads: 0,
+            group_bytes: 0,
+            member_state: None,
+            deliveries: Some(0),
+        }
+    }
+
+    #[test]
+    fn scopes_isolate_reused_ids_and_bound_registration_and_event_retention() {
+        let cluster = Id::new_v7().unwrap();
+        let other_cluster = Id::new_v7().unwrap();
+        let partition = PartitionKey {
+            topic_id: Id::new_v7().unwrap(),
+            partition: 0,
+        };
+        let other_partition = PartitionKey {
+            partition: 1,
+            ..partition
+        };
+        let identity = GroupIdentity {
+            topic: partition.topic_id,
+            shard: Id::new_v7().unwrap(),
+            subscription: Id::new_v7().unwrap(),
+        };
+        let scope = (cluster, partition);
+        let trace = ReadTrace::install(cluster, partition, identity.shard).unwrap();
+        assert!(enabled(scope, identity));
+        assert!(!enabled((other_cluster, partition), identity));
+        assert!(!enabled((cluster, other_partition), identity));
+        record((other_cluster, partition), identity, event(identity, 99));
+        record((cluster, other_partition), identity, event(identity, 98));
+        assert!(trace.events().is_empty());
+
+        let second = ReadTrace::install(other_cluster, partition, identity.shard).unwrap();
+        let third = ReadTrace::install(cluster, other_partition, identity.shard).unwrap();
+        record(scope, identity, event(identity, 1));
+        record((other_cluster, partition), identity, event(identity, 2));
+        record((cluster, other_partition), identity, event(identity, 3));
+        assert_eq!(trace.events().first().unwrap().sequence, 1);
+        assert_eq!(second.events().first().unwrap().sequence, 2);
+        assert_eq!(third.events().first().unwrap().sequence, 3);
+        assert_eq!(trace.events().len(), 1);
+        assert_eq!(second.events().len(), 1);
+        assert_eq!(third.events().len(), 1);
+
+        let wrong_topic = GroupIdentity {
+            topic: Id::new_v7().unwrap(),
+            ..identity
+        };
+        assert!(!enabled(scope, wrong_topic));
+        record(scope, wrong_topic, event(wrong_topic, 97));
+        assert_eq!(trace.events().len(), 1);
+        for sequence in 2..=256 {
+            record(scope, identity, event(identity, sequence));
+        }
+        assert_eq!(trace.events().len(), 256);
+        assert!(!trace.overflowed());
+        record(scope, identity, event(identity, 257));
+        assert!(trace.overflowed());
+        assert_eq!(trace.events().last().unwrap().sequence, 256);
+
+        drop(trace);
+        assert!(!enabled(scope, identity));
+        assert!(enabled((other_cluster, partition), identity));
+        let replacement = ReadTrace::install(cluster, partition, identity.shard).unwrap();
+        assert!(replacement.events().is_empty());
+        assert!(!replacement.overflowed());
+        assert!(ReadTrace::install(cluster, partition, identity.shard).is_err());
+        let additional: Vec<_> = (0..13)
+            .map(|_| ReadTrace::install(Id::new_v7().unwrap(), partition, identity.shard).unwrap())
+            .collect();
+        assert!(ReadTrace::install(Id::new_v7().unwrap(), partition, identity.shard).is_err());
+        drop(additional);
+        let released =
+            ReadTrace::install(Id::new_v7().unwrap(), partition, identity.shard).unwrap();
+        drop((replacement, second, third, released));
+        assert!(!enabled(scope, identity));
     }
 }

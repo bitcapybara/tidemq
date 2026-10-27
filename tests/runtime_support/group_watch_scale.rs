@@ -270,52 +270,67 @@ fn request(
     request
 }
 
+async fn observation_failure_ledger(observer: &Diagnostics, request: &public::GroupWatch) {
+    let root = Id::from_slice(&request.root_operation_id).unwrap();
+    let targets: Vec<_> = request
+        .targets
+        .iter()
+        .map(|target| {
+            serde_json::json!({
+                "shard": Id::from_slice(&target.shard_id).unwrap(),
+                "partition": target.birth_partition,
+                "token_hash": blake3::hash(&target.observed_token).to_hex().to_string(),
+            })
+        })
+        .collect();
+    eprintln!(
+        "Unexpected idle request ledger: {}",
+        serde_json::json!({
+            "root": root, "topic": Id::from_slice(&request.topic_id).unwrap(),
+            "subscription": Id::from_slice(&request.subscription_id).unwrap(),
+            "member": Id::from_slice(&request.member_id).unwrap(),
+            "epoch": request.member_epoch, "assignment_version": request.assignment_version,
+            "attempt": request.attempt, "wait_ms": request.wait_ms, "targets": targets,
+        })
+    );
+    eprintln!(
+        "Unexpected idle immediate state ledger: {}",
+        serde_json::to_string(&observer.snapshot().await).unwrap()
+    );
+    let events: Vec<_> = observer
+        .events()
+        .into_iter()
+        .filter(|event| event.root == root)
+        .collect();
+    eprintln!(
+        "Unexpected idle branch ledger: {}",
+        serde_json::to_string(&events).unwrap()
+    );
+}
+
 async fn checked_results(
     observer: &Diagnostics,
     request: &public::GroupWatch,
-    result: public::GroupWatchResult,
+    reply: &tidemq_protocol::common::Frame,
     status: public::WatchStatus,
 ) -> BTreeMap<Bytes, Bytes> {
+    if reply.kind == i32::from(FrameKind::Error) {
+        observation_failure_ledger(observer, request).await;
+        let error: tidemq_protocol::common::ErrorReply = decoded(reply, FrameKind::Error);
+        panic!(
+            "Idle Watch returned an explicit error: root={} attempt={} wait_ms={} error={error:?}",
+            Id::from_slice(&request.root_operation_id).unwrap(),
+            request.attempt,
+            request.wait_ms
+        );
+    }
+    let result: public::GroupWatchResult = decoded(reply, FrameKind::GroupWatchResult);
     if result.targets.iter().any(|target| {
         target.status != i32::from(status)
             || target.error_code != i32::from(ErrorCode::Unspecified)
             || target.retryable
     }) {
-        let root = Id::from_slice(&request.root_operation_id).unwrap();
-        let targets: Vec<_> = request
-            .targets
-            .iter()
-            .map(|target| {
-                serde_json::json!({
-                    "shard": Id::from_slice(&target.shard_id).unwrap(),
-                    "partition": target.birth_partition,
-                    "token_hash": blake3::hash(&target.observed_token).to_hex().to_string(),
-                })
-            })
-            .collect();
-        eprintln!(
-            "Unexpected idle request ledger: {}",
-            serde_json::json!({
-                "root": root, "topic": Id::from_slice(&request.topic_id).unwrap(),
-                "subscription": Id::from_slice(&request.subscription_id).unwrap(),
-                "member": Id::from_slice(&request.member_id).unwrap(),
-                "epoch": request.member_epoch, "assignment_version": request.assignment_version,
-                "attempt": request.attempt, "wait_ms": request.wait_ms, "targets": targets,
-            })
-        );
-        eprintln!(
-            "Unexpected idle immediate state ledger: {}",
-            serde_json::to_string(&observer.snapshot().await).unwrap()
-        );
-        let events: Vec<_> = observer
-            .events()
-            .into_iter()
-            .filter(|event| event.root == root)
-            .collect();
-        eprintln!(
-            "Unexpected idle branch ledger: {}",
-            serde_json::to_string(&events).unwrap()
-        );
+        observation_failure_ledger(observer, request).await;
     }
     let expected: BTreeSet<_> = request
         .targets
@@ -563,8 +578,7 @@ impl Hot {
     }
 }
 
-async fn scale() {
-    let shards_per_topic = SHARDS_PER_TOPIC;
+async fn scale(shards_per_topic: usize) {
     let idle_shards = TOPICS * shards_per_topic;
     eprintln!(
         "Watch real scale topology: idle_shards={idle_shards} topics={TOPICS} shards_per_topic={shards_per_topic} data_groups=8 rounds={ROUNDS}"
@@ -662,13 +676,15 @@ async fn scale() {
     let mut tokens = BTreeMap::new();
     for page in &pages {
         let request = request(&scopes.get(page.scope).unwrap().member, page, &tokens, 0);
-        for (shard, token) in checked_results(
-            &observer,
-            &request,
-            wire.watch(&request).await,
-            public::WatchStatus::WatchSync,
-        )
-        .await
+        let reply = wire
+            .call(frame(
+                FrameKind::GroupWatch,
+                Id::from_slice(&request.root_operation_id).unwrap(),
+                &request,
+            ))
+            .await;
+        for (shard, token) in
+            checked_results(&observer, &request, &reply, public::WatchStatus::WatchSync).await
         {
             assert!(tokens.insert(shard, token).is_none());
         }
@@ -717,7 +733,10 @@ async fn scale() {
         let mut held = Box::pin(response.receive());
         tokio::select! {
             entered = pause.wait(deadline()) => entered.unwrap(),
-            reply = &mut held => fail_before_pause(reply.unwrap().frame()),
+            reply = &mut held => {
+                observation_failure_ledger(&observer, &held_request).await;
+                fail_before_pause(reply.unwrap().frame());
+            },
         }
         let mut pending = vec![(held_request, held)];
         for page in long.iter().skip(1) {
@@ -769,11 +788,17 @@ async fn scale() {
             .enumerate()
         {
             let request = request(&scopes.get(page.scope).unwrap().member, page, &tokens, 0);
-            let result = wire.watch(&request).await;
+            let reply = wire
+                .call(frame(
+                    FrameKind::GroupWatch,
+                    Id::from_slice(&request.root_operation_id).unwrap(),
+                    &request,
+                ))
+                .await;
             for (shard, token) in checked_results(
                 &observer,
                 &request,
-                result,
+                &reply,
                 public::WatchStatus::WatchUnchanged,
             )
             .await
@@ -793,7 +818,7 @@ async fn scale() {
             for (shard, token) in checked_results(
                 &observer,
                 &request,
-                decoded(response.frame(), FrameKind::GroupWatchResult),
+                response.frame(),
                 public::WatchStatus::WatchUnchanged,
             )
             .await
@@ -948,7 +973,7 @@ async fn scale() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hot_ack_and_control_progress_leave_one_thousand_real_idle_shards_clean_and_fair() {
     let _serial = SERIAL.lock().await;
-    tokio::time::timeout(Duration::from_secs(900), scale())
+    tokio::time::timeout(Duration::from_secs(900), scale(SHARDS_PER_TOPIC))
         .await
         .expect("The real 1000-shard Watch regression exceeded its total deadline");
 }

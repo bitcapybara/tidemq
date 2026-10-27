@@ -46,6 +46,14 @@ Rust SDK 开启 `opentelemetry` feature 后，从宿主当前 tracing span 获�
 
 正文、业务 key、投递 token、凭据、原始错误链、任意 dependency DEBUG、event/link 和 status 描述都不进入内置 OTLP。普通日志和业务指标保留各自口径。ACK/读请求可由宿主当前操作关联；不持久化生产 trace 历史，不自动把较晚的消费 trace 伪装成原生产 span 的子节点。Raft 后台合批/心跳也不能伪造唯一业务父调用。`producer_submission` 覆盖该 owned 提交等待至原期限的观测，超过期限后的结果仍通过业务权威与指标判定。
 
+## 消费者观察日志
+
+`GroupWatch` 使用普通 DEBUG 日志中的 `consumer_watch` span，以 `operation_id`、`root_operation_id`、`parent_operation_id` 和 `watch_attempt` 关联分支。它不属于内置 OTLP 的四种 span 白名单；需要查看这些日志时，按现有日志过滤器启用相关 runtime 模块。
+
+固定 `event_code` 包括 `watch_completed`、`watch_failed`、`watch_cancelled`、`watch_cleanup_unknown` 和 `watch_scope_failed`。最后一项记录发生失败的数据组、`stage`、数值错误码/outcome、是否可重试和原请求剩余毫秒数。`leader_discovery`/`route`/`forward` 指向发现或转发，`initial_barrier`/`final_barrier` 指向线性化检查，`initial_samples`/`registered_samples`/`final_samples` 指向应用状态投影，`final_authorize` 与 `local_*_changed`/`local_permission_expired` 指向最终授权或路由复查。这些分类不记录消息、凭据、观察 token 或原始错误链。
+
+`WatchRetry` 是重新安排只读观察的提示，不能当成 `UNCHANGED`，也不能据此新建替代 `GroupRead` 身份。结合[消费说明](../guide/consumption.zh-CN.md#watch-与实际读取)和[指标](./metrics.zh-CN.md)检查当前成员、路由、准入与原截止时间；取消或 drain 后的明确拒绝也不表示已领取的数据丢失。
+
 ## 故障定位
 
 服务管理端 `/metrics` 在启用后增加以下无动态 label 的有限指标，HTTP `/diagnostics` 的 runtime sample 带对应 trace snapshot；CLI 对应命令为 `diagnose`。计数随进程重启归零，采样不是审计。

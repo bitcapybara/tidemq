@@ -415,7 +415,9 @@ impl Service {
             let (permit, expires) = tokio::select! {
                 _ = registration.cancelled.cancelled() => return Err(Error::unavailable()),
                 _ = self.watch_stopped() => return Err(Error::unavailable()),
-                authorization = self.watch_authorize(access, &request, deadline) => authorization?,
+                authorization = self.watch_authorize(access, &request, deadline) => authorization.map_err(|error| {
+                    self.watch_scope_failure(&request, (operation, 0), "entry_authorize", deadline, error)
+                })?,
             };
             if hops == 2
                 && DELEGATION
@@ -515,7 +517,9 @@ impl Service {
                 _ = registration.cancelled.cancelled() => return Err(Error::unavailable()),
                 _ = self.watch_stopped() => return Err(Error::unavailable()),
                 _ = tokio::time::sleep_until(deadline) => return Err(Error::unavailable()),
-                authorization = self.watch_authorize(access, &request, deadline) => authorization?,
+                authorization = self.watch_authorize(access, &request, deadline) => authorization.map_err(|error| {
+                    self.watch_scope_failure(&request, (operation, 0), "reply_authorize", deadline, error)
+                })?,
             };
             if registration.cancelled.is_cancelled()
                 || !self.watch_accepting()
@@ -570,6 +574,14 @@ impl Service {
         context: (u32, Instant, Instant),
     ) -> Result<public::GroupWatchResult> {
         let (hops, expires, deadline) = context;
+        let identity = (
+            operation,
+            scope
+                .permit
+                .targets
+                .first()
+                .map_or(0, |(_, route)| route.group_id),
+        );
         let (branches, local) = self
             .watch_branches(
                 &scope.request,
@@ -579,7 +591,10 @@ impl Service {
                 deadline,
                 access,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                self.watch_scope_failure(&scope.request, identity, "route", deadline, error)
+            })?;
         if let Some(branch) = branches.first() {
             branch.sent.store(true, Ordering::Release);
             let response = self
@@ -599,14 +614,88 @@ impl Service {
             ) {
                 branch.finished.store(true, Ordering::Release);
             }
-            return decode_watch_result(&response?, &branch.request, &self.config.protocol);
+            let response = response.map_err(|error| {
+                self.watch_scope_failure(
+                    &branch.request,
+                    (branch.operation, branch.group),
+                    "forward",
+                    deadline,
+                    error,
+                )
+            })?;
+            return decode_watch_result(&response, &branch.request, &self.config.protocol).map_err(
+                |error| {
+                    self.watch_scope_failure(
+                        &branch.request,
+                        (branch.operation, branch.group),
+                        "forward_result",
+                        deadline,
+                        error,
+                    )
+                },
+            );
         }
         if let Some((watch, permit)) = local.first() {
             return self
-                .watch_local(access, watch, permit, expires, deadline)
+                .watch_local(access, watch, permit, (operation, expires, deadline))
                 .await;
         }
-        Err(Error::unavailable())
+        Err(self.watch_scope_failure(
+            &scope.request,
+            identity,
+            "missing_route",
+            deadline,
+            Error::unavailable(),
+        ))
+    }
+
+    fn watch_scope_failure(
+        &self,
+        request: &public::GroupWatch,
+        identity: (Id, u64),
+        stage: &'static str,
+        deadline: Instant,
+        error: Error,
+    ) -> Error {
+        let (operation, group) = identity;
+        let failure = error.failure();
+        let remaining_ms = u64::try_from(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX);
+        let span = watch_span(
+            operation,
+            &request.root_operation_id,
+            &request.parent_operation_id,
+            request.attempt,
+        );
+        tracing::debug!(parent: &span,
+            event_code = "watch_scope_failed",
+            group,
+            stage,
+            error_code = failure.code,
+            outcome = failure.outcome,
+            retryable = failure.retryable,
+            remaining_ms,
+            "Consumer watch scope check failed"
+        );
+        #[cfg(feature = "test-hooks")]
+        super::watch_test_hooks::record(
+            self.cluster,
+            self.config.node_id,
+            group,
+            operation,
+            request,
+            super::watch_test_hooks::WatchPhase::Failed {
+                stage,
+                code: failure.code,
+                outcome: failure.outcome,
+                remaining_ms,
+            },
+        );
+        error
     }
 
     async fn watch_branches(
@@ -649,7 +738,16 @@ impl Service {
                             .ok_or_else(Error::unavailable)?,
                     ),
                 )
-                .await?,
+                .await
+                .map_err(|error| {
+                    self.watch_scope_failure(
+                        request,
+                        (operation, group),
+                        "leader_discovery",
+                        deadline,
+                        error,
+                    )
+                })?,
             )
         } else {
             None
@@ -826,9 +924,18 @@ impl Service {
         access: &Access,
         request: &public::GroupWatch,
         permit: &Permit,
-        expires: Instant,
-        deadline: Instant,
+        context: (Id, Instant, Instant),
     ) -> Result<public::GroupWatchResult> {
+        let (operation, expires, deadline) = context;
+        let identity = (
+            operation,
+            permit
+                .targets
+                .first()
+                .map_or(0, |(_, route)| route.group_id),
+        );
+        let failure =
+            |stage, error| self.watch_scope_failure(request, identity, stage, deadline, error);
         let started = Instant::now();
         let wait_end = started
             .checked_add(Duration::from_millis(u64::from(request.wait_ms)))
@@ -843,28 +950,45 @@ impl Service {
                     .checked_sub(Duration::from_millis(20))
                     .unwrap_or(started),
             );
-        self.watch_barrier(permit, deadline).await?;
+        self.watch_barrier(permit, deadline)
+            .await
+            .map_err(|error| failure("initial_barrier", error))?;
         loop {
             let samples = self
                 .watch_samples(access, request, permit, deadline)
-                .await?;
+                .await
+                .map_err(|error| failure("initial_samples", error))?;
             let changed = samples
                 .iter()
                 .any(|sample| sample.status != public::WatchStatus::WatchUnchanged);
             if changed || Instant::now() >= wait_end || request.wait_ms == 0 {
-                let (current, current_expires) =
-                    self.watch_authorize(access, request, deadline).await?;
-                if current.targets != permit.targets
-                    || current.installed_version != permit.installed_version
-                    || current_expires <= Instant::now()
-                    || self.draining.load(std::sync::atomic::Ordering::Acquire)
-                {
-                    return Err(Error::unavailable());
+                let (current, current_expires) = self
+                    .watch_authorize(access, request, deadline)
+                    .await
+                    .map_err(|error| failure("final_authorize", error))?;
+                let targets_changed = current.targets != permit.targets;
+                let version_changed = current.installed_version != permit.installed_version;
+                let permission_expired = current_expires <= Instant::now();
+                let draining = self.draining.load(std::sync::atomic::Ordering::Acquire);
+                if targets_changed || version_changed || permission_expired || draining {
+                    let stage = if targets_changed {
+                        "local_targets_changed"
+                    } else if version_changed {
+                        "local_version_changed"
+                    } else if permission_expired {
+                        "local_permission_expired"
+                    } else {
+                        "local_draining"
+                    };
+                    return Err(failure(stage, Error::unavailable()));
                 }
-                self.watch_barrier(permit, deadline).await?;
+                self.watch_barrier(permit, deadline)
+                    .await
+                    .map_err(|error| failure("final_barrier", error))?;
                 let checked = self
                     .watch_samples(access, request, permit, deadline)
-                    .await?;
+                    .await
+                    .map_err(|error| failure("final_samples", error))?;
                 return Ok(public::GroupWatchResult {
                     targets: request
                         .targets
@@ -913,7 +1037,8 @@ impl Service {
             }
             let registered = self
                 .watch_samples(access, request, permit, deadline)
-                .await?;
+                .await
+                .map_err(|error| failure("registered_samples", error))?;
             if registered
                 .iter()
                 .any(|sample| sample.status != public::WatchStatus::WatchUnchanged)

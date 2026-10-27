@@ -233,7 +233,15 @@ async fn two_owners_fan_out_to_distinct_groups_on_one_leader_and_late_cancel_is_
             first_ids,
             "Retry changed stable branch identities"
         );
+        let ingress = runtime.running.get(&4).unwrap().watch_diagnostics();
+        assert_eq!(ingress.snapshot().await.active_requests, 1);
         wire.cancel(&original).await;
+        assert_stale_cancel_unmatched(&ingress, &original);
+        assert_eq!(
+            ingress.snapshot().await.active_requests,
+            1,
+            "A stale cancellation removed the root replacement"
+        );
         let active = leader.snapshot().await;
         assert_eq!(
             active.active_requests, 2,
@@ -267,12 +275,7 @@ async fn two_owners_fan_out_to_distinct_groups_on_one_leader_and_late_cancel_is_
                 | public::WatchStatus::WatchUnchanged
                 | public::WatchStatus::WatchRetry
         )));
-        let old = receive(first).await;
-        assert!(
-            old.targets
-                .iter()
-                .all(|target| target.status != i32::from(public::WatchStatus::WatchUnchanged))
-        );
+        receive_replaced(first, &original).await;
         eprintln!(
             "Shared-leader Watch branch ledger: {}",
             serde_json::to_string(&leader.events()).unwrap()

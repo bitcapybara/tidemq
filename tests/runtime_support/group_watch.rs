@@ -636,6 +636,88 @@ pub(super) async fn receive(response: RpcResponse) -> public::GroupWatchResult {
     decoded(received.frame(), FrameKind::GroupWatchResult)
 }
 
+pub(super) async fn receive_replaced(response: RpcResponse, request: &public::GroupWatch) {
+    let received = tokio::time::timeout_at(deadline(), response.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let reply = received.frame();
+    assert_eq!(reply.operation_id, request.root_operation_id);
+    if reply.kind == i32::from(FrameKind::Error) {
+        let error: ErrorReply = decoded(reply, FrameKind::Error);
+        eprintln!(
+            "Replaced Watch termination ledger: root={} attempt={} code={} outcome={} retryable={}",
+            Id::from_slice(&request.root_operation_id).unwrap(),
+            request.attempt,
+            error.code,
+            error.outcome,
+            error.retryable
+        );
+        assert_eq!(error.code, i32::from(ErrorCode::Unavailable));
+        assert_eq!(
+            error.outcome,
+            i32::from(tidemq_protocol::common::Outcome::Rejected)
+        );
+        assert!(error.retryable);
+        return;
+    }
+    let result: public::GroupWatchResult = decoded(reply, FrameKind::GroupWatchResult);
+    let expected: std::collections::BTreeSet<_> = request
+        .targets
+        .iter()
+        .map(|target| &target.shard_id)
+        .collect();
+    assert_eq!(result.targets.len(), expected.len());
+    assert_eq!(
+        result
+            .targets
+            .iter()
+            .map(|target| &target.shard_id)
+            .collect::<std::collections::BTreeSet<_>>(),
+        expected
+    );
+    for target in result.targets {
+        assert_eq!(target.status, i32::from(public::WatchStatus::WatchRetry));
+        assert_eq!(target.error_code, i32::from(ErrorCode::Unavailable));
+        assert!(target.retryable);
+    }
+}
+
+pub(super) fn assert_stale_cancel_unmatched(
+    observer: &tidemq::runtime::watch_test_hooks::Diagnostics,
+    request: &public::GroupWatch,
+) {
+    use tidemq::runtime::watch_test_hooks::WatchPhase;
+    let root = Id::from_slice(&request.root_operation_id).unwrap();
+    let events: Vec<_> = observer
+        .events()
+        .into_iter()
+        .filter(|event| {
+            event.root == root
+                && event.operation == root
+                && event.attempt == request.attempt
+                && matches!(
+                    event.phase,
+                    WatchPhase::Cancelled | WatchPhase::CancelUnknown
+                )
+        })
+        .collect();
+    assert_eq!(
+        events.len(),
+        1,
+        "The real cancel handler did not record exactly one root attempt decision"
+    );
+    assert_eq!(
+        events.first().unwrap().phase,
+        WatchPhase::CancelUnknown,
+        "A stale cancel unexpectedly matched the replacement registration"
+    );
+    eprintln!(
+        "Stale Watch cancellation ledger: root={root} attempt={} actual_cancel_matched=false",
+        request.attempt
+    );
+}
+
 pub(super) fn metric(text: &str, name: &str) -> u64 {
     let prefix = format!("{name} ");
     text.lines()

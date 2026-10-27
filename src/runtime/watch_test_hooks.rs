@@ -146,6 +146,12 @@ pub enum WatchPhase {
     Cancelled,
     CancelUnknown,
     Refused,
+    Failed {
+        stage: &'static str,
+        code: i32,
+        outcome: i32,
+        remaining_ms: u64,
+    },
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct WatchEvent {

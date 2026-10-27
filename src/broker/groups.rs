@@ -227,11 +227,10 @@ impl DataApplication {
                 subscription::Rejection::Deleted,
             ));
         }
-        let limits = self
-            .config
-            .as_ref()
-            .ok_or(DataRejection::Uninitialized)?
-            .subscription;
+        let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
+        let limits = config.subscription;
+        #[cfg(feature = "test-hooks")]
+        let trace_scope = (config.cluster_id, partition);
         let usage = self.group_usage()?;
         let subscription = command.subscription();
         if let GroupCommand::Read { request, cold, .. } = &command {
@@ -351,8 +350,17 @@ impl DataApplication {
             )),
             _ => None,
         };
-        let outcome = execute_group(cursor, &state.producer, limits, usage, budget, command)
-            .map_err(DataRejection::Subscription)?;
+        let outcome = execute_group(
+            cursor,
+            &state.producer,
+            limits,
+            usage,
+            budget,
+            command,
+            #[cfg(feature = "test-hooks")]
+            trace_scope,
+        )
+        .map_err(DataRejection::Subscription)?;
         if let (Some(now_ms), GroupOutcome::Read(read)) = (read_now, &outcome) {
             if let Some(quota) = &mut state.quota {
                 quota.commit_consume(read.delivery_bytes, now_ms);
@@ -452,6 +460,7 @@ fn execute_group(
     usage: Usage,
     budget: ReadBudget,
     command: GroupCommand,
+    #[cfg(feature = "test-hooks")] trace_scope: (Id, PartitionKey),
 ) -> subscription::Result<GroupOutcome> {
     use subscription::Rejection;
     match command {
@@ -475,10 +484,17 @@ fn execute_group(
             cursor.install_members(version, &grants, now_ms)?;
             Ok(GroupOutcome::MembersInstalled)
         }
-        GroupCommand::Read { request, cold, .. } => {
-            read_group(cursor, producer, limits, usage, budget, request, &cold)
-                .map(GroupOutcome::Read)
-        }
+        GroupCommand::Read { request, cold, .. } => read_group(
+            cursor,
+            producer,
+            limits,
+            (usage, budget),
+            request,
+            &cold,
+            #[cfg(feature = "test-hooks")]
+            trace_scope,
+        )
+        .map(GroupOutcome::Read),
         GroupCommand::RetireRead {
             member,
             epoch,
@@ -546,11 +562,12 @@ fn read_group(
     cursor: &mut GroupCursor,
     producer: &ProducerState,
     limits: subscription::Limits,
-    usage: Usage,
-    mut budget: ReadBudget,
+    admission: (Usage, ReadBudget),
     request: GroupRead,
     cold: &[crate::lifecycle::VerifiedColdDelivery],
+    #[cfg(feature = "test-hooks")] trace_scope: (Id, PartitionKey),
 ) -> subscription::Result<subscription::ReadResult> {
+    let (usage, mut budget) = admission;
     if let Some(original) = cursor.original_read(&request) {
         return original;
     }
@@ -563,23 +580,24 @@ fn read_group(
             .map_err(|_| subscription::Rejection::WindowFull)?,
     );
     #[cfg(feature = "test-hooks")]
-    let trace = crate::runtime::read_trace_test_hooks::enabled(cursor.identity()).then(|| {
-        let mut event = cursor.trace_read_state(request, producer.committed_end());
-        event.budget_messages = budget.messages;
-        event.budget_bytes = budget.bytes;
-        event.budget_results = budget.results;
-        event.candidates = candidates.len();
-        event.candidate_min_bytes = candidates.iter().map(|candidate| candidate.bytes).min();
-        event.group_windows = usage.windows;
-        event.group_reads = usage.reads;
-        event.group_bytes = usage.bytes;
-        event
-    });
+    let trace = crate::runtime::read_trace_test_hooks::enabled(trace_scope, cursor.identity())
+        .then(|| {
+            let mut event = cursor.trace_read_state(request, producer.committed_end());
+            event.budget_messages = budget.messages;
+            event.budget_bytes = budget.bytes;
+            event.budget_results = budget.results;
+            event.candidates = candidates.len();
+            event.candidate_min_bytes = candidates.iter().map(|candidate| candidate.bytes).min();
+            event.group_windows = usage.windows;
+            event.group_reads = usage.reads;
+            event.group_bytes = usage.bytes;
+            event
+        });
     let result = cursor.read_admitted(request, &candidates, budget);
     #[cfg(feature = "test-hooks")]
     if let Some(mut event) = trace {
         event.deliveries = result.as_ref().ok().map(|read| read.deliveries.len());
-        crate::runtime::read_trace_test_hooks::record(cursor.identity(), event);
+        crate::runtime::read_trace_test_hooks::record(trace_scope, cursor.identity(), event);
     }
     result
 }
