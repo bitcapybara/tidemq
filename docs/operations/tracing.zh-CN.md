@@ -27,7 +27,7 @@ export_timeout_ms = 500
 | `batch_spans` 1—32，且不超过 queue | 单次官方 OTLP protobuf body 最大 64 KiB，单个 HTTP 响应最多保留 4 KiB；无 Content-Length 也累计检查 |
 | `export_interval_ms` 100—5000 | 每次尝试完成后至少等该间隔，再发下一批；单出口、并发 1，恢复不会抢跑排空 |
 | `export_timeout_ms` 50—1000 | 覆盖连接、HTTP 收发和整体 export；官方 exporter 与 HTTP client 都关闭重试，失败批次不重试、不落盘 |
-| span 内容 | 只接受固定 `tidemq_trace` target、四个 span 名与字段白名单；最多 8 属性，字符串最多 64 字节，events/links 为 0 |
+| span 内容 | 只接受固定 `tidemq_trace` target、固定 span 名与字段白名单；最多 8 属性，字符串最多 64 字节，events/links 为 0 |
 | 退出 | 先关闭业务任务/存储，再在入口同一个原始 5 秒总期限内排空 exporter；到期 abort + join 并返回明确错误 |
 
 该预算与应用消息许可分开，必须计入进程部署余量。最大队列逻辑许可 4 MiB 之外，还需给 SDK/span 元数据、编码时的有限复制、HTTP/TLS/native 和日志缓冲留出空间；实际水位仍以 RSS/cgroup 与容量准入监控为准。不要把 `pending_bytes` 当作进程总内存。开启前按正式性能流程比较 CPU/RSS、导出字节和业务时延。
@@ -42,13 +42,13 @@ Rust SDK 开启 `opentelemetry` feature 后，从宿主当前 tracing span 获�
 
 每个请求携带 55 字节 W3C traceparent；不携带 baggage/tracestate。Gateway/Broker/Storage/Metadata 的服务 span 接受远端父关系，逐跳请求使用当前 span 的子关系。生产提交队列只保留有界父上下文，独立等待任务重新建立提交 span；观测 span 到原请求期限结束，owned 业务 future 继续等待权威结果，观测到期不会取消提交。
 
-当前固定 span 名为 `tidemq.sdk.request`、`tidemq.sdk.produce`、`tidemq.server.request` 和 `producer_submission`。服务 span 字段为 node/role/frame kind/traffic class；SDK/提交 span 使用有限分类、epoch/attempt 与有界 operation/request ID。日志格式化层不接收专用 `tidemq_trace` span，关闭 OTLP 时不会为它分配 formatter 状态；临时日志级别不绕过导出白名单。
+当前固定 span 名为 `tidemq.sdk.request`、`tidemq.sdk.produce`、`tidemq.sdk.send`、`tidemq.sdk.send_batch`、`tidemq.server.request`、`producer_submission` 和 `console_http_request`。服务 span 字段为 node/role/frame kind/traffic class；SDK/提交 span 使用有限分类、epoch/attempt 与有界 operation/request ID。日志格式化层不接收专用 `tidemq_trace` span，关闭 OTLP 时不会为它分配 formatter 状态；临时日志级别不绕过导出白名单。
 
 正文、业务 key、投递 token、凭据、原始错误链、任意 dependency DEBUG、event/link 和 status 描述都不进入内置 OTLP。普通日志和业务指标保留各自口径。ACK/读请求可由宿主当前操作关联；不持久化生产 trace 历史，不自动把较晚的消费 trace 伪装成原生产 span 的子节点。Raft 后台合批/心跳也不能伪造唯一业务父调用。`producer_submission` 覆盖该 owned 提交等待至原期限的观测，超过期限后的结果仍通过业务权威与指标判定。
 
 ## 消费者观察日志
 
-`GroupWatch` 使用普通 DEBUG 日志中的 `consumer_watch` span，以 `operation_id`、`root_operation_id`、`parent_operation_id` 和 `watch_attempt` 关联分支。它不属于内置 OTLP 的四种 span 白名单；需要查看这些日志时，按现有日志过滤器启用相关 runtime 模块。
+`GroupWatch` 使用普通 DEBUG 日志中的 `consumer_watch` span，以 `operation_id`、`root_operation_id`、`parent_operation_id` 和 `watch_attempt` 关联分支。它不属于内置 OTLP 的固定 span 白名单；需要查看这些日志时，按现有日志过滤器启用相关 runtime 模块。
 
 固定 `event_code` 包括 `watch_completed`、`watch_failed`、`watch_cancelled`、`watch_cleanup_unknown` 和 `watch_scope_failed`。最后一项记录发生失败的数据组、`stage`、数值错误码/outcome、是否可重试和原请求剩余毫秒数。`leader_discovery`/`route`/`forward` 指向发现或转发，`initial_barrier`/`final_barrier` 指向线性化检查，`initial_samples`/`registered_samples`/`final_samples` 指向应用状态投影，`final_authorize` 与 `local_*_changed`/`local_permission_expired` 指向最终授权或路由复查。这些分类不记录消息、凭据、观察 token 或原始错误链。
 
