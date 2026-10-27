@@ -13,6 +13,10 @@ COPY bin/collector /usr/local/bin/otelcol-contrib
 RUN chmod 0555 /usr/local/bin/otelcol-contrib
 COPY bin/tidemq bin/deploy_validation /usr/local/bin/
 RUN chmod 0555 /usr/local/bin/tidemq /usr/local/bin/deploy_validation
+COPY --chown=10001:10001 console/ /opt/tidemq/console/
+RUN test -s /opt/tidemq/console/index.html \
+    && test -s /opt/tidemq/console/.vite/manifest.json \
+    && chmod -R a-w /opt/tidemq/console
 USER 10001:10001
 WORKDIR /var/lib/tidemq
 CMD ["/usr/local/bin/tidemq", "--help"]

@@ -29,6 +29,7 @@ use crate::{Admin, Error, Metrics, Result};
 #[derive(Clone, Debug)]
 pub(crate) struct ClientConfig {
     pub endpoint: String,
+    pub server_name: Option<String>,
     pub namespace: Option<String>,
     pub close_timeout: Duration,
     pub connect_timeout: Duration,
@@ -68,6 +69,7 @@ impl ClientConfig {
     pub fn new(endpoint: impl Into<String>) -> Self {
         Self {
             endpoint: endpoint.into(),
+            server_name: None,
             namespace: None,
             close_timeout: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(5),
@@ -344,9 +346,14 @@ impl Client {
         deadline: Instant,
     ) -> Result<Self> {
         let server_name = config
-            .endpoint
-            .rsplit_once(':')
-            .map(|(host, _)| host.trim_matches(['[', ']']).to_owned())
+            .server_name
+            .clone()
+            .or_else(|| {
+                config
+                    .endpoint
+                    .rsplit_once(':')
+                    .map(|(host, _)| host.trim_matches(['[', ']']).to_owned())
+            })
             .ok_or(Error::Configuration {
                 reason: "endpoint requires a host and port",
             })?;
@@ -1058,6 +1065,8 @@ fn read_only_request(frame: &Frame, limits: &ProtocolLimits) -> bool {
             FrameKind::GetTopic
             | FrameKind::GetTopicLayout
             | FrameKind::GetClusterRegistry
+            | FrameKind::ConsoleRead
+            | FrameKind::GetConsoleOperation
             | FrameKind::ListIdentities,
         ) => true,
         Ok(FrameKind::ConsumerControl) => {
@@ -1124,4 +1133,27 @@ fn bind_transport(
         )
     };
     Ok(result)
+}
+
+#[cfg(test)]
+mod console_query_tests {
+    use super::*;
+
+    #[test]
+    fn console_reads_and_operation_lookups_are_queries_while_console_writes_are_mutations() {
+        for (kind, read_only) in [
+            (FrameKind::ConsoleRead, true),
+            (FrameKind::GetConsoleOperation, true),
+            (FrameKind::ConsoleWrite, false),
+        ] {
+            let frame = Frame {
+                kind: kind.into(),
+                ..Default::default()
+            };
+            assert_eq!(
+                read_only_request(&frame, &ProtocolLimits::default()),
+                read_only
+            );
+        }
+    }
 }

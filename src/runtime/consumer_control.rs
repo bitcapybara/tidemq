@@ -195,18 +195,45 @@ impl Service {
         command: ConsumerCommand,
         deadline: Instant,
     ) -> Result<ConsumerOutcome> {
-        match self
-            .meta_write(
-                Command::consumer(operation, self.meta_revision().await?, command),
-                deadline,
-            )
-            .await?
-        {
-            metadata::Outcome::Consumer(outcome) => Ok(outcome),
-            _ => Err(Error::invalid(
-                "Metadata returned an invalid consumer outcome",
-            )),
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        for _ in 0..16 {
+            self.require_leader(replica)?;
+            let revision = self.meta_revision().await?;
+            #[cfg(test)]
+            super::data::consumer_tests::before_consumer_meta_write(operation, revision, &command)
+                .await;
+            let request = Command::consumer(operation, revision, command.clone());
+            let response = wire::within(deadline, replica.raft.client_write(request))
+                .await?
+                .map_err(|source| Error::operation("commit consumer metadata command", source))?
+                .data;
+            match response {
+                metadata::Response::Applied {
+                    outcome: metadata::Outcome::Consumer(outcome),
+                    ..
+                } => return Ok(outcome),
+                metadata::Response::Rejected {
+                    reason: metadata::Rejection::RevisionConflict,
+                    ..
+                } => {
+                    // Lease writers can advance the shared revision while a domain is installed.
+                    wire::within(
+                        deadline,
+                        tokio::time::sleep(std::time::Duration::from_millis(2)),
+                    )
+                    .await?;
+                }
+                metadata::Response::Rejected { reason, .. } => {
+                    return Err(super::metadata::metadata_rejection(reason));
+                }
+                _ => {
+                    return Err(Error::invalid(
+                        "Metadata returned an invalid consumer outcome",
+                    ));
+                }
+            }
         }
+        Err(Error::unavailable())
     }
 
     pub(super) async fn consumer_row(&self, subscription: Id) -> Result<ConsumerSubscription> {

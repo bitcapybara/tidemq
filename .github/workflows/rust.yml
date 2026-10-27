@@ -18,6 +18,28 @@ env:
   CARGO_PROFILE_TEST_DEBUG: 0
 
 jobs:
+  console:
+    name: Console web
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: console/web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: console/web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: node --test ../../scripts/console-package.test.mjs ../../deploy/console/prepare.test.mjs
+
   validate:
     name: Validate (${{ matrix.os }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -139,12 +161,12 @@ jobs:
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, faults, coverage, untrusted]
+    needs: [validate, faults, coverage, untrusted, console]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - run: >-
-          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; if(fork ? r.untrusted.result!=="success" : ["validate","faults","coverage"].some(k=>r[k].result!=="success")) process.exit(1)'
+          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["untrusted","console"]:["validate","faults","coverage","console"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
         env:
           RESULTS: ${{ toJSON(needs) }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

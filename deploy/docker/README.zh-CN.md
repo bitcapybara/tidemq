@@ -30,7 +30,7 @@
 
 需要 Linux x86_64、Docker Engine、支持这些 Compose 字段的 Compose（本次使用 5.6.0）、Bash、OpenSSL 和 coreutils。Docker 主机应支持 cgroup v2 和内存、swap、PID 限额。不要向主机安装 Rust 工具链。
 
-`Dockerfile.builder` 只准备 Rust 1.99.1、rustfmt、clippy、CMake、clang、pkg-config、OpenSSL 等构建依赖，不执行 Cargo 编译。`Dockerfile` 只复制预编译的 `bin/tidemq` 和 `bin/deploy_validation`，安装运行时库及 curl/OpenSSL。两者均要求显式传入已验证的基础镜像 digest，没有浮动默认值。
+`Dockerfile.builder` 只准备 Rust 1.99.1、rustfmt、clippy、CMake、clang、pkg-config、OpenSSL 等构建依赖，不执行 Cargo 编译，也不要求 Node.js。`Dockerfile` 复制预编译的 `bin/tidemq`、`bin/deploy_validation` 和同一源码构建的 `console/` 静态目录，安装运行时库及 curl/OpenSSL。两者均要求显式传入已验证的基础镜像 digest，没有浮动默认值。普通 Cargo 构建继续不依赖 Node.js。
 
 下面的 Rust 1.99.1 multiarch index digest 已从 Docker Hub 官方 registry 核对，包含 Linux amd64 和 arm64；目标机实际拉取后仍需记录本地镜像 ID。Debian digest 来自已有部署验证；Rust 1.96.0 的旧镜像和证据只供复核历史结果，不能作为 1.99.1 的部署验证结果。
 
@@ -58,13 +58,20 @@ docker run --rm --cpus 4 --memory 8g --memory-swap 8g --pids-limit 512 \
    install -Dm0755 /stage/target/release/tidemq /stage/runtime/bin/tidemq &&
    install -Dm0755 /stage/target/release/examples/deploy_validation /stage/runtime/bin/deploy_validation'
 
+# Run on the build host with a supported Node.js, from the same frozen source snapshot.
+bash "$REPO/scripts/build-console.sh" "$STAGE/runtime/console"
+
 docker build -f "$REPO/deploy/docker/Dockerfile" \
   --build-arg DEBIAN_IMAGE="$DEBIAN_IMAGE" -t "$TIDEMQ_IMAGE" "$STAGE/runtime"
 docker image inspect --format '{{.Id}}' "$BUILDER_IMAGE" "$TIDEMQ_IMAGE"
 sha256sum "$REPO/Cargo.lock" "$STAGE/runtime/bin/tidemq" "$STAGE/runtime/bin/deploy_validation"
 ```
 
-Runtime 构建 context 只有 `runtime/bin/{tidemq,deploy_validation}`，无需把整个仓库或生成的密钥交给 Docker build。容器 UID/GID 为 `10001:10001`。镜像创建该用户拥有、模式为 `0700` 的 `/var/lib/tidemq` 和 `objects` 子目录；空 named volume 的初始化依赖 Docker 的[卷内容复制语义](https://docs.docker.com/engine/storage/volumes/)，运行前仍须实际核对卷的 owner 和可写性。
+Runtime 构建 context 为 `runtime/bin/{tidemq,deploy_validation}` 与 `runtime/console/`，无需把整个仓库或生成的密钥交给 Docker build。`build-console.sh` 要求 Node.js 22.22+（22 系列）、24 或 26+、tar，以及有效的前端源码和锁文件；20、23、25 系列和低于 22.22 的 22 系列会明确拒绝。在私有临时目录执行 `npm ci` 与构建，排除源码中的 `node_modules`、`dist`、`.git`、`.env*`、`.npmrc`、PEM 与私钥文件。已有 npm 时直接使用；缺少 npm 时，下载官方 npm 11.6.2，先核验脚本内完整 SHA512，再临时提取和执行，不改变全局安装。该回退还要求 curl 和 npm registry 的 HTTPS 访问。[npm 元数据](https://registry.npmjs.org/npm/11.6.2)与 [npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci/)提供校验和锁文件行为的依据。
+
+输出目录必须尚不存在；构建失败不会发布旧 `dist`。浏览器 `.artifacts/`、coverage、`.DS_Store`、增量编译缓存与日志也不参与源码副本或摘要。输出包含 Vite manifest 和记录源码树哈希、Node/npm 版本的 `.tidemq-build.json`。镜像内资源位于只读 `/opt/tidemq/console/`；启动 Console 时会验证入口页及 manifest 声明的资源。缺少静态目录会让 runtime 镜像构建明确失败。Console 使用同一二进制的 `role = "console"` 独立无状态进程，提供个人 token 登录、授权/Topic/消息管理及消费和组件状态；Compose/Kubernetes 的 HTTPS、共享会话密钥和固定探针配置见 [Console 部署与验证](../console/README.zh-CN.md)。普通 Rust 构建、镜像打包与真实平台业务验收分别记录结果。
+
+容器 UID/GID 为 `10001:10001`。镜像创建该用户拥有、模式为 `0700` 的 `/var/lib/tidemq` 和 `objects` 子目录；空 named volume 的初始化依赖 Docker 的[卷内容复制语义](https://docs.docker.com/engine/storage/volumes/)，运行前仍须实际核对卷的 owner 和可写性。
 
 ### Linux Rust 回归容器
 

@@ -1,5 +1,10 @@
 syntax = "proto3";
 package tidemq.public.v1;
+message ConsoleRead { bytes json = 1; }
+message ConsoleReadResult { bytes json = 1; }
+message ConsoleWrite { bytes json = 1; }
+message GetConsoleOperation { bytes operation_id = 1; }
+message ConsoleOperationResult { bytes json = 1; }
 import "common.proto";
 
 message Hello {
@@ -142,6 +147,19 @@ enum IdentityAction {
   DELETE_TENANT_IDENTITY = 10;
   DELETE_NAMESPACE_IDENTITY = 11;
   SET_NAMESPACE_ENABLED = 12;
+  GRANT_RESOURCE_PERMISSION = 13;
+  REVOKE_RESOURCE_PERMISSION = 14;
+  REPLACE_RESOURCE_GRANTS = 15;
+}
+// Resource identifiers bind authorization to the resource incarnation, never its name.
+message ResourceScope {
+  bytes tenant_id = 1;
+  bytes namespace_id = 2;
+  bytes topic_id = 3;
+}
+message ResourceGrant {
+  ResourceScope scope = 1;
+  repeated string permissions = 2;
 }
 message ResourceLimits {
   // Zero retains the current value; namespace defaults inherit their tenant's current limit.
@@ -168,6 +186,10 @@ message ManageIdentity {
   bool enabled = 7;
   bytes namespace_id = 8;
   ResourceLimits limits = 9;
+  ResourceScope resource_scope = 10;
+  repeated ResourceGrant resource_grants = 11;
+  // Required for replacing a principal or all resource grants; distinct from operation_id.
+  uint64 expected_auth_revision = 12;
 }
 message IdentityResult {
   bytes id = 1;
@@ -184,6 +206,9 @@ enum IdentityKind {
   NAMESPACE_IDENTITIES = 2;
   PRINCIPAL_IDENTITIES = 3;
   CREDENTIAL_IDENTITIES = 4;
+  CURRENT_PRINCIPAL_IDENTITY = 5;
+  RESOURCE_AUTHORIZATIONS = 6;
+  PRINCIPAL_IDENTITY = 7;
 }
 message ListIdentities {
   IdentityKind kind = 1;
@@ -191,6 +216,7 @@ message ListIdentities {
   bytes after_id = 3;
   uint32 limit = 4;
   uint64 expected_revision = 5;
+  ResourceScope resource_scope = 6;
 }
 message IdentityInfo {
   bytes id = 1;
@@ -202,11 +228,17 @@ message IdentityInfo {
   uint64 expires_at_ms = 7;
   ResourceLimits limits = 8;
   bool deleted = 9;
+  repeated ResourceGrant resource_grants = 10;
+  repeated ResourceGrant effective_grants = 11;
+  repeated string effective_permissions = 12;
 }
 message IdentityPage {
   repeated IdentityInfo entries = 1;
   bytes next_after_id = 2;
   uint64 revision = 3;
+  bytes current_credential_id = 4;
+  uint64 credential_expires_at_ms = 5;
+  bytes cluster_id = 6;
 }
 
 enum ConsumerAction {

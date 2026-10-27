@@ -8,6 +8,8 @@ mod builder;
 mod client;
 mod close;
 mod cluster;
+mod console_operation;
+mod console_read;
 mod context;
 mod error;
 mod group_consumer;
@@ -17,6 +19,7 @@ mod logical_producer;
 mod message;
 mod metrics;
 mod request;
+mod resource_grants;
 mod resource_limits;
 mod subscriptions;
 mod topic;
@@ -49,6 +52,7 @@ pub use logical_producer::{PendingSend, Producer, ProducerBuilder, SendBatchResu
 pub use message::{Message, MessageId, ReceivedMessage};
 pub use metrics::{Metrics, MetricsSnapshot};
 pub use request::RequestContext;
+pub use resource_grants::{PrincipalAuthorization, ResourceGrant, ResourceScope};
 pub use resource_limits::{PolicyUpdate, ResourceLimits, ResourceLimitsBuilder};
 pub use subscriptions::{
     PendingSubscriptionDeletion, SubscriptionDeleted, SubscriptionId, SubscriptionInfo,

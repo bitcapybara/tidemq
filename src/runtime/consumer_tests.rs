@@ -32,7 +32,7 @@ use crate::{
 // Shared fixtures include helpers used by the runtime and external S3 integration suites.
 #[allow(dead_code)]
 #[path = "../../tests/runtime_support/fixture.rs"]
-mod fixture;
+pub(in crate::runtime) mod fixture;
 #[allow(dead_code)]
 #[path = "../../tests/lifecycle_support/rustfs.rs"]
 mod rustfs;
@@ -49,6 +49,73 @@ mod ack_priority;
 const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 const TOPIC: &str = "test/app/consumer-authority";
 static COMMIT: Mutex<Option<Arc<CommitPause>>> = Mutex::new(None);
+static METADATA_WRITE: Mutex<Option<Arc<MetadataWritePause>>> = Mutex::new(None);
+
+struct MetadataWritePause {
+    operation: Id,
+    attempts: Mutex<Vec<(u64, crate::metadata::ConsumerCommand)>>,
+    ready: Notify,
+    resume: Notify,
+}
+
+struct InstalledMetadataWritePause(Arc<MetadataWritePause>);
+
+impl InstalledMetadataWritePause {
+    fn new(operation: Id) -> Self {
+        let pause = Arc::new(MetadataWritePause {
+            operation,
+            attempts: Mutex::new(Vec::new()),
+            ready: Notify::new(),
+            resume: Notify::new(),
+        });
+        assert!(
+            METADATA_WRITE
+                .lock()
+                .unwrap()
+                .replace(pause.clone())
+                .is_none()
+        );
+        Self(pause)
+    }
+}
+
+impl Drop for InstalledMetadataWritePause {
+    fn drop(&mut self) {
+        let mut slot = METADATA_WRITE.lock().unwrap();
+        if slot
+            .as_ref()
+            .is_some_and(|pause| Arc::ptr_eq(pause, &self.0))
+        {
+            slot.take();
+        }
+        self.0.resume.notify_one();
+    }
+}
+
+pub(in crate::runtime) async fn before_consumer_meta_write(
+    operation: Id,
+    revision: u64,
+    command: &crate::metadata::ConsumerCommand,
+) {
+    let pause = METADATA_WRITE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .filter(|pause| pause.operation == operation)
+        .cloned();
+    let Some(pause) = pause else {
+        return;
+    };
+    let first = {
+        let mut attempts = pause.attempts.lock().unwrap();
+        attempts.push((revision, command.clone()));
+        attempts.len() == 1
+    };
+    if first {
+        pause.ready.notify_one();
+        pause.resume.notified().await;
+    }
+}
 
 struct CommitPause {
     partition: PartitionKey,
@@ -142,6 +209,141 @@ async fn access(service: &Service, frame: &Frame) -> crate::gateway::Access {
         .await
         .unwrap()
         .0
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_consumer_observation_retries_a_real_resource_lease_revision_conflict() {
+    use crate::metadata::{
+        Command, ConsumerCommand, ConsumerOutcome, Outcome as MetadataOutcome,
+        ResourceLeaseCommand, Response,
+    };
+    use tidemq_protocol::topic::{InitialPosition, SubscriptionKind};
+
+    let (fixture, client) = setup().await;
+    let topic = client.admin().create_topic(TOPIC).await.unwrap();
+    let service = fixture.running.get(&1).unwrap().service.clone();
+    let guard = service.metadata_mutation.lock().await;
+    let subscription = Id::new_v7().unwrap();
+    service
+        .consumer_meta_write(
+            subscription,
+            ConsumerCommand::Create {
+                topic: topic.id().to_string().parse().unwrap(),
+                name: "cas-observation".into(),
+                model: SubscriptionKind::Stream,
+                initial: InitialPosition::EarliestAvailable,
+            },
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let row = service.consumer_row(subscription).await.unwrap();
+    let plan = row.members.plan().clone();
+    let domain = *plan.domains.first().unwrap();
+    let now_ms = unix_millis().unwrap();
+    service
+        .install_consumer_domain(
+            &row,
+            domain,
+            plan.version.checked_mul(2).unwrap(),
+            row.members.grants(now_ms).unwrap(),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let command = ConsumerCommand::Observe {
+        subscription,
+        version: plan.version,
+        fenced: false,
+        domain,
+        now_ms,
+    };
+    let operation = Id::new_v7().unwrap();
+    let pause = InstalledMetadataWritePause::new(operation);
+    let original_deadline = Instant::now() + Duration::from_secs(5);
+    let handler = service.clone();
+    let original = command.clone();
+    let pending = tokio::spawn(async move {
+        handler
+            .consumer_meta_write(operation, original, original_deadline)
+            .await
+    });
+    tokio::time::timeout_at(original_deadline, pause.0.ready.notified())
+        .await
+        .unwrap();
+    let revision = pause.0.attempts.lock().unwrap().first().unwrap().0;
+    let replica = service.metadata.as_ref().unwrap();
+    let competing = Command::resource_lease(
+        Id::new_v7().unwrap(),
+        revision,
+        ResourceLeaseCommand::Release {
+            id: Id::new_v7().unwrap(),
+            owner: 1,
+            now_ms,
+        },
+    );
+    let response = replica.raft.client_write(competing).await.unwrap().data;
+    assert!(matches!(
+        response,
+        Response::Applied {
+            outcome: MetadataOutcome::ResourceLease(None),
+            ..
+        }
+    ));
+    let stale = Command::consumer(operation, revision, command.clone());
+    let response = replica.raft.client_write(stale).await.unwrap().data;
+    assert!(matches!(
+        response,
+        Response::Rejected {
+            reason: crate::metadata::Rejection::RevisionConflict,
+            ..
+        }
+    ));
+    assert_eq!(
+        service
+            .consumer_row(subscription)
+            .await
+            .unwrap()
+            .members
+            .plan(),
+        &plan
+    );
+    pause.0.resume.notify_one();
+    let outcome = tokio::time::timeout_at(original_deadline, pending)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let ConsumerOutcome::Plan(observed) = outcome else {
+        panic!("Consumer observation returned a different outcome");
+    };
+    assert!(observed.fenced);
+    assert!(!observed.active);
+    assert_eq!(observed.version, plan.version);
+    assert!(observed.installed.is_empty());
+    let attempts = pause.0.attempts.lock().unwrap().clone();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts.first().unwrap().0, revision);
+    assert_eq!(attempts.get(1).unwrap().0, revision.checked_add(1).unwrap());
+    assert!(attempts.iter().all(|(_, attempted)| *attempted == command));
+    assert!(Instant::now() < original_deadline);
+    drop(pause);
+    service
+        .resume_consumer(subscription, deadline())
+        .await
+        .unwrap();
+    assert!(
+        service
+            .consumer_row(subscription)
+            .await
+            .unwrap()
+            .members
+            .plan()
+            .active
+    );
+    drop(guard);
+    client.close().await.unwrap();
+    fixture.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

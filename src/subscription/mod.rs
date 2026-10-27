@@ -14,7 +14,7 @@ pub(crate) use group::ReadBudget;
 
 pub use group::{
     AckDisposition, Candidate, DeliveryProof, GroupAck, GroupCommand, GroupCursor, GroupIdentity,
-    GroupOutcome, GroupRead, MemberGrant, ReadResult,
+    GroupOutcome, GroupProgress, GroupRead, MemberGrant, ReadResult,
 };
 pub use state::SubscriptionState;
 pub use token::{DELIVERY_TOKEN_BYTES, DeliveryToken, SigningKey};

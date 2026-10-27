@@ -39,7 +39,13 @@ pub struct PrincipalInfo {
     pub namespace: Option<NamespaceId>,
     pub name: String,
     pub enabled: bool,
+    /// Permissions directly bound to the principal's tenant or namespace identity scope.
     pub permissions: BTreeSet<Permission>,
+    /// Direct sources, including existing identity-management permissions at their original scope.
+    pub resource_grants: Vec<crate::ResourceGrant>,
+    pub effective_grants: Vec<crate::ResourceGrant>,
+    /// Applicable allows for a queried resource; availability and enabled state are separate checks.
+    pub effective_permissions: BTreeSet<Permission>,
 }
 #[derive(Clone, Debug)]
 pub struct CredentialInfo {
@@ -57,6 +63,22 @@ pub struct ResourceList<T> {
 }
 
 impl<T> ResourceList<T> {
+    pub fn set_continuation(&mut self, after: tidemq_protocol::Id, revision: u64) {
+        self.request.after_id = crate::admin::bytes(after);
+        self.request.expected_revision = revision;
+    }
+    pub fn continuation(&self) -> Result<Option<(tidemq_protocol::Id, u64)>> {
+        if self.complete || self.request.after_id.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some((
+            tidemq_protocol::Id::from_slice(&self.request.after_id)?,
+            self.request.expected_revision,
+        )))
+    }
+    pub fn revision(&self) -> Option<u64> {
+        (self.request.expected_revision != 0).then_some(self.request.expected_revision)
+    }
     pub fn page_size(mut self, count: u32) -> Self {
         self.request.limit = count;
         self
@@ -115,9 +137,13 @@ impl<T> ResourceList<T> {
         let mut after = optional_id(&request.after_id)?;
         for entry in &reply.entries {
             let id = Id::from_slice(&entry.id)?;
-            if after.is_some_and(|after| id <= after) || entry.parent_id != request.parent_id {
+            let scoped = request.kind == i32::from(public::IdentityKind::ResourceAuthorizations);
+            if after.is_some_and(|after| id <= after)
+                || !scoped && entry.parent_id != request.parent_id
+            {
                 return Err(mismatch());
             }
+            crate::resource_grants::validate_effective_grants(request, entry)?;
             after = Some(id);
         }
         if !reply.next_after_id.is_empty()
@@ -131,6 +157,18 @@ impl<T> ResourceList<T> {
 }
 
 impl Admin {
+    pub fn resource_authorizations(
+        &self,
+        scope: crate::ResourceScope,
+    ) -> ResourceList<PrincipalInfo> {
+        let mut listing = self.identity_listing(
+            public::IdentityKind::ResourceAuthorizations,
+            None,
+            principal_info,
+        );
+        listing.request.resource_scope = Some(scope.to_wire());
+        listing
+    }
     pub fn tenants(&self) -> ResourceList<TenantInfo> {
         self.identity_listing(public::IdentityKind::TenantIdentities, None, tenant_info)
     }
@@ -238,24 +276,23 @@ fn namespace_info(row: public::IdentityInfo) -> Result<NamespaceInfo> {
         limits: effective_limits(row.limits)?,
     })
 }
-fn principal_info(row: public::IdentityInfo) -> Result<PrincipalInfo> {
+pub(crate) fn principal_info(row: public::IdentityInfo) -> Result<PrincipalInfo> {
     crate::admin::validate_name(&row.name)?;
-    if row.deleted || row.permissions.is_empty() || row.permissions.len() > 6 {
+    if row.deleted || row.resource_grants.len() > 33 || row.effective_grants.len() > 33 {
         return Err(mismatch());
     }
-    let permissions = row
-        .permissions
-        .iter()
-        .map(|permission| match permission.as_str() {
-            "manage_tenants" => Ok(Permission::ManageTenants),
-            "manage_credentials" => Ok(Permission::ManageCredentials),
-            "manage_topics" => Ok(Permission::ManageTopics),
-            "produce" => Ok(Permission::Produce),
-            "consume" => Ok(Permission::Consume),
-            "inspect" => Ok(Permission::Inspect),
-            _ => Err(mismatch()),
-        })
+    let permissions = crate::resource_grants::permission_set(&row.permissions)?;
+    let resource_grants = row
+        .resource_grants
+        .into_iter()
+        .map(crate::ResourceGrant::from_wire)
         .collect::<Result<_>>()?;
+    let effective_grants = row
+        .effective_grants
+        .into_iter()
+        .map(crate::ResourceGrant::from_wire)
+        .collect::<Result<_>>()?;
+    let effective_permissions = crate::resource_grants::permission_set(&row.effective_permissions)?;
     Ok(PrincipalInfo {
         id: PrincipalId(Id::from_slice(&row.id)?),
         tenant: optional_id(&row.parent_id)?.map(TenantId),
@@ -263,6 +300,9 @@ fn principal_info(row: public::IdentityInfo) -> Result<PrincipalInfo> {
         name: row.name,
         enabled: row.enabled,
         permissions,
+        resource_grants,
+        effective_grants,
+        effective_permissions,
     })
 }
 fn credential_info(row: public::IdentityInfo) -> Result<CredentialInfo> {

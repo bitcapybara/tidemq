@@ -1,0 +1,32 @@
+role = "console"
+listen = "127.0.0.1:8080"
+management_listen = "127.0.0.1:9420"
+static_dir = "console/web/dist"
+
+[cluster]
+address = "gateway.tidemq.local:7443"
+server_name = "gateway.tidemq.local"
+trust_roots = "private/ca.pem"
+
+[session]
+# Provision 32 random raw bytes; allow only owner access or a read-only service group.
+key_file = "private/console-session.key"
+# Shared verification-only keys allow a staged rotation across stateless replicas.
+previous_key_files = []
+public_origin = "https://console.example.test"
+max_age_seconds = 1800
+
+[observability]
+components = []
+# Optional fixed Prometheus endpoint; missing or failed sources remain partial.
+# alerts_url = "http://prometheus:9090/api/v1/alerts"
+# alerts_detail_url = "https://metrics.example.test/alerts"
+# Configure health endpoints using [[observability.components]] entries with
+# id, name, probe_url, and an optional HTTPS detail_url. No user credentials are sent.
+
+[logging]
+filter = "warn,tidemq=info"
+json = true
+
+[tracing]
+enabled = false

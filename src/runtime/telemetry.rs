@@ -98,6 +98,7 @@ impl RuntimeMetrics {
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct Snapshot {
     pub ready: bool,
+    pub sampled_at_ms: Option<u64>,
     pub process_memory: Option<crate::quota::memory::Snapshot>,
     pub log_dropped_events: Option<u64>,
     pub log_sink_errors: Option<u64>,

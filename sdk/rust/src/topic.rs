@@ -9,6 +9,16 @@ use crate::{Admin, Error, Result};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TopicId(pub(crate) Id);
+impl From<Id> for TopicId {
+    fn from(value: Id) -> Self {
+        Self(value)
+    }
+}
+impl From<TopicId> for Id {
+    fn from(value: TopicId) -> Self {
+        value.0
+    }
+}
 
 impl std::fmt::Display for TopicId {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

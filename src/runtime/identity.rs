@@ -29,7 +29,7 @@ impl Service {
             .ok_or_else(forbidden)?
             .parse()
             .map_err(|_| forbidden())?;
-        let request =
+        let request: public::ListIdentities =
             tidemq_protocol::framing::decode_payload(frame.payload.clone(), &self.config.protocol)
                 .map_err(|source| Error::operation("decode identity listing", source))?;
         let now_ms = super::data::unix_millis()?;
@@ -38,7 +38,19 @@ impl Service {
             .as_ref()
             .ok_or_else(Error::unavailable)?
             .state
-            .try_with_application(|state| state.auth().identity_page(credential, now_ms, &request))
+            .try_with_application(|state| {
+                let mut page = state.auth().identity_page(credential, now_ms, &request)?;
+                page.cluster_id = state
+                    .cluster_id()
+                    .map(super::metadata::bytes_id)
+                    .unwrap_or_default();
+                if let Some(scope) = request.resource_scope.as_ref() {
+                    let scope = crate::metadata::ResourceScope::from_wire(scope)
+                        .map_err(crate::metadata::Rejection::Authorization)?;
+                    state.validate_authorization_scope(scope, false)?;
+                }
+                Ok(page)
+            })
             .await
             .map_err(|source| Error::operation("read authorized identity page", source))?
             .map_err(super::metadata::metadata_rejection)?;
@@ -347,29 +359,57 @@ fn identity_action(
             id: target()?,
             enabled: request.enabled,
         },
+        Action::GrantResourcePermission | Action::RevokeResourcePermission => {
+            if request.permissions.len() != 1 {
+                return Err(Error::invalid(
+                    "Exactly one resource permission is required",
+                ));
+            }
+            let permission = request
+                .permissions
+                .first()
+                .ok_or_else(|| Error::invalid("Resource permission is required"))?;
+            AuthAction::SetResourcePermission {
+                principal: target()?,
+                scope: identity_scope(request)?,
+                permission: Permission::from_name(permission)
+                    .map_err(|_| Error::invalid("Resource permission is invalid"))?,
+                allow: action == Action::GrantResourcePermission,
+            }
+        }
+        Action::ReplaceResourceGrants => {
+            if request.resource_grants.len() > 32 {
+                return Err(Error::invalid("Resource grant count exceeds its bound"));
+            }
+            AuthAction::ReplaceResourceGrants {
+                principal: target()?,
+                expected_revision: request.expected_auth_revision,
+                grants: request
+                    .resource_grants
+                    .iter()
+                    .map(crate::metadata::ResourceGrant::from_wire)
+                    .collect::<std::result::Result<_, _>>()
+                    .map_err(|_| Error::invalid("Resource grants are invalid"))?,
+            }
+        }
         Action::Unspecified => return Err(Error::invalid("Identity action is unspecified")),
     };
     Ok((value, None))
 }
 
 fn principal_action(request: &public::ManageIdentity, operation: Id) -> Result<AuthAction> {
-    if request.permissions.len() > 6 {
+    if request.permissions.len() > 7 {
         return Err(Error::invalid("Permission count exceeds its bound"));
     }
     let permissions = request
         .permissions
         .iter()
-        .map(|permission| match permission.as_str() {
-            "manage_tenants" => Ok(Permission::ManageTenants),
-            "manage_credentials" => Ok(Permission::ManageCredentials),
-            "manage_topics" => Ok(Permission::ManageTopics),
-            "produce" => Ok(Permission::Produce),
-            "consume" => Ok(Permission::Consume),
-            "inspect" => Ok(Permission::Inspect),
-            _ => Err(Error::invalid("Permission name is invalid")),
+        .map(|permission| {
+            Permission::from_name(permission)
+                .map_err(|_| Error::invalid("Permission name is invalid"))
         })
         .collect::<Result<std::collections::BTreeSet<_>>>()?;
-    Ok(AuthAction::PutPrincipal(Principal {
+    let principal = Principal {
         id: if request.target_id.is_empty() {
             operation
         } else {
@@ -384,7 +424,24 @@ fn principal_action(request: &public::ManageIdentity, operation: Id) -> Result<A
         name: request.name.clone(),
         enabled: request.enabled,
         permissions,
-    }))
+    };
+    if request.target_id.is_empty() {
+        Ok(AuthAction::PutPrincipal(principal))
+    } else {
+        Ok(AuthAction::ReplacePrincipal {
+            principal,
+            expected_revision: request.expected_auth_revision,
+        })
+    }
+}
+
+fn identity_scope(request: &public::ManageIdentity) -> Result<crate::metadata::ResourceScope> {
+    let scope = request
+        .resource_scope
+        .as_ref()
+        .ok_or_else(|| Error::invalid("Resource scope is required"))?;
+    crate::metadata::ResourceScope::from_wire(scope)
+        .map_err(|_| Error::invalid("Resource scope is invalid"))
 }
 
 fn generate_token() -> Result<String> {

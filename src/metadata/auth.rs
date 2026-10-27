@@ -8,6 +8,9 @@ use tidemq_protocol::Id;
 mod deletion;
 #[path = "identity_list.rs"]
 mod listing;
+#[path = "resource_grants.rs"]
+mod resource_grants;
+pub use resource_grants::{ResourceGrant, ResourceScope};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, Snafu)]
 pub enum AuthRejection {
@@ -50,6 +53,7 @@ pub enum Permission {
     Produce,
     Consume,
     Inspect,
+    InspectMessageContent,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -107,6 +111,21 @@ pub enum AuthAction {
     CreateTenant(Tenant),
     CreateNamespace(Namespace),
     PutPrincipal(Principal),
+    ReplacePrincipal {
+        principal: Principal,
+        expected_revision: u64,
+    },
+    SetResourcePermission {
+        principal: Id,
+        scope: ResourceScope,
+        permission: Permission,
+        allow: bool,
+    },
+    ReplaceResourceGrants {
+        principal: Id,
+        expected_revision: u64,
+        grants: Vec<ResourceGrant>,
+    },
     CreateCredential {
         id: Id,
         principal: Id,
@@ -177,6 +196,7 @@ pub struct AuthState {
     principals: BTreeMap<Id, Principal>,
     credentials: BTreeMap<Id, Credential>,
     digests: BTreeMap<[u8; 32], Id>,
+    resource_grants: BTreeMap<(Id, ResourceScope), BTreeSet<Permission>>,
 }
 
 impl std::fmt::Debug for AuthState {
@@ -310,10 +330,19 @@ impl AuthState {
         permission: Permission,
         name: Option<&str>,
     ) -> Result<&Principal, AuthRejection> {
-        let principal = self.authorized_principal(credential, now_ms, permission)?;
+        let principal = self.current_principal(credential, now_ms)?;
         if let Some(name) = name {
             let (tenant, namespace, _) = self.resolve_topic(name)?;
             Self::authorize_scope(principal, tenant.id, namespace.id)?;
+            let scope = ResourceScope::Namespace {
+                tenant: tenant.id,
+                namespace: namespace.id,
+            };
+            if !self.allows(principal, permission, scope) {
+                return Err(AuthRejection::Forbidden);
+            }
+        } else if !Self::permission_implied(&principal.permissions, permission) {
+            return Err(AuthRejection::Forbidden);
         }
         Ok(principal)
     }
@@ -325,11 +354,22 @@ impl AuthState {
         permission: Permission,
         topic: &super::TopicRecord,
     ) -> Result<&Principal, AuthRejection> {
-        let principal = self.authorized_principal(credential, now_ms, permission)?;
+        let principal = self.current_principal(credential, now_ms)?;
         self.validate_topic_parent(topic)?;
         let tenant = topic.tenant.ok_or(AuthRejection::Invalid)?;
         let namespace = topic.namespace.ok_or(AuthRejection::Invalid)?;
         Self::authorize_scope(principal, tenant, namespace)?;
+        if !self.allows(
+            principal,
+            permission,
+            ResourceScope::Topic {
+                tenant,
+                namespace,
+                topic: topic.topic_id,
+            },
+        ) {
+            return Err(AuthRejection::Forbidden);
+        }
         let active = self.tenants.get(&tenant).is_some_and(|row| row.enabled)
             && self
                 .namespaces
@@ -356,30 +396,17 @@ impl AuthState {
         Ok(())
     }
 
-    fn authorized_principal(
+    pub fn current_principal(
         &self,
         credential: Id,
         now_ms: u64,
-        permission: Permission,
     ) -> Result<&Principal, AuthRejection> {
         let credential = self
             .credentials
             .get(&credential)
             .filter(|credential| credential.enabled && credential.expires_ms > now_ms)
             .ok_or(AuthRejection::Forbidden)?;
-        let principal = self.active_principal(credential.principal)?;
-        if !principal.permissions.contains(&permission)
-            && !(permission == Permission::Inspect
-                && principal.permissions.iter().any(|permission| {
-                    matches!(
-                        permission,
-                        Permission::Produce | Permission::Consume | Permission::ManageTopics
-                    )
-                }))
-        {
-            return Err(AuthRejection::Forbidden);
-        }
-        Ok(principal)
+        self.active_principal(credential.principal)
     }
 
     pub fn resolve_topic<'a>(
@@ -554,7 +581,34 @@ impl AuthState {
                 self.namespaces.insert(namespace.id, namespace.clone());
                 Ok(AuthOutcome::Namespace(namespace.id))
             }
-            AuthAction::PutPrincipal(principal) => self.put_principal(actor, principal),
+            AuthAction::PutPrincipal(principal) => {
+                self.validate_principal_delegation(actor, principal)?;
+                if self.principals.contains_key(&principal.id) {
+                    return Err(AuthRejection::Conflict);
+                }
+                self.put_principal(actor, principal)
+            }
+            AuthAction::ReplacePrincipal {
+                principal,
+                expected_revision,
+            } => {
+                self.require_revision(*expected_revision)?;
+                if !self.principals.contains_key(&principal.id) {
+                    return Err(AuthRejection::NotFound);
+                }
+                self.put_principal(actor, principal)
+            }
+            AuthAction::SetResourcePermission {
+                principal,
+                scope,
+                permission,
+                allow,
+            } => self.set_resource_permission(actor, *principal, *scope, *permission, *allow),
+            AuthAction::ReplaceResourceGrants {
+                principal,
+                expected_revision,
+                grants,
+            } => self.replace_resource_grants(actor, *principal, *expected_revision, grants),
             AuthAction::CreateCredential {
                 id,
                 principal,
@@ -568,9 +622,7 @@ impl AuthState {
                     .ok_or(AuthRejection::NotFound)?;
                 self.manage_principal(actor, target)?;
                 self.validate_live_parents(target)?;
-                if !target.permissions.is_subset(&actor.permissions) {
-                    return Err(AuthRejection::Forbidden);
-                }
+                self.validate_principal_delegation(actor, target)?;
                 if self.credentials.contains_key(id) || self.digests.contains_key(&digest.0) {
                     return Err(AuthRejection::Conflict);
                 }
@@ -697,6 +749,7 @@ impl AuthState {
                 self.manage_principal(actor, principal)?;
                 if *enabled {
                     self.validate_live_parents(principal)?;
+                    self.validate_principal_delegation(actor, principal)?;
                 }
                 self.principals
                     .get_mut(id)
@@ -737,10 +790,7 @@ impl AuthState {
         }) {
             return Err(AuthRejection::Conflict);
         }
-        if principal.permissions.is_empty() || !principal.permissions.is_subset(&actor.permissions)
-        {
-            return Err(AuthRejection::Forbidden);
-        }
+        self.validate_principal_delegation(actor, principal)?;
         if principal.tenant.is_some() && principal.permissions.contains(&Permission::ManageTenants)
         {
             return Err(AuthRejection::Forbidden);
@@ -823,6 +873,7 @@ impl AuthState {
 
     pub fn validate(&self) -> Result<(), AuthRejection> {
         self.validate_deletions()?;
+        self.validate_resource_grants()?;
         if self.tenants.len() > 256
             || self.namespaces.len() > 4096
             || self.principals.len() > 4096
@@ -849,7 +900,8 @@ impl AuthState {
         for (id, principal) in &self.principals {
             valid_component(&principal.name)?;
             if *id != principal.id
-                || principal.permissions.is_empty()
+                || principal.tenant.is_some()
+                    && principal.permissions.contains(&Permission::ManageTenants)
                 || principal
                     .tenant
                     .is_some_and(|id| !self.tenants.contains_key(&id))
@@ -910,6 +962,7 @@ fn all_permissions() -> BTreeSet<Permission> {
         Permission::Produce,
         Permission::Consume,
         Permission::Inspect,
+        Permission::InspectMessageContent,
     ]
     .into()
 }

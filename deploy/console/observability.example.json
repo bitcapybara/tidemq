@@ -1,0 +1,18 @@
+{
+  "tracingEndpoint": "https://192.0.2.10:4318/v1/traces",
+  "observability": {
+    "components": [
+      {"id": "object-storage", "name": "RustFS object storage", "probeUrl": "http://rustfs:9000/health/ready", "detailUrl": "https://rustfs.example.test/rustfs/console/index.html"},
+      {"id": "otel-collector", "name": "Central OpenTelemetry Collector", "probeUrl": "http://collector:13134/", "detailUrl": "https://grafana.example.test/d/tidemq-lab"},
+      {"id": "otel-agent-node-1", "name": "OpenTelemetry agent node 1", "probeUrl": "http://otel-agent-node-1:13133/", "detailUrl": "https://grafana.example.test/d/tidemq-lab"},
+      {"id": "otel-agent-node-2", "name": "OpenTelemetry agent node 2", "probeUrl": "http://otel-agent-node-2:13133/", "detailUrl": "https://grafana.example.test/d/tidemq-lab"},
+      {"id": "prometheus", "name": "Prometheus", "probeUrl": "http://prometheus:9090/-/ready", "detailUrl": "https://metrics.example.test/graph"},
+      {"id": "loki", "name": "Loki", "probeUrl": "http://loki:3100/ready", "detailUrl": "https://grafana.example.test/explore"},
+      {"id": "tempo", "name": "Tempo", "probeUrl": "http://tempo:3200/ready", "detailUrl": "https://grafana.example.test/explore"},
+      {"id": "grafana", "name": "Grafana", "probeUrl": "http://grafana:3000/api/health", "detailUrl": "https://grafana.example.test/d/tidemq-runtime"},
+      {"id": "alertmanager", "name": "Alertmanager", "probeUrl": "http://alertmanager:9093/-/ready", "detailUrl": "https://metrics.example.test/alertmanager/"}
+    ],
+    "alertsUrl": "http://prometheus:9090/api/v1/alerts",
+    "alertsDetailUrl": "https://metrics.example.test/alerts"
+  }
+}

@@ -41,6 +41,9 @@ impl MetadataState {
             return Err(Rejection::InvalidEvidence);
         }
         self.auth.validate().map_err(Rejection::Authorization)?;
+        for scope in self.auth.explicit_resource_scopes() {
+            self.validate_authorization_scope(scope, false)?;
+        }
         self.publishers.validate()?;
         if self
             .publishers
@@ -61,6 +64,7 @@ impl MetadataState {
         self.validate_quotas()?;
         self.validate_resource_leases()?;
         self.validate_policies()?;
+        self.validate_console_operations()?;
         for (partition, record) in &self.partitions {
             self.validate_partition(*partition, record)?;
         }
@@ -81,6 +85,7 @@ impl MetadataState {
             || self.quotas.allocations().next().is_some()
             || !self.resource_leases.is_empty()
             || !self.policies.is_empty()
+            || !self.console_operations.is_empty()
             || !self.topic_names.is_empty()
             || !self.subscription_names.is_empty()
             || !self.nodes.is_empty()

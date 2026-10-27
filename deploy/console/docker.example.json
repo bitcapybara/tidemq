@@ -1,0 +1,12 @@
+{
+  "image": "REPLACE_WITH_TIDEMQ_IMAGE_DIGEST",
+  "publicOrigin": "https://console.example.test",
+  "clusterAddress": "REPLACE_WITH_GATEWAY_DNS:7443",
+  "clusterServerName": "gateway.example.test",
+  "tracingEndpoint": "https://192.0.2.10:4318/v1/traces",
+  "hostPort": 18080,
+  "trustRootsFile": "/absolute/private/ca.pem",
+  "sessionKeyFile": "/absolute/private/session.key",
+  "previousSessionKeyFiles": [],
+  "observability": {"components": []}
+}

@@ -32,6 +32,9 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
     matches!(
         kind,
         FrameKind::CreateLogicalTopic
+            | FrameKind::ConsoleRead
+            | FrameKind::ConsoleWrite
+            | FrameKind::GetConsoleOperation
             | FrameKind::GetTopicLayout
             | FrameKind::ChangeTopicLayout
             | FrameKind::ManageIdentity

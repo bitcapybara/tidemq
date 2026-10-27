@@ -7,3 +7,5 @@
 *.profraw
 *.profdata
 /artifacts/
+/console/web/node_modules/
+/console/web/dist/

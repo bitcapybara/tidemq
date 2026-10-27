@@ -65,6 +65,8 @@ host_control status > "$report/vms-before.txt"
 kubectl get nodes -o json > "$report/nodes-before.json"
 bash scripts/lab/build-image.sh "$private/build"
 cp "$private/build/source-commit.txt" "$private/build/source-patch-sha256.txt" "$private/build/toolchain.txt" "$private/build/sha256.txt" "$private/build/image-id.txt" "$report/"
+cp "$private/build/source-sha256.txt" "$private/build/source-tree-sha256.txt" "$private/build/runtime-sha256.txt" "$report/"
+cp "$private/build/console/.tidemq-build.json" "$report/console-build.json"
 lab_ssh tidemq-fixtures sudo /usr/local/sbin/tidemq-fixtures create "$run" > "$report/fixtures-create.log" 2>&1
 lab_fetch tidemq-fixtures "/srv/tidemq/fixtures/$run/a/credentials.toml" "$private/objects.toml"
 bash scripts/lab/deploy-workload.sh "$run" "$private/build" https://192.168.241.34:36443 "$private/objects.toml" "$private/workload" > "$report/deploy.log" 2>&1

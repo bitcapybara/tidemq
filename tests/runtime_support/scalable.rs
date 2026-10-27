@@ -2,6 +2,11 @@ use super::*;
 
 #[path = "scalable_admin_cli.rs"]
 mod admin_cli;
+#[path = "scalable_console_read.rs"]
+mod console_read;
+
+#[path = "scalable_console_http.rs"]
+mod console_http;
 
 #[path = "scalable_data_membership.rs"]
 mod data_membership;
@@ -124,6 +129,48 @@ async fn stream_and_queue_recover_archived_context_and_nack_after_local_reclaim_
     fixture.stop(1).await;
     fixture.restart(1).await;
     let client = fixture.client(1).await;
+    let tidemq_protocol::console::Reply::Topic(detail) = client
+        .console_read(tidemq_protocol::console::Query::Topic {
+            topic: partition.topic_id,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("Expected archived shard details after restart");
+    };
+    let shard = detail.shard_details.first().unwrap().id;
+    let tidemq_protocol::console::Reply::Messages(inspected) = client
+        .console_read(tidemq_protocol::console::Query::Messages {
+            topic: partition.topic_id,
+            shard,
+            start: Some(tidemq_protocol::console::Decimal(0)),
+            end: Some(tidemq_protocol::console::Decimal(3)),
+            observed_end: None,
+            limit: 3,
+            scan_limit: 3,
+            key_base64: None,
+            properties_base64: BTreeMap::new(),
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("Expected bounded cold inspection without creating a consumer");
+    };
+    assert_eq!(inspected.items.len(), 3);
+    for (index, message) in inspected.items.iter().enumerate() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        assert_eq!(message.tier, "cold");
+        assert_eq!(message.id, expected[index].to_string());
+        assert_eq!(
+            message.payload_base64,
+            STANDARD.encode(format!("cold-{index}"))
+        );
+        assert_eq!(message.key_base64, (index > 0).then(String::new));
+        assert_eq!(
+            message.properties_base64.get("source"),
+            Some(&STANDARD.encode("archive"))
+        );
+    }
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)

@@ -13,6 +13,10 @@ RUN case "$DEBIAN_IMAGE" in *@sha256:*) ;; *) echo 'DEBIAN_IMAGE must use a veri
 
 COPY --chown=10001:10001 --chmod=0555 bin/tidemq /usr/local/bin/tidemq
 COPY --chown=10001:10001 --chmod=0555 bin/deploy_validation /usr/local/bin/deploy_validation
+COPY --chown=10001:10001 console/ /opt/tidemq/console/
+RUN test -s /opt/tidemq/console/index.html \
+    && test -s /opt/tidemq/console/.vite/manifest.json \
+    && chmod -R a-w /opt/tidemq/console
 
 USER 10001:10001
 ENV HOME=/var/lib/tidemq

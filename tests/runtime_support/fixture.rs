@@ -1,14 +1,14 @@
 use super::*;
 
-pub(super) struct Fixture {
-    pub(super) directory: PathBuf,
-    pub(super) roots: Bytes,
-    pub(super) configs: BTreeMap<u64, Config>,
-    pub(super) running: BTreeMap<u64, RunningNode>,
+pub(crate) struct Fixture {
+    pub(crate) directory: PathBuf,
+    pub(crate) roots: Bytes,
+    pub(crate) configs: BTreeMap<u64, Config>,
+    pub(crate) running: BTreeMap<u64, RunningNode>,
 }
 
 impl Fixture {
-    pub(super) async fn new(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) -> Self {
+    pub(crate) async fn new(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) -> Self {
         let directory =
             std::env::temp_dir().join(format!("tidemq-runtime-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir_all(&directory).await.unwrap();
@@ -120,7 +120,7 @@ impl Fixture {
         }
     }
 
-    pub(super) async fn start_all(&mut self) {
+    pub(crate) async fn start_all(&mut self) {
         for (node, config) in &self.configs {
             self.running
                 .insert(*node, RunningNode::start(config.clone()).await.unwrap());
@@ -128,7 +128,7 @@ impl Fixture {
         self.wait_ready().await;
     }
 
-    pub(super) async fn wait_ready(&self) {
+    pub(crate) async fn wait_ready(&self) {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let mut ready = true;
@@ -160,12 +160,12 @@ impl Fixture {
         }
     }
 
-    pub(super) async fn client(&self, gateway: u64) -> Client {
+    pub(crate) async fn client(&self, gateway: u64) -> Client {
         self.client_with_timeouts(gateway, Duration::from_secs(10), Duration::from_secs(5))
             .await
     }
 
-    pub(super) async fn client_with_timeouts(
+    pub(crate) async fn client_with_timeouts(
         &self,
         gateway: u64,
         request: Duration,
@@ -183,11 +183,11 @@ impl Fixture {
         .unwrap()
     }
 
-    pub(super) async fn stop(&mut self, node: u64) {
+    pub(crate) async fn stop(&mut self, node: u64) {
         let running = self.running.remove(&node).unwrap();
         running.shutdown().await.unwrap();
     }
-    pub(super) async fn restart(&mut self, node: u64) {
+    pub(crate) async fn restart(&mut self, node: u64) {
         self.running.insert(
             node,
             RunningNode::start(self.configs.get(&node).unwrap().clone())
@@ -196,7 +196,7 @@ impl Fixture {
         );
         self.wait_ready().await;
     }
-    pub(super) async fn close(mut self) {
+    pub(crate) async fn close(mut self) {
         for (_, node) in std::mem::take(&mut self.running) {
             node.shutdown().await.unwrap();
         }
@@ -216,7 +216,7 @@ impl Drop for Fixture {
     }
 }
 
-pub(super) fn udp_address() -> SocketAddr {
+pub(crate) fn udp_address() -> SocketAddr {
     use std::{
         collections::BTreeSet,
         os::fd::AsRawFd,
@@ -309,7 +309,7 @@ pub(super) fn udp_address() -> SocketAddr {
     }
     panic!("No test UDP port is available outside the observed ephemeral range");
 }
-pub(super) fn tcp_address() -> SocketAddr {
+pub(crate) fn tcp_address() -> SocketAddr {
     for _ in 0..64_512 {
         // Share the cross-process reservations and stay outside client ephemeral ports.
         let address = udp_address();
@@ -319,11 +319,11 @@ pub(super) fn tcp_address() -> SocketAddr {
     }
     panic!("No test TCP port is available outside the observed ephemeral range");
 }
-pub(super) fn deadline() -> Instant {
+pub(crate) fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(10)
 }
 
-pub(super) async fn http(address: SocketAddr, path: &str) -> String {
+pub(crate) async fn http(address: SocketAddr, path: &str) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
     connection
@@ -335,7 +335,7 @@ pub(super) async fn http(address: SocketAddr, path: &str) -> String {
     response
 }
 
-pub(super) async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {
+pub(crate) async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {
     let credentials_file = fixture.directory.join("object-credentials.toml");
     let (access, secret) = rustfs.credentials();
     tokio::fs::write(
@@ -361,7 +361,7 @@ pub(super) async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustF
         config.runtime.objects = Some(objects.clone());
     }
 }
-pub(super) async fn private_file(path: PathBuf) {
+pub(crate) async fn private_file(path: PathBuf) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

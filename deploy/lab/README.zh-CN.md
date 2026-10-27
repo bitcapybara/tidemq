@@ -210,6 +210,8 @@ bash scripts/lab/deploy-workload.sh tidemq-dev PRIVATE_BUILD \
 
 `deploy-workload.sh` 会导入固定镜像、创建资源并等待全部角色 Ready。它要求新 namespace / 输出目录；重部署已有持久实例应先保存数据和身份材料，再按变更策略操作，不能直接删除公共 namespace 作为日常升级方式。
 
+`build-image.sh` 现在同时从同一源码和前端锁文件构建 Console 静态资源，镜像内路径为 `/opt/tidemq/console`。打包需要支持的 Node.js 和 npm；runner 只有 Node 24 二进制而没有 npm 时，脚本从官方 registry 临时下载固定 npm 包，先核验完整 SHA512，再执行，不改变 runner 的全局安装。普通 Cargo 构建及 Rust 工具链镜像继续不依赖 Node/npm。全部静态文件（含 Vite manifest 与源码树哈希）纳入 runtime 校验清单和镜像标签；`source-patch-sha256.txt` 还组合前端完整源码树哈希，覆盖尚未提交的前端文件。Console 以 `role = "console"` 独立部署，提供登录、授权/Topic/消息管理及消费和组件状态；HTTPS、共享密钥和探针配置见 [Console 部署与验证](../console/README.zh-CN.md)。现有十角色 workload 不自动新增 Console 实例，lab 主机的 loopback 观测端点也不会因此变为 Pod 可访问；本文件的历史验收不代表这次 Console 版本已经在平台验收。
+
 角色 StatefulSet 使用 `OnDelete`。变更配置后，须在独占租约下逐个删除对应 Pod，再等待新 Pod 创建且 Ready 后处理下一个；同一 metadata/storage quorum 同时最多停一个副本。`kubectl rollout restart/status` 不能代替该策略下的实际 Pod 重建。
 
 公共镜像的源码、manifest/config digest、二进制身份和验收结果保存在 [合并验收](evidence/2026-10-25/README.zh-CN.md) 中；镜像 tar 和旧构建目录可清理，由固定源码及工具重建。当前三个 worker 的运行镜像与独立公共标签保留。升级时仅采用 CI 通过且 Rust 补丁为空的构建，先导入全部 worker 并验证 digest，再逐个更新角色；资源身份、卷绑定与私有材料必须沿用已有备份。

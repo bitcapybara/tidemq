@@ -153,6 +153,9 @@ impl MembersBook {
     pub fn model(&self) -> SubscriptionKind {
         self.model
     }
+    pub fn observed_members(&self) -> impl Iterator<Item = &MemberInfo> {
+        self.members.values().map(|record| &record.info)
+    }
     pub fn initial_position(&self) -> InitialPosition {
         self.initial
     }

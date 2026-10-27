@@ -52,6 +52,30 @@ mod admission_tests {
         );
         assert!(admit_deadline(original, now).is_err());
     }
+
+    #[test]
+    fn token_refusal_and_unknown_authority_failures_keep_distinct_transport_errors() {
+        assert!(matches!(
+            transport_authentication_error(super::super::service::forbidden()),
+            crate::transport::Error::Authentication { .. }
+        ));
+        assert!(matches!(
+            transport_authentication_error(Error::unavailable()),
+            crate::transport::Error::Unavailable
+        ));
+        assert!(matches!(
+            transport_authentication_error(super::super::service::forbidden().admitted()),
+            crate::transport::Error::Unavailable
+        ));
+        assert!(matches!(
+            transport_authentication_error(Error::reject(
+                ErrorCode::QuotaExceeded,
+                Outcome::Rejected,
+                true
+            )),
+            crate::transport::Error::Admission { .. }
+        ));
+    }
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -77,7 +101,9 @@ pub(super) struct DeletionPermit {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 enum AuthResource {
     None,
+    Identity,
     Name(String),
+    LookupName(String),
     Topic(Id),
 }
 
@@ -138,17 +164,15 @@ impl TokenAuthenticator for Authenticator {
         deadline: Instant,
     ) -> Pin<Box<dyn Future<Output = crate::transport::Result<CredentialGrant>> + Send + 'a>> {
         Box::pin(async move {
-            let service = self.0.get().and_then(Weak::upgrade).ok_or(
-                crate::transport::Error::Authentication {
-                    reason: "authentication service is not ready",
-                },
-            )?;
+            let service = self
+                .0
+                .get()
+                .and_then(Weak::upgrade)
+                .ok_or(crate::transport::Error::Unavailable)?;
             if service.draining.load(std::sync::atomic::Ordering::Acquire)
                 || !service.registry.schedulable(service.config.node_id)
             {
-                return Err(crate::transport::Error::Authentication {
-                    reason: "gateway is not accepting new connections",
-                });
+                return Err(crate::transport::Error::Unavailable);
             }
             let digest =
                 TokenDigest::of(token).map_err(|_| crate::transport::Error::Authentication {
@@ -157,24 +181,18 @@ impl TokenAuthenticator for Authenticator {
             let (reply, _) = service
                 .auth_query(AuthQuery::Authenticate(digest), deadline)
                 .await
-                .map_err(|_| crate::transport::Error::Authentication {
-                    reason: "access token rejected or authentication authority is unavailable",
-                })?;
+                .map_err(transport_authentication_error)?;
             let kinds = (1..=128)
                 .filter_map(|value| FrameKind::try_from(value).ok())
                 .filter(|kind| crate::gateway::external_kind(*kind))
                 .collect();
             let credential = reply
                 .credential
-                .ok_or(crate::transport::Error::Authentication {
-                    reason: "credential authority omitted its identity",
-                })?;
+                .ok_or(crate::transport::Error::Unavailable)?;
             let lease = service
                 .connection_quota_lease(credential, deadline)
                 .await
-                .map_err(|_| crate::transport::Error::Authentication {
-                    reason: "connection quota is exhausted or its authority is unavailable",
-                })?;
+                .map_err(transport_authentication_error)?;
             Ok(CredentialGrant {
                 credential,
                 tenant: reply.tenant,
@@ -623,6 +641,17 @@ impl Service {
                                 .auth()
                                 .authorize(credential, now, permission, Some(&name))
                         }
+                        AuthResource::LookupName(name) => match state.topic_by_name(&name) {
+                            Some(topic) => state
+                                .auth()
+                                .authorize_topic(credential, now, permission, topic),
+                            None => {
+                                state
+                                    .auth()
+                                    .authorize(credential, now, permission, Some(&name))
+                            }
+                        },
+                        AuthResource::Identity => state.auth().current_principal(credential, now),
                         AuthResource::None => {
                             state.auth().authorize(credential, now, permission, None)
                         }
@@ -662,6 +691,7 @@ impl Service {
             return Err(super::service::forbidden());
         }
         let permission = match kind {
+            FrameKind::ConsoleWrite | FrameKind::GetConsoleOperation => Permission::Inspect,
             FrameKind::SubscriptionAdmin => match decode::<public::SubscriptionAdmin>(self, frame)?
                 .action
             {
@@ -681,7 +711,21 @@ impl Service {
                     ));
                 }
             },
-            FrameKind::ManageIdentity | FrameKind::ListIdentities => Permission::ManageCredentials,
+            FrameKind::ManageIdentity => Permission::ManageCredentials,
+            FrameKind::ConsoleRead => Permission::Inspect,
+            FrameKind::ListIdentities => {
+                if matches!(
+                    public::IdentityKind::try_from(
+                        decode::<public::ListIdentities>(self, frame)?.kind
+                    ),
+                    Ok(public::IdentityKind::CurrentPrincipalIdentity
+                        | public::IdentityKind::PrincipalIdentity)
+                ) {
+                    Permission::Inspect
+                } else {
+                    Permission::ManageCredentials
+                }
+            }
             FrameKind::GetTopic | FrameKind::GetTopicLayout | FrameKind::Cancel => {
                 Permission::Inspect
             }
@@ -721,13 +765,16 @@ impl Service {
     fn auth_resource(&self, frame: &Frame) -> Result<AuthResource> {
         let kind = super::service::frame_kind(frame)?;
         let topic = match kind {
+            FrameKind::ConsoleWrite | FrameKind::GetConsoleOperation => {
+                return Ok(AuthResource::Identity);
+            }
             FrameKind::CreateLogicalTopic => {
                 return Ok(AuthResource::Name(
                     decode::<public::LogicalTopic>(self, frame)?.name,
                 ));
             }
             FrameKind::GetTopic => {
-                return Ok(AuthResource::Name(
+                return Ok(AuthResource::LookupName(
                     decode::<public::GetTopic>(self, frame)?.name,
                 ));
             }
@@ -749,12 +796,26 @@ impl Service {
             FrameKind::PublisherControl => {
                 wire::id(&decode::<public::PublisherControl>(self, frame)?.topic_id)?
             }
-            FrameKind::Cancel
-            | FrameKind::Diagnose
+            FrameKind::Cancel => return Ok(AuthResource::Identity),
+            FrameKind::ConsoleRead => return Ok(AuthResource::Identity),
+            FrameKind::ListIdentities => {
+                let request = decode::<public::ListIdentities>(self, frame)?;
+                return Ok(
+                    if matches!(
+                        public::IdentityKind::try_from(request.kind),
+                        Ok(public::IdentityKind::CurrentPrincipalIdentity
+                            | public::IdentityKind::PrincipalIdentity)
+                    ) {
+                        AuthResource::Identity
+                    } else {
+                        AuthResource::None
+                    },
+                );
+            }
+            FrameKind::Diagnose
             | FrameKind::ManageIdentity
             | FrameKind::ManageCluster
-            | FrameKind::GetClusterRegistry
-            | FrameKind::ListIdentities => return Ok(AuthResource::None),
+            | FrameKind::GetClusterRegistry => return Ok(AuthResource::None),
             _ => super::data::partition(frame, &self.config.protocol)?.topic_id,
         };
         Ok(AuthResource::Topic(topic))
@@ -768,6 +829,24 @@ fn decode<M: prost::Message + Default>(service: &Service, frame: &Frame) -> Resu
 
 fn auth_rejection(_: AuthRejection) -> Error {
     super::service::forbidden()
+}
+
+fn transport_authentication_error(error: Error) -> crate::transport::Error {
+    let failure = error.failure();
+    if failure.outcome != i32::from(Outcome::Rejected) {
+        return crate::transport::Error::Unavailable;
+    }
+    match ErrorCode::try_from(failure.code).ok() {
+        Some(ErrorCode::Unauthenticated | ErrorCode::Forbidden) => {
+            crate::transport::Error::Authentication {
+                reason: "access token rejected by its authority",
+            }
+        }
+        Some(ErrorCode::QuotaExceeded) => crate::transport::Error::Admission {
+            resource: "authenticated connection quota",
+        },
+        _ => crate::transport::Error::Unavailable,
+    }
 }
 
 pub(super) fn scheduling_key(

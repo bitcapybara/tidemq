@@ -10,6 +10,9 @@ use crate::error::{ClusterIdentitySnafu, IoSnafu, ParseConfigurationSnafu, Proto
 use crate::{Error, Result};
 
 mod file;
+mod process;
+
+pub use process::ProcessConfig;
 
 const MAX_CONFIG_BYTES: u64 = 65_536;
 
@@ -64,23 +67,7 @@ impl Default for Config {
 
 impl Config {
     pub async fn load(path: &Path) -> Result<Self> {
-        let file = tokio::fs::File::open(path).await.context(IoSnafu {
-            operation: "open configuration",
-            path,
-        })?;
-        let mut text = String::new();
-        file.take(MAX_CONFIG_BYTES + 1)
-            .read_to_string(&mut text)
-            .await
-            .context(IoSnafu {
-                operation: "read configuration",
-                path,
-            })?;
-        if text.len() as u64 > MAX_CONFIG_BYTES {
-            return Err(Error::Configuration {
-                reason: "configuration exceeds 64 KiB",
-            });
-        }
+        let text = read_configuration(path).await?;
         let config: Self = toml::from_str(&text).context(ParseConfigurationSnafu { path })?;
         config.validate()?;
         Ok(config)
@@ -121,6 +108,27 @@ impl Config {
         self.tracing.validate()?;
         Ok(())
     }
+}
+
+async fn read_configuration(path: &Path) -> Result<String> {
+    let file = tokio::fs::File::open(path).await.context(IoSnafu {
+        operation: "open configuration",
+        path,
+    })?;
+    let mut text = String::new();
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .await
+        .context(IoSnafu {
+            operation: "read configuration",
+            path,
+        })?;
+    if text.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(Error::Configuration {
+            reason: "configuration exceeds 64 KiB",
+        });
+    }
+    Ok(text)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

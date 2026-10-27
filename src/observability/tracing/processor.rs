@@ -19,6 +19,7 @@ pub(super) fn allowed_name(name: &str) -> bool {
     matches!(
         name,
         "tidemq.server.request"
+            | "console_http_request"
             | "tidemq.sdk.request"
             | "tidemq.sdk.produce"
             | "tidemq.sdk.send"
@@ -40,6 +41,8 @@ pub(super) fn allowed_field(name: &str) -> bool {
             | "attempt"
             | "operation_id"
             | "request_id"
+            | "method"
+            | "status"
     )
 }
 

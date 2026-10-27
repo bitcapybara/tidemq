@@ -9,9 +9,9 @@ use tidemq::{
     budget::MemoryBudget,
     config::MemoryConfig,
     transport::{
-        Client, ClientCredentials, ClientTls, Error, NodeAuthorizations, NodeGrant, PeerTarget,
-        Server, ServerAuthorization, ServerTls, StreamPurpose, TlsIdentity, TokenGrant,
-        TransportConfig,
+        Client, ClientCredentials, ClientTls, CredentialGrant, Error, NodeAuthorizations,
+        NodeGrant, PeerTarget, Server, ServerAuthorization, ServerTls, StreamPurpose, TlsIdentity,
+        TokenAuthenticator, TokenGrant, TransportConfig,
     },
 };
 use tidemq_protocol::{
@@ -453,12 +453,12 @@ async fn scoped_tokens_are_checked_on_each_connection_and_frame() {
         session_id: Id::new_v7().unwrap(),
         access_token: "wrong-token-with-at-least-32-characters".into(),
     };
-    assert!(
+    assert!(matches!(
         client
             .connect(target(&server), &wrong, TrafficClass::Produce, deadline())
-            .await
-            .is_err()
-    );
+            .await,
+        Err(Error::Authentication { .. })
+    ));
     let session = client
         .connect(
             target(&server),
@@ -484,6 +484,49 @@ async fn scoped_tokens_are_checked_on_each_connection_and_frame() {
         incoming.receiver.receive(deadline()).await,
         Err(Error::Authorization { .. })
     ));
+}
+
+struct UnavailableAuthenticator;
+
+impl TokenAuthenticator for UnavailableAuthenticator {
+    fn authenticate<'a>(
+        &'a self,
+        _: &'a str,
+        _: Instant,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<CredentialGrant, Error>> + Send + 'a>,
+    > {
+        Box::pin(async { Err(Error::Unavailable) })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn authenticated_hello_preserves_authority_unavailable_instead_of_rejecting_credentials() {
+    let pki = pki();
+    let server = Server::bind(
+        address(),
+        ServerTls {
+            identity: identity(&pki.server),
+            client_trust_roots: None,
+        },
+        ServerAuthorization::Dynamic(Arc::new(UnavailableAuthenticator)),
+        config(),
+        budget(),
+    )
+    .unwrap();
+    let client = external_client(&pki, config());
+    for class in [
+        TrafficClass::Control,
+        TrafficClass::Bulk,
+        TrafficClass::Produce,
+    ] {
+        let result = client
+            .connect(target(&server), &credentials(), class, deadline())
+            .await;
+        assert!(matches!(result, Err(Error::Unavailable)));
+    }
+    client.close(deadline()).await.unwrap();
+    server.shutdown().await.unwrap();
 }
 
 fn node_grant(leaf: &Leaf, cluster_id: Id, node_id: u64, role: &str) -> NodeGrant {

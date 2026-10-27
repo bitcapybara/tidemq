@@ -28,7 +28,20 @@ impl MetadataState {
         command: &AuthCommand,
     ) -> Result<AuthResult, Rejection> {
         self.validate_identity_deletion(command)?;
-        let mut outcome = self.auth.apply(command).map_err(Rejection::Authorization)?;
+        let mut auth = self.auth.clone();
+        let mut outcome = auth.apply(command).map_err(Rejection::Authorization)?;
+        match &command.action {
+            AuthAction::SetResourcePermission { scope, allow, .. } => {
+                self.validate_authorization_scope(*scope, *allow)?;
+            }
+            AuthAction::ReplaceResourceGrants { grants, .. } => {
+                for grant in grants {
+                    self.validate_authorization_scope(grant.scope, true)?;
+                }
+            }
+            _ => {}
+        }
+        self.auth = auth;
         let target = match command.action {
             AuthAction::SetTenantLimits { id, limits } => Some((id, None, limits)),
             AuthAction::SetNamespaceLimits { id, limits } => Some((
@@ -62,6 +75,23 @@ impl MetadataState {
             request_digest: command.request_digest,
             outcome,
         })
+    }
+
+    pub(crate) fn validate_authorization_scope(
+        &self,
+        scope: super::ResourceScope,
+        require_active: bool,
+    ) -> Result<(), Rejection> {
+        if let Some(topic) = scope.topic() {
+            let row = self
+                .topic(topic)
+                .filter(|row| row.tenant == scope.tenant() && row.namespace == scope.namespace())
+                .ok_or(Rejection::NotFound)?;
+            if require_active && row.status != super::RecordStatus::Active {
+                return Err(Rejection::Authorization(super::AuthRejection::Forbidden));
+            }
+        }
+        Ok(())
     }
 
     pub fn quota_suspended(

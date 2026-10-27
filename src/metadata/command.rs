@@ -21,6 +21,7 @@ pub struct Command {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum Action {
+    Console(super::ConsoleCommand),
     CompleteMetadataChange {
         operation: Id,
         membership_index: u64,
@@ -482,6 +483,7 @@ impl std::fmt::Display for Rejection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Outcome {
+    ConsoleOperation(Id),
     Retention(super::RetentionPlan),
     MetadataChange(Box<super::MetadataChange>),
     Cluster(Box<super::ClusterResult>),

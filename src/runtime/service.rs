@@ -42,6 +42,7 @@ pub(crate) struct Service {
     pub cluster: Id,
     pub(super) instance: Id,
     pub metadata: Option<Replica<MetadataState>>,
+    pub(super) console_mutation: Mutex<()>,
     pub data: BTreeMap<u64, Replica<DataApplication>>,
     pub objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
     pub rpc: PeerRpc,
@@ -192,6 +193,7 @@ impl Service {
             groups: RwLock::new(BTreeMap::new()),
             leases: std::sync::Mutex::new(BTreeMap::new()),
             metadata_mutation: Mutex::new(()),
+            console_mutation: Mutex::new(()),
             transfer_serial: Mutex::new(()),
             tenant_quota_serial: Mutex::new(()),
             retention_deferrals: std::sync::atomic::AtomicU64::new(0),
@@ -379,7 +381,7 @@ impl Service {
         Ok(())
     }
 
-    async fn public(
+    pub(super) async fn public(
         &self,
         access: Access,
         frame: &Frame,
@@ -435,6 +437,9 @@ impl Service {
         if matches!(
             kind,
             FrameKind::CreateLogicalTopic
+                | FrameKind::ConsoleRead
+                | FrameKind::ConsoleWrite
+                | FrameKind::GetConsoleOperation
                 | FrameKind::GetTopicLayout
                 | FrameKind::ChangeTopicLayout
                 | FrameKind::ManageIdentity
@@ -681,6 +686,16 @@ impl Service {
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
         let value = match request.kind {
+            super::console_read::DATA_QUERY => {
+                drop(order);
+                if frame.traffic_class != i32::from(TrafficClass::Bulk)
+                    || !matches!(peer.role.as_str(), "metadata" | "combined")
+                {
+                    return Err(forbidden());
+                }
+                self.console_data_command(group, &request.body, deadline)
+                    .await?
+            }
             super::shard_load::QUERY => {
                 drop(order);
                 if frame.traffic_class != i32::from(TrafficClass::Control)

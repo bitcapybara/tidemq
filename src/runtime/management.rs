@@ -168,6 +168,7 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
             .and_then(|health| health.clone());
         let sampled = super::telemetry::Snapshot {
             ready,
+            sampled_at_ms: super::data::unix_millis().ok(),
             process_memory: memory,
             log_dropped_events: logging.as_ref().map(|health| health.dropped_events()),
             log_sink_errors: logging

@@ -94,6 +94,10 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
+    pub fn server_name(mut self, name: impl Into<String>) -> Self {
+        self.config.server_name = Some(name.into());
+        self
+    }
     pub(crate) fn new(
         endpoint: impl Into<String>,
         trust: TlsTrust,

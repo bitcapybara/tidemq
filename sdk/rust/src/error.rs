@@ -352,6 +352,7 @@ fn transient_transport(error: &tidemq_transport::Error) -> bool {
     matches!(
         error,
         tidemq_transport::Error::Deadline { .. }
+            | tidemq_transport::Error::Unavailable
             | tidemq_transport::Error::Closed
             | tidemq_transport::Error::Poisoned
             | tidemq_transport::Error::Io { .. }

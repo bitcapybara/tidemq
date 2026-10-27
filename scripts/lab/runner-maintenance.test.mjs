@@ -206,6 +206,12 @@ printf '%s\\n' '${inventory.docker.runtimeBaseImageID}'
   delete env.CARGO_ENCODED_RUSTFLAGS;
   const run = (settings, name) => spawnSync('bash', [path.join(scripts, 'build-image.sh'), path.join(root, name)], {env: settings, encoding: 'utf8'});
   assert.equal(run(env, 'instrumented').status, 42);
+  const sourceManifest = fs.readFileSync(path.join(root, 'instrumented/source-sha256.txt'), 'utf8');
+  assert.match(sourceManifest, / src\/console\/mod\.rs$/m);
+  assert.match(sourceManifest, / src\/config\/process\.rs$/m);
+  assert.match(sourceManifest, / console\/web\/package-lock\.json$/m);
+  assert.ok(!sourceManifest.includes('/node_modules/'));
+  assert.ok(!sourceManifest.includes('/dist/'));
   const args = fs.readFileSync(path.join(root, 'cargo.log'), 'utf8');
   assert.ok(args.includes('--bin tidemq --example deploy_validation'));
   assert.ok(!args.includes('--release'));

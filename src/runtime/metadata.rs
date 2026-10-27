@@ -288,6 +288,8 @@ impl Service {
             _ => None,
         });
         let operation = command.operation_id;
+        #[cfg(test)]
+        super::console_operation::tests::before_metadata_write(&command).await;
         let response = wire::within(deadline, replica.raft.client_write(command))
             .await?
             .map_err(|source| Error::operation("commit metadata command", source))?
@@ -326,6 +328,14 @@ impl Service {
         wire::within(deadline, replica.raft.ensure_linearizable())
             .await?
             .map_err(|_| Error::unavailable())?;
+        if super::service::frame_kind(frame)? == FrameKind::ConsoleWrite {
+            return self.console_write_public(&access, frame, deadline).await;
+        }
+        if super::service::frame_kind(frame)? == FrameKind::GetConsoleOperation {
+            return self
+                .console_operation_public(&access, frame, deadline)
+                .await;
+        }
         if super::service::frame_kind(frame)? == FrameKind::PublisherControl {
             return self
                 .publisher_control_public(&access, frame, deadline)
@@ -353,6 +363,9 @@ impl Service {
         }
         if super::service::frame_kind(frame)? == FrameKind::ListIdentities {
             return self.identity_list_public(&access, frame).await;
+        }
+        if super::service::frame_kind(frame)? == FrameKind::ConsoleRead {
+            return self.console_read_public(&access, frame, deadline).await;
         }
         if matches!(
             super::service::frame_kind(frame)?,

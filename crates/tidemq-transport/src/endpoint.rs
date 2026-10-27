@@ -18,7 +18,7 @@ use s2n_quic::{
 };
 use tidemq_protocol::{
     Id,
-    common::{FrameKind, TrafficClass},
+    common::{ErrorCode, ErrorReply, Frame, FrameKind, Outcome as RequestOutcome, TrafficClass},
     framing::{ALPN, decode_payload, new_frame},
     public::HelloResult,
 };
@@ -864,9 +864,26 @@ async fn accept_connection(
     )
     .await?
     .ok_or(Error::Closed)?;
-    let (session_id, class, peer) = authorization
+    let (session_id, class, peer) = match authorization
         .authorize(hello.frame(), evidence.peer_pin, &config.protocol, deadline)
-        .await?;
+        .await
+    {
+        Ok(authorized) => authorized,
+        Err(error) => {
+            if let Some(rejection) = hello_rejection(&error) {
+                send_hello_rejection(
+                    &mut send,
+                    hello.frame(),
+                    rejection,
+                    &config,
+                    &budget,
+                    deadline,
+                )
+                .await?;
+            }
+            return Err(error);
+        }
+    };
     let memory = budget
         .try_reserve(class, config.transport_reservation()?)
         .map_err(|source| Error::Memory { source })?;
@@ -919,6 +936,79 @@ async fn accept_connection(
     let session = start_session(state, acceptor, initial);
     closing.0 = None;
     Ok(session)
+}
+
+fn hello_rejection(error: &Error) -> Option<ErrorReply> {
+    let (code, retryable, message) = match error {
+        Error::Authentication { .. } => (
+            ErrorCode::Unauthenticated,
+            false,
+            "Access token was rejected",
+        ),
+        Error::Authorization { .. } => {
+            (ErrorCode::Forbidden, false, "Connection scope was rejected")
+        }
+        Error::Admission { .. } | Error::Memory { .. } => (
+            ErrorCode::QuotaExceeded,
+            true,
+            "Connection capacity is exhausted",
+        ),
+        Error::Unavailable | Error::Deadline { .. } => (
+            ErrorCode::Unavailable,
+            true,
+            "Authentication authority is unavailable",
+        ),
+        _ => return None,
+    };
+    Some(ErrorReply {
+        code: code.into(),
+        retryable,
+        message: message.into(),
+        outcome: RequestOutcome::Rejected.into(),
+        ..Default::default()
+    })
+}
+
+async fn send_hello_rejection(
+    send: &mut s2n_quic::stream::SendStream,
+    hello: &Frame,
+    rejection: ErrorReply,
+    config: &TransportConfig,
+    budget: &MemoryBudget,
+    deadline: Instant,
+) -> Result<()> {
+    let class = TrafficClass::try_from(hello.traffic_class).map_err(|_| Error::Prelude)?;
+    let response = new_frame(
+        FrameKind::Error,
+        class,
+        Id::from_slice(&hello.request_id).map_err(|source| Error::Protocol { source })?,
+        Id::from_slice(&hello.operation_id).map_err(|source| Error::Protocol { source })?,
+        &rejection,
+        remaining_ms(deadline)?,
+        &config.protocol,
+    )
+    .map_err(|source| Error::Protocol { source })?;
+    let (bytes, _) = super::frame::encode_charged(
+        &response,
+        FrameAdmission::Handshake(Some(class)),
+        config,
+        budget,
+        deadline,
+    )?;
+    send.send(bytes).await.map_err(|source| Error::Stream {
+        operation: "send HELLO rejection",
+        source,
+    })?;
+    // A rejection must reach the peer before the close guard shuts down this connection.
+    timeout_at(deadline, send.close())
+        .await
+        .map_err(|_| Error::Deadline {
+            operation: "flush HELLO rejection",
+        })?
+        .map_err(|source| Error::Stream {
+            operation: "finish HELLO rejection",
+            source,
+        })
 }
 
 fn verify_server(
@@ -981,23 +1071,17 @@ fn validate_hello_result(
     session: Id,
     config: &TransportConfig,
 ) -> Result<()> {
-    for (valid, reason) in [
-        (
-            FrameKind::try_from(frame.kind).ok() == Some(FrameKind::HelloResult),
-            "HELLO response kind must be HELLO_RESULT",
-        ),
-        (
-            frame.request_id == hello.request_id,
-            "HELLO response request_id differs from the request",
-        ),
-        (
-            frame.operation_id == hello.operation_id,
-            "HELLO response operation_id differs from the request",
-        ),
-    ] {
-        if !valid {
-            return Err(Error::Authentication { reason });
-        }
+    if frame.request_id != hello.request_id
+        || frame.operation_id != hello.operation_id
+        || frame.traffic_class != hello.traffic_class
+    {
+        return Err(Error::Prelude);
+    }
+    if FrameKind::try_from(frame.kind).ok() == Some(FrameKind::Error) {
+        return Err(decode_hello_rejection(frame, config)?);
+    }
+    if FrameKind::try_from(frame.kind).ok() != Some(FrameKind::HelloResult) {
+        return Err(Error::Prelude);
     }
     let result: HelloResult = decode_payload(frame.payload.clone(), &config.protocol)
         .map_err(|source| Error::Protocol { source })?;
@@ -1024,6 +1108,36 @@ fn validate_hello_result(
         }
     }
     Ok(())
+}
+
+fn decode_hello_rejection(frame: &Frame, config: &TransportConfig) -> Result<Error> {
+    if frame.payload.len() > 1024 {
+        return Err(Error::Prelude);
+    }
+    let failure: ErrorReply = decode_payload(frame.payload.clone(), &config.protocol)
+        .map_err(|source| Error::Protocol { source })?;
+    if failure.outcome != i32::from(RequestOutcome::Rejected)
+        || failure.message.len() > 256
+        || failure.original_outcome_known
+        || failure.expected_sequence.is_some()
+        || failure.expected_registration_epoch.is_some()
+        || failure.retry_after_ms.is_some()
+    {
+        return Err(Error::Prelude);
+    }
+    match ErrorCode::try_from(failure.code).ok() {
+        Some(ErrorCode::Unauthenticated) if !failure.retryable => Ok(Error::Authentication {
+            reason: "access token rejected by the remote authority",
+        }),
+        Some(ErrorCode::Forbidden) if !failure.retryable => Ok(Error::Authorization {
+            reason: "connection scope rejected by the remote authority",
+        }),
+        Some(ErrorCode::QuotaExceeded) if failure.retryable => Ok(Error::Admission {
+            resource: "remote authenticated connection capacity",
+        }),
+        Some(ErrorCode::Unavailable) if failure.retryable => Ok(Error::Unavailable),
+        _ => Err(Error::Prelude),
+    }
 }
 
 fn initial_purpose(class: TrafficClass) -> StreamPurpose {
@@ -1070,4 +1184,81 @@ pub(super) fn recovery_snapshot(
 
 fn pem_text<'a>(bytes: &'a [u8], reason: &'static str) -> Result<&'a str> {
     std::str::from_utf8(bytes).map_err(|_| Error::Configuration { reason })
+}
+
+#[cfg(test)]
+mod hello_rejection_tests {
+    use super::*;
+
+    fn rejection_frame(config: &TransportConfig) -> (Id, Frame, Frame) {
+        let session = Id::new_v7().unwrap();
+        let hello = ClientCredentials::External {
+            session_id: session,
+            access_token: "test-token-with-at-least-32-characters".into(),
+        }
+        .hello(TrafficClass::Bulk, 1000, &config.protocol)
+        .unwrap();
+        let response = new_frame(
+            FrameKind::Error,
+            TrafficClass::Bulk,
+            Id::from_slice(&hello.request_id).unwrap(),
+            session,
+            &hello_rejection(&Error::Authentication {
+                reason: "private diagnostic",
+            })
+            .unwrap(),
+            1000,
+            &config.protocol,
+        )
+        .unwrap();
+        (session, hello, response)
+    }
+
+    #[test]
+    fn hello_rejections_require_original_request_and_operation_and_class() {
+        let config = TransportConfig::default();
+        let (session, hello, response) = rejection_frame(&config);
+        assert!(matches!(
+            validate_hello_result(&response, &hello, session, &config),
+            Err(Error::Authentication { .. })
+        ));
+        assert!(!String::from_utf8_lossy(&response.payload).contains("private diagnostic"));
+        for field in [0, 1, 2] {
+            let mut changed = response.clone();
+            match field {
+                0 => changed.request_id = Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes()),
+                1 => {
+                    changed.operation_id = Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes())
+                }
+                _ => changed.traffic_class = TrafficClass::Control.into(),
+            }
+            assert!(matches!(
+                validate_hello_result(&changed, &hello, session, &config),
+                Err(Error::Prelude)
+            ));
+        }
+    }
+
+    #[test]
+    fn hello_rejections_cannot_claim_business_outcomes_or_unbounded_diagnostics() {
+        let config = TransportConfig::default();
+        let (session, hello, mut response) = rejection_frame(&config);
+        let original: ErrorReply =
+            decode_payload(response.payload.clone(), &config.protocol).unwrap();
+        for variant in [0, 1, 2, 3, 4] {
+            let mut failure = original.clone();
+            match variant {
+                0 => failure.outcome = RequestOutcome::Committed.into(),
+                1 => failure.expected_sequence = Some(1),
+                2 => failure.message = "a".repeat(257),
+                3 => failure.retryable = true,
+                _ => failure.code = ErrorCode::ResultUnknown.into(),
+            }
+            response.payload = tidemq_protocol::framing::encode_payload(&failure, 16_384).unwrap();
+            assert!(matches!(
+                validate_hello_result(&response, &hello, session, &config),
+                Err(Error::Prelude)
+            ));
+        }
+    }
 }

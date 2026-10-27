@@ -13,6 +13,7 @@ tidemq-protocol.workspace = true
 tidemq-transport.workspace = true
 bytes.workspace = true
 prost.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 snafu.workspace = true

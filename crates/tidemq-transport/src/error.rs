@@ -11,6 +11,8 @@ pub enum Error {
     Authentication { reason: &'static str },
     #[snafu(display("Transport authorization rejected: {reason}"))]
     Authorization { reason: &'static str },
+    #[snafu(display("Transport authentication authority is unavailable"))]
+    Unavailable,
     #[snafu(display("Transport admission exhausted: {resource}"))]
     Admission { resource: &'static str },
     #[snafu(display("Transport deadline expired during {operation}"))]

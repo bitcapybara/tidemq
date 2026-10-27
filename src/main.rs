@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use serde::Serialize;
-use tidemq::config::Config;
+use tidemq::config::{Config, ProcessConfig};
 use tidemq::{Error, Result, allocator};
 
 #[path = "cli/admin.rs"]
@@ -40,7 +40,7 @@ struct Cli {
 enum Command {
     /// Operate the live cluster through the authenticated public SDK.
     Admin(admin::Args),
-    /// Start authenticated listeners and durable queue authorities.
+    /// Start the configured MQ node or stateless Console process.
     Serve {
         #[arg(long)]
         config: PathBuf,
@@ -101,7 +101,18 @@ async fn run(cli: Cli) -> Result<()> {
             #[cfg(all(feature = "heap-profiling", unix))]
             profile_output,
         }) => {
-            let config = Config::load(&config).await?;
+            let config = match ProcessConfig::load(&config).await? {
+                ProcessConfig::Node(config) => *config,
+                ProcessConfig::Console(config) => {
+                    return serve_console(
+                        *config,
+                        trace_seconds,
+                        #[cfg(all(feature = "heap-profiling", unix))]
+                        profile_output,
+                    )
+                    .await;
+                }
+            };
             let mut logging = tidemq::observability::logging::initialize_with_tracing(
                 &config.logging,
                 &config.tracing,
@@ -163,23 +174,20 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Command::ValidateConfig { config }) => {
-            let config = Config::load(&config).await?;
-            config.runtime.validate(&config).map_err(runtime_error)?;
+            ProcessConfig::load(&config).await?.validate_for_startup()?;
             print_json(&serde_json::json!({"valid": true}))
         }
         Some(Command::Diagnose { config }) => {
             let config = if let Some(path) = config {
-                Config::load(&path).await?
+                ProcessConfig::load(&path).await?
             } else {
-                Config::default()
+                ProcessConfig::Node(Box::default())
             };
-            config.validate()?;
-            if !config.runtime.peers.is_empty() {
-                config.runtime.validate(&config).map_err(runtime_error)?;
-            }
+            config.validate_for_diagnosis()?;
+            let messaging_runtime_available = matches!(config, ProcessConfig::Node(_));
             print_json(&serde_json::json!({"version": env!("CARGO_PKG_VERSION"),
                 "scope": "current_process", "configuration": config,
-                "allocator": allocator::snapshot().await?, "messaging_runtime_available": true}))
+                "allocator": allocator::snapshot().await?, "messaging_runtime_available": messaging_runtime_available}))
         }
         Some(Command::Metrics) => {
             let text = tidemq::observability::metrics::Metrics::default().encode()?;
@@ -213,6 +221,56 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+async fn serve_console(
+    config: tidemq::console::ConsoleConfig,
+    trace_seconds: u16,
+    #[cfg(all(feature = "heap-profiling", unix))] profile_output: Option<PathBuf>,
+) -> Result<()> {
+    let mut logging =
+        tidemq::observability::logging::initialize_with_tracing(&config.logging, &config.tracing)?;
+    if trace_seconds > 0 {
+        logging.control.temporary_filter(
+            "warn,tidemq=info,tidemq::console=trace",
+            std::time::Duration::from_secs(u64::from(trace_seconds)),
+        )?;
+    }
+    let mut server = tidemq::console::RunningConsole::start(config).await?;
+    #[cfg(all(feature = "heap-profiling", unix))]
+    let profile = profile_output.map(|directory| tokio::spawn(async move {
+        let result = allocator::profile::sample(directory, 8_388_608, std::time::Duration::from_secs(5), std::time::Duration::from_secs(15)).await;
+        match result {
+            Ok(artifact) => tracing::info!(event_code = "console_heap_sample_completed", artifact = ?artifact, "Bounded Console heap sample completed"),
+            Err(source) => { let error = anyhow::Error::new(source); tracing::warn!(event_code = "console_heap_sample_failed", error = %format_args!("{error:#}"), "Bounded Console heap sample failed"); }
+        }
+    }));
+    tracing::info!(event_code = "service_started", role = "console", address = %server.address, management_address = %server.management_address, "Stateless TideMQ Console is accepting HTTP requests");
+    let stopped = tokio::select! {
+        result = shutdown_signal() => result,
+        result = server.wait_for_exit() => result,
+    };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let drained = server.shutdown_until(deadline).await;
+    #[cfg(all(feature = "heap-profiling", unix))]
+    if let Some(mut profile) = profile
+        && tokio::time::timeout_at(deadline, &mut profile)
+            .await
+            .is_err()
+    {
+        profile.abort();
+        let _ = profile.await;
+    }
+    let traced = logging.shutdown_tracing(deadline).await;
+    stopped?;
+    drained?;
+    traced?;
+    tracing::info!(
+        event_code = "service_stopped",
+        role = "console",
+        "Stateless TideMQ Console drained its HTTP listeners"
+    );
+    Ok(())
 }
 
 fn runtime_error(source: tidemq::runtime::Error) -> Error {

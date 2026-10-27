@@ -1,5 +1,7 @@
 # Kubernetes 人工部署与退休
 
+Console 使用同一二进制和镜像，以 `role = "console"` 启动独立无状态 Deployment，提供登录、授权/Topic/消息管理及消费和组件状态；配置、HTTPS Ingress、跨副本会话密钥和固定探针示例见 [Console 部署与验证](../console/README.zh-CN.md)。Console 不加入 MQ 注册表或 Raft 成员，不需要本文件 MQ StatefulSet 的 PVC 或平台写权限；配置生成和 HTTP 测试不代替目标集群的真实部署验收。
+
 这是使用稳定节点身份和 PVC 的 RF3 Combined 示例，包含三个活动实例和一个尚未启动的替换实例。节点 1/2/3 分别要求 Kubernetes 节点标签 `topology.kubernetes.io/zone=zone-1/zone-2/zone-0`，候选节点 4 位于 `zone-0`。真实部署应将标签映射到实际故障域；同机 Kind 的标签仅验证调度规则。分角色部署使用相同管理协议，不能通过增加 Metadata 副本提高数据写入容量。
 
 需要 Bash、OpenSSL、kubectl、jq、可动态分配 RWO PVC 的 StorageClass，以及按源码提交构建的 TideMQ 镜像。镜像沿用 [Docker 构建](../docker/README.zh-CN.md)，使用固定 tag 或 digest；不能使用 `latest`。脚本要求显式 context，并且拒绝已有 namespace 和输出目录。它会在所选集群创建资源，不替换已有部署。

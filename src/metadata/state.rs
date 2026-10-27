@@ -71,6 +71,7 @@ pub struct MetadataState {
     pub(crate) quotas: super::QuotaLedger,
     pub(crate) resource_leases: super::ResourceLeases,
     pub(crate) policies: BTreeMap<Id, super::QuotaPolicy>,
+    pub(crate) console_operations: super::ConsoleOperations,
     pub(crate) limits: MetadataLimits,
     pub(crate) topics: BTreeMap<Id, TopicRecord>,
     pub(crate) topic_names: BTreeMap<String, Id>,
@@ -218,6 +219,7 @@ impl MetadataState {
                     | Action::ResourceLease(_)
                     | Action::ObserveQuotaPolicy { .. }
                     | Action::CompleteMetadataChange { .. }
+                    | Action::Console(_)
             )
         {
             return self.apply_new(&command);
@@ -362,6 +364,7 @@ impl MetadataState {
             return Err(Rejection::Uninitialized);
         }
         match &command.action {
+            Action::Console(request) => self.console_command(request),
             Action::CompleteMetadataChange {
                 operation,
                 membership_index,

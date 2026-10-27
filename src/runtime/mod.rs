@@ -6,6 +6,8 @@ mod authority_transfer;
 mod broker_balance;
 mod cluster;
 mod config;
+mod console_operation;
+mod console_read;
 mod consumer_control;
 mod consumer_data;
 mod consumer_delete;

@@ -6,6 +6,16 @@ macro_rules! resource_id {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
         pub struct $name(pub(crate) Id);
+        impl From<Id> for $name {
+            fn from(value: Id) -> Self {
+                Self(value)
+            }
+        }
+        impl From<$name> for Id {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
         impl std::fmt::Display for $name {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 self.0.fmt(formatter)
@@ -34,10 +44,11 @@ pub enum Permission {
     Produce,
     Consume,
     Inspect,
+    InspectMessageContent,
 }
 
 impl Permission {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::ManageTenants => "manage_tenants",
             Self::ManageCredentials => "manage_credentials",
@@ -45,6 +56,20 @@ impl Permission {
             Self::Produce => "produce",
             Self::Consume => "consume",
             Self::Inspect => "inspect",
+            Self::InspectMessageContent => "inspect_message_content",
+        }
+    }
+
+    pub(crate) fn from_name(value: &str) -> Result<Self> {
+        match value {
+            "manage_tenants" => Ok(Self::ManageTenants),
+            "manage_credentials" => Ok(Self::ManageCredentials),
+            "manage_topics" => Ok(Self::ManageTopics),
+            "produce" => Ok(Self::Produce),
+            "consume" => Ok(Self::Consume),
+            "inspect" => Ok(Self::Inspect),
+            "inspect_message_content" => Ok(Self::InspectMessageContent),
+            _ => Err(result_mismatch()),
         }
     }
 }
@@ -89,9 +114,9 @@ impl PrincipalBuilder {
         self
     }
     pub async fn build(self) -> Result<PrincipalId> {
-        if self.request.permissions.is_empty() || self.request.permissions.len() > 6 {
+        if self.request.permissions.len() > 7 {
             return Err(Error::Configuration {
-                reason: "principal must have between one and six permissions",
+                reason: "principal may have at most seven permissions",
             });
         }
         let result = self.admin.manage_identity(&self.request).await?;
@@ -205,7 +230,7 @@ impl Admin {
                 name: name.into(),
                 permissions: permissions
                     .into_iter()
-                    .take(7)
+                    .take(8)
                     .map(|permission| permission.as_str().to_owned())
                     .collect(),
                 enabled: true,
@@ -306,7 +331,10 @@ impl Admin {
         }
     }
 
-    async fn manage_identity(&self, request: &public::ManageIdentity) -> Result<AdminReceipt> {
+    pub(crate) async fn manage_identity(
+        &self,
+        request: &public::ManageIdentity,
+    ) -> Result<AdminReceipt> {
         self.execute(crate::admin::pending::Request::Identity(request.clone()))
             .await
     }
@@ -334,7 +362,10 @@ pub(crate) fn receipt(
         | Action::SetNamespaceLimits => Id::from_slice(&request.target_id)?,
         Action::DeleteTenantIdentity
         | Action::DeleteNamespaceIdentity
-        | Action::SetNamespaceEnabled => Id::from_slice(&request.target_id)?,
+        | Action::SetNamespaceEnabled
+        | Action::GrantResourcePermission
+        | Action::RevokeResourcePermission
+        | Action::ReplaceResourceGrants => Id::from_slice(&request.target_id)?,
         Action::PutPrincipalIdentity if !request.target_id.is_empty() => {
             Id::from_slice(&request.target_id)?
         }
@@ -353,7 +384,10 @@ pub(crate) fn receipt(
     Ok(match action {
         Action::CreateTenantIdentity => AdminReceipt::TenantCreated(TenantId(id)),
         Action::CreateNamespaceIdentity => AdminReceipt::NamespaceCreated(NamespaceId(id)),
-        Action::PutPrincipalIdentity => AdminReceipt::PrincipalConfigured(PrincipalId(id)),
+        Action::PutPrincipalIdentity
+        | Action::GrantResourcePermission
+        | Action::RevokeResourcePermission
+        | Action::ReplaceResourceGrants => AdminReceipt::PrincipalConfigured(PrincipalId(id)),
         Action::RevokeCredential => AdminReceipt::CredentialRevoked(CredentialId(id)),
         Action::SetTenantEnabled => AdminReceipt::TenantStatusChanged(TenantId(id)),
         Action::SetTenantLimits => AdminReceipt::TenantLimitsChanged(TenantId(id)),

@@ -129,6 +129,11 @@ pub enum FrameKind {
     ClusterControlResult = 90,
     GetClusterRegistry = 91,
     ClusterRegistryPage = 92,
+    ConsoleRead = 93,
+    ConsoleReadResult = 94,
+    ConsoleWrite = 95,
+    ConsoleOperationResult = 96,
+    GetConsoleOperation = 97,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -183,6 +188,11 @@ impl FrameKind {
             Self::ClusterControlResult => "CLUSTER_CONTROL_RESULT",
             Self::GetClusterRegistry => "GET_CLUSTER_REGISTRY",
             Self::ClusterRegistryPage => "CLUSTER_REGISTRY_PAGE",
+            Self::ConsoleRead => "CONSOLE_READ",
+            Self::ConsoleReadResult => "CONSOLE_READ_RESULT",
+            Self::ConsoleWrite => "CONSOLE_WRITE",
+            Self::ConsoleOperationResult => "CONSOLE_OPERATION_RESULT",
+            Self::GetConsoleOperation => "GET_CONSOLE_OPERATION",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -234,6 +244,11 @@ impl FrameKind {
             "CLUSTER_CONTROL_RESULT" => Some(Self::ClusterControlResult),
             "GET_CLUSTER_REGISTRY" => Some(Self::GetClusterRegistry),
             "CLUSTER_REGISTRY_PAGE" => Some(Self::ClusterRegistryPage),
+            "CONSOLE_READ" => Some(Self::ConsoleRead),
+            "CONSOLE_READ_RESULT" => Some(Self::ConsoleReadResult),
+            "CONSOLE_WRITE" => Some(Self::ConsoleWrite),
+            "CONSOLE_OPERATION_RESULT" => Some(Self::ConsoleOperationResult),
+            "GET_CONSOLE_OPERATION" => Some(Self::GetConsoleOperation),
             _ => None,
         }
     }

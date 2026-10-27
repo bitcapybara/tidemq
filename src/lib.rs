@@ -8,6 +8,7 @@ pub mod archive;
 pub mod broker;
 pub mod budget;
 pub mod config;
+pub mod console;
 pub mod error;
 pub mod gateway;
 pub mod metadata;

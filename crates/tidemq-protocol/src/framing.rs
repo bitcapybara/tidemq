@@ -273,6 +273,11 @@ fn validate_frame(frame: &Frame, expected: TrafficClass, limits: &ProtocolLimits
 
 pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
     match kind {
+        FrameKind::ConsoleRead
+        | FrameKind::ConsoleReadResult
+        | FrameKind::ConsoleWrite
+        | FrameKind::ConsoleOperationResult
+        | FrameKind::GetConsoleOperation => class == TrafficClass::Bulk,
         FrameKind::Hello | FrameKind::HelloResult | FrameKind::Error | FrameKind::Cancel => true,
         FrameKind::TopicResult
         | FrameKind::GetTopic

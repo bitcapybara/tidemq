@@ -1,0 +1,13 @@
+{
+  "image": "REPLACE_WITH_TIDEMQ_IMAGE_DIGEST",
+  "publicOrigin": "https://console.example.test",
+  "clusterAddress": "mq.tidemq.svc:7443",
+  "clusterServerName": "mq.tidemq.svc",
+  "tracingEndpoint": "https://192.0.2.10:4318/v1/traces",
+  "namespace": "tidemq",
+  "privateSecret": "tidemq-console-private",
+  "previousSessionKeyNames": [],
+  "tlsSecret": "tidemq-console-tls",
+  "ingressClass": "nginx",
+  "observability": {"components": []}
+}

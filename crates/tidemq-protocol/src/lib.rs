@@ -1,5 +1,7 @@
 //! Shared identities, bounded framing, and versioned TideMQ wire messages.
 
+pub mod console;
+pub mod console_operation;
 mod error;
 pub mod framing;
 pub mod identity;
