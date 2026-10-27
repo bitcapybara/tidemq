@@ -14,6 +14,19 @@ struct JoinAttempt {
     operation: Id,
     request: public::ConsumerControl,
     heartbeat: Option<(Id, public::ConsumerControl)>,
+    started: bool,
+    // Allocated epochs need not be consecutive; cleanup uses the last confirmed epoch.
+    previous_epoch: u64,
+}
+
+impl JoinAttempt {
+    fn prepare_next(&mut self, epoch: u64) -> Result<()> {
+        self.operation = Id::new_v7()?;
+        self.request.member_epoch = epoch;
+        self.heartbeat = None;
+        self.started = false;
+        Ok(())
+    }
 }
 
 use bytes::Bytes;
@@ -53,6 +66,8 @@ struct Builder {
     initial: InitialPosition,
     messages: u32,
     bytes: u32,
+    #[cfg(test)]
+    stop_before_initial_join: bool,
 }
 
 pub struct StreamConsumerBuilder(Builder);
@@ -140,6 +155,8 @@ pub(crate) struct Core {
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     quarantine: Mutex<Option<tokio::task::JoinHandle<()>>>,
     resource_memory: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+    #[cfg(test)]
+    stop_after_join_replacement: std::sync::atomic::AtomicBool,
 }
 
 impl Client {
@@ -179,6 +196,8 @@ impl Builder {
             initial: InitialPosition::EarliestAvailable,
             messages: 256,
             bytes: 8 * 1024 * 1024,
+            #[cfg(test)]
+            stop_before_initial_join: false,
         }
     }
 
@@ -257,6 +276,8 @@ impl Builder {
             operation,
             request,
             heartbeat: None,
+            started: false,
+            previous_epoch: 0,
         };
         let core = Arc::new(Core {
             client: self.client.background(),
@@ -293,7 +314,13 @@ impl Builder {
             task: Mutex::new(None),
             quarantine: Mutex::new(None),
             resource_memory: Mutex::new(Some(resource_memory)),
+            #[cfg(test)]
+            stop_after_join_replacement: std::sync::atomic::AtomicBool::new(false),
         });
+        #[cfg(test)]
+        if self.stop_before_initial_join {
+            core.stop.cancel();
+        }
         self.client.register_consumer(&core)?;
         let owner = Arc::new(Owner {
             core: core.clone(),
@@ -304,7 +331,11 @@ impl Builder {
         let task = tokio::spawn(async move {
             let core = worker;
             let mut joining = joining;
-            let result = join_control(&core.client, &mut joining, deadline).await;
+            let result = tokio::select! {
+                biased;
+                _ = core.stop.cancelled() => Err(Error::Closed),
+                result = join_control(&core, &mut joining, deadline) => result,
+            };
             core.epoch
                 .store(joining.request.member_epoch, Ordering::Release);
             match result {
@@ -355,18 +386,18 @@ async fn control(
 }
 
 async fn join_control(
-    client: &Client,
+    core: &Core,
     joining: &mut JoinAttempt,
     deadline: Instant,
 ) -> Result<(public::ConsumerControlResult, Instant)> {
-    let JoinAttempt {
-        operation,
-        request,
-        heartbeat: pending_heartbeat,
-    } = joining;
     loop {
+        if core.stop.is_cancelled() {
+            return Err(Error::Closed);
+        }
+        joining.started = true;
+        core.remember_join(joining)?;
         let started = Instant::now();
-        match control(client, *operation, request, deadline).await {
+        match control(&core.client, joining.operation, &joining.request, deadline).await {
             Ok(result)
                 if result.member_status == 2
                     && result.plan_active
@@ -376,22 +407,21 @@ async fn join_control(
                 return Ok((result, started));
             }
             Ok(result) if matches!(result.member_status, 1 | 2) && result.member_epoch > 0 => {
-                if pending_heartbeat.as_ref().is_some_and(|(_, request)| {
+                if joining.heartbeat.as_ref().is_some_and(|(_, request)| {
                     request.heartbeat_sequence < result.next_heartbeat_sequence
                 }) {
-                    *pending_heartbeat = None;
+                    joining.heartbeat = None;
                 }
-                if pending_heartbeat.is_none() {
-                    let mut heartbeat = request.clone();
+                if joining.heartbeat.is_none() {
+                    let mut heartbeat = joining.request.clone();
                     heartbeat.action = public::ConsumerAction::HeartbeatConsumer.into();
                     heartbeat.heartbeat_sequence = result.next_heartbeat_sequence;
-                    *pending_heartbeat = Some((Id::new_v7()?, heartbeat));
+                    joining.heartbeat = Some((Id::new_v7()?, heartbeat));
                 }
-                let (heartbeat_operation, heartbeat) =
-                    pending_heartbeat.as_ref().ok_or(Error::SessionExpired)?;
+                let (operation, heartbeat) =
+                    joining.heartbeat.as_ref().ok_or(Error::SessionExpired)?;
                 let started = Instant::now();
-                let status = match control(client, *heartbeat_operation, heartbeat, deadline).await
-                {
+                let status = match control(&core.client, *operation, heartbeat, deadline).await {
                     Ok(status) => status,
                     Err(error)
                         if (error.outcome_unknown()
@@ -404,16 +434,20 @@ async fn join_control(
                     }
                     Err(error) => return Err(error),
                 };
-                *pending_heartbeat = None;
+                joining.heartbeat = None;
                 if status.member_status == 2 && status.plan_active && fresh_view(&status, started) {
                     return Ok((status, started));
                 }
                 pause_control(deadline).await?;
             }
             Ok(result) if matches!(result.member_status, 5 | 7) && result.plan_active => {
-                request.member_epoch = result.next_member_epoch;
-                *operation = Id::new_v7()?;
-                *pending_heartbeat = None;
+                joining.previous_epoch = joining.request.member_epoch;
+                joining.prepare_next(result.next_member_epoch)?;
+                core.remember_join(joining)?;
+                #[cfg(test)]
+                if core.stop_after_join_replacement.load(Ordering::Acquire) {
+                    core.stop.cancel();
+                }
                 pause_control(deadline).await?;
             }
             Ok(_) => return Err(Error::SessionExpired),
@@ -423,9 +457,12 @@ async fn join_control(
                 expected_registration_epoch: Some(expected),
                 ..
             }) => {
-                request.member_epoch = expected;
-                *operation = Id::new_v7()?;
-                *pending_heartbeat = None;
+                joining.prepare_next(expected)?;
+                core.remember_join(joining)?;
+                #[cfg(test)]
+                if core.stop_after_join_replacement.load(Ordering::Acquire) {
+                    core.stop.cancel();
+                }
                 pause_control(deadline).await?;
             }
             Err(error)
@@ -434,7 +471,7 @@ async fn join_control(
                     || error.retry_rejected())
                     && Instant::now() < deadline =>
             {
-                pause_control(deadline).await?;
+                pause_control(deadline).await?
             }
             Err(error) => return Err(error),
         }
@@ -455,6 +492,12 @@ fn fresh_view(status: &public::ConsumerControlResult, started: Instant) -> bool 
 }
 
 impl Core {
+    fn remember_join(&self, joining: &JoinAttempt) -> Result<()> {
+        self.state()?.pending_join = Some(joining.clone());
+        self.changed.notify_waiters();
+        Ok(())
+    }
+
     pub(crate) fn retains_work(&self) -> bool {
         self.state().is_ok_and(|state| {
             state.closed.is_none()
@@ -570,7 +613,9 @@ impl Core {
             if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 let unresolved_joins = self
                     .state()
-                    .map(|state| usize::from(state.pending_join.is_some()))
+                    .map(|state| {
+                        usize::from(state.pending_join.as_ref().is_some_and(|join| join.started))
+                    })
                     .unwrap_or(1);
                 return Err(CloseError {
                     report: CloseReport {

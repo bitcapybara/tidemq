@@ -176,18 +176,28 @@ async fn original_rejoin_closes(point: Point) {
         assert!(!changed);
         assert_eq!(status.unwrap().0, identity.epoch);
     }
+    if point == Point::BeforeCommit {
+        independent_heartbeat_advances(&fixture).await;
+    }
     let close = fixture.first.close();
     tokio::pin!(close);
+    let mut completed = None;
     if point == Point::BeforeCommit {
         tokio::select! {
             result = pause.replayed(Instant::now() + Duration::from_secs(5)) => result.unwrap(),
-            result = &mut close => panic!("Close did not resolve its accepted original Join: {result:?}"),
+            result = &mut close => {
+                assert!(pause.snapshot().unwrap().attempts >= 2,
+                    "Close finished without resolving its original Join");
+                completed = Some(result);
+            },
         }
         pause.resume();
     }
-    let report = close
-        .await
-        .expect("The original Join must close within the original five-second budget");
+    let report = match completed {
+        Some(result) => result,
+        None => close.await,
+    }
+    .expect("The original Join must close within the original five-second budget");
     assert!(report.local_cleanup_complete());
     assert_eq!(report.members_left(), 1);
     assert_eq!(report.unresolved_joins(), 0);
@@ -256,6 +266,38 @@ async fn original_rejoin_closes(point: Point) {
     drop(pause);
     fixture.proxy.close().await;
     fixture.runtime.close().await;
+}
+
+async fn independent_heartbeat_advances(fixture: &CloseFixture) {
+    let rows = members(&fixture.root, fixture.topic, fixture.subscription).await;
+    let other = rows
+        .iter()
+        .find(|row| row.id != fixture.member && row.lease_valid)
+        .unwrap();
+    let member = other.id;
+    let epoch = other.epoch.0;
+    let before = other.expires_at_ms.0;
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rows = members(&fixture.root, fixture.topic, fixture.subscription).await;
+        if let Some(after) = rows.iter().find(|row| {
+            row.id == member
+                && row.epoch.0 == epoch
+                && row.lease_valid
+                && row.expires_at_ms.0 > before
+        }) {
+            eprintln!(
+                "Independent member {member} retained epoch {epoch} and advanced its persisted lease expiry from {before} to {} while the original Join stayed paused",
+                after.expires_at_ms.0
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "A paused Join blocked an independent member's metadata heartbeat"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
