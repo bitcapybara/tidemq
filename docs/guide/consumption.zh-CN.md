@@ -45,9 +45,23 @@ Queue NACK 成功只表示已持久安排重投，不表示业务成功。业务
 
 SDK 先用只读 `GroupWatch` 观察可读性，再用 `GroupRead` 领取消息。Watch 提示不分配消息、不签发交付 token，也不推进消费进度；收到变化提示仍须读取并取得持久结果。观察 token 失效、换主或路由变化时重新同步，不能把观察失败当作远端没有消息。
 
-观察按最多 32 个 Shard 分页，单次服务端等待最多 1 秒；SDK 公平轮转目标，并保留 30 秒的兜底读取期限。期限控制、取消和成员 fencing 同时作用于观察及读取。应用仍使用相同的 `receive`、ACK 和原结果恢复接口。
+观察按最多 32 个 Shard 分页，单次服务端等待最多 1 秒；SDK 公平轮转目标，以约 30 秒、带抖动的周期安排保底读取。排队、信用不足或故障会影响实际完成时间，这个周期不构成最大交付时延保证。期限控制、取消和成员 fencing 同时作用于观察及读取。应用仍使用相同的 `receive`、ACK 和原结果恢复接口。
 
 在 `Isolated` 模式下，最多保留 8 个普通原读取和 1 个保护原读取；短 RPC 尝试结束后，Unknown 原读取继续持有原身份和正文信用。普通请求、恢复和其他消费者不能借用本消费者的保护份额。该份额还需要 Client 和原生传输预算支持；低容量配置采用可见的 `Serial` 模式或在构建时明确拒绝，不能把串行模式视为仍有独立保护读取保证。增加 Shard 数不会增加这些额度。
+
+对已构建的 consumer 调用 `diagnostics()?`，可以读取当前模式、普通/保护未决读取、恢复队列、活跃 RPC、观察页、过期保底及两池的可用消息槽和字节。它是 SDK 本地调度状态的即时快照；服务端的观察占用和结果看 [Watch 指标](../operations/subscription-troubleshooting.zh-CN.md#watch-与实际读取)。持续受阻也会通过 `receive()` 暴露可重试错误。宿主可周期采集这些数值为固定名称的 gauge；业务 ID 应用于受控诊断，不作为无限制指标 label。
+
+```rust
+let status = consumer.diagnostics()?;
+tracing::debug!(
+    mode = ?status.mode,
+    ordinary_unknown = status.ordinary_unknown,
+    protected_blocked = status.protected_blocked,
+    observation_overdue = status.observation_overdue,
+    fallback_overdue = status.fallback_overdue,
+    "Consumer scheduling state"
+);
+```
 
 ## 共享实例、预算与退出
 
