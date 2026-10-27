@@ -36,6 +36,7 @@ pub(super) struct ReadAttempt {
     deadline: Instant,
     token: Bytes,
     progress: Option<ReadProgress>,
+    failed_since: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -532,6 +533,18 @@ async fn poll_read(
         .map_err(|error| error.preserve_uncertainty(uncertain));
     if let Err(error) = &result {
         let mut read = work.lock().map_err(|_| Error::Closed)?;
+        tracing::debug!(
+            target: "tidemq_sdk::consumer_recovery",
+            consumer = %core.member,
+            operation = %operation,
+            shard = %domain,
+            member_epoch = request.member_epoch,
+            sequence = request.sequence,
+            phase = if read.applied { "retire" } else { "read" },
+            error_kind = ?error.kind(),
+            outcome_unknown = error.outcome_unknown(),
+            "Consumer original read attempt failed"
+        );
         read.uncertain |= error.outcome_unknown()
             || matches!(
                 error,
@@ -541,20 +554,40 @@ async fn poll_read(
     result
 }
 
-fn no_work(error: &Error) -> bool {
-    error.retry_transport()
-        || error.retry_rejected()
-        || error.outcome_unknown()
-        || matches!(
-            error,
-            Error::Remote {
-                code: tidemq_protocol::common::ErrorCode::AssignmentBusy
-                    | tidemq_protocol::common::ErrorCode::StaleGeneration
-                    | tidemq_protocol::common::ErrorCode::QuotaExceeded,
-                outcome: tidemq_protocol::common::Outcome::Rejected,
-                ..
-            }
-        )
+pub(super) fn no_work(error: &Error) -> bool {
+    use tidemq_protocol::common::{ErrorCode, Outcome};
+    // An unknown outcome preserves identity; it does not make a terminal cause retryable.
+    match error {
+        Error::Query { source } | Error::RequestUnknown { source } => no_work(source),
+        Error::Deadline
+        | Error::Admission { .. }
+        | Error::Rpc {
+            source: tidemq_transport::rpc::Error::Admission { .. },
+        }
+        | Error::Transport {
+            source: tidemq_transport::Error::Admission { .. },
+        } => true,
+        Error::Remote {
+            code,
+            outcome,
+            retryable,
+            ..
+        } => {
+            *retryable
+                && matches!(outcome, Outcome::Rejected | Outcome::Unknown)
+                && matches!(
+                    code,
+                    ErrorCode::Unavailable
+                        | ErrorCode::Fenced
+                        | ErrorCode::AssignmentBusy
+                        | ErrorCode::StaleGeneration
+                        | ErrorCode::QuotaExceeded
+                        | ErrorCode::ResultUnknown
+                        | ErrorCode::DeadlineExceeded
+                )
+        }
+        _ => error.retry_transport(),
+    }
 }
 
 fn validate_deliveries(

@@ -2,6 +2,7 @@
 use super::*;
 use prost::Message;
 use std::sync::atomic::AtomicBool;
+mod hints;
 use tidemq_protocol::{
     common::Frame,
     framing::{decode_payload, new_frame},
@@ -18,6 +19,14 @@ struct Oracle {
     read_unknown: AtomicBool,
     retire_unknown: AtomicBool,
     watch_unknown: AtomicBool,
+    watch_drop: AtomicBool,
+    watch_error: Mutex<Option<tidemq_protocol::common::ErrorCode>>,
+    watch_dropped: AtomicU64,
+    watch_refused: AtomicU64,
+    layout_disconnect: AtomicBool,
+    layout_disconnected: AtomicU64,
+    layout_completed: AtomicU64,
+    layout: Mutex<Option<public::TopicLayoutResult>>,
     frames: Mutex<Vec<Frame>>,
     late: Notify,
     watch_ids: Mutex<BTreeMap<Id, u64>>,
@@ -64,6 +73,8 @@ async fn peer() -> Peer {
                     FrameKind::GroupWatch,
                     FrameKind::GroupWatchCancel,
                     FrameKind::ConsumerControl,
+                    FrameKind::GetTopic,
+                    FrameKind::GetTopicLayout,
                     FrameKind::Cancel,
                 ],
             )
@@ -148,6 +159,29 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
         }
         let kind = FrameKind::try_from(frame.kind).unwrap();
         let response = match kind {
+            FrameKind::GetTopic => {
+                if oracle.layout_disconnect.load(Ordering::Acquire) {
+                    oracle.layout_disconnected.fetch_add(1, Ordering::Release);
+                    return;
+                }
+                let layout = oracle.layout.lock().unwrap();
+                reply(
+                    &frame,
+                    FrameKind::TopicResult,
+                    &public::TopicResult {
+                        topic_id: layout.as_ref().unwrap().topic_id.clone(),
+                        name: "test/app/events".into(),
+                    },
+                )
+            }
+            FrameKind::GetTopicLayout => {
+                oracle.layout_completed.fetch_add(1, Ordering::Release);
+                reply(
+                    &frame,
+                    FrameKind::TopicLayoutResult,
+                    oracle.layout.lock().unwrap().as_ref().unwrap(),
+                )
+            }
             FrameKind::GroupRead => {
                 let read: public::GroupRead = decode_payload(
                     frame.payload.clone(),
@@ -213,6 +247,29 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
                     .lock()
                     .unwrap()
                     .insert(Id::from_slice(&frame.operation_id).unwrap(), watch.attempt);
+                if oracle.watch_drop.load(Ordering::Acquire) {
+                    oracle.watch_dropped.fetch_add(1, Ordering::Release);
+                    continue;
+                }
+                let watch_error = *oracle.watch_error.lock().unwrap();
+                if let Some(code) = watch_error {
+                    oracle.watch_refused.fetch_add(1, Ordering::Release);
+                    let error = tidemq_protocol::common::ErrorReply {
+                        code: code.into(),
+                        outcome: tidemq_protocol::common::Outcome::Rejected.into(),
+                        retryable: code == tidemq_protocol::common::ErrorCode::QuotaExceeded,
+                        message: "Watch observation was refused".into(),
+                        ..Default::default()
+                    };
+                    sender
+                        .send(
+                            &reply(&frame, FrameKind::Error, &error),
+                            Instant::now() + Duration::from_secs(5),
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 if oracle.watch_unknown.load(Ordering::Acquire) {
                     let error = tidemq_protocol::common::ErrorReply {
                         code: tidemq_protocol::common::ErrorCode::Unavailable.into(),
@@ -423,7 +480,7 @@ async fn quic_retirement_recovery_only_retires_and_close_cancels_watch_resources
     let result = watch::poll(&core, operation, &request, deadline, &permit).await;
     assert!(result.is_err());
     assert!(!result.as_ref().unwrap_err().outcome_unknown());
-    assert!(watch::finish(&core, watch_id, request.attempt, result).is_err());
+    watch::finish(&core, watch_id, request.attempt, result).unwrap();
     drop(permit);
     core.stop.cancel();
     finish(core.clone(), None).await;

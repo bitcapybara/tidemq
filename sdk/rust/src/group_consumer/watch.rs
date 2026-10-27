@@ -321,6 +321,17 @@ pub(super) fn finish(
                 Instant::now() + Duration::from_millis(250)
             };
             drop(state);
+            if driver::no_work(&error) {
+                tracing::debug!(
+                    target: "tidemq_sdk::consumer_recovery",
+                    consumer = %core.member,
+                    operation = %id,
+                    attempt,
+                    error_kind = ?error.kind(),
+                    "Consumer watch hint will retry within its original deadline"
+                );
+                return Ok(());
+            }
             return Err(error);
         }
     };
@@ -379,18 +390,7 @@ fn observe(domain: &mut driver::Domain, result: public::WatchResult) -> Result<(
                         reason: "watch error code is invalid".into(),
                     }
                 })?;
-            if status == public::WatchStatus::WatchRetry
-                && result.retryable
-                && !matches!(
-                    code,
-                    tidemq_protocol::common::ErrorCode::Forbidden
-                        | tidemq_protocol::common::ErrorCode::Unauthenticated
-                )
-            {
-                // A retry is neither an unchanged observation nor a business receive failure.
-                return Ok(());
-            }
-            return Err(Error::Remote {
+            let error = Error::Remote {
                 code,
                 message: "Watch target could not be observed".into(),
                 outcome: tidemq_protocol::common::Outcome::Rejected,
@@ -399,7 +399,12 @@ fn observe(domain: &mut driver::Domain, result: public::WatchResult) -> Result<(
                 expected_registration_epoch: None,
                 retry_after_ms: None,
                 original_outcome_known: true,
-            });
+            };
+            if status == public::WatchStatus::WatchRetry && driver::no_work(&error) {
+                // A retry is neither an unchanged observation nor a business receive failure.
+                return Ok(());
+            }
+            return Err(error);
         }
         public::WatchStatus::Unspecified => {
             return Err(Error::ResponseMismatch {

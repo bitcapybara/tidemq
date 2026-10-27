@@ -51,6 +51,86 @@ async fn standalone() -> Fixture {
     runtime
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stream_handoff_preserves_original_read_retirement_and_cumulative_ack() {
+    let _serial = SERIAL.lock().await;
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter("tidemq_sdk::consumer_recovery=debug")
+        .try_init();
+    let runtime = standalone().await;
+    let client = runtime
+        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .await;
+    let tenant = client.admin().create_tenant("test").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    const TOPIC_HANDOFF: &str = "test/app/sdk-handoff";
+    client.admin().create_topic(TOPIC_HANDOFF).await.unwrap();
+    let first = client
+        .new_stream_consumer(TOPIC_HANDOFF, "history")
+        .prefetch_messages(64)
+        .build()
+        .await
+        .unwrap();
+    let producer = client.new_producer(TOPIC_HANDOFF).build().await.unwrap();
+    for index in 0..40 {
+        producer
+            .send(Message::new(format!("old-{index}")).key(format!("key-{index}")))
+            .await
+            .unwrap();
+    }
+    let mut old = Vec::new();
+    for _ in 0..40 {
+        old.push(
+            tokio::time::timeout(Duration::from_secs(15), first.receive())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    let second = client
+        .new_stream_consumer(TOPIC_HANDOFF, "history")
+        .build()
+        .await
+        .unwrap();
+    let handed_off = tokio::time::timeout(Duration::from_secs(30), second.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let revoked = old
+        .iter()
+        .find(|message| message.message_id() == handed_off.message_id())
+        .unwrap();
+    second.ack_cumulative(&handed_off).await.unwrap();
+    for index in 0..40 {
+        producer
+            .send(Message::new(format!("new-{index}")).key(format!("key-{index}")))
+            .await
+            .unwrap();
+    }
+    let retained = tokio::time::timeout(Duration::from_secs(30), first.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(retained.payload().starts_with(b"new-"));
+    first.ack_cumulative(&retained).await.unwrap();
+    assert!(matches!(
+        first.ack_cumulative(revoked).await,
+        Err(tidemq_sdk::Error::StaleDelivery)
+    ));
+    producer.close().await.unwrap();
+    second.close().await.unwrap();
+    first.close().await.unwrap();
+    drop((old, handed_off, retained));
+    client.close().await.unwrap();
+    assert_eq!(client.metrics().snapshot().admitted_bytes, 0);
+    runtime.close().await;
+}
+
 fn key_for(shard: &tidemq_sdk::ShardInfo, topic: Id) -> Vec<u8> {
     (0_u64..100_000)
         .map(|sequence| sequence.to_be_bytes().to_vec())

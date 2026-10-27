@@ -1,6 +1,125 @@
 use super::*;
 mod peer;
 
+fn remote_failure(code: tidemq_protocol::common::ErrorCode, retryable: bool) -> Error {
+    Error::Remote {
+        code,
+        message: "The peer refused the original operation".into(),
+        outcome: tidemq_protocol::common::Outcome::Rejected,
+        retryable,
+        expected_sequence: None,
+        expected_registration_epoch: None,
+        retry_after_ms: None,
+        original_outcome_known: false,
+    }
+}
+
+#[test]
+fn terminal_causes_are_not_made_retryable_by_query_or_unknown_wrappers() {
+    use tidemq_protocol::common::ErrorCode;
+    for code in [
+        ErrorCode::Forbidden,
+        ErrorCode::Unauthenticated,
+        ErrorCode::DeduplicationExpired,
+        ErrorCode::OffsetExpired,
+        ErrorCode::SessionExpired,
+        ErrorCode::ContentConflict,
+        ErrorCode::InvalidRequest,
+        ErrorCode::NotFound,
+    ] {
+        assert!(!no_work(&remote_failure(code, true)));
+        assert!(!no_work(
+            &remote_failure(code, true).preserve_uncertainty(true)
+        ));
+        assert!(!no_work(&Error::Query {
+            source: Box::new(remote_failure(code, true))
+        }));
+    }
+    assert!(!no_work(&remote_failure(ErrorCode::QuotaExceeded, false)));
+    assert!(!no_work(
+        &Error::ResponseMismatch {
+            reason: "Invalid Watch response".into()
+        }
+        .preserve_uncertainty(true)
+    ));
+    assert!(!no_work(
+        &Error::Protocol {
+            source: tidemq_protocol::Error::Limit {
+                name: "test protocol bound"
+            }
+        }
+        .preserve_uncertainty(true)
+    ));
+    for code in [
+        ErrorCode::Unavailable,
+        ErrorCode::QuotaExceeded,
+        ErrorCode::AssignmentBusy,
+        ErrorCode::StaleGeneration,
+    ] {
+        assert!(no_work(&remote_failure(code, true)));
+        assert!(no_work(
+            &remote_failure(code, true).preserve_uncertainty(true)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn continuous_layout_failure_uses_the_shared_thirty_second_saturation_gate() {
+    let client = client();
+    let core = core(&client, 0, 256, 8 * 1024 * 1024);
+    scheduling::report_stall(&core, Instant::now() - Duration::from_secs(29)).unwrap();
+    assert!(core.try_receive().unwrap().is_none());
+    let failed_since = Instant::now() - Duration::from_secs(31);
+    scheduling::report_stall(&core, failed_since).unwrap();
+    assert_eq!(
+        core.try_receive().unwrap_err().kind(),
+        crate::ErrorKind::ResourceExhausted
+    );
+    scheduling::report_stall(&core, failed_since).unwrap();
+    assert!(core.try_receive().unwrap().is_none());
+    assert!(!core.stop.is_cancelled());
+}
+
+#[tokio::test]
+async fn an_expired_original_read_remains_visible_without_replacing_its_unknown_identity() {
+    let client = client();
+    let core = core(&client, 1, 256, 8 * 1024 * 1024);
+    let (id, read, attempt) = scheduling::next_read(&core, false).unwrap().unwrap();
+    let original = {
+        let read = read.lock().unwrap();
+        (
+            read.operation,
+            read.request.clone(),
+            read.deadline,
+            read.pool,
+        )
+    };
+    drop(attempt);
+    unknown(&core, id, &read);
+    let error = remote_failure(
+        tidemq_protocol::common::ErrorCode::DeduplicationExpired,
+        false,
+    )
+    .preserve_uncertainty(true);
+    scheduling::finish_read(&core, id, &read, Err(error)).unwrap();
+    let error = core.try_receive().unwrap_err();
+    assert_eq!(error.kind(), crate::ErrorKind::RecoveryExpired);
+    assert!(error.outcome_unknown());
+    let retained = read.lock().unwrap();
+    assert_eq!(
+        (
+            retained.operation,
+            retained.request.clone(),
+            retained.deadline,
+            retained.pool
+        ),
+        original
+    );
+    assert!(retained.credit.is_some());
+    drop(retained);
+    assert!(scheduling::next_read(&core, false).unwrap().is_none());
+}
+
 fn core(client: &Client, targets: usize, messages: u32, max_bytes: u32) -> Arc<Core> {
     let member = Id::new_v7().unwrap();
     let credit = credit::Pools::new(client, messages, max_bytes).unwrap();
@@ -190,7 +309,17 @@ async fn protected_unknown_blocks_only_its_own_share_and_recovery_has_two_attemp
     }
     assert!(scheduling::next_read(&core, false).unwrap().is_none());
     assert!(diagnostics(&core).unwrap().protected_blocked);
-    assert!(core.try_receive().unwrap_err().outcome_unknown());
+    assert!(core.try_receive().unwrap().is_none());
+    for domain in core.state().unwrap().domains.values_mut() {
+        if let Some(read) = &domain.read {
+            read.lock().unwrap().failed_since = Some(Instant::now() - Duration::from_secs(31));
+        }
+    }
+    scheduling::report_saturation(&core).unwrap();
+    assert_eq!(
+        core.try_receive().unwrap_err().kind(),
+        crate::ErrorKind::ResourceExhausted
+    );
     for domain in core.state().unwrap().domains.values_mut() {
         domain.next_poll = Instant::now();
     }
@@ -304,8 +433,6 @@ async fn retirement_unknown_cannot_enqueue_twice_and_clones_retain_protected_byt
     unknown(&core, id, &read);
     accept_read(&core, id, &read, &original, result).unwrap();
     assert_eq!(core.state().unwrap().queue.len(), 1);
-    let message = core.try_receive().unwrap_err();
-    assert!(message.outcome_unknown());
     let message = core.try_receive().unwrap().unwrap();
     let clone = message.clone();
     message.data.release_credit().unwrap();
@@ -580,7 +707,7 @@ async fn original_watch_retry_keeps_its_targets_and_deadline_with_a_higher_attem
     let core = core(&client, 2, 256, 8 * 1024 * 1024);
     let (id, request, operation, deadline, permit) = watch::next(&core).unwrap().unwrap();
     drop(permit);
-    assert!(watch::finish(&core, id, request.attempt, Err(Error::Deadline)).is_err());
+    watch::finish(&core, id, request.attempt, Err(Error::Deadline)).unwrap();
     // Set the bounded scheduler's next wake without relying on wall-clock sleeps.
     watch::retry_now_for_test(&core, id);
     let (_, retry, next_operation, next_deadline, _) = watch::next(&core).unwrap().unwrap();

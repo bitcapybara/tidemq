@@ -14,6 +14,7 @@ pub(super) async fn run(core: Arc<Core>) {
     timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut refresh = Instant::now();
     let mut refreshing = false;
+    let mut layout_failed_since = None;
     loop {
         tokio::select! {
             _ = core.stop.cancelled() => break,
@@ -29,7 +30,22 @@ pub(super) async fn run(core: Arc<Core>) {
                     }
                     Some(Ok(Event::Layout(result))) => {
                         refreshing = false;
-                        if let Err(error) = result { report_error(&core, error); }
+                        if let Err(error) = result {
+                            if no_work(&error) {
+                                let since = *layout_failed_since.get_or_insert(Instant::now());
+                                if let Err(error) = report_stall(&core, since) { report_error(&core, error); }
+                                tracing::debug!(
+                                    target: "tidemq_sdk::consumer_recovery",
+                                    consumer = %core.member,
+                                    error_kind = ?error.kind(),
+                                    "Consumer layout hint will retry on the bounded refresh schedule"
+                                );
+                            } else {
+                                report_error(&core, error);
+                            }
+                        } else {
+                            layout_failed_since = None;
+                        }
                     }
                     Some(Err(error)) => { core.record_error(Error::Task { source: error }); core.stop.cancel(); }
                     None => {},
@@ -88,7 +104,7 @@ fn schedule(core: &Arc<Core>, jobs: &mut JoinSet<Event>) -> Result<()> {
     report_saturation(core)
 }
 
-async fn refresh_domains(core: &Core) -> Result<()> {
+pub(super) async fn refresh_domains(core: &Core) -> Result<()> {
     let layout = core.client.admin().topic_info(&core.topic).await?;
     if layout.id != core.topic_id {
         return Err(Error::TopicReplaced);
@@ -101,9 +117,17 @@ async fn refresh_domains(core: &Core) -> Result<()> {
             .iter()
             .any(|id| id.as_ref() == domain.shard.as_bytes());
     }
-    state
-        .domains
-        .retain(|_, domain| domain.assigned || domain.read.is_some() || domain.watching.is_some());
+    // A temporary assignment loss must not reset a birth domain's retired Read sequence.
+    state.domains.retain(|id, domain| {
+        domain.read.is_some()
+            || domain.watching.is_some()
+            || layout
+                .wire
+                .active
+                .iter()
+                .chain(&layout.wire.history)
+                .any(|shard| shard.shard_id.as_ref() == id.as_bytes())
+    });
     for shard in layout.wire.active.iter().chain(&layout.wire.history) {
         let id = Id::from_slice(&shard.shard_id)?;
         if !info.work_shards.contains(&shard.shard_id) || state.domains.contains_key(&id) {
@@ -368,6 +392,7 @@ fn start_read(
         deadline: Instant::now() + Duration::from_secs(600),
         token: domain.token.clone(),
         progress: None,
+        failed_since: None,
     })));
     domain.dirty = false;
     domain.next_fallback = Instant::now() + fallback_delay(domain.shard);
@@ -424,13 +449,15 @@ pub(super) fn finish_read(
                 domain.dirty = true;
                 drop(read);
                 drop(state);
-                report_error(core, error);
+                if !no_work(&error) {
+                    report_error(core, error);
+                }
                 return Ok(());
             }
             read.uncertain |= error.outcome_unknown();
-            let protected = read.pool == Pool::Protected;
+            read.failed_since.get_or_insert(Instant::now());
             drop(read);
-            if protected || !no_work(&error) {
+            if !no_work(&error) {
                 drop(state);
                 report_error(core, error);
             }
@@ -452,23 +479,61 @@ fn unsubmitted(error: &Error) -> bool {
     )
 }
 
-fn report_saturation(core: &Core) -> Result<()> {
+pub(super) fn report_saturation(core: &Core) -> Result<()> {
     let mut state = core.state()?;
     let now = Instant::now();
-    let blocked = state.domains.values().any(|domain| {
-        domain.assigned
-            && !domain.complete
-            && (domain.dirty && domain.read.is_none()
-                || now.saturating_duration_since(domain.next_fallback) >= Duration::from_secs(30))
-            || domain.assigned
+    let mut overdue_progress = state
+        .domains
+        .values()
+        .filter(|domain| {
+            domain.assigned
                 && !domain.complete
-                && domain.observed_at.elapsed() >= Duration::from_secs(30)
-    });
+                && now.saturating_duration_since(domain.observed_at) >= Duration::from_secs(30)
+        })
+        .map(|domain| domain.observed_at)
+        .min();
+    for domain in state
+        .domains
+        .values()
+        .filter(|domain| domain.assigned && !domain.complete)
+    {
+        if let Some(read) = &domain.read {
+            let read = read.lock().map_err(|_| Error::Closed)?;
+            if let Some(since) = read
+                .failed_since
+                .filter(|since| now.saturating_duration_since(*since) >= Duration::from_secs(30))
+            {
+                overdue_progress = Some(overdue_progress.map_or(since, |old| old.min(since)));
+            }
+        }
+    }
+    let blocked = overdue_progress.is_some()
+        || state.domains.values().any(|domain| {
+            domain.assigned
+                && !domain.complete
+                && (domain.dirty && domain.read.is_none()
+                    || now.saturating_duration_since(domain.next_fallback)
+                        >= Duration::from_secs(30))
+                || domain.assigned
+                    && !domain.complete
+                    && domain.observed_at.elapsed() >= Duration::from_secs(30)
+        });
     if !blocked {
         state.saturated_since = None;
         return Ok(());
     }
-    let since = *state.saturated_since.get_or_insert(now);
+    let since = state.saturated_since.get_or_insert(now);
+    if let Some(progress_at) = overdue_progress {
+        *since = (*since).min(progress_at);
+    }
+    let since = *since;
+    drop(state);
+    report_stall(core, since)
+}
+
+pub(super) fn report_stall(core: &Core, since: Instant) -> Result<()> {
+    let mut state = core.state()?;
+    let now = Instant::now();
     if now.saturating_duration_since(since) < Duration::from_secs(30)
         || state
             .last_saturation_error
