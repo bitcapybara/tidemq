@@ -19,6 +19,8 @@
 
 Playwright 的 `mock-network` 套件覆盖确定性的页面操作和故障展示，不计作真实后端验收。`live` 套件通过独立 combined、Console 和 HTTPS 代理进程运行实际登录、导航、刷新、退出与凭据写入结果恢复，使用本次生成的私有身份和数据。真实凭据用例禁用 trace、视频和截图；mock 套件保留失败制品。浏览器结果与 Vitest 源码覆盖率分别统计。
 
+mock 浏览器在 CI 中保留一次诊断重试，但 flaky 结果仍使 CI 失败；必须定位并修复首败原因，不能用重试通过解除门禁。`node --test tests/ci/*.test.mjs` 在 `console/web` 中实际启动受控 Playwright 用例，验证首败后重试通过仍返回失败。此负例不启动浏览器或后端，不替代三引擎交互测试。
+
 ```sh
 npm --prefix console/web ci
 npm --prefix console/web run typecheck
@@ -36,6 +38,8 @@ npm --prefix console/web run test:e2e:live
 合入 main 前，按根目录 [AGENTS.md](https://github.com/bitcapybara/tidemq/blob/main/AGENTS.md) 完成独立 agent review 和候选分支 CI；偶发失败也要定位原因并修复。新功能的检查同时包含正确性、log/trace/metrics 和相应层次测试。长轮询真实 QUIC/Raft 回归由 `runtime_group_watch` 在 test-hooks 故障流程执行；同一流程显式运行根 crate 的 test-hooks 单元测试，覆盖拒绝回复背压等私有组件边界。原生保护帧与 RPC 隔离测试随 transport 单元流程执行；测试配置不代替实际运行结果。
 
 千分片回归通过公开管理接口建立 1000 个真实 shard 及读取游标，测试内部总预算为 900 秒，包含初始化、测量与清理；CI 只为该用例设置 18 分钟的进程终止边界，给失败后的清理留余量。其余用例保留原单例限制，整个集成 lane 最长 40 分钟；这些是测试资源边界，生产 Watch 仍最多等待 1 秒。
+
+`runtime_consumer_close` 在 test-hooks 故障流程中运行真实 RF1/QUIC/Raft 关闭回归，覆盖重加入提交与回复之间关闭的边界，校验原 Join 身份、正确 member epoch、有限关闭预算和未决 Join 报告；它与长轮询、成员故障用例一起运行并纳入同一份 JUnit。
 
 ## CI 与覆盖率
 

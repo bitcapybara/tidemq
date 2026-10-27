@@ -172,7 +172,7 @@ async fn authorization(
     .await;
     let closed = reader.close().await?;
     ensure!(
-        closed.local_cleanup_complete(),
+        closed.local_cleanup_complete() && closed.unresolved_joins() == 0,
         "Scoped client close did not complete"
     );
     result?;

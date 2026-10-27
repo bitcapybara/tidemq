@@ -222,6 +222,7 @@ async fn close_client(client: &Client, report: &mut Report<'_>) {
     match timeout(Duration::from_secs(5), client.close()).await {
         Ok(Ok(close))
             if close.local_cleanup_complete()
+                && close.unresolved_joins() == 0
                 && close.unresolved_sends() == 0
                 && close.unresolved_acks() == 0
                 && close.unresolved_reads() == 0 =>

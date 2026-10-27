@@ -57,6 +57,10 @@ name = "runtime_consumer_reads"
 required-features = ["test-hooks"]
 
 [[test]]
+name = "runtime_consumer_close"
+required-features = ["test-hooks"]
+
+[[test]]
 name = "runtime_group_watch"
 required-features = ["test-hooks"]
 

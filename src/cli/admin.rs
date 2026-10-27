@@ -133,6 +133,7 @@ pub(super) async fn run(args: Args) -> Result<()> {
         Err(error) => error.report(),
     };
     let cleanup = json!({"local_cleanup_complete":report.local_cleanup_complete(),
+        "unresolved_joins":report.unresolved_joins(),
         "unresolved_administrations":report.unresolved_administrations(),
         "unclaimed_results":report.unclaimed_results()});
     match result {

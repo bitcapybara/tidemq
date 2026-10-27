@@ -53,6 +53,7 @@ jobs:
           cache: npm
           cache-dependency-path: console/web/package-lock.json
       - run: npm ci
+      - run: node --test tests/ci/*.test.mjs
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:coverage

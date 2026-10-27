@@ -41,6 +41,8 @@ Vitest 5 with V8 includes every application TypeScript file under `src/`, includ
 
 `npm run test:e2e` runs the separately labelled `e2e/mock-network/` suite against the production build served by Vite preview. The explicit `mockNetwork` Playwright fixture intercepts only API traffic; this suite proves browser UI behavior and does not prove Rust/backend correctness. Projects are `chromium`, `firefox` and `webkit`. PR CI selects Chromium; main CI selects all three. Run `npx playwright install --with-deps chromium firefox webkit` to provision matching browsers. The Playwright version is pinned so local and CI browser revisions match. Reports go to `playwright-report/mock-network/`; failures retain screenshots, video and traces under `test-results/mock-network/`. Pass `--trace=on` to preserve successful synthetic-fixture traces too.
 
+CI retains one diagnostic retry and fails on flaky results. Investigate and fix the first failure before merging. `node --test tests/ci/*.test.mjs` runs a controlled Playwright probe to verify that passing only after a retry still blocks CI; this gate test does not launch a browser or backend.
+
 Covered interactions include login rejection/logout/session expiry, navigation and locale, offset-bounded message scans and private exact filters, permission redaction and cache invalidation, server-version grant previews, input validation, stable write operation IDs after lost replies, conflicts, result recovery, pagination, stale/unavailable reads and native dialog keyboard/focus behavior.
 
 ## Live Rust backend browser smoke

@@ -254,7 +254,10 @@ async fn validate_connected(
                 .context("Close deadline overflow")?,
         );
     match timeout_at(close, client.close()).await {
-        Ok(Ok(close)) => report.client_close_completed = close.local_cleanup_complete(),
+        Ok(Ok(close)) => {
+            report.client_close_completed =
+                close.local_cleanup_complete() && close.unresolved_joins() == 0;
+        }
         Ok(Err(error)) if result.is_ok() => result = Err(error.into()),
         Ok(Err(_)) => {}
         Err(error) if result.is_ok() => {

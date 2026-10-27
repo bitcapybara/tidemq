@@ -58,6 +58,21 @@ impl Service {
         let action = public::ConsumerAction::try_from(request.action)
             .map_err(|_| Error::invalid("Consumer action is invalid"))?;
         let operation = wire::id(&frame.operation_id)?;
+        #[cfg(feature = "test-hooks")]
+        let join_observation = if action == public::ConsumerAction::JoinConsumer {
+            super::consumer_join_hook::observe(super::consumer_join_hook::Identity {
+                operation,
+                topic,
+                subscription: wire::id(&request.subscription_id)?,
+                member: wire::id(&request.member_id)?,
+                epoch: request.member_epoch,
+                client,
+                credential,
+                digest: *blake3::hash(&frame.payload).as_bytes(),
+            })
+        } else {
+            None
+        };
         let guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
         let subscription = if action == public::ConsumerAction::EnsureConsumerSubscription {
             match self
@@ -115,6 +130,12 @@ impl Service {
                 .await?;
             }
             public::ConsumerAction::JoinConsumer => {
+                #[cfg(feature = "test-hooks")]
+                if let Some(observation) = &join_observation {
+                    observation
+                        .pause(super::consumer_join_hook::Point::BeforeCommit, deadline)
+                        .await;
+                }
                 self.consumer_meta_write(
                     operation,
                     ConsumerCommand::Join {
@@ -181,6 +202,13 @@ impl Service {
             .consumer_status(subscription, &request, client, credential)
             .await?;
         drop(guard);
+        #[cfg(feature = "test-hooks")]
+        if let Some(observation) = &join_observation {
+            observation.status(result.member_epoch, result.member_status);
+            observation
+                .pause(super::consumer_join_hook::Point::Reply, deadline)
+                .await;
+        }
         wire::response(
             frame,
             FrameKind::ConsumerControlResult,

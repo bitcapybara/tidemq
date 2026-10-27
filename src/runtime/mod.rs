@@ -11,6 +11,9 @@ mod console_read;
 mod consumer_control;
 mod consumer_data;
 mod consumer_delete;
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub mod consumer_join_hook;
 mod consumer_read;
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]

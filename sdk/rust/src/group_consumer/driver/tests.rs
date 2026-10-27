@@ -323,6 +323,7 @@ fn core(client: &Client, targets: usize, messages: u32, max_bytes: u32) -> Arc<C
             saturated_since: None,
             last_saturation_error: None,
             pending: BTreeMap::new(),
+            pending_join: None,
             claims: BTreeMap::new(),
             ack_sequences: BTreeMap::new(),
             error: None,
