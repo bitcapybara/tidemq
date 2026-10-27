@@ -203,12 +203,21 @@ async fn read(stream: &mut TcpStream) -> Option<Bytes> {
     Some(body.into())
 }
 
-pub async fn wait(mut condition: impl FnMut() -> bool) {
+pub async fn wait(condition: impl FnMut() -> bool) {
+    wait_for("Trace condition", condition, String::new).await;
+}
+
+pub async fn wait_for(
+    name: &str,
+    mut condition: impl FnMut() -> bool,
+    diagnostics: impl Fn() -> String,
+) {
     let deadline = Instant::now() + Duration::from_secs(8);
     while !condition() {
         assert!(
             Instant::now() < deadline,
-            "Trace condition exceeded its deadline"
+            "{name} exceeded its deadline: {}",
+            diagnostics()
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

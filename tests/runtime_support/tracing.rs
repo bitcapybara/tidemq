@@ -69,27 +69,31 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     let host = tracing::info_span!(target: "tidemq_trace", "tidemq.sdk.request", kind = "HOST_OPERATION", class = "PRODUCE");
     host.set_parent(parent).unwrap();
     roundtrip(&producer, &consumer, 0).instrument(host).await;
-    collector::wait(|| {
-        let spans = collector.spans();
-        // Independent exporters can deliver a child before its SDK parent.
-        spans.iter().any(|gateway| {
-            gateway.trace_id == trace.to_bytes()
-                && role(gateway, "gateway")
-                && kind(gateway, tidemq_protocol::common::FrameKind::Publish)
-                && spans.iter().any(|sdk| {
-                    sdk.trace_id == trace.to_bytes()
-                        && sdk.name == "tidemq.sdk.request"
-                        && sdk.span_id == gateway.parent_span_id
-                })
-                && spans.iter().any(|broker| {
-                    broker.trace_id == trace.to_bytes()
-                        && role(broker, "broker")
-                        && broker.parent_span_id == gateway.span_id
-                })
-        }) && spans
-            .iter()
-            .any(|span| span.trace_id == trace.to_bytes() && span.name == "producer_submission")
-    })
+    collector::wait_for(
+        "SDK, gateway and broker trace linkage",
+        || {
+            let spans = collector.spans();
+            // Independent exporters can deliver a child before its SDK parent.
+            spans.iter().any(|gateway| {
+                gateway.trace_id == trace.to_bytes()
+                    && role(gateway, "gateway")
+                    && kind(gateway, tidemq_protocol::common::FrameKind::Publish)
+                    && spans.iter().any(|sdk| {
+                        sdk.trace_id == trace.to_bytes()
+                            && sdk.name == "tidemq.sdk.request"
+                            && sdk.span_id == gateway.parent_span_id
+                    })
+                    && spans.iter().any(|broker| {
+                        broker.trace_id == trace.to_bytes()
+                            && role(broker, "broker")
+                            && broker.parent_span_id == gateway.span_id
+                    })
+            }) && spans
+                .iter()
+                .any(|span| span.trace_id == trace.to_bytes() && span.name == "producer_submission")
+        },
+        || trace_diagnostics(&collector, &pipeline, trace),
+    )
     .await;
     let spans = collector.spans();
     let trace_spans: Vec<_> = spans
@@ -133,19 +137,23 @@ async fn sdk_gateway_broker_trace_and_durable_ack_survive_collector_faults() {
     )
     .await
     .unwrap();
-    collector::wait(|| {
-        let spans = collector.spans();
-        [FrameKind::Publish, FrameKind::GroupAck]
-            .iter()
-            .all(|expected| {
-                spans.iter().any(|span| {
-                    span.trace_id == explicit_trace.to_bytes()
-                        && span.parent_span_id == explicit_parent.to_bytes()
-                        && role(span, "gateway")
-                        && kind(span, *expected)
+    collector::wait_for(
+        "Explicit trace parent propagation",
+        || {
+            let spans = collector.spans();
+            [FrameKind::Publish, FrameKind::GroupAck]
+                .iter()
+                .all(|expected| {
+                    spans.iter().any(|span| {
+                        span.trace_id == explicit_trace.to_bytes()
+                            && span.parent_span_id == explicit_parent.to_bytes()
+                            && role(span, "gateway")
+                            && kind(span, *expected)
+                    })
                 })
-            })
-    })
+        },
+        || trace_diagnostics(&collector, &pipeline, explicit_trace),
+    )
     .await;
     for mode in [collector::SLOW, collector::FAIL, collector::LARGE] {
         let before = pipeline.health.snapshot();
@@ -249,6 +257,34 @@ async fn roundtrip(
         started.elapsed() < Duration::from_secs(3),
         "Collector fault delayed a durable business roundtrip beyond its local test budget"
     );
+}
+
+fn trace_diagnostics(
+    collector: &collector::Collector,
+    pipeline: &Tracing,
+    trace: TraceId,
+) -> String {
+    let spans: Vec<_> = collector
+        .spans()
+        .into_iter()
+        .filter(|span| {
+            span.trace_id == trace.to_bytes()
+                || role(span, "gateway") && kind(span, FrameKind::GroupAck)
+        })
+        .map(|span| {
+            (
+                span.name,
+                span.trace_id,
+                span.span_id,
+                span.parent_span_id,
+                span.attributes,
+            )
+        })
+        .collect();
+    format!(
+        "SDK exporter health: {:?}; observed trace spans: {spans:?}",
+        pipeline.health.snapshot()
+    )
 }
 
 fn role(span: &opentelemetry_proto::tonic::trace::v1::Span, expected: &str) -> bool {

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use opentelemetry::trace::{Link, SpanContext, SpanKind, Status, TraceId, TraceState};
@@ -45,7 +45,8 @@ pub(super) fn allowed_field(name: &str) -> bool {
 
 #[derive(Clone, Debug)]
 pub(super) struct Sampler {
-    rate: Arc<Mutex<(Instant, u16)>>,
+    rate: Arc<AtomicU64>,
+    started: Instant,
     ratio: u16,
     limit: u16,
     health: TraceHealth,
@@ -54,11 +55,33 @@ pub(super) struct Sampler {
 impl Sampler {
     pub fn new(config: &TracingConfig, health: TraceHealth) -> Self {
         Self {
-            rate: Arc::new(Mutex::new((Instant::now(), 0))),
+            rate: Arc::new(AtomicU64::new(0)),
+            started: Instant::now(),
             ratio: config.sample_per_mille,
             limit: config.spans_per_second,
             health,
         }
+    }
+
+    fn reserve(&self, window: u64) -> bool {
+        // Keep the window and count together so contention cannot discard an available sample.
+        self.rate
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |packed| {
+                let previous = packed >> 16;
+                let window = window.max(previous);
+                let count = if window == previous {
+                    packed & 0xffff
+                } else {
+                    0
+                };
+                if count >= u64::from(self.limit) {
+                    return None;
+                }
+                window
+                    .checked_mul(1 << 16)
+                    .map(|base| base | count.saturating_add(1))
+            })
+            .is_ok()
     }
 }
 
@@ -72,19 +95,9 @@ impl ShouldSample for Sampler {
         _attributes: &[KeyValue],
         _links: &[Link],
     ) -> SamplingResult {
-        let mut admitted = false;
-        if allowed_name(name)
+        let admitted = allowed_name(name)
             && u128::from_be_bytes(trace.to_bytes()) % 1_000 < u128::from(self.ratio)
-            && let Ok(mut rate) = self.rate.try_lock()
-        {
-            if rate.0.elapsed() >= Duration::from_secs(1) {
-                *rate = (Instant::now(), 0);
-            }
-            if rate.1 < self.limit {
-                rate.1 += 1;
-                admitted = true;
-            }
-        }
+            && self.reserve(self.started.elapsed().as_secs());
         if !admitted {
             self.health.0.sampled_out.fetch_add(1, Ordering::Relaxed);
         }
@@ -310,4 +323,74 @@ async fn worker(
         next = Instant::now() + interval;
     }
     let _ = exporter.shutdown_with_timeout(Duration::ZERO);
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    #[test]
+    fn sampling_windows_reset_without_rolling_back_or_exceeding_the_limit() {
+        let sampler = Sampler::new(
+            &TracingConfig {
+                spans_per_second: 2,
+                ..TracingConfig::default()
+            },
+            TraceHealth::default(),
+        );
+        assert!(sampler.reserve(0));
+        assert!(sampler.reserve(0));
+        assert!(!sampler.reserve(0));
+        assert!(sampler.reserve(1));
+        assert!(sampler.reserve(0));
+        assert!(!sampler.reserve(1));
+        assert!(!sampler.reserve(u64::MAX));
+        assert!(sampler.reserve(2));
+    }
+
+    #[test]
+    fn concurrent_spans_below_the_rate_budget_are_all_sampled() {
+        let config = TracingConfig {
+            sample_per_mille: 1000,
+            spans_per_second: 1024,
+            ..TracingConfig::default()
+        };
+        let health = TraceHealth::default();
+        let sampler = Sampler::new(&config, health.clone());
+        let barrier = Barrier::new(17);
+        let admitted = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..16)
+                .map(|_| {
+                    let sampler = &sampler;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        (0..32)
+                            .filter(|_| {
+                                sampler
+                                    .should_sample(
+                                        None,
+                                        TraceId::from_bytes([1; 16]),
+                                        "tidemq.sdk.request",
+                                        &SpanKind::Internal,
+                                        &[],
+                                        &[],
+                                    )
+                                    .decision
+                                    == SamplingDecision::RecordAndSample
+                            })
+                            .count()
+                    })
+                })
+                .collect();
+            barrier.wait();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .sum::<usize>()
+        });
+        assert_eq!(admitted, 512);
+        assert_eq!(health.snapshot().sampled_out, 0);
+    }
 }
