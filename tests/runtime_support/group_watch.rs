@@ -206,6 +206,29 @@ impl WireClient {
             .unwrap()
     }
 
+    pub(super) async fn submit_until(
+        &self,
+        request: &public::GroupWatch,
+        until: Instant,
+    ) -> (RpcResponse, Bytes) {
+        let remaining = until.saturating_duration_since(Instant::now());
+        assert!(
+            remaining.as_millis() > 0,
+            "The original observation deadline expired before submission"
+        );
+        let mut request_frame = frame(
+            FrameKind::GroupWatch,
+            Id::from_slice(&request.root_operation_id).unwrap(),
+            request,
+        );
+        request_frame.remaining_timeout_ms = remaining.as_millis().try_into().unwrap();
+        let request_id = request_frame.request_id.clone();
+        (
+            self.control.submit(request_frame, until).await.unwrap(),
+            request_id,
+        )
+    }
+
     pub async fn watch(&self, request: &public::GroupWatch) -> public::GroupWatchResult {
         let reply = self
             .call(frame(
@@ -596,6 +619,10 @@ pub(super) fn assert_released(snapshot: &tidemq::runtime::watch_test_hooks::Snap
     assert_eq!(snapshot.active_requests, 0);
     assert_eq!(snapshot.cancellation_watermarks, 0);
     assert_eq!(snapshot.timers, 0);
+    assert_eq!(snapshot.authority_inbound, 0);
+    assert_eq!(snapshot.authority_outbound, 0);
+    assert_eq!(snapshot.admission_queued, 0);
+    assert_eq!(snapshot.rechecks_queued, 0);
     for group in &snapshot.groups {
         assert_eq!(group.cached_targets, 0);
         assert_eq!(group.dependency_edges, 0);

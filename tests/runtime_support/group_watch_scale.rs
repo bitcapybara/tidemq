@@ -308,6 +308,457 @@ async fn observation_failure_ledger(observer: &Diagnostics, request: &public::Gr
     );
 }
 
+enum ObservationReply {
+    Complete,
+    Retry(Duration),
+    Invalid(String),
+}
+
+struct Observation {
+    request: public::GroupWatch,
+    digest: [u8; 32],
+    until: Instant,
+    request_ids: BTreeSet<Bytes>,
+    current_request: Bytes,
+    refusals: usize,
+}
+
+struct Observed {
+    targets: BTreeMap<Bytes, Bytes>,
+    attempts: usize,
+    refusals: usize,
+}
+
+#[derive(Default, serde::Serialize)]
+struct ObservationTotals {
+    roots: usize,
+    attempts: usize,
+    refusals: usize,
+    maximum_attempts: usize,
+}
+
+impl ObservationTotals {
+    fn record(&mut self, observed: &Observed) {
+        self.roots += 1;
+        self.attempts += observed.attempts;
+        self.refusals += observed.refusals;
+        self.maximum_attempts = self.maximum_attempts.max(observed.attempts);
+    }
+}
+
+impl Observation {
+    fn new(request: public::GroupWatch, timeout: Duration) -> Self {
+        let digest = tidemq_protocol::watch::digest(&request);
+        Self {
+            request,
+            digest,
+            until: Instant::now() + timeout,
+            request_ids: BTreeSet::new(),
+            current_request: Bytes::new(),
+            refusals: 0,
+        }
+    }
+
+    async fn submit(&mut self, wire: &WireClient) -> tidemq::transport::rpc::RpcResponse {
+        assert_eq!(
+            tidemq_protocol::watch::digest(&self.request),
+            self.digest,
+            "An observation retry changed its immutable branch scope"
+        );
+        assert!(
+            self.request_ids.len() < 64,
+            "An observation exhausted its finite attempt bound"
+        );
+        let (response, request_id) = wire.submit_until(&self.request, self.until).await;
+        assert!(
+            self.request_ids.insert(request_id.clone()),
+            "A retry reused its request ID"
+        );
+        self.current_request = request_id;
+        eprintln!(
+            "Watch observation attempt ledger: root={} request={} attempt={} remaining_ms={} scope_hash={}",
+            Id::from_slice(&self.request.root_operation_id).unwrap(),
+            Id::from_slice(&self.current_request).unwrap(),
+            self.request.attempt,
+            self.until
+                .saturating_duration_since(Instant::now())
+                .as_millis(),
+            blake3::hash(&self.digest).to_hex()
+        );
+        response
+    }
+
+    fn classify(
+        &self,
+        reply: &tidemq_protocol::common::Frame,
+        expected: public::WatchStatus,
+    ) -> ObservationReply {
+        if reply.kind == i32::from(FrameKind::Error) {
+            let error: tidemq_protocol::common::ErrorReply = decoded(reply, FrameKind::Error);
+            eprintln!(
+                "Watch explicit refusal ledger: root={} attempt={} error={error:?}",
+                Id::from_slice(&self.request.root_operation_id).unwrap(),
+                self.request.attempt
+            );
+            return if error.code == i32::from(ErrorCode::QuotaExceeded)
+                && error.outcome == i32::from(tidemq_protocol::common::Outcome::Rejected)
+                && error.retryable
+            {
+                ObservationReply::Retry(Duration::from_millis(
+                    error.retry_after_ms.unwrap_or(50).max(1),
+                ))
+            } else {
+                ObservationReply::Invalid(format!(
+                    "The observation returned a nonrecoverable error: {error:?}"
+                ))
+            };
+        }
+        let result: public::GroupWatchResult = decoded(reply, FrameKind::GroupWatchResult);
+        let expected_shards: BTreeSet<_> = self
+            .request
+            .targets
+            .iter()
+            .map(|target| &target.shard_id)
+            .collect();
+        let actual: BTreeSet<_> = result
+            .targets
+            .iter()
+            .map(|target| &target.shard_id)
+            .collect();
+        if actual != expected_shards || result.targets.len() != expected_shards.len() {
+            return ObservationReply::Invalid(
+                "An observation omitted or duplicated a target".into(),
+            );
+        }
+        let mut retry = false;
+        for target in &result.targets {
+            let original = self
+                .request
+                .targets
+                .iter()
+                .find(|original| original.shard_id == target.shard_id)
+                .unwrap();
+            if target.status == i32::from(expected)
+                && target.error_code == i32::from(ErrorCode::Unspecified)
+                && !target.retryable
+                && !target.observed_token.is_empty()
+                && target.observed_token.len() <= tidemq_protocol::watch::MAX_TOKEN_BYTES
+                && (expected != public::WatchStatus::WatchUnchanged
+                    || target.observed_token == original.observed_token)
+            {
+                continue;
+            }
+            if target.status == i32::from(public::WatchStatus::WatchRetry)
+                && target.retryable
+                && target.observed_token == original.observed_token
+                && matches!(
+                    ErrorCode::try_from(target.error_code),
+                    Ok(ErrorCode::QuotaExceeded
+                        | ErrorCode::Unavailable
+                        | ErrorCode::DeadlineExceeded)
+                )
+            {
+                retry = true;
+            } else {
+                return ObservationReply::Invalid(format!(
+                    "An observation returned a nonrecoverable target: {target:?}"
+                ));
+            }
+        }
+        if retry {
+            // WatchResult has no retry-after field; pace only the explicitly refused observation.
+            ObservationReply::Retry(Duration::from_millis(50))
+        } else {
+            ObservationReply::Complete
+        }
+    }
+
+    async fn finish(
+        &mut self,
+        wire: &WireClient,
+        observer: &Diagnostics,
+        mut reply: tidemq_protocol::common::Frame,
+        expected: public::WatchStatus,
+    ) -> Observed {
+        loop {
+            assert_eq!(reply.operation_id, self.request.root_operation_id);
+            assert_eq!(reply.request_id, self.current_request);
+            let delay = match self.classify(&reply, expected) {
+                ObservationReply::Complete => {
+                    return Observed {
+                        targets: checked_results(observer, &self.request, &reply, expected).await,
+                        attempts: self.request_ids.len(),
+                        refusals: self.refusals,
+                    };
+                }
+                ObservationReply::Retry(delay) => delay,
+                ObservationReply::Invalid(reason) => {
+                    observation_failure_ledger(observer, &self.request).await;
+                    panic!("{reason}");
+                }
+            };
+            self.refusals += 1;
+            observation_failure_ledger(observer, &self.request).await;
+            let retry_at = Instant::now() + delay;
+            assert!(
+                retry_at < self.until,
+                "The original observation deadline cannot accommodate the explicit retry delay"
+            );
+            eprintln!(
+                "Watch bounded retry ledger: root={} rejected_attempt={} refusals={} retry_after_ms={} remaining_ms={}",
+                Id::from_slice(&self.request.root_operation_id).unwrap(),
+                self.request.attempt,
+                self.refusals,
+                delay.as_millis(),
+                self.until
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+            );
+            // This delay paces a known refusal; only the subsequent authenticated reply proves progress.
+            tokio::time::sleep_until(retry_at).await;
+            self.request.attempt = self.request.attempt.checked_add(1).unwrap();
+            let response = self.submit(wire).await;
+            let received = tokio::time::timeout_at(self.until, response.receive())
+                .await
+                .expect("The original observation deadline expired during recovery")
+                .unwrap();
+            reply = received.frame().clone();
+        }
+    }
+}
+
+async fn observe(
+    wire: &WireClient,
+    observer: &Diagnostics,
+    request: public::GroupWatch,
+    expected: public::WatchStatus,
+) -> Observed {
+    let mut observation = Observation::new(request, Duration::from_millis(RPC_MS));
+    let response = observation.submit(wire).await;
+    let received = tokio::time::timeout_at(observation.until, response.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    observation
+        .finish(wire, observer, received.frame().clone(), expected)
+        .await
+}
+
+async fn parked_gate_failure_ledger(
+    observer: &Diagnostics,
+    held: Vec<(Id, Instant, tidemq::transport::rpc::RpcResponse)>,
+    parked: usize,
+    expected: usize,
+) {
+    eprintln!(
+        "Watch authority gate failure ledger: expected={expected} actual_parked={parked} resources={}",
+        serde_json::to_string(&observer.snapshot().await).unwrap()
+    );
+    let roots: BTreeSet<_> = held.iter().map(|(root, _, _)| *root).collect();
+    let events: Vec<_> = observer
+        .events()
+        .into_iter()
+        .filter(|event| roots.contains(&event.root))
+        .collect();
+    eprintln!(
+        "Watch authority gate branch ledger: {}",
+        serde_json::to_string(&events).unwrap()
+    );
+    for (root, until, response) in held {
+        let remaining = until.saturating_duration_since(Instant::now()).as_millis();
+        let mut receive = Box::pin(response.receive());
+        let ready = std::future::poll_fn(|context| {
+            Poll::Ready(match receive.as_mut().poll(context) {
+                Poll::Ready(result) => Some(result),
+                Poll::Pending => None,
+            })
+        })
+        .await;
+        match ready {
+            None => eprintln!(
+                "Watch authority gate RPC ledger: root={root} original_remaining_ms={remaining} state=pending"
+            ),
+            Some(Err(error)) => eprintln!(
+                "Watch authority gate RPC ledger: root={root} original_remaining_ms={remaining} transport_error={error:?}"
+            ),
+            Some(Ok(received)) => {
+                let reply = received.frame();
+                if reply.kind == i32::from(FrameKind::Error) {
+                    let error: tidemq_protocol::common::ErrorReply =
+                        decoded(reply, FrameKind::Error);
+                    eprintln!(
+                        "Watch authority gate RPC ledger: root={root} original_remaining_ms={remaining} state=complete error={error:?}"
+                    );
+                } else if reply.kind == i32::from(FrameKind::GroupWatchResult) {
+                    let result: public::GroupWatchResult =
+                        decoded(reply, FrameKind::GroupWatchResult);
+                    let statuses: Vec<_> = result
+                        .targets
+                        .iter()
+                        .map(|target| (target.status, target.error_code, target.retryable))
+                        .collect();
+                    eprintln!(
+                        "Watch authority gate RPC ledger: root={root} original_remaining_ms={remaining} state=complete statuses={statuses:?}"
+                    );
+                } else {
+                    eprintln!(
+                        "Watch authority gate RPC ledger: root={root} original_remaining_ms={remaining} state=complete reply_kind={}",
+                        reply.kind
+                    );
+                }
+            }
+        }
+    }
+}
+
+pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: Bytes) {
+    use tidemq::runtime::watch_test_hooks::AuthorizeQuorumPause;
+    let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
+    let before = quiescent(&observer).await;
+    let cluster = fixture
+        .runtime
+        .configs
+        .get(&1)
+        .unwrap()
+        .cluster_id
+        .parse()
+        .unwrap();
+    let before_wait = BeforeWait::install(fixture.member.partition).unwrap();
+    let mut held = Vec::new();
+    let mut held_roots = BTreeSet::new();
+    for _ in 0..8 {
+        let request = fixture.member.watch(token.clone(), 1_000);
+        let root = Id::from_slice(&request.root_operation_id).unwrap();
+        held_roots.insert(root);
+        let until = deadline();
+        let (response, _) = fixture.wire.submit_until(&request, until).await;
+        held.push((root, until, response));
+    }
+    tokio::time::timeout_at(deadline(), async {
+        loop {
+            let registered: BTreeSet<_> = observer
+                .events()
+                .iter()
+                .filter(|event| {
+                    held_roots.contains(&event.root) && event.phase == WatchPhase::Registered
+                })
+                .map(|event| event.root)
+                .collect();
+            if registered == held_roots {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("The eight real observations did not release their initial admission turns");
+    before_wait.wait(deadline()).await.unwrap();
+    let pause = AuthorizeQuorumPause::install(cluster, 1).unwrap();
+    let parked_until = deadline();
+    for expected in 1..=8 {
+        // BeforeWait releases one waiter per notification; late arrivals observe its released flag.
+        for _ in 0..8 {
+            before_wait.resume();
+        }
+        if let Err(error) = pause.wait_parked(expected, parked_until).await {
+            parked_gate_failure_ledger(&observer, held, pause.parked(), expected).await;
+            panic!("The original authority pause deadline expired: {error}");
+        }
+    }
+    drop(before_wait);
+    let mut observation = Observation::new(
+        fixture.member.watch(token.clone(), 0),
+        Duration::from_millis(RPC_MS),
+    );
+    let root = Id::from_slice(&observation.request.root_operation_id).unwrap();
+    let response = observation.submit(&fixture.wire).await;
+    let received = tokio::time::timeout_at(observation.until, response.receive())
+        .await
+        .unwrap()
+        .unwrap();
+    let error: tidemq_protocol::common::ErrorReply = decoded(received.frame(), FrameKind::Error);
+    assert_eq!(error.code, i32::from(ErrorCode::QuotaExceeded));
+    assert_eq!(
+        error.outcome,
+        i32::from(tidemq_protocol::common::Outcome::Rejected)
+    );
+    assert!(error.retryable);
+    assert_eq!(error.retry_after_ms, Some(50));
+    assert_eq!(pause.parked(), 8);
+    let saturated = observer.snapshot().await;
+    eprintln!(
+        "Known observation refusal resource ledger: {}",
+        serde_json::to_string(&saturated).unwrap()
+    );
+    let configured_memory = &fixture.runtime.configs.get(&1).unwrap().memory;
+    let data_capacity = tidemq::budget::MemoryBudget::new(configured_memory)
+        .unwrap()
+        .data_capacity();
+    let watch_maximum = (data_capacity / 16).min(8 * 1024 * 1024);
+    assert_eq!(saturated.authority_inbound, 8);
+    assert_eq!(saturated.authority_outbound, 8);
+    assert!(saturated.admission_queued <= 128 && saturated.rechecks_queued <= 128);
+    assert!(saturated.charged_bytes <= watch_maximum);
+    assert!(saturated.admission_rejected > before.admission_rejected);
+    assert!(observer.events().iter().any(|event| event.root == root
+        && matches!(
+            event.phase, WatchPhase::Failed { stage: "entry_authorize", code, outcome, .. }
+                if code == i32::from(ErrorCode::QuotaExceeded)
+                    && outcome == i32::from(tidemq_protocol::common::Outcome::Rejected)
+        )));
+    pause.release();
+    for (_, _, pending) in held {
+        let result = receive(pending).await;
+        assert_eq!(result.targets.len(), 1);
+        let target = result.targets.first().unwrap();
+        assert_eq!(
+            target.status,
+            i32::from(public::WatchStatus::WatchUnchanged)
+        );
+        assert_eq!(target.observed_token, token);
+    }
+    let result = observation
+        .finish(
+            &fixture.wire,
+            &observer,
+            received.frame().clone(),
+            public::WatchStatus::WatchUnchanged,
+        )
+        .await;
+    assert!(result.attempts >= 2 && result.refusals >= 1);
+    assert_eq!(result.targets.get(&fixture.member.shard), Some(&token));
+    assert!(
+        Instant::now() < observation.until,
+        "Recovery extended the original two-second deadline"
+    );
+    drop(pause);
+    let after = quiescent(&observer).await;
+    assert_eq!(after.charged_bytes, before.charged_bytes);
+    assert_eq!(after.target_contexts, before.target_contexts);
+    assert_eq!(after.authority_inbound, 0);
+    assert_eq!(after.authority_outbound, 0);
+    assert_eq!(after.admission_queued, 0);
+    assert_eq!(after.rechecks_queued, 0);
+    assert_eq!(
+        [
+            after.group_reads,
+            after.group_retires,
+            after.empty_reads,
+            after.dirty
+        ],
+        [
+            before.group_reads,
+            before.group_retires,
+            before.empty_reads,
+            before.dirty
+        ]
+    );
+    eprintln!(
+        "Known observation recovery ledger: root={root} attempts={} refusals={} original_deadline_preserved=true",
+        result.attempts, result.refusals
+    );
+}
+
 async fn checked_results(
     observer: &Diagnostics,
     request: &public::GroupWatch,
@@ -674,18 +1125,12 @@ async fn scale(shards_per_topic: usize) {
     hot.step(&wire).await;
     let pages = pages(&scopes);
     let mut tokens = BTreeMap::new();
+    let mut observation_totals = ObservationTotals::default();
     for page in &pages {
         let request = request(&scopes.get(page.scope).unwrap().member, page, &tokens, 0);
-        let reply = wire
-            .call(frame(
-                FrameKind::GroupWatch,
-                Id::from_slice(&request.root_operation_id).unwrap(),
-                &request,
-            ))
-            .await;
-        for (shard, token) in
-            checked_results(&observer, &request, &reply, public::WatchStatus::WatchSync).await
-        {
+        let observed = observe(&wire, &observer, request, public::WatchStatus::WatchSync).await;
+        observation_totals.record(&observed);
+        for (shard, token) in observed.targets {
             assert!(tokens.insert(shard, token).is_none());
         }
     }
@@ -727,9 +1172,8 @@ async fn scale(shards_per_topic: usize) {
             &tokens,
             1_000,
         );
-        let response = wire
-            .submit_for(&held_request, Duration::from_secs(10))
-            .await;
+        let mut held_observation = Observation::new(held_request.clone(), Duration::from_secs(10));
+        let response = held_observation.submit(&wire).await;
         let mut held = Box::pin(response.receive());
         tokio::select! {
             entered = pause.wait(deadline()) => entered.unwrap(),
@@ -738,7 +1182,7 @@ async fn scale(shards_per_topic: usize) {
                 fail_before_pause(reply.unwrap().frame());
             },
         }
-        let mut pending = vec![(held_request, held)];
+        let mut pending = vec![(held_observation, held)];
         for page in long.iter().skip(1) {
             let request = request(
                 &scopes.get(page.scope).unwrap().member,
@@ -746,15 +1190,17 @@ async fn scale(shards_per_topic: usize) {
                 &tokens,
                 1_000,
             );
-            let response = wire.submit(&request).await;
-            pending.push((request, Box::pin(response.receive())));
+            let mut observation = Observation::new(request, Duration::from_millis(RPC_MS));
+            let response = observation.submit(&wire).await;
+            pending.push((observation, Box::pin(response.receive())));
         }
         assert!(observer.snapshot().await.active_requests > 0);
         let long_roots: BTreeSet<_> = pending
             .iter()
-            .map(|(request, _)| Id::from_slice(&request.root_operation_id).unwrap())
+            .map(|(observation, _)| Id::from_slice(&observation.request.root_operation_id).unwrap())
             .collect();
-        let held_root = Id::from_slice(&pending.first().unwrap().0.root_operation_id).unwrap();
+        let held_root =
+            Id::from_slice(&pending.first().unwrap().0.request.root_operation_id).unwrap();
         tokio::time::timeout(Duration::from_secs(5), hot.step(&wire))
             .await
             .expect("Hot ACK did not progress while a real ordinary Watch was paused");
@@ -788,21 +1234,15 @@ async fn scale(shards_per_topic: usize) {
             .enumerate()
         {
             let request = request(&scopes.get(page.scope).unwrap().member, page, &tokens, 0);
-            let reply = wire
-                .call(frame(
-                    FrameKind::GroupWatch,
-                    Id::from_slice(&request.root_operation_id).unwrap(),
-                    &request,
-                ))
-                .await;
-            for (shard, token) in checked_results(
+            let observed = observe(
+                &wire,
                 &observer,
-                &request,
-                &reply,
+                request,
                 public::WatchStatus::WatchUnchanged,
             )
-            .await
-            {
+            .await;
+            observation_totals.record(&observed);
+            for (shard, token) in observed.targets {
                 assert_eq!(tokens.get(&shard), Some(&token));
                 assert!(served.insert(shard));
             }
@@ -810,19 +1250,21 @@ async fn scale(shards_per_topic: usize) {
                 hot.step(&wire).await;
             }
         }
-        for (request, pending) in pending {
-            let response = tokio::time::timeout_at(deadline(), pending)
+        for (mut observation, pending) in pending {
+            let response = tokio::time::timeout_at(observation.until, pending)
                 .await
                 .unwrap()
                 .unwrap();
-            for (shard, token) in checked_results(
-                &observer,
-                &request,
-                response.frame(),
-                public::WatchStatus::WatchUnchanged,
-            )
-            .await
-            {
+            let observed = observation
+                .finish(
+                    &wire,
+                    &observer,
+                    response.frame().clone(),
+                    public::WatchStatus::WatchUnchanged,
+                )
+                .await;
+            observation_totals.record(&observed);
+            for (shard, token) in observed.targets {
                 assert_eq!(tokens.get(&shard), Some(&token));
                 assert!(served.insert(shard));
             }
@@ -933,6 +1375,7 @@ async fn scale(shards_per_topic: usize) {
         serde_json::to_vec_pretty(&serde_json::json!({
             "idle_shards": idle_shards, "hot_shards": 1, "data_groups": 8,
             "pages": pages.len(), "max_targets": tidemq_protocol::watch::MAX_TARGETS,
+            "observation_recovery": observation_totals,
             "rounds": ROUNDS, "hot_acks": hot.acknowledged - first_hot,
             "hot_publishes": hot.published - first_hot_publish,
             "hot_reads": hot.read_sequence - first_hot_read,

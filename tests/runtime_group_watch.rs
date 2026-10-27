@@ -359,6 +359,7 @@ async fn observation_budget_refuses_explicitly_while_member_control_still_progre
     let metrics = fixture.metrics(1).await;
     assert!(metric(&metrics, "tidemq_watch_admission_rejected_total") > 0);
     assert_eq!(activity(&metrics), [0, 0, 0]);
+    group_watch_scale::verify_observation_recovery(&fixture, token).await;
     fixture.close().await;
 }
 
