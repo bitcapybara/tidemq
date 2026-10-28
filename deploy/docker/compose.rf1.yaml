@@ -23,7 +23,8 @@ services:
     cpus: 0.05
     mem_limit: 16m
     memswap_limit: 16m
-    networks: [private]
+    networks: [private, console-ingress]
+    ports: ["127.0.0.1:8443:8443/tcp"]
   rustfs:
     <<: *runtime
     network_mode: service:network
@@ -115,6 +116,8 @@ services:
       retries: 30
       start_period: 5s
 networks:
+  console-ingress:
+    driver: bridge
   private:
     driver: bridge
     internal: true

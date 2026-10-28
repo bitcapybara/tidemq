@@ -3,12 +3,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import test from 'node:test';
+import test, {after} from 'node:test';
 
 import {prepare, validate} from './prepare.mjs';
 
-const base = {image: `registry.example.test/tidemq@sha256:${'a'.repeat(64)}`, publicOrigin: 'https://console.example.test', clusterAddress: 'mq.tidemq.svc:7443', clusterServerName: 'mq.tidemq.svc'};
-const kubernetes = {...base, namespace: 'tidemq', privateSecret: 'console-private', tlsSecret: 'console-tls', ingressClass: 'nginx'};
+const identity = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemq-console-identity-'));
+after(() => fs.rmSync(identity, {recursive: true, force: true}));
+const certificateFile = path.join(identity, 'server.pem'), privateKeyFile = path.join(identity, 'server.key');
+const issued = spawnSync('openssl', ['req', '-new', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-days', '1', '-subj', '/CN=console.example.test', '-addext', 'subjectAltName=DNS:console.example.test,IP:127.0.0.1,IP:::1', '-keyout', privateKeyFile, '-out', certificateFile], {encoding: 'utf8'});
+assert.equal(issued.status, 0, issued.stderr);
+const base = {certificateFile, privateKeyFile, image: `registry.example.test/tidemq@sha256:${'a'.repeat(64)}`, publicOrigin: 'https://console.example.test', clusterAddress: 'mq.tidemq.svc:7443', clusterServerName: 'mq.tidemq.svc'};
+const kubernetes = {...base, namespace: 'tidemq', privateSecret: 'console-private', tlsSecret: 'console-tls'};
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemq-console-deploy-'));
@@ -20,7 +25,7 @@ test('Kubernetes Console is stateless, has no platform token, and probes loopbac
   const root = fixture(t), output = path.join(root, 'kubernetes');
   prepare('kubernetes', kubernetes, output);
   const resources = JSON.parse(fs.readFileSync(path.join(output, 'resources.json')));
-  assert.deepEqual(resources.items.map(item => item.kind), ['ConfigMap', 'Deployment', 'Service', 'Ingress']);
+  assert.deepEqual(resources.items.map(item => item.kind), ['ConfigMap', 'Secret', 'Deployment', 'Service']);
   const deployment = resources.items.find(item => item.kind === 'Deployment');
   assert.equal(deployment.spec.replicas, 2);
   const pod = deployment.spec.template.spec;
@@ -31,15 +36,17 @@ test('Kubernetes Console is stateless, has no platform token, and probes loopbac
   assert.equal(pod.volumes.find(volume => volume.secret).secret.defaultMode, 0o440);
   const server = pod.containers[0];
   assert.equal(server.securityContext.readOnlyRootFilesystem, true);
-  assert.deepEqual(server.ports.map(port => port.containerPort), [8080]);
+  assert.deepEqual(server.ports.map(port => port.containerPort), [8443]);
   for (const name of ['startupProbe', 'readinessProbe', 'livenessProbe']) {
     assert.ok(!server[name].httpGet);
     assert.match(server[name].exec.command.at(-1), /^http:\/\/127\.0\.0\.1:9420\/health\/(ready|live)$/);
   }
-  const ingress = resources.items.find(item => item.kind === 'Ingress');
-  assert.equal(ingress.spec.tls[0].secretName, kubernetes.tlsSecret);
-  assert.equal(ingress.spec.rules[0].host, 'console.example.test');
-  assert.equal(ingress.metadata.annotations['nginx.ingress.kubernetes.io/proxy-body-size'], '1500000');
+  const service = resources.items.find(item => item.kind === 'Service');
+  assert.deepEqual(service.spec.ports, [{name: 'https', port: 443, targetPort: 'https'}]);
+  const tls = resources.items.find(item => item.kind === 'Secret');
+  assert.equal(tls.type, 'kubernetes.io/tls');
+  assert.equal(Buffer.from(tls.data['tls.crt'], 'base64').toString(), fs.readFileSync(certificateFile, 'utf8'));
+  assert.ok(pod.volumes.some(volume => volume.name === 'tls' && volume.secret.secretName === kubernetes.tlsSecret));
   const config = resources.items.find(item => item.kind === 'ConfigMap').data['console.toml'];
   assert.match(config, /^role = "console"$/m);
   assert.ok(!config.includes('node_id'));
@@ -52,7 +59,7 @@ test('Kubernetes Console is stateless, has no platform token, and probes loopbac
   }
 });
 
-test('Compose exposes only a loopback page port and read-only files, with an HTTPS proxy example', t => {
+test('Compose exposes only a loopback page port and read-only files, with native HTTPS', t => {
   const root = fixture(t);
   const ca = path.join(root, 'ca.pem'), key = path.join(root, 'session.key');
   fs.writeFileSync(ca, 'CA placeholder'); fs.writeFileSync(key, Buffer.alloc(32, 1), {mode: 0o440});
@@ -62,14 +69,11 @@ test('Compose exposes only a loopback page port and read-only files, with an HTT
   const server = document.services.console;
   assert.equal(server.user, '10001:10001');
   assert.equal(server.read_only, true);
-  assert.deepEqual(server.ports, ['127.0.0.1:18080:8080']);
+  assert.deepEqual(server.ports, ['127.0.0.1:18080:8443']);
   assert.ok(server.volumes.every(volume => volume.type === 'bind' && volume.read_only && !volume.bind.create_host_path));
   assert.ok(!JSON.stringify(document).includes('docker.sock'));
   assert.ok(!document.volumes);
   assert.equal(document.networks, undefined);
-  assert.match(fs.readFileSync(path.join(output, 'nginx.conf'), 'utf8'), /listen 443 ssl/);
-  assert.match(fs.readFileSync(path.join(output, 'nginx.conf'), 'utf8'), /proxy_pass http:\/\/127\.0\.0\.1:18080/);
-  assert.match(fs.readFileSync(path.join(output, 'nginx.conf'), 'utf8'), /client_max_body_size 1500000;/);
   assert.equal(fs.statSync(path.join(output, 'console.toml')).mode & 0o777, 0o644);
   assert.throws(() => prepare('docker', settings, output), /Output must be a new directory/);
   const overlay = path.join(root, 'overlay');
@@ -77,7 +81,7 @@ test('Compose exposes only a loopback page port and read-only files, with an HTT
   const shared = JSON.parse(fs.readFileSync(path.join(overlay, 'compose.json')));
   assert.equal(shared.services.console.network_mode, 'service:network');
   assert.equal(shared.services.console.ports, undefined);
-  assert.deepEqual(shared.services.network.ports, ['127.0.0.1:18080:8080']);
+  assert.deepEqual(shared.services.network.ports, ['127.0.0.1:18080:8443']);
   assert.deepEqual(shared.services.network.networks, ['console-ingress']);
   assert.deepEqual(shared.networks, {'console-ingress': {driver: 'bridge', internal: false}});
 });
@@ -100,7 +104,7 @@ test('Compose configuration remains readable to UID 10001 under a private umask'
   assert.equal(fs.statSync(path.join(output, 'console.toml')).mode & 0o777, 0o644);
   assert.equal(fs.statSync(output).mode & 0o777, 0o700);
   assert.equal(fs.statSync(path.join(output, 'compose.json')).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(path.join(output, 'nginx.conf')).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(path.join(output, 'nginx.conf')), false);
   assert.equal(fs.statSync(key).mode & 0o777, 0o400);
 });
 
@@ -112,7 +116,7 @@ test('unsafe image, origin, upstream, and inactive settings fail before creating
     {publicOrigin: 'https://console.example.test/path'}, {publicOrigin: 'https://console.example.test:8443'},
     {clusterAddress: 'https://mq:7443'}, {clusterAddress: 'mq:0'}, {clusterAddress: 'mq:7443/path'},
     {clusterAddress: '0.0.0.0:7443'}, {clusterAddress: '[:::1]:7443'}, {clusterAddress: '[::]:7443'},
-    {hostPort: 18080}, {privateSecret: 'invalid/name'},
+    {hostPort: 18080}, {privateSecret: 'invalid/name'}, {privateSecret: kubernetes.tlsSecret},
   ].entries()) {
     const output = path.join(root, `rejected-${index}`);
     assert.throws(() => prepare('kubernetes', {...kubernetes, ...patch}, output));
@@ -221,4 +225,14 @@ test('tracing requires a fixed literal IP, protected scheme, exact path, and no 
   const output = path.join(root, 'disabled'); prepare('kubernetes', kubernetes, output);
   const config = JSON.parse(fs.readFileSync(path.join(output, 'resources.json'))).items.find(item => item.kind === 'ConfigMap').data['console.toml'];
   assert.ok(!config.includes('[tracing]'));
+});
+
+test('certificate SAN and key pair are validated before output is created', t => {
+  const root = fixture(t);
+  for (const patch of [{publicOrigin: 'https://other.example.test'}, {privateKeyFile: certificateFile}]) {
+    const output = path.join(root, 'rejected');
+    assert.throws(() => prepare('kubernetes', {...kubernetes, ...patch}, output));
+    assert.equal(fs.existsSync(output), false);
+  }
+  for (const publicOrigin of ['https://127.0.0.1', 'https://[::1]']) validate('kubernetes', {...kubernetes, publicOrigin});
 });

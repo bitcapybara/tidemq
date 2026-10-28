@@ -31,7 +31,7 @@ key_file = "private/console-session.key"
 # staged rotation across stateless replicas; never reuse the current path.
 previous_key_files = []
 # Required HTTPS origin only (no path/query); replace this deployment placeholder.
-public_origin = "https://console.example.test"
+public_origin = "https://console.example.test:8443"
 # Code default in seconds; accepted range: 60..3600.
 max_age_seconds = 1800
 

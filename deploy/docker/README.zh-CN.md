@@ -1,8 +1,10 @@
 # Docker 隔离验证
 
-本目录用于在已有业务容器的 Linux Docker 主机上，先验证 RF1，再验证 RF3 的 10 个角色。所有命令必须使用新目录和生成的独立 Compose 项目名；结束 RF1 后再启动 RF3。构建、启动和故障注入应由同一个操作者协调。
+[English](../../docs/guide/deployment.md#containers-and-kubernetes)
 
-项目只有一个私有 bridge 网络。`network` 容器持有网络 namespace，TideMQ、RustFS 和验证客户端通过 `network_mode: service:network` 共用该项目的 loopback。每个角色仍有独立 PID namespace、cgroup 和数据卷，管理 HTTP 和对象存储 HTTP 保持 loopback 策略。没有 host 网络、host 端口、特权容器或 Docker socket 挂载。[Compose 网络与资源选项](https://docs.docker.com/reference/compose-file/services/)说明了这些设置的语义。
+本目录用于在已有业务容器的 Linux Docker 主机上，先验证单进程 Combined（rf1），再验证分离 RF3 的10个角色。Combined 使用本地持久执行，不运行Raft或内部peer监听；分离角色保留真实Raft/QUIC。所有命令必须使用新目录和生成的独立 Compose 项目名；结束 RF1 后再启动 RF3。构建、启动和故障注入应由同一个操作者协调。
+
+RF3项目使用私有internal bridge。RF1额外接入console-ingress bridge，仅将Combined原生HTTPS发布为宿主loopback的8443；共享namespace允许egress。`network` 容器持有网络 namespace，TideMQ、RustFS 和验证客户端通过 `network_mode: service:network` 共用该项目的 loopback。每个角色仍有独立 PID namespace、cgroup 和数据卷，管理 HTTP 和对象存储 HTTP 保持 loopback 策略。没有host网络、MQ/管理host端口、特权容器或Docker socket挂载。浏览器信任开发CA后可访问 `https://localhost:8443`；证书覆盖localhost。[Compose 网络与资源选项](https://docs.docker.com/reference/compose-file/services/)说明了这些设置的语义。
 
 这套拓扑验证容器进程故障、持久目录和真实 QUIC/S3 链路；共享 namespace、内核和主机，不能证明跨 AZ 或独立节点网络故障域。RF3 配置中的 zone 名称只用于逻辑拓扑。开发证书由原 `deploy/local/generate.sh` 签发，有效期 7 天。
 
@@ -16,7 +18,7 @@
 | --- | --- |
 | [Dockerfile.builder](Dockerfile.builder) | 固定工具链和构建依赖 |
 | [Dockerfile](Dockerfile) | 服务及 SDK 验证程序的运行镜像 |
-| [compose.rf1.yaml](compose.rf1.yaml) | RF1 完整 Compose 配置 |
+| [compose.rf1.yaml](compose.rf1.yaml) | 单进程Combined与内置HTTPS，宿主loopback8443 |
 | [compose.rf3.yaml](compose.rf3.yaml) | 十角色 RF3 完整 Compose 配置 |
 | [prepare.sh](prepare.sh) | 读取所选 Compose 文件，生成独立项目、私有身份和运行配置 |
 | [init-bucket.sh](init-bucket.sh) | 有界 RustFS 桶初始化 |
@@ -69,7 +71,7 @@ sha256sum "$REPO/Cargo.lock" "$STAGE/runtime/bin/tidemq" "$STAGE/runtime/bin/dep
 
 Runtime 构建 context 为 `runtime/bin/{tidemq,deploy_validation}` 与 `runtime/console/`，无需把整个仓库或生成的密钥交给 Docker build。`build-console.sh` 要求 Node.js 22.22+（22 系列）、24 或 26+、tar，以及有效的前端源码和锁文件；20、23、25 系列和低于 22.22 的 22 系列会明确拒绝。在私有临时目录执行 `npm ci` 与构建，排除源码中的 `node_modules`、`dist`、`.git`、`.env*`、`.npmrc`、PEM 与私钥文件。已有 npm 时直接使用；缺少 npm 时，下载官方 npm 11.6.2，先核验脚本内完整 SHA512，再临时提取和执行，不改变全局安装。该回退还要求 curl 和 npm registry 的 HTTPS 访问。[npm 元数据](https://registry.npmjs.org/npm/11.6.2)与 [npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci/)提供校验和锁文件行为的依据。
 
-输出目录必须尚不存在；构建失败不会发布旧 `dist`。浏览器 `.artifacts/`、coverage、`.DS_Store`、增量编译缓存与日志也不参与源码副本或摘要。输出包含 Vite manifest 和记录源码树哈希、Node/npm 版本的 `.tidemq-build.json`。镜像内资源位于只读 `/opt/tidemq/console/`；启动 Console 时会验证入口页及 manifest 声明的资源。缺少静态目录会让 runtime 镜像构建明确失败。Console 使用同一二进制的 `role = "console"` 独立无状态进程，提供个人 token 登录、授权/Topic/消息管理及消费和组件状态；Compose/Kubernetes 的 HTTPS、共享会话密钥和固定探针配置见 [Console 部署与验证](../console/README.zh-CN.md)。普通 Rust 构建、镜像打包与真实平台业务验收分别记录结果。
+输出目录必须尚不存在；构建失败不会发布旧 `dist`。浏览器 `.artifacts/`、coverage、`.DS_Store`、增量编译缓存与日志也不参与源码副本或摘要。输出包含 Vite manifest 和记录源码树哈希、Node/npm 版本的 `.tidemq-build.json`。镜像内资源位于只读 `/opt/tidemq/console/`；启动 Console 时会验证入口页及 manifest 声明的资源。缺少静态目录会让 runtime 镜像构建明确失败。Combined 启动时使用镜像内同版本资源、节点证书/私钥及生成的32字节session key；配置不包含trust root、peer DER或Raft字段。分离部署的Console使用同一二进制的 `role = "console"` 独立无状态进程，提供个人 token 登录、授权/Topic/消息管理及消费和组件状态；Compose/Kubernetes 的 HTTPS、共享会话密钥和固定探针配置见 [Console 部署与验证](../console/README.zh-CN.md)。普通 Rust 构建、镜像打包与真实平台业务验收分别记录结果。
 
 容器 UID/GID 为 `10001:10001`。镜像创建该用户拥有、模式为 `0700` 的 `/var/lib/tidemq` 和 `objects` 子目录；空 named volume 的初始化依赖 Docker 的[卷内容复制语义](https://docs.docker.com/engine/storage/volumes/)，运行前仍须实际核对卷的 owner 和可写性。
 

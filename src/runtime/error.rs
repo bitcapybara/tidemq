@@ -17,6 +17,8 @@ pub enum Error {
     },
     #[snafu(display("Local request was rejected before handler admission"))]
     LocalNotSubmitted { source: crate::Error },
+    #[snafu(display("Execution command was rejected before handoff"))]
+    GroupNotSubmitted { source: crate::execution::Error },
     #[snafu(display("Failed to verify committed consumer writer"))]
     CommittedConsumerWriter {
         source: crate::ownership::LeaseError,
@@ -93,6 +95,9 @@ impl Error {
             }
             Self::Rejected { failure } | Self::TenantGrantExhausted { failure } => failure.clone(),
             Self::LocalNotSubmitted { .. } => {
+                Failure::new(ErrorCode::Unavailable, Outcome::Rejected, true)
+            }
+            Self::GroupNotSubmitted { .. } => {
                 Failure::new(ErrorCode::Unavailable, Outcome::Rejected, true)
             }
             Self::Invalid { reason } => {

@@ -12,15 +12,16 @@ use tokio::task::JoinHandle;
 use crate::broker::{DataApplication, DataGroupConfig, ProducerMetrics};
 use crate::budget::MemoryBudget;
 use crate::config::Config;
+use crate::execution::{
+    Application, GroupHandle, GroupState, LocalGroup, LocalOptions, StorageIdentity,
+};
 use crate::metadata::{MetadataState, NodeRole};
 use crate::observability::metrics::{Metrics, Operation};
 use crate::ownership::ControlPolicy;
-use crate::ownership::remote::RemoteMetadataAuthority;
+use crate::ownership::remote::Authority;
 use crate::producer::ProducerLimits;
 use crate::replication::rpc::{NetworkConfig, PeerPool, QuicNetworkFactory};
-use crate::replication::{
-    Application, DiskLog, DiskStateMachine, DiskStore, Raft, StorageIdentity, StorageOptions,
-};
+use crate::replication::{DiskStore, Raft, StorageOptions};
 use crate::server::{DispatchConfig, DispatchMetrics};
 use crate::transport::{
     Client, ClientCredentials, ClientTls, NodeGrant, Server, ServerAuthorization, ServerTls,
@@ -31,25 +32,78 @@ use super::service::Service;
 use super::wire::PeerRpc;
 use super::{Error, GroupConfig, Result};
 
+#[path = "node_local.rs"]
+mod local;
+
 pub(crate) struct Replica<A: Application> {
-    pub raft: Raft<A>,
-    pub state: DiskStateMachine<A>,
-    pub log: DiskLog<A>,
+    pub group: GroupHandle<A>,
+    pub state: GroupState<A>,
     pub voters: BTreeSet<u64>,
+}
+
+impl<A: Application> Replica<A> {
+    pub(crate) fn authority_node(&self) -> Option<u64> {
+        match &self.group {
+            GroupHandle::Local(group) => {
+                let health = group.health();
+                matches!(
+                    *health.borrow(),
+                    crate::execution::LocalHealth::Ready | crate::execution::LocalHealth::Draining
+                )
+                .then_some(group.identity().node_id)
+            }
+            GroupHandle::Raft { raft, .. } => super::wire::native_leader(raft),
+        }
+    }
+
+    pub(crate) fn current_placement(&self) -> Result<crate::metadata::GroupPlacement> {
+        match &self.group {
+            GroupHandle::Local(group) => Ok(crate::metadata::GroupPlacement::Local {
+                node_id: group.identity().node_id,
+            }),
+            GroupHandle::Raft { raft, .. } => Ok(crate::metadata::GroupPlacement::Raft {
+                voters: crate::ownership::remote::current_voters(raft)?,
+            }),
+        }
+    }
+
+    pub(crate) async fn storage_bound(&self) -> Result<(u64, bool)> {
+        match &self.group {
+            GroupHandle::Local(group) => Ok((
+                group
+                    .file_limit_bytes()
+                    .map_err(super::wire::execution_error)?,
+                group.statistics().snapshot_sequence > 0,
+            )),
+            GroupHandle::Raft { log, .. } => {
+                let diagnostics = log.diagnostics().await;
+                Ok((
+                    diagnostics.replica_file_limit_bytes,
+                    diagnostics.snapshot_log.is_some(),
+                ))
+            }
+        }
+    }
 }
 
 pub struct RunningNode {
     pub external_address: Option<SocketAddr>,
-    pub internal_address: SocketAddr,
+    pub internal_address: Option<SocketAddr>,
+    pub console_address: Option<SocketAddr>,
     pub management_address: SocketAddr,
     pub(crate) service: Arc<Service>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<Result<()>>>,
+    console: Option<crate::console::RunningConsole>,
+    local_rpc: Option<JoinHandle<Result<()>>>,
 }
 
 impl RunningNode {
     pub async fn start(config: Config) -> Result<Self> {
         config.runtime.validate(&config)?;
+        if config.role == crate::config::Role::Combined {
+            return Self::start_combined(config).await;
+        }
         let cluster = config
             .cluster_id
             .parse::<Id>()
@@ -118,30 +172,19 @@ impl RunningNode {
             .map_err(|source| Error::operation("bind internal QUIC client", source))?,
         );
         let mut transport_metrics = vec![client.metrics.clone()];
-        let repair = crate::scaling::RepairBudget::new(crate::scaling::RepairLimits::default())
-            .map_err(|source| Error::operation("initialize node repair budget", source))?;
-        let mut metrics = Metrics::default();
-        let dispatch = Arc::new(DispatchMetrics::default());
-        dispatch.register(metrics.registry_mut());
-        let runtime_metrics = super::telemetry::RuntimeMetrics::default();
-        metrics
-            .registry_mut()
-            .sub_registry_with_prefix("tidemq_runtime")
-            .register_collector(Box::new(runtime_metrics.clone()));
+        let super::facilities::Facilities {
+            mut metrics,
+            dispatch,
+            runtime: runtime_metrics,
+            producer,
+            ownership,
+            quota,
+            repair,
+        } = super::facilities::Facilities::new(&config)?;
         metrics
             .registry_mut()
             .sub_registry_with_prefix("tidemq_internal_client")
             .register_collector(Box::new(client.metrics.clone()));
-        let producer = ProducerMetrics::default();
-        metrics
-            .registry_mut()
-            .sub_registry_with_prefix("tidemq_producer")
-            .register_collector(Box::new(producer.clone()));
-        let ownership = crate::ownership::OwnershipMetrics::register(metrics.registry_mut());
-        let quota_metrics = crate::quota::Metrics::default();
-        quota_metrics.register(metrics.registry_mut());
-        let quota = crate::quota::Quota::new(config.runtime.capacity, quota_metrics)
-            .map_err(|source| Error::operation("initialize capacity admission", source))?;
         let targets = registry.targets(&config, cluster)?;
         let pool = Arc::new(
             PeerPool::new(
@@ -164,11 +207,13 @@ impl RunningNode {
             .with_repair_budget(repair.clone()),
         );
         let rpc = PeerRpc::remote(pool.clone(), config.protocol.clone());
-        let authority = Arc::new(RemoteMetadataAuthority::new(
+        let authority = Arc::new(Authority::new(
             rpc.clone(),
             cluster,
             config.runtime.metadata_group,
-            config.runtime.metadata_voters.iter().copied().collect(),
+            crate::metadata::GroupPlacement::Raft {
+                voters: config.runtime.metadata_voters.iter().copied().collect(),
+            },
             ControlPolicy::default(),
         )?);
         let metadata = if config.role.stores_metadata() {
@@ -178,7 +223,7 @@ impl RunningNode {
                     config.runtime.metadata_group,
                     &config.runtime.metadata_voters,
                     cluster,
-                    pool.clone(),
+                    Some(pool.clone()),
                     metrics.operation(Operation::Control),
                 )
                 .await?,
@@ -196,7 +241,7 @@ impl RunningNode {
                         group.group_id,
                         &group.voters,
                         cluster,
-                        pool.clone(),
+                        Some(pool.clone()),
                         metrics.operation(Operation::Produce),
                     )
                     .await?,
@@ -206,6 +251,7 @@ impl RunningNode {
         let objects = super::objects::coordinators(
             &config,
             cluster,
+            metadata.as_ref(),
             &data,
             rpc.clone(),
             authority.clone(),
@@ -341,11 +387,14 @@ impl RunningNode {
             .collect();
         Ok(Self {
             external_address,
-            internal_address,
+            internal_address: Some(internal_address),
+            console_address: None,
             management_address,
             service,
             shutdown,
             tasks,
+            console: None,
+            local_rpc: None,
         })
     }
 
@@ -571,34 +620,65 @@ impl RunningNode {
             .await
     }
 
-    /// Share the service entry point's original total deadline with optional exporters.
+    /// One deadline covers completion admission, listeners, handlers, group writers and locks.
     pub async fn shutdown_until(mut self, deadline: tokio::time::Instant) -> Result<()> {
         self.service.process.drain();
-        self.service.rpc.begin_drain(deadline);
         self.service
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
+        self.service.watch_budget.close();
+        if self.service.process.phase() != super::process::Phase::Failed
+            && self
+                .service
+                .transport_metrics
+                .iter()
+                .any(|metrics| metrics.snapshot().active_connections > 0)
+        {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let completion = (remaining / 3).min(Duration::from_secs(1));
+            tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + completion)).await;
+        }
         let _ = self.service.external_stop.send(true);
         let _ = self.shutdown.send(true);
-        let mut failure = None;
-        for mut task in std::mem::take(&mut self.tasks) {
-            match tokio::time::timeout_at(deadline, &mut task).await {
-                Ok(Ok(result)) => {
-                    if let Err(error) = result {
-                        failure = Some(error);
-                    }
-                }
-                Ok(Err(source)) => failure = Some(Error::operation("join runtime worker", source)),
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await;
-                    failure = Some(Error::invalid("Runtime worker exceeded its drain deadline"));
+        let console = self.console.take();
+        let (mut failure, console_result) = tokio::join!(
+            join_workers(std::mem::take(&mut self.tasks), deadline),
+            async move {
+                if let Some(console) = console {
+                    tokio::time::timeout_at(deadline, console.shutdown_until(deadline))
+                        .await
+                        .map_err(|_| {
+                            Error::invalid("Console exceeded the total process shutdown deadline")
+                        })?
+                        .map_err(Error::foundation)
+                } else {
+                    Ok(())
                 }
             }
+        );
+        if let Err(error) = console_result {
+            failure.get_or_insert(error);
         }
-        tokio::time::timeout_at(deadline, self.service.close(deadline))
-            .await
-            .map_err(|_| Error::invalid("Runtime exceeded its total shutdown deadline"))??;
+        self.service.rpc.begin_drain(deadline);
+        if let Some(task) = self.local_rpc.take()
+            && let Some(error) = join_workers(vec![task], deadline).await
+        {
+            failure.get_or_insert(error);
+        }
+        match tokio::time::timeout_at(deadline, self.service.close(deadline)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                failure.get_or_insert(error);
+            }
+            Err(_) => {
+                failure.get_or_insert_with(|| {
+                    Error::invalid("Runtime exceeded its total shutdown deadline")
+                });
+            }
+        }
+        if failure.is_some() {
+            self.service.process.fail("shutdown");
+        }
         if self.service.process.phase() == super::process::Phase::Failed {
             failure.get_or_insert_with(|| Error::invalid("A required process dependency failed"));
         }
@@ -616,6 +696,28 @@ impl Drop for RunningNode {
         let _ = self.service.external_stop.send(true);
         let _ = self.shutdown.send(true);
     }
+}
+
+async fn join_workers(
+    tasks: Vec<JoinHandle<Result<()>>>,
+    deadline: tokio::time::Instant,
+) -> Option<Error> {
+    let mut failure = None;
+    for mut task in tasks {
+        let result = match tokio::time::timeout_at(deadline, &mut task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(source)) => Err(Error::operation("join runtime worker", source)),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                Err(Error::invalid("Runtime worker exceeded its drain deadline"))
+            }
+        };
+        if let Err(error) = result {
+            failure.get_or_insert(error);
+        }
+    }
+    failure
 }
 
 struct OwnedTask(JoinHandle<Result<()>>);
@@ -689,9 +791,30 @@ async fn open_replica<A: Application>(
     group: u64,
     voters: &[u64],
     cluster: Id,
-    pool: Arc<PeerPool>,
+    pool: Option<Arc<PeerPool>>,
     stages: Option<Arc<crate::observability::metrics::OperationMetrics>>,
 ) -> Result<Replica<A>> {
+    if config.role == crate::config::Role::Combined {
+        let local = LocalGroup::open(
+            config.data_dir.join(format!("group-{group}")),
+            StorageIdentity::new::<A>(cluster, group, config.node_id),
+            LocalOptions {
+                metrics: stages,
+                ..LocalOptions::default()
+            },
+            A::default(),
+        )
+        .await
+        .map_err(|source| Error::operation("recover durable local execution group", source))?;
+        let group = GroupHandle::Local(local);
+        return Ok(Replica {
+            state: group.state(),
+            group,
+            voters: BTreeSet::new(),
+        });
+    }
+    let pool =
+        pool.ok_or_else(|| Error::invalid("Separate execution requires its internal peer pool"))?;
     let store = DiskStore::<A>::open(
         config.data_dir.join(format!("group-{group}")),
         StorageIdentity::new::<A>(cluster, group, config.node_id),
@@ -743,10 +866,10 @@ async fn open_replica<A: Application>(
             .await
             .map_err(|source| Error::operation("bootstrap explicit voter set", source))?;
     }
+    let group = GroupHandle::from_raft(raft, store.state_machine, store.log);
     Ok(Replica {
-        raft,
-        state: store.state_machine,
-        log: store.log,
+        state: group.state(),
+        group,
         voters: voters.iter().copied().collect(),
     })
 }

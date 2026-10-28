@@ -417,6 +417,18 @@ pub(crate) fn remaining(deadline: Instant) -> Result<u64> {
     Ok(millis)
 }
 
+pub(crate) fn execution_error(source: crate::execution::Error) -> Error {
+    if matches!(
+        source,
+        crate::execution::Error::NotSubmitted { .. }
+            | crate::execution::Error::ForwardToLeader { .. }
+    ) {
+        Error::GroupNotSubmitted { source }
+    } else {
+        Error::operation("execute authoritative group command", source)
+    }
+}
+
 pub(crate) async fn within<T>(
     deadline: Instant,
     future: impl std::future::Future<Output = T>,

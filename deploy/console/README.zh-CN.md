@@ -1,6 +1,10 @@
 # Console 部署与验证
 
-Console 使用同一 `tidemq` 二进制和镜像，以 `role = "console"` 启动独立无状态进程。镜像内的前端静态资源由 Rust HTTP 服务提供，浏览器经统一 HTTPS 入口访问，运行时不需要 Node.js。
+[English](../../docs/guide/deployment.md#console-https-and-sessions)
+
+Combined 在单个进程内提供原生 HTTPS Console，与节点共用证书、预算和 loopback 管理入口。通过 `[console]` 配置 listen/static_dir，以及 `[console.session]` 的 key_file/public_origin；不用另起 Console 或 TLS 代理。
+
+分离部署使用同一 `tidemq` 二进制和镜像，以 `role = "console"` 启动独立无状态进程。镜像内的前端静态资源由 Rust HTTP 服务提供，浏览器经统一 HTTPS 入口访问，运行时不需要 Node.js。
 
 当前实现覆盖个人 token 登录、按作用域管理用户/应用身份、凭据和授权、Topic 创建/删除、手动发送消息，以及消费者成员/租约/消费进度、生产者登记/租约、节点与组件状态。消息以 Topic → Shard → offset 有界浏览，支持消息 ID、key 和属性筛选。消息正文需要独立的内容检查权限；Produce、Consume 和普通 Inspect 不自动授予正文访问。租户查看本租户授权数据，跨租户集群观测与外部详情链接限定运维权限。
 
@@ -14,13 +18,13 @@ Console 使用现有集群入口，不加入 MQ 节点、peer 或 voter，不挂
 
 按 [Docker 构建](../docker/README.zh-CN.md) 打包；runtime context 必须同时包含 `bin/` 与由 `scripts/build-console.sh` 新生成的 `console/`。Lab 的 `scripts/lab/build-image.sh` 已同步执行此步骤，并将全部静态资源及源码树哈希纳入镜像身份。使用同一冻结源码构建二进制和静态资源，普通 Cargo 构建不需要 Node.js。
 
-运行配置使用 `tidemq serve --config /config/console.toml`，静态路径为 `/opt/tidemq/console`。公共 HTTP 监听 8080，仅经已有 HTTPS 入口访问；管理监听固定为进程内 `127.0.0.1:9420`，不发布 Service 或宿主端口。
+运行配置使用 `tidemq serve --config /config/console.toml`，静态路径为 `/opt/tidemq/console`。公共原生 HTTPS 监听 8443，顶层 `[tls]` 提供服务端 certificate/private_key；管理监听固定为进程内 `127.0.0.1:9420`，不发布 Service 或宿主端口。
 
-会话密钥由部署人员提供：恰好 32 个随机原始字节，所有 Console 实例使用同一个文件内容。Unix 允许 owner 读写和可选的只读服务组，禁止其他用户及组写入/执行；常用模式为 `0400/0600/0440/0640`。服务 UID/GID 为 `10001:10001`，密钥必须能由该用户读取。TLS 信任根仅包含集群 CA；部署配置及挂载 Secret 不包含节点私钥、CA 签名私钥或个人 token。用户仅在 HTTPS 登录页面输入自己的 token，凭据由服务端按用户身份用于 SDK 请求，不存入浏览器 localStorage。
+会话密钥由部署人员提供：恰好 32 个随机原始字节，所有 Console 实例使用同一个文件内容。Unix 允许 owner 读写和可选的只读服务组，禁止其他用户及组写入/执行；常用模式为 `0400/0600/0440/0640`。服务 UID/GID 为 `10001:10001`，密钥必须能由该用户读取。远程 `[cluster.trust_roots]` 仅包含 MQ 集群 CA；HTTPS 使用自己的服务端证书和匹配私钥，SAN 覆盖 publicOrigin。挂载 Secret 不包含 CA 签名私钥、无关 MQ 节点私钥或个人 token。用户仅在 HTTPS 登录页面输入自己的 token，凭据由服务端按用户身份用于 SDK 请求，不存入浏览器 localStorage。
 
 ### 无状态会话与密钥轮换
 
-会话在 `__Host-tidemq-session` 中加密保存，带 `Secure`、`HttpOnly`、`Path=/` 和 `SameSite=Lax`。默认最长 30 分钟，并受核心返回的真实凭据到期时间限制；读取请求不会自动延长会话。每次业务请求仍由核心按该用户的 token 核权。写入还要求部署配置中的精确 HTTPS Origin 和会话 CSRF token，因此代理必须保留浏览器的 Origin，公开域名应与 `publicOrigin` 一致。
+会话在 `__Host-tidemq-session` 中加密保存，带 `Secure`、`HttpOnly`、`Path=/` 和 `SameSite=Lax`。默认最长 30 分钟，并受核心返回的真实凭据到期时间限制；读取请求不会自动延长会话。每次业务请求仍由核心按该用户的 token 核权。写入还要求部署配置中的精确 HTTPS Origin 和会话 CSRF token，因此公开域名必须与 `publicOrigin` 一致，接入现有负载均衡时也不能改写浏览器 Origin。
 
 退出登录清除该浏览器会话；需要撤销凭据时使用凭据管理。所有 Console 副本只连接其配置中的同一个固定集群地址；集群地址、证书名、公开域名或会话密钥发生变更时应重新核对部署配置。
 
@@ -62,7 +66,7 @@ settings 可选 `observability`，同时用于 Compose 和 Kubernetes；不填�
 
 探测没有个人 token、Cookie、任意 URL 参数或重定向；禁止配置带凭据的 URL。每次探测最多两秒、响应体最多 64 KiB，共享并发最多四个，等待容量最多两秒。内部 HTTP 入口应由网络策略限制访问，HTTPS 使用系统受信任证书；这里不绕过证书验证，也不为探测配置业务凭据。
 
-HTTP 成功仅证明所配置的健康入口返回成功。核心 MQ 组件同时读取有界注册表和受鉴权的节点探测：区分注册、存活、真实 readiness、采样时间、退役、进程 instance/zone/version，以及逐组 leader/voters/线性 quorum 证明。只接受领导者本人返回的 quorum 证明，follower 的未知不会被当成 quorum 失败；缺少 fresh readiness 或 leader 证明时保持未知。存储组热数据使用领导者样本，不累加同组副本。日志丢弃和 sink 错误计数原样保留用于排查，不新增阈值告警规则，也不推测期望副本数。Console 只报告当前响应进程的 readiness，不猜测其他副本数。
+HTTP成功仅证明所配置外部健康入口返回成功。Combined核心MQ观测直接来自共享运行状态，不通过HTTP/QUIC探测自己，不展示Raft leader/term/voters。分离Console的核心MQ组件读取有界注册表和受鉴权的节点探测：区分注册、存活、真实 readiness、采样时间、退役、进程 instance/zone/version，以及逐组 leader/voters/线性 quorum 证明。只接受领导者本人返回的 quorum 证明，follower 的未知不会被当成 quorum 失败；缺少 fresh readiness 或 leader 证明时保持未知。存储组热数据使用领导者样本，不累加同组副本。日志丢弃和 sink 错误计数原样保留用于排查，不新增阈值告警规则，也不推测期望副本数。Console 只报告当前响应进程的 readiness，不猜测其他副本数。
 
 未配置、超时、权限拒绝、响应超限或不支持的返回格式都会显示未知或部分结果；告警源失败不会被当成“零告警”。告警仅支持 Prometheus `/api/v1/alerts` 的 firing/pending，最多 128 条，详情跳转只使用配置中的链接。既有告警规则仍来自 `deploy/observability/alerts/`，本目录不复制维护另一套阈值。
 
@@ -80,30 +84,26 @@ Compose 和 Kubernetes settings 均支持可选的顶层 `tracingEndpoint`，用
 
 ## Kubernetes
 
-示例需要现有 namespace、集群 Gateway、NGINX Ingress Controller，以及组织提供的 HTTPS 证书。镜像使用完整 digest；已由 lab 生成的 `localhost/tidemq-lab:<content-hash>` 也可用于已导入镜像的实验环境。先复制并修改 [kubernetes.example.json](kubernetes.example.json)：镜像、HTTPS origin、固定集群地址、证书匹配的 server name、namespace、两个 Secret 名及现有 NGINX IngressClass。
+需要现有 namespace、已部署的分离 Gateway、固定镜像和可读取的 HTTPS 证书/私钥。复制并修改 [kubernetes.example.json](kubernetes.example.json)：填写 image/publicOrigin/clusterAddress/clusterServerName/namespace/privateSecret/tlsSecret，以及本地绝对路径 certificateFile/privateKeyFile。不需要 Ingress Controller 或额外 TLS 代理。
 
-共享 Secret `privateSecret` 必须预先包含 `ca.pem` 和 `session.key`；`tlsSecret` 为 HTTPS 入口的 `kubernetes.io/tls` Secret。下列命令是操作者步骤，生成器不会执行。所有路径应来自本次部署的私有目录，TLS 证书应匹配公开域名：
+生成器在写输出前检查证书的当前有效期、SAN 是否覆盖 publicOrigin、私钥是否匹配证书。共享 privateSecret 预先包含 MQ CA 与32字节会话密钥；生成输出包含使用指定材料的 TLS Secret，所以 resources.json 也属于私密文件，保持0600，不提交仓库：
 
 ```sh
 kubectl --context CONTEXT -n NAMESPACE create secret generic tidemq-console-private \
   --from-file=ca.pem=/absolute/private/ca.pem \
   --from-file=session.key=/absolute/private/session.key
-kubectl --context CONTEXT -n NAMESPACE create secret tls tidemq-console-tls \
-  --cert=/absolute/private/tls.crt --key=/absolute/private/tls.key
 node deploy/console/prepare.mjs kubernetes /absolute/settings.json /absolute/new-console-kubernetes
 kubectl --context CONTEXT -n NAMESPACE apply --dry-run=server -f /absolute/new-console-kubernetes/resources.json
 kubectl --context CONTEXT -n NAMESPACE apply -f /absolute/new-console-kubernetes/resources.json
 ```
 
-生成内容包括 ConfigMap、两个副本的无状态 Deployment、ClusterIP Service 和 TLS Ingress。非 root、只读根文件系统、丢弃 capabilities、禁止提权；没有 PVC、平台访问 token、RoleBinding 或平台写权限。Secret 采用 `0440`、`fsGroup: 10001`，避免 root 所有的 `0400` 文件让非 root 用户无法启动。[Kubernetes 安全上下文](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/)说明组访问语义。
+输出包含 ConfigMap、TLS Secret、两个副本的 Deployment、HTTPS ClusterIP Service。Service 443 转发原生 HTTPS 8443；管理9420不出 Pod。外部浏览器需要已有的四层入口与匹配公开 Origin 的DNS，或在隔离验证中使用受控的TLS端口转发。这里不配置控制器专属 TLS 终止行为。
 
-startup/readiness/liveness 均通过容器内 exec curl 检查 loopback 管理监听；不会让 kubelet 从 Pod 外访问 loopback。readiness 只表示本地配置、密钥和静态资源可用，上游 MQ/DNS 不可达仍保留页面和本地健康入口；需要核心重新核权或读取的数据会明确返回上游不可用，不伪造空列表或健康状态。Ingress 仅导出 8080，NGINX 注解要求 HTTPS 重定向；组织采用其他 Controller 时应调整其 HTTPS 策略并重新验证。[Ingress TLS](https://kubernetes.io/docs/concepts/services-networking/ingress/#tls)的证书和域名由实际平台负责。
+服务使用 UID/GID10001、只读根文件系统、丢弃capabilities与禁止提权；无PVC、ServiceAccount token、RoleBinding或平台写权限。Secret采用0440和fsGroup10001，保证非root用户只读访问。startup/readiness/liveness通过exec访问loopback管理口；独立Console的上游MQ暂不可达不关闭页面，业务请求保持明确失败或未知，不伪造健康数据。Combined则由MQ、本地存储和Console共同就绪，必需资源持续失效使整体收尾。
 
 ## Docker Compose
 
-示例创建独立的 Console 服务，通过宿主 loopback 端口连接既有 NGINX HTTPS 入口。Console 的容器网络必须能够解析并访问所填 Gateway 地址；已有隔离验证拓扑的 `127.0.0.1` 仅属于其共享网络 namespace，不能直接填入独立 Console 容器。
-
-复制并修改 [docker.example.json](docker.example.json)，填写实际镜像、HTTPS origin、可从 Console 网络访问的 Gateway DNS/IP、服务端证书名、可用宿主端口和现有 CA/会话密钥绝对路径。文件必须由 UID 10001 或只读组 10001 可读；生成配置不包含密钥内容。输出目录必须尚不存在：
+复制并修改 [docker.example.json](docker.example.json)，填写固定镜像、真实HTTPS Origin、从Console可达的Gateway地址、CA/session绝对路径、certificateFile/privateKeyFile与hostPort。首次创建前检查UID10001或只读组10001能读取这些文件。生成器检查证书SAN和私钥，不复制源密钥内容到TOML，也不安装或重载任何宿主服务。
 
 ```sh
 node deploy/console/prepare.mjs docker /absolute/settings.json /absolute/new-console-compose
@@ -111,20 +111,9 @@ docker compose --project-name tidemq-console -f /absolute/new-console-compose/co
 docker compose --project-name tidemq-console -f /absolute/new-console-compose/compose.json up -d
 ```
 
-生成的 `nginx.conf` 沿用现有宿主反向代理模式，转发 Host、声明 HTTPS，并关闭包含 URL 的 access log。操作者将证书/私钥路径改为现有 TLS 材料，纳入自己的 NGINX 配置，先 `nginx -t` 再按既有流程 reload；生成器不安装或重载宿主服务。无需新增代理镜像。
+生成的服务直接发布 `127.0.0.1:<hostPort>:8443`，使用原生HTTPS，没有nginx.conf或明文后端。公开Origin须指向实际可达的HTTPS入口；示例hostPort8443对应 `https://console.example.test:8443`。服务有界CPU/内存/PID、只读文件挂载，不挂载持久卷或Docker socket。管理口不发布。
 
-Console 仅发布 `127.0.0.1:<hostPort>:8080`，不将明文入口绑定全部网卡。进程使用 `10001:10001`、只读根文件系统、有限 CPU/内存/PID、只读文件挂载，不挂载持久卷或 Docker socket。当前样例不配置实例亲和，也不把连接池或本地缓存作为恢复依据。不要跨多个无关集群复用同一个 Console 配置。
-
-仓库现有 RF1/RF3 隔离 Compose 使用 `network` holder 共享 loopback。若需要同项目交付，在**新建项目首次启动前**给 Docker settings 添加 `"networkService": "network"`，并将 `clusterAddress` 设为相应的 `127.0.0.1:7410`（RF1）或 `127.0.0.1:7810`（RF3），`clusterServerName` 选择所用 Gateway 证书包含的名称。生成文件此时是 overlay：Console 使用 `network_mode: service:network`，宿主 loopback 端口由 holder 发布。先按原部署文档生成新的 `STATE`，再将原 Compose 放在首位合并：
-
-该 overlay 适用于仓库 RF1/RF3 基准：holder 已显式声明 `networks: [private]`，Compose 合并后保留该 internal 网络，并追加独立的 `console-ingress` 非 internal bridge，使 Docker 能实际发布 `127.0.0.1` 上的页面端口；Docker 29 的纯 internal 网络不会落实该端口发布。不要假设 overlay 会保留基准的隐式 `default` 网络；其他部署须先在基准中显式声明 holder 的网络，再首次部署。此时整个共享网络 namespace 允许 egress，不能再按只有 internal 网络的隔离边界描述。MQ 和管理监听仍绑定各自原有的 loopback，只新增 Console 的页面端口，不发布 MQ 管理端口或挂载 Docker socket。
-
-```sh
-docker compose --project-name NEW_PROJECT --env-file /absolute/new-state/project.env \
-  -f /absolute/new-state/compose.yaml -f /absolute/new-console-overlay/compose.json config --quiet
-```
-
-后续启动同样始终使用这两个文件和同一个项目名。不要给已运行项目直接套用此 overlay；新增 holder 端口可能重建网络 namespace，影响共享它的 MQ 容器。没有 `networkService` 时生成独立 Console 服务，不修改 holder 或原 MQ 配置。
+仓库 RF1 Compose 已包含 Combined 内置 Console，占用8443；不要再添加独立Console。RF3基准共用network holder的loopback。只有在新建RF3项目第一次启动前，才可用 `networkService: "network"` overlay 给独立Console接入同一个namespace，clusterAddress设为 `127.0.0.1:7810`，server name匹配node-41证书。合并原Compose与overlay时，holder显式保留private网络并增加console-ingress网络与HTTPS端口；该namespace因此允许egress，不再是纯internal网络。不要在运行中的项目直接重建holder，避免影响同namespace的MQ进程。
 
 ## 检查与实际验收
 
@@ -139,4 +128,4 @@ cargo test -p tidemq --test runtime_queue scalable::console_http::
 
 静态测试检查不可覆盖输出、锁文件/构建失败、私密文件排除、哈希变化、npm 校验先于执行，以及部署的只读/无持久化/Secret/loopback 探测边界；不运行 Docker 或 Kubernetes。HTTP 集成测试在临时隔离集群中检查跨 Console 会话、Origin/CSRF、权限撤销、Topic/消息/身份/凭据/授权、原操作回执与只读消费进度；测试结束关闭实例，不访问已有 lab 集群。
 
-目标平台验收仍须记录源码/镜像/静态资源身份，检查 UID 与 Secret 访问，验证真实 HTTPS、证书、重定向和页面深链接，再验证业务流程、跨副本恢复及已有日志/metrics/tracing 采集链路。具体通过状态以该次运行证据为准。示例内存请求/限额尚无真实并发负载验收依据；消费者删除/位置重置、节点扩缩容/排空/调度等操作继续使用 CLI。
+目标平台验收仍须记录源码/镜像/静态资源身份，检查 UID 与 Secret 访问，验证真实原生 HTTPS、证书与页面深链接，再验证业务流程、跨副本恢复及已有日志/metrics/tracing 采集链路。具体通过状态以该次运行证据为准。示例内存请求/限额尚无真实并发负载验收依据；消费者删除/位置重置、节点扩缩容/排空/调度等操作继续使用 CLI。

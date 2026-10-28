@@ -62,7 +62,7 @@ impl Service {
         )
     }
 
-    async fn console_read_query(
+    pub(super) async fn console_read_query(
         &self,
         credential: Id,
         query: &Query,

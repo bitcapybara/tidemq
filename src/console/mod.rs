@@ -5,6 +5,7 @@ mod api_identity;
 mod api_query;
 mod api_write;
 mod assets;
+mod backend;
 mod config;
 mod files;
 mod http;

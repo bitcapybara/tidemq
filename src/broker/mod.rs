@@ -22,7 +22,7 @@ pub use application::{
     ShardLoad, ShardLoadReport, TransferCapacity, TransferDataRejection, TransferOutcome,
     TransferPage, WriterFence,
 };
-pub(crate) use application::{WatchHub, WatchKey, WatchSample, WatchSignal};
+pub(crate) use application::{WatchHub, WatchIncarnation, WatchKey, WatchSample, WatchSignal};
 pub use error::{Error, Result};
 pub use runtime::{Broker, HotRead, ProducerStatus, ProducerSubmission, RequestContext};
 pub(crate) use telemetry::AttemptOutcome;

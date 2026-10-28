@@ -147,7 +147,7 @@ jobs:
         with: {name: console-server-linux, path: target/ci/console-server, retention-days: 3}
 
   console-browser-live:
-    name: Console real backend (${{ matrix.browser }})
+    name: Console native HTTPS (${{ matrix.browser }}, ${{ matrix.topology }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [validate]
     runs-on: ubuntu-24.04
@@ -155,6 +155,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        topology: [combined, separated-rf1]
         browser: ${{ fromJSON((github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && '["chromium","firefox","webkit"]' || '["chromium"]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -179,11 +180,12 @@ jobs:
       - run: npm run test:e2e:live -- --project=${{ matrix.browser }}
         working-directory: console/web
         env:
+          TIDEMQ_LIVE_TOPOLOGY: ${{ matrix.topology }}
           TIDEMQ_BINARY: ${{ github.workspace }}/target/ci/console-server/tidemq
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: console-browser-live-${{ matrix.browser }}
+          name: console-browser-live-${{ matrix.browser }}-${{ matrix.topology }}
           path: target/ci/console-browser-live
           retention-days: 14
 

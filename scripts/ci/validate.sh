@@ -29,4 +29,9 @@ cp target/nextest/ci/junit.xml target/ci/sdk-default-unit-junit.xml
 cargo build -p tidemq-protocol --features codegen --locked
 cargo fmt --all -- --check
 git diff --exit-code -- crates/tidemq-protocol/src/generated
-cargo run --locked -- validate-config --config config/combined.toml
+for config in config/*.toml; do
+  cargo run --locked -- validate-config --config "$config"
+done
+target_dir=${CARGO_TARGET_DIR:-$PWD/target}
+TIDEMQ_BIN="$target_dir/debug/tidemq" bash deploy/kubernetes/selfcheck.sh
+TIDEMQ_BIN="$target_dir/debug/tidemq" node --test deploy/console/prepare.test.mjs

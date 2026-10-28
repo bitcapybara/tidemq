@@ -1,10 +1,10 @@
 # Console 使用
 
-Console 是同一 `tidemq` 二进制的独立 `role = "console"` 进程。它提供静态页面和同源 API，通过登录用户自己的 token 调用固定集群的 Gateway。它不加入 Raft、不挂载 MQ 数据目录，也不持有 Docker / Kubernetes 写权限。
+Combined 内置 Console，与 MQ 在同一进程直接通过 HTTPS 提供页面和同源 API；按登录用户真实权限调用本地业务路径。分离部署使用同一二进制的独立 `role = "console"`，通过 SDK / QUIC 访问固定 Gateway。独立 Console 无状态、不加入 Raft、不挂载 MQ 数据目录；两种 Console 均不持有 Docker / Kubernetes 写权限。
 
 ## 部署与登录
 
-准备同版本二进制和前端静态资源、集群 CA、固定 Gateway 地址与证书名、恰好 32 字节的随机会话密钥，并在 HTTPS 反向代理后启动。样例配置为[console.toml](https://github.com/bitcapybara/tidemq/blob/main/config/console.toml)，完整打包、Compose、Kubernetes、Secret 权限和密钥轮换步骤见[Console 部署](https://github.com/bitcapybara/tidemq/blob/main/deploy/console/README.zh-CN.md)。
+Combined 使用节点证书与私钥，以及 `[console]` 中的监听、资源目录、会话 key_file 与 HTTPS public_origin；不用另起 Console、代理或管理监听。分离 Console 另配置顶层 `[tls]` 的服务端证书/私钥和 `[cluster]` 的固定 Gateway、服务名与信任根。两者均需要同版本静态资源、恰好 32 字节随机会话密钥，证书 SAN 必须覆盖公开 Origin。样例配置为[console.toml](https://github.com/bitcapybara/tidemq/blob/main/config/console.toml)，完整打包、Compose、Kubernetes、Secret 权限和密钥轮换步骤见[Console 部署](https://github.com/bitcapybara/tidemq/blob/main/deploy/console/README.zh-CN.md)。
 
 使用自己的 token 登录。会话保存于带 Secure / HttpOnly 的加密 Cookie，不写入浏览器 localStorage；默认最长 30 分钟，还受凭据真实有效期限制。写入须同时满足精确 HTTPS Origin、CSRF 和核心授权，反向代理需要保留 Origin。退出清除本浏览器会话，撤销 token 仍需在凭据管理中执行。
 
@@ -31,6 +31,6 @@ Console 是同一 `tidemq` 二进制的独立 `role = "console"` 进程。它提
 
 ## 就绪和故障
 
-Console 自身 ready 表示本地配置、密钥和静态资源可用；上游集群不可达时，本地页面仍可用，业务请求会明确失败。节点已登记不等于健康；缺少新鲜 readiness、leader quorum 证明或观测源时保持未知。告警源失败不能表示“零告警”。
+Combined 的 ready 由 MQ、存储与内置 Console 共同决定，必需资源持续失效会使整体停止新准入并收尾。独立 Console 自身 ready 表示本地配置、TLS、密钥和静态资源可用；上游集群不可达时，本地页面仍可用，业务请求会明确失败。节点已登记不等于健康；缺少新鲜 readiness、leader quorum 证明或观测源时保持未知。告警源失败不能表示“零告警”。
 
-先检查 HTTPS / Origin、会话有效期、个人 token 和作用域，再检查 Console 到 Gateway 的 DNS、UDP、证书和观测入口。组件健康探针不携带个人凭据，独立容器中的 loopback 不指向其他主机。详见[安全](../operations/security.zh-CN.md)与[排障](../operations/troubleshooting.zh-CN.md)。
+先检查 HTTPS / Origin、会话有效期、个人 token 和作用域，分离Console再检查到Gateway的DNS/UDP/证书；Combined检查本地组与进程状态，两者分别检查已配置的外部观测入口。组件健康探针不携带个人凭据，独立容器中的 loopback 不指向其他主机。详见[安全](../operations/security.zh-CN.md)与[排障](../operations/troubleshooting.zh-CN.md)。
