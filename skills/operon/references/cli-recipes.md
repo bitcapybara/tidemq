@@ -109,6 +109,19 @@ operon task update --profile '<profile-alias>' --input update.json --json
 
 状态、父子关系、依赖不是普通 Note 更新。使用 `task transition --help`、`task complete --help`、`task update --help` 及 `mutation-preview-request` 中相应 spec，分别生成语义操作；例如普通字段更新不要混入 `parentTask` 关系替换。
 
+状态和 Note 可以在一个语义 transition 中提交。复用上例真实 `target`，将 `spec` 改为：
+
+```json
+{
+  "operation": "transition",
+  "targetStatusId": "st_project_finished",
+  "expectedStatusId": "st_project_in_progress",
+  "changes": [{"field": "note", "valueType": "text", "value": "Implementation and independent review passed; main delivery is tracked separately"}]
+}
+```
+
+用 `operon task transition --input transition.json --json` 预览，按同一计划应用并精确读回状态。上例已在 T14 实操，`postflight.status=verified` 且 `task get` 读回 `workflow.status.id=st_project_finished`、`checkbox=done`；目标和预期状态仍须取自当前任务及 Catalog。
+
 ## 应用结果不确定
 
 ```sh

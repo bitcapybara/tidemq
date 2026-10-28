@@ -17,6 +17,10 @@ const PAGE: usize = 16;
 #[path = "../../tests/scalable_support/shard_load_wire.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "../../tests/runtime_support/shard_load_semantic_local.rs"]
+mod local_tests;
+
 #[derive(Serialize, Deserialize)]
 struct LoadRequest {
     partitions: [Option<PartitionKey>; PAGE],
@@ -53,11 +57,21 @@ impl Service {
         };
         let started = Instant::now();
         let node = self.leader(group, deadline).await?;
-        let bytes = self
-            .rpc
-            .call(node, group, Request::typed(QUERY, &request)?, deadline)
-            .await?;
-        let reply: ShardLoadPage = wire::decode_binary(&bytes)?;
+        let reply = if self.rpc.is_local() {
+            use tracing::Instrument;
+            self.read_shard_loads(group, request, deadline)
+                .instrument(
+                    tracing::info_span!(target: "tidemq_trace", "shard_load_local",
+                    node_id = self.config.node_id, group_id = group),
+                )
+                .await?
+        } else {
+            let bytes = self
+                .rpc
+                .call(node, group, Request::typed(QUERY, &request)?, deadline)
+                .await?;
+            wire::decode_binary(&bytes)?
+        };
         if reply.cluster != self.cluster
             || reply.node != node
             || reply.group != group
@@ -83,11 +97,28 @@ impl Service {
         body: &[u8],
         deadline: Instant,
     ) -> Result<Bytes> {
+        let request: LoadRequest = wire::decode_binary(body)?;
+        let reply = self.read_shard_loads(group, request, deadline).await?;
+        wire::binary(&reply)
+    }
+
+    async fn read_shard_loads(
+        &self,
+        group: u64,
+        request: LoadRequest,
+        deadline: Instant,
+    ) -> Result<ShardLoadPage> {
+        let _admission = self.rpc.admit_local(
+            group,
+            crate::transport::StreamPurpose::Request,
+            32 * 1024,
+            deadline,
+        )?;
+        wire::remaining(deadline)?;
         let _memory = self
             .budget
             .try_reserve(TrafficClass::Control, 32 * 1024)
             .map_err(|source| Error::operation("reserve bounded shard load observation", source))?;
-        let request: LoadRequest = wire::decode_binary(body)?;
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         replica
@@ -110,7 +141,7 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("read committed shard load summaries", source))??;
-        wire::binary(&ShardLoadPage {
+        Ok(ShardLoadPage {
             cluster: self.cluster,
             node: self.config.node_id,
             instance: self.instance,
