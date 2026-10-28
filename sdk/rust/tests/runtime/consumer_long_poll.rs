@@ -1,5 +1,5 @@
 #![cfg(feature = "test-hooks")]
-//! Root-package integration target: real SDK, QUIC, WAL and Raft; no transport peer mock.
+//! Root-package integration target: real SDK, QUIC and local WAL; no transport peer mock.
 
 use bytes::Bytes;
 use rcgen::{
@@ -43,7 +43,7 @@ async fn standalone() -> Fixture {
     runtime.configs.get_mut(&1).unwrap().runtime.groups = (2..=10)
         .map(|group_id| GroupConfig {
             group_id,
-            voters: vec![1],
+            voters: Vec::new(),
             standby: Vec::new(),
         })
         .collect();
