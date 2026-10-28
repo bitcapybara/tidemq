@@ -10,6 +10,7 @@ pub mod budget;
 pub mod config;
 pub mod console;
 pub mod error;
+pub mod execution;
 pub mod gateway;
 pub mod metadata;
 pub mod object_store;

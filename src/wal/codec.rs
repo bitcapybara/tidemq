@@ -199,8 +199,19 @@ pub(crate) async fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().ok_or(Error::Configuration {
         reason: "storage file must have a parent directory",
     })?;
+    // Snapshot staging uses its own budget instead of consuming WAL recovery capacity.
+    let prefix = if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(super::segmented_file_kind)
+        == Some(super::SegmentedFileKind::Snapshot)
+    {
+        ".incoming"
+    } else {
+        ".replace"
+    };
     let temporary = parent.join(format!(
-        ".replace-{}",
+        "{prefix}-{}",
         uuid::Uuid::from(tidemq_protocol::Id::new_v7().map_err(|e| {
             Error::Writer {
                 reason: e.to_string(),
