@@ -45,6 +45,24 @@ clean_checkouts() {
   empty_cache "$workspace"
 }
 
+clean_nextest_containers() {
+  local ids id details name owned run token user
+  local -a command=(docker --host unix:///var/run/docker.sock)
+  ids=$("${command[@]}" ps --all --quiet --no-trunc --filter label=tidemq.lab/nextest=true) || return 1
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    [[ $id =~ ^[a-f0-9]{64}$ ]] || return 1
+    details=$("${command[@]}" inspect --format '{{.Name}} {{index .Config.Labels "tidemq.lab/nextest"}} {{index .Config.Labels "tidemq.lab/nextest-run"}} {{index .Config.Labels "tidemq.lab/nextest-token"}} {{.Config.User}}' "$id") || return 1
+    read -r name owned run token user <<< "$details"
+    name=${name#/}
+    [[ $owned == true && $user == 1001:1001 && $run =~ ^[0-9]+-[0-9]+$ &&
+       $token =~ ^[A-Za-z0-9]{6}$ && $name == "tidemq-nextest-$run-$token" ]] || {
+      printf 'Refusing a nextest container with mismatched ownership: %s\n' "$id" >&2; return 1;
+    }
+    "${command[@]}" rm --force "$id" || return 1
+  done <<< "$ids"
+}
+
 sweep() {
   local repo=$1 phase=$2 run runs status=0 directory
   if ! runs=$(kubectl --request-timeout=15s get namespaces -l tidemq.lab/ci=true -o json |
@@ -63,6 +81,9 @@ sweep() {
     bash "$repo/scripts/lab/cleanup-ci.sh" "$run" || status=1
   done < <(printf '%s\n' "$runs" | sort -u)
 
+  # Reclaim cancelled test scopes before removing paths that they could still mount.
+  [[ $(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') == /srv/tidemq/docker ]] || return 1
+  clean_nextest_containers || return 1
   # Job hooks run outside the checkout, after artifact uploads and action post steps.
   clean_checkouts /srv/tidemq/work "${GITHUB_WORKSPACE:-}"
   # A new Worker can prepare actions before its started hook acquires our lock.
@@ -79,7 +100,6 @@ sweep() {
   if (( $(du -sx -B1 /srv/tidemq/actions-runner/_diag | cut -f 1) > DIAGNOSTIC_MAX_BYTES )); then
     find /srv/tidemq/actions-runner/_diag -type f -mtime +1 -delete
   fi
-  [[ $(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') == /srv/tidemq/docker ]] || return 1
   [[ -z $(docker --host unix:///var/run/docker.sock ps --format '{{.Names}} {{.Label "tidemq.lab/runner"}}' |
     sed '/^tidemq-ci-runner ci-container$/d') ]] || {
     printf 'Refusing Docker cleanup while a runner container is active\n' >&2; return 1;

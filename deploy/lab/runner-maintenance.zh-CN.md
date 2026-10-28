@@ -37,6 +37,10 @@ Worker 上的 CI 镜像由 kubelet 自带镜像回收管理。已从运行中的
 
 ## CI 遗留资源回收
 
+原生 nextest 每次在独立 6GiB/4 CPU 容器执行，host 先按原参数预编译。正常/TERM trap 精确删除该次创建的 ID；caller 被 SIGKILL 时可能留下仍在运行的容器。before/after/idle 的 sweep 在删除 checkout/target/tmp 之前，使用本机 Docker socket 只发现 `tidemq.lab/nextest=true` 容器，复核 `tidemq-nextest-数字-数字-六位标识` 名称、匹配的 nextest-run/nextest-token label 和 `1001:1001` 用户，才按完整 ID 删除。任一所有权不符则失败，不删除该容器；原有未知活动容器保护仍保留，长期 `tidemq-ci-runner` 不匹配这些身份。
+
+该回收沿用原生维护入口的 role、mountpoint、本地 cleanup.lock 和宿主全局租约；idle 仍在 Runner.Worker 活跃时跳过。新增规则只需在 lab 空闲且通过独立 review 后更新现有原生 maintenance bundle，无需重建 runner 镜像或修改 systemd 额度。Git 中有规则不表示已安装，安装与实际正常/取消回收须分别留证。
+
 [cleanup-ci.sh](../../scripts/lab/cleanup-ci.sh) 同时用于 CI 的 EXIT trap 和空闲回收，必须持有宿主租约。只接受 `ci-数字-数字` 身份；namespace 必须带 `tidemq.lab/ci=true` 标签。CI 开始即写私有 `.tidemq-ci` 标记，即使部署尚未创建 namespace，也能在下次回收时发现。
 
 先恢复允许故障的 VM，再检查 namespace 和所有 PV 的 claim namespace、固定名字及精确本地路径。确认 namespace 删除完成后，才删除该 run 的 6 个 PV、worker 数据、fixture 进程/单元、loadgen 目录和私有构建。任何不匹配或 API 故障都会保留重试材料并返回失败；控制面不可用时，本机缓存清理仍继续执行。`tidemq-dev`、无标签的手工 namespace 和公共服务不在允许范围内。

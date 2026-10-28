@@ -6,8 +6,56 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
+test('maintenance reclaims only labelled nextest identities and refuses mismatches', t => {
+  for (const [name, label, run, token, user, allowed] of [
+    ['tidemq-nextest-123-1-ABCdef', 'true', '123-1', 'ABCdef', '1001:1001', true],
+    ['tidemq-ci-runner', 'true', '123-1', 'ABCdef', '1001:1001', false],
+    ['tidemq-nextest-123-1-ABCdef', 'false', '123-1', 'ABCdef', '1001:1001', false],
+    ['tidemq-nextest-123-1-ABCdef', 'true', '999-1', 'ABCdef', '1001:1001', false],
+    ['tidemq-nextest-123-1-ABCdef', 'true', '123-1', 'ABCdef', '0:0', false],
+  ]) {
+    const root = fixture(t), id = 'a'.repeat(64);
+    const result = spawnSync('bash', ['-c', [
+      'source "$1"',
+      'docker() {',
+      '  if [[ "$*" == *" ps "* ]]; then printf "%s\\n" "$ID";',
+      '  elif [[ "$*" == *" inspect "* ]]; then printf "%s\\n" "$INFO";',
+      '  elif [[ "$*" == *" rm "* ]]; then printf "%s\\n" "$*" > "$TRACE"; fi',
+      '}',
+      'clean_nextest_containers',
+    ].join('\n'), 'test', path.join(scripts, 'runner-maintenance.sh')], {encoding: 'utf8', env: {...process.env,
+      ID: id, INFO: '/' + [name, label, run, token, user].join(' '), TRACE: path.join(root, 'deleted')}});
+    assert.equal(result.status === 0, allowed, result.stderr);
+    assert.equal(fs.existsSync(path.join(root, 'deleted')), allowed);
+    if (allowed) assert.match(fs.readFileSync(path.join(root, 'deleted'), 'utf8'), new RegExp('rm --force ' + id));
+  }
+});
+
+
 const scripts = path.dirname(fileURLToPath(import.meta.url));
 const linux = {skip: process.platform !== 'linux'};
+
+test('unlabelled active containers still block the original Docker cleanup', t => {
+  const root = fixture(t), trace = path.join(root, 'removed');
+  const result = spawnSync('bash', ['-c', [
+    'source "$1"',
+    'TIDEMQ_LAB_HOME="$2" DIAGNOSTIC_MAX_BYTES=1',
+    'TARGET_MAX_BYTES=1 CARGO_CACHE_MAX_BYTES=1 ACTION_CACHE_MAX_BYTES=1 TMP_MAX_BYTES=1 CACHE_MAX_DAYS=7',
+    'kubectl() { printf "{\\"items\\":[]}\\n"; }',
+    'clean_checkouts() { :; }; bound_cache() { :; }; clean_cargo_downloads() { :; }',
+    'find() { :; }; du() { printf "0\\tignored\\n"; }',
+    'docker() {',
+    '  if [[ "$*" == *" info "* ]]; then printf /srv/tidemq/docker;',
+    '  elif [[ "$*" == *" ps "* && "$*" != *" label=tidemq.lab/nextest=true"* ]]; then printf "unknown-active \\n";',
+    '  elif [[ "$*" == *" rm "* || "$*" == *" prune "* ]]; then printf "%s\\n" "$*" > "$TRACE"; fi',
+    '}',
+    'sweep unused after',
+  ].join('\n'), 'test', path.join(scripts, 'runner-maintenance.sh'), root], {encoding: 'utf8', env: {...process.env, TRACE: trace}});
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Refusing Docker cleanup/);
+  assert(!fs.existsSync(trace));
+});
+
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemq-maintenance-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));

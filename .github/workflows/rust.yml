@@ -125,6 +125,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
+          TIDEMQ_NEXTEST_IMAGE: sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b
       - run: bash scripts/ci/validate-and-integrate.sh
         if: runner.os == 'macOS'
         env:
@@ -202,6 +203,7 @@ jobs:
         env:
           TIDEMQ_REQUIRE_EXTERNAL: '1'
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
+          TIDEMQ_NEXTEST_IMAGE: sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
