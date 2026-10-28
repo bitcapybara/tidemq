@@ -665,8 +665,21 @@ impl Client {
                 operation: "drain client connection attempts",
             }),
         };
+        // Reserve half the remaining caller budget for forced native I/O cleanup.
+        let graceful_until = deadline
+            .checked_sub(deadline.saturating_duration_since(Instant::now()) / 2)
+            .unwrap_or(deadline);
+        let mut endpoint = self.endpoint.clone();
+        let native = match timeout_at(graceful_until, endpoint.wait_idle()).await {
+            Ok(result) => result.map_err(|source| Error::Connection {
+                operation: "drain native client connections",
+                source,
+            }),
+            // Closing periods can outlive the caller; the I/O owner still stops by its deadline.
+            Err(_) => Ok(()),
+        };
         let io = self.io.shutdown(deadline).await;
-        sessions.and(io)
+        sessions.and(native).and(io)
     }
 
     async fn close_sessions(&self, deadline: Instant) -> Result<()> {
