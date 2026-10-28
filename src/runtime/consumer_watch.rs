@@ -854,6 +854,9 @@ impl Service {
 
     async fn watch_leader(&self, group: u64, deadline: Instant) -> Result<u64> {
         wire::remaining(deadline)?;
+        if self.rpc.is_local() {
+            return self.leader(group, deadline).await;
+        }
         let voters = self
             .registry
             .candidates(group, self.config.runtime.metadata_group)?;
