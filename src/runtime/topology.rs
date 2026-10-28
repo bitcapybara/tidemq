@@ -413,12 +413,14 @@ impl Service {
         let request = SealRequest { plan, partition };
         let reply = if self.rpc.is_local() {
             use tracing::Instrument;
-            self.execute_seal(group, request, deadline)
-                .instrument(
+            wire::within(
+                deadline,
+                self.execute_seal(group, request, deadline).instrument(
                     tracing::info_span!(target: "tidemq_trace", "seal_shard_local",
                     node_id = self.config.node_id, group_id = group, operation_id = %plan),
-                )
-                .await?
+                ),
+            )
+            .await??
         } else {
             let response = self
                 .rpc

@@ -2,6 +2,78 @@ use super::*;
 use crate::runtime::wire::semantic_local_tests::Fixture;
 
 #[tokio::test]
+async fn local_consumer_control_wait_obeys_the_original_deadline_behind_a_cache_writer() {
+    use std::time::Duration;
+    let fixture = Fixture::new().await;
+    let consumer = fixture
+        .client
+        .new_queue_consumer("typed/app/events", "bounded")
+        .build()
+        .await
+        .unwrap();
+    consumer.close().await.unwrap();
+    let service = fixture.service.clone();
+    let subscription = service
+        .metadata
+        .as_ref()
+        .unwrap()
+        .state
+        .try_with_application(|state| {
+            state
+                .consumer_subscriptions()
+                .find(|row| row.topic == fixture.partition.topic_id)
+                .unwrap()
+                .id
+        })
+        .await
+        .unwrap();
+    let guard = service.groups.write().await;
+    let until = Instant::now() + Duration::from_millis(250);
+    let mut pending = Box::pin(service.consumer_control(
+        2,
+        Control::Inspect {
+            partition: fixture.partition,
+            subscription,
+        },
+        until,
+    ));
+    let observation =
+        tokio::time::timeout_at(until + Duration::from_millis(200), pending.as_mut()).await;
+    let respected_deadline = observation.is_ok();
+    drop(guard);
+    let late_success = match observation {
+        Ok(result) => {
+            assert_eq!(
+                result.err().unwrap().failure().outcome,
+                i32::from(tidemq_protocol::common::Outcome::Unknown)
+            );
+            drop(pending);
+            false
+        }
+        Err(_) => pending.await.is_ok(),
+    };
+    eprintln!(
+        "Typed consumer deadline ledger: respected_deadline={respected_deadline} late_success={late_success}"
+    );
+    service
+        .consumer_control(
+            2,
+            Control::Inspect {
+                partition: fixture.partition,
+                subscription,
+            },
+            Instant::now() + Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+    fixture.close().await;
+    assert!(
+        respected_deadline,
+        "A local consumer control wait outlived its original deadline"
+    );
+}
+
+#[tokio::test]
 async fn local_consumer_progress_uses_the_durable_cursor_without_remote_encoding() {
     let fixture = Fixture::new().await;
     let consumer = fixture
