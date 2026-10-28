@@ -46,9 +46,14 @@ mod metadata_replay_tests;
 #[path = "../../tests/runtime_support/ack_priority.rs"]
 mod ack_priority;
 
+#[path = "../../tests/runtime_support/consumer_retirement.rs"]
+#[cfg(feature = "test-hooks")]
+mod consumer_retirement;
+
 const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 const TOPIC: &str = "test/app/consumer-authority";
 static COMMIT: Mutex<Option<Arc<CommitPause>>> = Mutex::new(None);
+static COMMIT_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static METADATA_WRITE: Mutex<Option<Arc<MetadataWritePause>>> = Mutex::new(None);
 
 struct MetadataWritePause {
@@ -119,18 +124,33 @@ pub(in crate::runtime) async fn before_consumer_meta_write(
 
 struct CommitPause {
     partition: PartitionKey,
+    point: CommitPoint,
     expires: Mutex<Option<std::time::Instant>>,
+    outcome: Mutex<Option<crate::subscription::GroupOutcome>>,
     ready: Notify,
     resume: Notify,
 }
 
 struct InstalledCommitPause(Arc<CommitPause>);
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(in crate::runtime) enum CommitPoint {
+    Gate,
+    Read,
+    RetireRead,
+}
+
 impl InstalledCommitPause {
     fn new(partition: PartitionKey) -> Self {
+        Self::at(partition, CommitPoint::Gate)
+    }
+
+    fn at(partition: PartitionKey, point: CommitPoint) -> Self {
         let pause = Arc::new(CommitPause {
             partition,
+            point,
             expires: Mutex::new(None),
+            outcome: Mutex::new(None),
             ready: Notify::new(),
             resume: Notify::new(),
         });
@@ -155,12 +175,14 @@ impl Drop for InstalledCommitPause {
 pub(in crate::runtime) async fn after_group_commit(
     partition: PartitionKey,
     expires: std::time::Instant,
+    point: CommitPoint,
+    outcome: Option<crate::subscription::GroupOutcome>,
 ) {
     let pause = {
         let mut slot = COMMIT.lock().unwrap();
         if slot
             .as_ref()
-            .is_some_and(|pause| pause.partition == partition)
+            .is_some_and(|pause| pause.partition == partition && pause.point == point)
         {
             slot.take()
         } else {
@@ -169,6 +191,7 @@ pub(in crate::runtime) async fn after_group_commit(
     };
     if let Some(pause) = pause {
         *pause.expires.lock().unwrap() = Some(expires);
+        *pause.outcome.lock().unwrap() = outcome;
         pause.ready.notify_one();
         pause.resume.notified().await;
     }
@@ -435,6 +458,7 @@ async fn a_consumer_observation_retries_a_real_resource_lease_revision_conflict(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn committed_consumer_mutation_expiry_preserves_unknown_semantics_and_source() {
+    let _serial = COMMIT_SERIAL.lock().await;
     let (fixture, client) = setup().await;
     let topic = client.admin().create_topic(TOPIC).await.unwrap();
     let queue = client

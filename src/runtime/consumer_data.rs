@@ -889,7 +889,14 @@ impl Service {
             _ => None,
         };
         #[cfg(test)]
-        let gate = matches!(&command, GroupCommand::OpenGate { .. });
+        let commit_point = match &command {
+            GroupCommand::OpenGate { .. } => Some(super::data::consumer_tests::CommitPoint::Gate),
+            GroupCommand::Read { .. } => Some(super::data::consumer_tests::CommitPoint::Read),
+            GroupCommand::RetireRead { .. } => {
+                Some(super::data::consumer_tests::CommitPoint::RetireRead)
+            }
+            _ => None,
+        };
         #[cfg(test)]
         super::data::control_lease_tests::before_group_write(
             route.partition,
@@ -938,9 +945,17 @@ impl Service {
             }
         };
         #[cfg(test)]
-        if gate {
-            super::data::consumer_tests::after_group_commit(route.partition, lease.expires_at())
-                .await;
+        if let Some(point) = commit_point {
+            super::data::consumer_tests::after_group_commit(
+                route.partition,
+                lease.expires_at(),
+                point,
+                match &result {
+                    DataResponse::ConsumerGroup(outcome) => Some(outcome.clone()),
+                    _ => None,
+                },
+            )
+            .await;
         }
         let current = replica
             .state
