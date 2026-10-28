@@ -28,6 +28,19 @@ test('redaction removes repeated tokens at every chunk boundary and preserves UT
   assert.equal(await redacted([Buffer.from('short output')]), 'short output');
 });
 
+test('redaction follows seeded credentials added after a service starts', async () => {
+  const values = ['private-bootstrap-token'];
+  const stream = redactToken(() => values);
+  const output = [];
+  stream.on('data', chunk => output.push(chunk));
+  stream.write('login private-boot');
+  values.push('private-restricted-token', 'private-revocable-token');
+  stream.write('strap-token; fill("private-restr');
+  stream.end('icted-token"); private-revocable-token');
+  await new Promise((resolve, reject) => { stream.once('end', resolve); stream.once('error', reject); });
+  assert.equal(Buffer.concat(output).toString(), 'login [REDACTED]; fill("[REDACTED]"); [REDACTED]');
+});
+
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tidemq-browser-runner-test-'));
   const state = { artifacts: path.join(root, 'public'), privateDirectory: path.join(root, 'private'), token, children: [] };

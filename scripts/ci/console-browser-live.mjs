@@ -13,6 +13,7 @@ import { PassThrough, Transform } from 'node:stream';
 import { finished, pipeline } from 'node:stream/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { operationId } from '../../console/web/src/features/logic.ts';
 
 const repository = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -62,19 +63,21 @@ async function hashFile(file) {
 
 export function redactToken(token) {
   if (!token) return new PassThrough();
-  const secret = Buffer.from(token);
+  const secrets = () => (typeof token === 'function' ? token() : [token]).filter(Boolean).map(value => Buffer.from(value));
   let pending = Buffer.alloc(0);
   return new Transform({
     transform(chunk, _encoding, callback) {
       pending = Buffer.concat([pending, chunk]);
-      let at;
-      while ((at = pending.indexOf(secret)) !== -1) {
+      const values = secrets();
+      let match;
+      while ((match = values.map(secret => ({secret, at: pending.indexOf(secret)})).filter(value => value.at >= 0).sort((a, b) => a.at - b.at || b.secret.length - a.secret.length)[0])) {
+        const {secret, at} = match;
         this.push(pending.subarray(0, at));
         this.push('[REDACTED]');
         pending = pending.subarray(at + secret.length);
       }
       // Retain a possible token prefix until the next chunk of this stream arrives.
-      const safe = Math.max(0, pending.length - secret.length + 1);
+      const safe = Math.max(0, pending.length - Math.max(1, ...values.map(value => value.length)) + 1);
       this.push(pending.subarray(0, safe));
       pending = pending.subarray(safe);
       callback();
@@ -97,7 +100,7 @@ export function startChild(state, name, command, args, cwd, env = process.env) {
   };
   // Redact independently so stderr cannot interrupt a token split across stdout chunks.
   const logging = Promise.all([child.stdout, child.stderr].map((source) =>
-    pipeline(source, redactToken(state.token), output, { end: false }).catch(logFailed),
+    pipeline(source, redactToken(() => state.secrets ?? [state.token]), output, { end: false }).catch(logFailed),
   )).then(() => {
     output.end();
     return finished(output);
@@ -158,6 +161,7 @@ async function startCore(state, binary, web, topology, signal) {
   ], repository);
   assert.deepEqual(await generator.done, {code: 0, signal: null}, 'RF1 configuration generation failed');
   state.token = (await fs.readFile(path.join(generated, 'access.token'), 'utf8')).trim();
+  state.secrets = [state.token];
   assert(/^[0-9a-f]{64}$/.test(state.token), 'The fixture requires a generated bootstrap token');
   const nodes = topology === 'combined' ? [1] : [11, 21, 31, 41];
   const ports = new Map();
@@ -212,6 +216,83 @@ async function startConsole(state, binary, web, core, signal) {
   return baseURL;
 }
 
+function fixtureRequest(baseURL, ca, method, resource, body, headers = {}, signal) {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    const request = https.request(new URL(resource, baseURL), {
+      method, ca, signal, timeout: 15_000,
+      headers: {origin: baseURL, 'content-type': 'application/json', ...headers},
+    }, response => {
+      let text = '';
+      response.on('data', chunk => {
+        text += chunk;
+        if (text.length > 1_048_576) response.destroy(new Error('Fixture response exceeded its limit'));
+      });
+      response.on('error', () => reject(new Error('Fixture HTTPS response failed')));
+      response.on('end', () => {
+        try { resolve({status: response.statusCode, headers: response.headers, value: JSON.parse(text)}); }
+        catch { reject(new Error('Fixture HTTPS returned invalid JSON')); }
+      });
+    });
+    request.on('timeout', () => request.destroy());
+    request.on('error', () => reject(new Error('Fixture HTTPS request failed')));
+    request.end(payload);
+  });
+}
+
+async function seedContext(state, binary, core, baseURL, topology, signal) {
+  const admin = async (name, args) => {
+    signal.throwIfAborted();
+    const endpoint = '127.0.0.1:' + core.ports.get(topology === 'combined' ? 7410 : 7810);
+    const managed = startChild(state, name, binary, ['admin', '--endpoint', endpoint,
+      '--ca', path.join(core.generated, 'ca.pem'), '--token-file', core.tokenFile, ...args], repository);
+    let stdout = '';
+    managed.child.stdout.on('data', chunk => { stdout += chunk; });
+    const stop = () => signalChild(managed, 'SIGTERM');
+    signal.addEventListener('abort', stop, {once: true});
+    try { assert.deepEqual(await managed.done, {code: 0, signal: null}, 'Native seed administration failed'); }
+    finally { signal.removeEventListener('abort', stop); }
+    return JSON.parse(stdout).result.id;
+  };
+  const tenantId = await admin('seed-tenant', ['create-tenant', 'live-allowed']);
+  const otherTenant = await admin('seed-other-tenant', ['create-tenant', 'live-other']);
+  const namespaceId = await admin('seed-namespace', ['create-namespace', tenantId, 'allowed']);
+  const deniedNamespace = await admin('seed-denied-namespace', ['create-namespace', tenantId, 'denied']);
+  const otherNamespace = await admin('seed-other-namespace', ['create-namespace', otherTenant, 'other']);
+  const ca = await fs.readFile(path.join(core.generated, 'ca.pem'));
+  const login = await fixtureRequest(baseURL, ca, 'POST', '/api/v1/session', {token: state.token}, {}, signal);
+  assert.equal(login.status, 200, 'Native seed session failed');
+  const headers = {cookie: login.headers['set-cookie'].map(value => value.split(';')[0]).join('; '),
+    'x-csrf-token': login.value.csrfToken};
+  const write = async (resource, body) => {
+    signal.throwIfAborted();
+    const reply = await fixtureRequest(baseURL, ca, 'POST', resource, {...body, operationId: operationId()}, headers, signal);
+    assert.equal(reply.status, 200, 'Native seed write HTTP request failed');
+    assert.equal(reply.value.status, 'succeeded', 'Native seed write did not commit');
+    return reply.value;
+  };
+  const allowed = await write('/api/v1/topics', {tenantId, namespaceId, name: 'visible'});
+  const denied = await write('/api/v1/topics', {tenantId, namespaceId: deniedNamespace, name: 'hidden'});
+  const other = await write('/api/v1/topics', {tenantId: otherTenant, namespaceId: otherNamespace, name: 'foreign'});
+  const principal = await write('/api/v1/principals', {name: 'live-inspector', tenantId, namespaceId, permissions: ['inspect']});
+  const credential = async name => {
+    const issued = await write('/api/v1/credentials', {principalId: principal.resourceId, lifetimeMs: '3600000'});
+    assert.equal(typeof issued.secret, 'string', 'Native seed credential secret is missing');
+    state.secrets.push(issued.secret);
+    const tokenFile = path.join(state.privateDirectory, name + '.token');
+    await fs.writeFile(tokenFile, issued.secret, {mode: 0o600});
+    return {tokenFile, credentialId: issued.resourceId};
+  };
+  const restricted = await credential('restricted');
+  const revocable = {};
+  for (const browser of ['chromium', 'firefox', 'webkit']) revocable[browser] = await credential(browser);
+  const contextFile = path.join(state.privateDirectory, 'live-context.json');
+  await fs.writeFile(contextFile, JSON.stringify({topology, tenantId, namespaceId,
+    allowedTopicId: allowed.resourceId, sameTenantDeniedTopicId: denied.resourceId,
+    otherTenantTopicId: other.resourceId, restricted, revocable}), {mode: 0o600});
+  return contextFile;
+}
+
 function signalChild(managed, signal) {
   try {
     if (process.platform !== 'win32' && managed.child.pid) process.kill(-managed.child.pid, signal);
@@ -239,6 +320,21 @@ export async function cleanup(state) {
     try { children.push(await stopChild(managed)); }
     catch { children.push({ name: managed.name, graceful: false, error: 'Fixture process cleanup failed' }); }
   }
+  let credentialLogsClean = true;
+  try { for (const name of await fs.readdir(state.artifacts)) {
+    if (!name.endsWith('.log')) continue;
+    const file = path.join(state.artifacts, name);
+    const original = await fs.readFile(file, 'utf8');
+    let sanitized = original;
+    for (const secret of state.secrets ?? [state.token]) {
+      if (secret) sanitized = sanitized.replaceAll(secret, '[REDACTED]');
+    }
+    if (sanitized !== original) {
+      credentialLogsClean = false;
+      await fs.writeFile(file, sanitized, {mode: 0o600});
+    }
+  } } catch { credentialLogsClean = false; }
+  if (!credentialLogsClean) failures.push('Credential redaction failed');
   let privateMaterialRemoved = false;
   try {
     await fs.rm(state.privateDirectory, { recursive: true, force: true });
@@ -246,7 +342,7 @@ export async function cleanup(state) {
   } catch { failures.push('Private fixture removal failed'); }
   const passed = privateMaterialRemoved && failures.length === 0 && children.every((child) => child.graceful);
   await fs.writeFile(path.join(state.artifacts, 'cleanup.json'), JSON.stringify({
-    passed, private_material_removed: privateMaterialRemoved, children, failures,
+    passed, private_material_removed: privateMaterialRemoved, credential_logs_clean: credentialLogsClean, children, failures,
   }, null, 2));
   assert(passed, 'Browser fixture cleanup or a child exit failed; inspect cleanup.json');
 }
@@ -277,11 +373,14 @@ export async function run(args = process.argv.slice(2)) {
     const core = await startCore(state, binary, web, topology, cancellation.signal);
     const baseURL = topology === 'combined' ? core.baseURL : await startConsole(state, binary, web, core, cancellation.signal);
     await verifyHttps(baseURL, path.join(core.generated, 'ca.pem'), cancellation.signal);
+    const contextFile = await seedContext(state, binary, core, baseURL, topology, cancellation.signal);
+    cancellation.signal.throwIfAborted();
     console.log(`Running real Console browser tests at ${baseURL}; evidence: ${artifacts}`);
     const browser = startChild(state, 'playwright', 'npx', [
       '--no-install', 'playwright', 'test', '--config', 'playwright.live.config.ts', ...args,
       '--reporter=line', '--trace=off', '--output', path.join(privateDirectory, 'playwright-output'),
-    ], web, { ...process.env, TIDEMQ_LIVE_BASE_URL: baseURL, TIDEMQ_LIVE_TOKEN_FILE: core.tokenFile });
+    ], web, { ...process.env, TIDEMQ_LIVE_BASE_URL: baseURL, TIDEMQ_LIVE_TOKEN_FILE: core.tokenFile,
+      TIDEMQ_LIVE_CONTEXT_FILE: contextFile });
     const abortBrowser = () => signalChild(browser, 'SIGTERM');
     cancellation.signal.addEventListener('abort', abortBrowser, { once: true });
     const result = await browser.done;
