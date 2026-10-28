@@ -212,15 +212,15 @@ impl RuntimeFile {
         Ok(())
     }
 
-    fn into_runtime(self, local: bool, node: u64) -> RuntimeConfig {
+    fn into_runtime(self, local: bool) -> RuntimeConfig {
         let defaults = RuntimeConfig::default();
         RuntimeConfig {
             internal_listen: self.internal_listen.unwrap_or(defaults.internal_listen),
             metadata_group: self.metadata_group,
-            // Local ownership is derived; no membership is accepted from the file.
+            // Local placement uses the process identity, without Raft membership.
             metadata_voters: self.metadata_voters.unwrap_or_else(|| {
                 if local {
-                    vec![node]
+                    Vec::new()
                 } else {
                     defaults.metadata_voters
                 }
@@ -232,7 +232,7 @@ impl RuntimeFile {
                     group_id: group.group_id,
                     voters: group
                         .voters
-                        .unwrap_or_else(|| if local { vec![node] } else { vec![1] }),
+                        .unwrap_or_else(|| if local { Vec::new() } else { vec![1] }),
                     standby: group.standby.unwrap_or_default(),
                 })
                 .collect(),
@@ -251,7 +251,7 @@ impl TryFrom<ConfigFile> for Config {
     fn try_from(file: ConfigFile) -> Result<Self> {
         let role = file.validate_layout()?;
         let local = role == Role::Combined;
-        let mut runtime = file.runtime.into_runtime(local, file.node_id);
+        let mut runtime = file.runtime.into_runtime(local);
         if let Some(authorization) = file.authorization {
             runtime.bootstrap_admin_token_file = authorization.bootstrap_admin_token_file;
         }
@@ -286,7 +286,7 @@ impl TryFrom<ConfigFile> for Config {
                     }
                 }),
             },
-            console: file.console.unwrap_or_default(),
+            console: file.console,
             runtime,
         })
     }
@@ -325,7 +325,7 @@ impl From<Config> for ConfigFile {
             runtime: RuntimeFile::from_runtime(config.runtime, local),
             gateway,
             storage,
-            console: local.then_some(config.console),
+            console: if local { config.console } else { None },
         }
     }
 }

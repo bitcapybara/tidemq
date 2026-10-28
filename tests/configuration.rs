@@ -161,10 +161,10 @@ fn node_schema(role: Role) -> Config {
         logging: defaults.logging,
         tracing: defaults.tracing,
         tls: defaults.tls,
-        console: tidemq::console::EmbeddedConsoleConfig {
+        console: (role == Role::Combined).then(|| tidemq::console::EmbeddedConsoleConfig {
             observability: console_schema().observability,
-            ..defaults.console
-        },
+            ..defaults.console.unwrap()
+        }),
         runtime,
     }
 }
