@@ -12,6 +12,47 @@ umask 077
    ${GITHUB_RUN_ID:-} =~ ^[0-9]+$ && ${GITHUB_RUN_ATTEMPT:-} =~ ^[0-9]+$ ]] || {
   printf 'An immutable test image and numeric CI identity are required\n' >&2; exit 2;
 }
+build_arguments=("$@")
+discovery_arguments=()
+execution_arguments=()
+metadata_flags=(--format-version 1 --locked)
+while (( $# > 0 )); do
+  argument=$1
+  shift
+  case $argument in
+    --workspace|--lib|--bins|--examples|--all-targets|--locked)
+      discovery_arguments+=("$argument") ;;
+    -p|--package|--test|--features|-F)
+      (( $# > 0 )) || { printf 'Missing nextest build argument value\n' >&2; exit 2; }
+      discovery_arguments+=("$argument" "$1")
+      if [[ $argument == --features || $argument == -F ]]; then metadata_flags+=("$argument" "$1"); fi
+      shift ;;
+    --profile|-P|-E|--filterset|--run-ignored)
+      (( $# > 0 )) || { printf 'Missing nextest selection argument value\n' >&2; exit 2; }
+      discovery_arguments+=("$argument" "$1")
+      execution_arguments+=("$argument" "$1")
+      shift ;;
+    --profile=*|--filterset=*|--run-ignored=*|--ignore-default-filter)
+      discovery_arguments+=("$argument")
+      execution_arguments+=("$argument") ;;
+    --test-threads|-j|--retries)
+      (( $# > 0 )) || { printf 'Missing nextest runner argument value\n' >&2; exit 2; }
+      execution_arguments+=("$argument" "$1")
+      shift ;;
+    --test-threads=*|--retries=*|--fail-fast|--no-fail-fast|--no-capture)
+      execution_arguments+=("$argument") ;;
+    --)
+      discovery_arguments+=(-- "$@")
+      execution_arguments+=(-- "$@")
+      break ;;
+    -*)
+      printf 'Unsupported argument in the isolated CI nextest entry\n' >&2; exit 2 ;;
+    *)
+      discovery_arguments+=("$argument")
+      execution_arguments+=("$argument") ;;
+  esac
+done
+
 workspace=$(pwd -P)
 target=${CARGO_TARGET_DIR:?An absolute Cargo target directory is required}
 temporary=${TMPDIR:?An absolute test temporary directory is required}
@@ -55,20 +96,8 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 # Reuse both metadata files so the execution account cannot launch another Cargo build.
-cargo nextest run --no-run "$@"
-cargo nextest list --list-type binaries-only --message-format json "$@" > "$metadata/binaries.json"
-metadata_flags=(--format-version 1 --locked)
-arguments=("$@")
-for ((index=0; index<${#arguments[@]}; index++)); do
-  case ${arguments[index]} in
-    --) break ;;
-    --features|-F)
-      (( index + 1 < ${#arguments[@]} )) || exit 2
-      metadata_flags+=("${arguments[index]}" "${arguments[index+1]}")
-      index=$((index + 1)) ;;
-    --features=*|--all-features|--no-default-features) metadata_flags+=("${arguments[index]}") ;;
-  esac
-done
+cargo nextest run --no-run "${build_arguments[@]}"
+cargo nextest list --list-type binaries-only --message-format json "${discovery_arguments[@]}" > "$metadata/binaries.json"
 cargo metadata "${metadata_flags[@]}" > "$metadata/cargo.json"
 
 options=(create --name "$name" --label tidemq.lab/nextest=true
@@ -111,7 +140,7 @@ container=$("${docker[@]}" "${options[@]}" --entrypoint /usr/bin/bash "$TIDEMQ_N
   } > "$receipt"
   exec "$@"
 ' nextest "$metadata/scope.txt" /srv/tidemq/tools/cargo-nextest nextest run \
-  --binaries-metadata "$metadata/binaries.json" --cargo-metadata "$metadata/cargo.json" "$@")
+  --binaries-metadata "$metadata/binaries.json" --cargo-metadata "$metadata/cargo.json" "${execution_arguments[@]}")
 [[ $container =~ ^[a-f0-9]{64}$ ]] || { container=; exit 2; }
 "${docker[@]}" start --attach "$container" &
 wait "$!"
