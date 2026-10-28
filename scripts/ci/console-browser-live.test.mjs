@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import http from 'node:http';
+import https from 'node:https';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
-import { cleanup, listen, proxyRequest, redactToken, startChild, stopChild } from './console-browser-live.mjs';
+import { cleanup, listen, rewriteNodeConfiguration, verifyHttps, redactToken, startChild, stopChild } from './console-browser-live.mjs';
 
 const token = 'a1'.repeat(32);
 
@@ -28,7 +30,7 @@ test('redaction removes repeated tokens at every chunk boundary and preserves UT
 
 async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tidemq-browser-runner-test-'));
-  const state = { artifacts: path.join(root, 'public'), privateDirectory: path.join(root, 'private'), token, children: [], proxy: null };
+  const state = { artifacts: path.join(root, 'public'), privateDirectory: path.join(root, 'private'), token, children: [] };
   await fs.mkdir(state.artifacts);
   await fs.mkdir(state.privateDirectory);
   return { root, state };
@@ -122,52 +124,34 @@ test('signal exits fail the gate and cleanup continues through remaining childre
   }
 });
 
-test('the browser fixture proxy preserves origin, cookies, bodies and status without mocking the API', async () => {
-  const upstream = http.createServer(async (request, response) => {
-    let body = '';
-    for await (const chunk of request) body += chunk;
-    assert.equal(request.headers.origin, 'https://127.0.0.1:8443');
-    assert.equal(request.headers.cookie, '__Host-test=opaque');
-    assert.equal(request.headers.host, '127.0.0.1:8443');
-    assert.equal(body, '{"operationId":"original-operation"}');
-    response.writeHead(409, { 'content-type': 'application/json', 'set-cookie': '__Host-test=new; Secure; HttpOnly; Path=/' });
-    response.end('{"error":"operation_conflict"}');
-  });
-  const upstreamPort = await listen(upstream);
-  const proxy = http.createServer((request, response) => proxyRequest(upstreamPort, request, response));
-  const proxyPort = await listen(proxy);
-  try {
-    const result = await new Promise((resolve, reject) => {
-      const request = http.request({ hostname: '127.0.0.1', port: proxyPort, path: '/api/v1/operations', method: 'POST',
-        headers: { origin: 'https://127.0.0.1:8443', host: '127.0.0.1:8443', cookie: '__Host-test=opaque', 'content-type': 'application/json' } },
-      async (response) => {
-        let body = '';
-        for await (const chunk of response) body += chunk;
-        resolve({ status: response.statusCode, cookie: response.headers['set-cookie'], body });
-      });
-      request.once('error', reject);
-      request.end('{"operationId":"original-operation"}');
-    });
-    assert.deepEqual(result, { status: 409, cookie: ['__Host-test=new; Secure; HttpOnly; Path=/'], body: '{"error":"operation_conflict"}' });
-  } finally {
-    proxy.closeAllConnections();
-    upstream.closeAllConnections();
-    await Promise.all([new Promise((resolve) => proxy.close(resolve)), new Promise((resolve) => upstream.close(resolve))]);
-  }
+test('native fixtures rewrite every advertised peer and the built-in Console endpoint', () => {
+  const ports = new Map([[7410, 41000], [7411, 41001], [8410, 41002], [8443, 41003]]);
+  const text = ["role = 'combined'", "listen = '127.0.0.1:7410'", "internal_address = '127.0.0.1:7411'", "management_listen = '127.0.0.1:8410'", "static_dir = '/missing/console'", "public_origin = 'https://localhost:8443'"].join('\n');
+  const rewritten = rewriteNodeConfiguration(text, ports, '/published/assets');
+  for (const port of [41000, 41001, 41002, 41003]) assert.ok(rewritten.includes(':' + port));
+  assert.ok(rewritten.includes('static_dir = "/published/assets"'));
+  assert.ok(rewritten.includes("role = 'combined'"));
 });
 
-test('an unavailable Console produces an explicit proxy failure', async () => {
-  const stopped = http.createServer();
-  const unused = await listen(stopped);
-  await new Promise((resolve) => stopped.close(resolve));
-  const proxy = http.createServer((request, response) => proxyRequest(unused, request, response));
-  const port = await listen(proxy);
+test('native HTTPS fixture verifies its generated CA and rejects an untrusted signer', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tidemq-native-https-'));
+  let server;
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/api/v1/session`);
-    assert.equal(response.status, 502);
-    assert.equal(await response.text(), 'The test Console is unavailable');
+    const generator = fileURLToPath(new URL('../../deploy/local/generate.sh', import.meta.url));
+    for (const name of ['trusted', 'other']) {
+      const issued = spawnSync('bash', [generator, 'rf1', path.join(root, name)], {encoding: 'utf8'});
+      assert.equal(issued.status, 0, issued.stderr);
+    }
+    server = https.createServer({cert: await fs.readFile(path.join(root, 'trusted/node-1.pem')), key: await fs.readFile(path.join(root, 'trusted/node-1.key'))}, (_request, response) => response.end('Console'));
+    const port = await listen(server);
+    const url = 'https://127.0.0.1:' + port;
+    await verifyHttps(url, path.join(root, 'trusted/ca.pem'));
+    await assert.rejects(verifyHttps(url, path.join(root, 'other/ca.pem')));
   } finally {
-    proxy.closeAllConnections();
-    await new Promise((resolve) => proxy.close(resolve));
+    if (server) {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+    await fs.rm(root, {recursive: true, force: true});
   }
 });

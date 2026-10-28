@@ -11,6 +11,12 @@ use tidemq_protocol::public::WatchStatus;
 use tokio::sync::Notify;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum WatchIncarnation {
+    Local { process: Id },
+    Raft { term: u64 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct WatchKey {
     pub partition: PartitionKey,
     pub shard: Id,
@@ -21,7 +27,7 @@ pub(crate) struct WatchKey {
     pub installation: u64,
     pub route_epoch: u64,
     pub route_generation: u64,
-    pub leader_term: u64,
+    pub incarnation: WatchIncarnation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -622,7 +628,7 @@ mod tests {
             installation: 2,
             route_epoch: 1,
             route_generation: 1,
-            leader_term: 1,
+            incarnation: WatchIncarnation::Raft { term: 1 },
         }
     }
     fn projection(dependencies: BTreeSet<Dependency>, ready: bool) -> Projection {
@@ -633,6 +639,45 @@ mod tests {
             due_ms: None,
             dependencies,
         }
+    }
+
+    #[test]
+    fn local_process_incarnations_reset_tokens_without_reusing_raft_terms() {
+        let hub = WatchHub::default();
+        let budget = budget();
+        let mut key = key();
+        let first = hub
+            .observe(key, projection(BTreeSet::new(), false), &[], &budget, None)
+            .unwrap();
+        let mut token = first.token;
+        for process in [Id::new_v7().unwrap(), Id::new_v7().unwrap()] {
+            key.incarnation = WatchIncarnation::Local { process };
+            let changed = hub
+                .observe(
+                    key,
+                    projection(BTreeSet::new(), false),
+                    &token,
+                    &budget,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(changed.status, WatchStatus::WatchReset);
+            assert_ne!(changed.token, token);
+            token = changed.token;
+            let same = hub
+                .observe(
+                    key,
+                    projection(BTreeSet::new(), false),
+                    &token,
+                    &budget,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(same.status, WatchStatus::WatchUnchanged);
+        }
+        hub.reset();
+        assert_eq!(budget.metrics().bytes.get(), 0);
+        assert_eq!(budget.metrics().targets.get(), 0);
     }
 
     #[test]

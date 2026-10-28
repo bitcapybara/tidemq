@@ -5,7 +5,7 @@ use super::{
     wire::{self, Request},
 };
 use crate::{
-    broker::{WatchKey, WatchSample},
+    broker::{WatchIncarnation, WatchKey, WatchSample},
     gateway::Access,
     metadata::Route,
     server::{
@@ -1057,9 +1057,11 @@ impl Service {
             .ok_or_else(forbidden)?;
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         Ok(())
     }
 
@@ -1086,7 +1088,14 @@ impl Service {
             .ok_or_else(forbidden)?;
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        let term = replica.raft.metrics().borrow().current_term;
+        let incarnation = match replica.group.raft() {
+            Some(raft) => WatchIncarnation::Raft {
+                term: raft.metrics().borrow().current_term,
+            },
+            None => WatchIncarnation::Local {
+                process: self.instance,
+            },
+        };
         let now = super::data::unix_millis()?;
         replica
             .state
@@ -1122,7 +1131,7 @@ impl Service {
                                     installation: permit.installed_version,
                                     route_epoch: route.epoch,
                                     route_generation: route.generation,
-                                    leader_term: term,
+                                    incarnation,
                                 },
                                 (client, credential),
                                 &target.observed_token,

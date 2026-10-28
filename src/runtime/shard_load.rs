@@ -90,9 +90,11 @@ impl Service {
         let request: LoadRequest = wire::decode_binary(body)?;
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let reports = replica
             .state
             .try_with_application(|state| {

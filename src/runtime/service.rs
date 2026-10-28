@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::gateway::Access;
 use crate::metadata::{DataGroup, MetadataState, PartitionKey, Route};
 use crate::observability::metrics::{Metrics, Operation};
-use crate::ownership::remote::{Query, RemoteMetadataAuthority, Value};
+use crate::ownership::remote::{Authority, Query, Value};
 use crate::replication::rpc::{GroupRole, RaftService};
 use crate::server::{SubmissionOrder, WireService};
 use crate::transport::{Authorization, StreamPurpose};
@@ -38,6 +38,8 @@ type CancelKey = (Arc<str>, Arc<str>, Option<Id>, Id);
 type LeaseSlot = Arc<Mutex<Option<Arc<crate::ownership::ControlLease>>>>;
 
 pub(crate) struct Service {
+    pub process: super::process::Process,
+    pub(super) console_ready: AtomicBool,
     pub config: Config,
     pub cluster: Id,
     pub(super) instance: Id,
@@ -46,7 +48,7 @@ pub(crate) struct Service {
     pub data: BTreeMap<u64, Replica<DataApplication>>,
     pub objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
     pub rpc: PeerRpc,
-    pub authority: Arc<RemoteMetadataAuthority>,
+    pub authority: Arc<Authority>,
     pub(super) registry: Arc<super::registry::Registry>,
     pub(super) metadata_repair: std::sync::Mutex<Option<(Id, crate::scaling::RepairLease)>>,
     pub(super) auth_cache: super::auth::AuthCache,
@@ -102,7 +104,7 @@ impl Service {
         data: BTreeMap<u64, Replica<DataApplication>>,
         objects: BTreeMap<u64, crate::lifecycle::Coordinator>,
         rpc: PeerRpc,
-        authority: Arc<RemoteMetadataAuthority>,
+        authority: Arc<Authority>,
         registry: Arc<super::registry::Registry>,
         budget: MemoryBudget,
         producer: ProducerMetrics,
@@ -118,6 +120,9 @@ impl Service {
         external_stop: watch::Sender<bool>,
         has_external: bool,
     ) -> Result<Self> {
+        let process = super::process::Process::default();
+        process.recovering();
+        process.register(metrics.registry_mut());
         let failover_metrics = super::failover::Metrics::register(metrics.registry_mut());
         let scaling = super::scaling::RuntimeScaling::new(
             &config,
@@ -130,12 +135,15 @@ impl Service {
             metrics.registry_mut(),
         )?;
         let voters = registry.metadata_voters()?;
-        authority.replace_voters(voters.clone())?;
-        scaling
-            .service
-            .replace_metadata_voters(voters.clone())
-            .map_err(|source| Error::operation("restore scaling metadata discovery", source))?;
-        for coordinator in objects.values() {
+        if !rpc.is_local() {
+            authority.replace_voters(voters.clone())?;
+        }
+        if let Some(service) = &scaling.service {
+            service
+                .replace_metadata_voters(voters.clone())
+                .map_err(|source| Error::operation("restore scaling metadata discovery", source))?;
+        }
+        for coordinator in objects.values().filter(|_| !rpc.is_local()) {
             coordinator
                 .replace_metadata_nodes(voters.iter().copied().collect())
                 .map_err(|source| {
@@ -159,6 +167,8 @@ impl Service {
             .start(reaper_memory)
             .map_err(|_| Error::unavailable())?;
         Ok(Self {
+            process,
+            console_ready: AtomicBool::new(config.role != crate::config::Role::Combined),
             watch_budget,
             watch_registry,
             config,
@@ -238,7 +248,7 @@ impl Service {
         {
             failure.get_or_insert(error);
         }
-        if let Err(source) = self.rpc.pool.close(deadline).await {
+        if let Err(source) = self.rpc.close(deadline).await {
             failure.get_or_insert_with(|| Error::operation("drain internal QUIC endpoint", source));
         }
         failure.map_or(Ok(()), Err)
@@ -248,12 +258,11 @@ impl Service {
         replica: &Replica<A>,
         deadline: Instant,
     ) -> Result<()> {
-        wire::within(deadline, replica.raft.shutdown())
-            .await?
-            .map_err(|source| Error::operation("stop Raft replica before WAL closure", source))?;
-        wire::within(deadline, replica.log.close())
-            .await?
-            .map_err(|source| Error::operation("close drained Raft WAL", source))
+        replica
+            .group
+            .close(deadline)
+            .await
+            .map_err(wire::execution_error)
     }
 
     pub async fn route(&self, partition: PartitionKey, deadline: Instant) -> Result<Route> {
@@ -307,7 +316,7 @@ impl Service {
         let actual = self
             .data
             .get(&group)
-            .map(|replica| crate::ownership::remote::current_voters(&replica.raft))
+            .map(Replica::current_placement)
             .transpose()?;
         if let Some((cached, _)) =
             self.groups
@@ -318,7 +327,7 @@ impl Service {
                     *expires > Instant::now()
                         && actual
                             .as_ref()
-                            .is_none_or(|voters| *voters == cached.voters)
+                            .is_none_or(|placement| *placement == cached.placement)
                 })
         {
             return Ok(cached.clone());
@@ -330,8 +339,15 @@ impl Service {
         };
         if configured.group_id != group
             || configured.generation == 0
-            || configured.voters.len() != usize::from(self.config.replication_factor)
-            || configured.voters.iter().any(|node| {
+            || configured.placement.mode().ok()
+                != Some(if self.rpc.is_local() {
+                    crate::metadata::DeploymentMode::Local
+                } else if self.config.replication_factor == 1 {
+                    crate::metadata::DeploymentMode::SeparateRf1
+                } else {
+                    crate::metadata::DeploymentMode::SeparateRf3
+                })
+            || configured.placement.hosts().iter().any(|node| {
                 !self
                     .registry
                     .has_role(*node, crate::metadata::NodeRole::Storage)
@@ -341,7 +357,7 @@ impl Service {
             return Err(Error::unavailable());
         }
         if let Some(replica) = self.data.get(&group)
-            && crate::ownership::remote::current_voters(&replica.raft)? != configured.voters
+            && replica.current_placement()? != configured.placement
         {
             return Err(Error::unavailable());
         }
@@ -366,6 +382,15 @@ impl Service {
     }
 
     pub async fn leader(&self, group: u64, deadline: Instant) -> Result<u64> {
+        if self.rpc.is_local() {
+            wire::remaining(deadline)?;
+            return if group == self.config.runtime.metadata_group {
+                self.metadata.as_ref().and_then(Replica::authority_node)
+            } else {
+                self.data.get(&group).and_then(Replica::authority_node)
+            }
+            .ok_or_else(Error::unavailable);
+        }
         let cached = self.leaders.read().await.get(&group).copied();
         if let Some((leader, expires)) = cached
             && expires > Instant::now()
@@ -407,7 +432,7 @@ impl Service {
         &self,
         replica: &Replica<A>,
     ) -> Result<()> {
-        if wire::native_leader(&replica.raft) != Some(self.config.node_id) {
+        if replica.authority_node() != Some(self.config.node_id) {
             return Err(Error::unavailable());
         }
         Ok(())
@@ -421,6 +446,15 @@ impl Service {
         order: Option<SubmissionOrder>,
         hops: u32,
     ) -> Result<Frame> {
+        let phase = self.process.phase();
+        if phase != super::process::Phase::Ready
+            && !(matches!(
+                phase,
+                super::process::Phase::Draining | super::process::Phase::Failed
+            ) && super::drain::allows_completion(frame, &self.config.protocol)?)
+        {
+            return Err(Error::unavailable());
+        }
         let _active = self.public_admission.enter()?;
         let operation = match frame_kind(frame)? {
             FrameKind::GroupRead => Operation::Read,
@@ -898,6 +932,10 @@ impl Service {
                 let reply = self
                     .scaling
                     .service
+                    .as_ref()
+                    .ok_or_else(|| {
+                        Error::invalid("Replica scaling is unsupported in local execution")
+                    })?
                     .handle(peer, query, deadline)
                     .await
                     .map_err(|source| {
@@ -915,13 +953,9 @@ impl Service {
                     return Err(forbidden());
                 }
                 let leader = if group == self.config.runtime.metadata_group {
-                    self.metadata
-                        .as_ref()
-                        .and_then(|replica| wire::native_leader(&replica.raft))
+                    self.metadata.as_ref().and_then(Replica::authority_node)
                 } else {
-                    self.data
-                        .get(&group)
-                        .and_then(|replica| wire::native_leader(&replica.raft))
+                    self.data.get(&group).and_then(Replica::authority_node)
                 };
                 wire::json(&leader)?
             }
@@ -935,8 +969,7 @@ impl Service {
                 let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
                 self.require_leader(replica)?;
                 let authority = crate::ownership::MetadataAuthority::new(
-                    replica.raft.clone(),
-                    replica.state.clone(),
+                    replica.group.clone(),
                     self.cluster,
                     group,
                     crate::ownership::ControlPolicy::default(),
@@ -970,31 +1003,28 @@ impl Service {
                 self.require_leader(replica)?;
                 let class = TrafficClass::try_from(frame.traffic_class)
                     .map_err(|_| Error::invalid("Lifecycle traffic class is invalid"))?;
-                crate::lifecycle::remote::MetadataHandler::new(
-                    replica.raft.clone(),
-                    replica.state.clone(),
-                )
-                .handle(
-                    &Authorization::Internal(peer.clone().into()),
-                    request.kind,
-                    class,
-                    &request.body,
-                    deadline.into_std(),
-                )
-                .await
-                .map_err(|source| {
-                    Error::operation("perform authenticated lifecycle metadata operation", source)
-                })?
+                crate::lifecycle::remote::MetadataHandler::new(replica.group.clone())
+                    .handle(
+                        &Authorization::Internal(peer.clone().into()),
+                        request.kind,
+                        class,
+                        &request.body,
+                        deadline.into_std(),
+                    )
+                    .await
+                    .map_err(|source| {
+                        Error::operation(
+                            "perform authenticated lifecycle metadata operation",
+                            source,
+                        )
+                    })?
             }
             crate::lifecycle::remote::LIFECYCLE_CHECKPOINT => {
                 drop(order);
                 let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
                 let class = TrafficClass::try_from(frame.traffic_class)
                     .map_err(|_| Error::invalid("Checkpoint traffic class is invalid"))?;
-                let data = crate::lifecycle::DataReplica::local(
-                    replica.raft.clone(),
-                    replica.state.clone(),
-                );
+                let data = crate::lifecycle::DataReplica::local(replica.group.clone());
                 crate::lifecycle::remote::SnapshotHandler::new(data)
                     .handle(
                         &Authorization::Internal(peer.clone().into()),
@@ -1128,7 +1158,11 @@ impl Service {
         if group == self.config.runtime.metadata_group {
             let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
             RaftService::new(
-                replica.raft.clone(),
+                replica
+                    .group
+                    .raft()
+                    .ok_or_else(|| Error::invalid("Local execution does not accept Raft RPCs"))?
+                    .clone(),
                 self.cluster,
                 group,
                 GroupRole::Metadata,
@@ -1142,7 +1176,11 @@ impl Service {
         } else {
             let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
             RaftService::new(
-                replica.raft.clone(),
+                replica
+                    .group
+                    .raft()
+                    .ok_or_else(|| Error::invalid("Local execution does not accept Raft RPCs"))?
+                    .clone(),
                 self.cluster,
                 group,
                 GroupRole::Data,

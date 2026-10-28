@@ -5,7 +5,7 @@
 1. 使用完整 `tenant/namespace/topic` 名称，或在 Client builder 中设置 Namespace。管理端用 `admin.create_topic(name)` 创建 Topic；Producer 不隐式创建资源。
 2. 使用 `client.new_producer(topic).build().await` 创建 Producer。SDK 管理生产身份、路由和会话维护，应用不选择物理分区或填写 epoch。
 3. 调用 `send(message).await`，或通过有界任务池、FuturesOrdered/FuturesUnordered 并发驱动发送。需要保持批次输入关联时使用 `send_batch`；它允许跨组部分完成，不提供事务。
-4. 成功回执包含稳定 MessageId，表示数据 Raft 已持久提交。S3 归档在后台进行，不改变生产成功的完成点。
+4. 成功回执包含稳定 MessageId，表示所属数据组已持久提交（Combined为本地WAL，分离角色为Raft）。S3 归档在后台进行，不改变生产成功的完成点。
 5. 超时、取消或断线后检查错误的 `outcome_unknown()` 与原 PendingSend。调用原句柄的 `retry()` 恢复，不重新 send 同一内容来替代未知操作。部分批次逐条处理原 outcomes/pending。
 6. 先收束应用任务并恢复必要结果，再调用 Producer 和 Client 的 `close()`，检查 CloseReport 或 CloseError 中的未决与未领取结果。
 

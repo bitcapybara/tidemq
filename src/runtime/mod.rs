@@ -6,7 +6,9 @@ mod authority_transfer;
 mod broker_balance;
 mod cluster;
 mod config;
+mod console_local;
 mod console_operation;
+pub(crate) use console_local::{LocalConsole, LocalContext};
 mod console_read;
 mod consumer_control;
 mod consumer_data;
@@ -23,6 +25,7 @@ mod consumer_watch_authority;
 mod data;
 mod drain;
 mod error;
+mod facilities;
 mod failover;
 #[cfg(all(test, feature = "test-hooks"))]
 #[path = "../../tests/runtime_support/group_watch_reply_pressure.rs"]
@@ -36,6 +39,7 @@ mod node;
 mod node_retirement;
 mod objects;
 pub(crate) mod physical;
+pub(crate) mod process;
 mod publishing;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod read_trace_test_hooks;

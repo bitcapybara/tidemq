@@ -5,6 +5,7 @@ import * as data from "./data";
 export const apiUrl = (path: string) => `http://localhost:5173/api/v1${path}`;
 export const handlers = [
   http.get(apiUrl("/me"), () => HttpResponse.json(data.session)),
+  http.get(apiUrl("/capabilities"), () => HttpResponse.json(data.session.capabilities)),
   http.post(apiUrl("/session"), () => HttpResponse.json(data.session)),
   http.delete(apiUrl("/session"), () => new HttpResponse(null, { status: 204 })),
   http.get(apiUrl("/overview"), () => HttpResponse.json(data.overview)),

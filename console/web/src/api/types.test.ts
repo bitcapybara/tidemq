@@ -10,7 +10,9 @@ import {
   topicDetailSchema,
   memberSchema,
   producerSchema,
+  localNodeSchema,
 } from "./types";
+import { localNode, localSession, session as remoteSession } from "../../tests/network/data";
 
 const progress = {
   source: "perShardLinearizableGroupCursorSamples",
@@ -74,6 +76,7 @@ it("rejects incomplete authority responses instead of manufacturing current perm
     tenant: null,
     namespace: null,
     operator: true,
+    capabilities: remoteSession.capabilities,
     permissions: ["inspect"],
     csrfToken: "csrf",
     credentialId: "credential",
@@ -82,7 +85,7 @@ it("rejects incomplete authority responses instead of manufacturing current perm
     resourceGrants: [],
   }) as Record<string, unknown>;
   expect(sessionSchema.safeParse(session).success).toBe(true);
-  for (const field of ["namespace", "resourceGrants", "credentialId", "expiresAt"])
+  for (const field of ["namespace", "resourceGrants", "credentialId", "expiresAt", "capabilities"])
     expect(
       sessionSchema.safeParse(Object.fromEntries(
         Object.entries(session).filter(([key]) => key !== field),
@@ -99,6 +102,14 @@ it("rejects incomplete authority responses instead of manufacturing current perm
   };
   expect(topicDetailSchema.safeParse(detail).success).toBe(false);
   expect(topicDetailSchema.safeParse({ ...detail, effectivePermissions: [] }).success).toBe(true);
+});
+
+it("requires explicit local execution capabilities and process facts", () => {
+  expect(sessionSchema.parse(localSession).capabilities).toEqual(localSession.capabilities);
+  expect(localNodeSchema.parse(localNode).phase).toBe("ready");
+  expect(localNodeSchema.safeParse({ ...localNode, execution: "remote" }).success).toBe(false);
+  expect(localNodeSchema.safeParse({ ...localNode, phase: "leader" }).success).toBe(false);
+  expect(sessionSchema.safeParse({ ...localSession, capabilities: {} }).success).toBe(false);
 });
 
 it("requires current producer and consumer facts without filling absent state", () => {

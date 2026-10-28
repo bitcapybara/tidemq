@@ -1,5 +1,7 @@
 # 扩缩容和成员替换排障
 
+Combined不支持跨节点放置、成员替换、退休副本或权威迁移；前后端均按能力拒绝。逻辑Topic/Shard与有界业务弹性策略保留，使用真实Local Group/host与持久证明。以下Raft成员和节点流程适用于分离部署。
+
 本手册对应 `src/scaling` 的真实共识执行器、固定迁移槽和运行时 drain 接缝。不要直接修改 voter 配置、清空计划或删除仍有状态的节点目录。
 
 部署入口包括[单机配置生成器](https://github.com/bitcapybara/tidemq/blob/main/deploy/local/generate.sh)、[Compose RF1/RF3](https://github.com/bitcapybara/tidemq/blob/main/deploy/docker/README.zh-CN.md)和 [Kubernetes 人工部署](https://github.com/bitcapybara/tidemq/blob/main/deploy/kubernetes/README.zh-CN.md)，共用下述管理与退休协议。
@@ -62,11 +64,11 @@ Gateway 需通知运行时执行受控连接关闭/重连，保留在途最终�
 
 ## Topic 自动 Split / Merge
 
-Metadata / Combined 节点可配置 `runtime.topic_scaling`。缺省关闭；启用时必须显式填写 `capacity` 的全部八项正值：`publish_bytes_per_second`、`publish_messages_per_second`、`delivery_bytes_per_second`、`deliveries_per_second`、`read_requests_per_second`、`ack_bytes_per_second`、`acknowledgements_per_second`、`ack_requests_per_second`。它们表示当前 RF、批量和读写组合下单个 Raft 组的容量基线，所有 Metadata 副本使用相同配置。功能测试使用人为降低的阈值，不提供生产容量数值；本阶段不进行压测或参数校准。
+Metadata / Combined 节点可配置 `runtime.topic_scaling`。缺省关闭；启用时必须显式填写 `capacity` 的全部八项正值：`publish_bytes_per_second`、`publish_messages_per_second`、`delivery_bytes_per_second`、`deliveries_per_second`、`read_requests_per_second`、`ack_bytes_per_second`、`acknowledgements_per_second`、`ack_requests_per_second`。它们表示当前 RF、批量和读写组合下单个Group在相应执行方式下的容量基线，所有 Metadata 副本使用相同配置。功能测试使用人为降低的阈值，不提供生产容量数值；本阶段不进行压测或参数校准。
 
 默认每 10 秒评估，高水位为容量的 70%，连续 60 秒；低水位为 30%，连续 10 分钟；新窗口或布局变化后至少冷却 5 分钟。Merge 窗口至少为 Split 的两倍，低水位严格低于高水位，分片数默认 1–128。配置校验拒绝零容量、无界窗口和非法数量。
 
-Data Raft 持久记录写入、交付和 ACK 的计数，以及固定 16 桶哈希摘要，不保留 key 或正文。观测来自实际 Data Leader 的新鲜 quorum 查询；查询包含进程身份和 owner epoch，重启、owner/布局/组代次变化、计数回退或采样间隔超过三个周期均重建窗口。缺失/过期观测停止相关动作；尚未首次写入的分片，只有新鲜 quorum 明确证明提交位置和消息计数均为零时才能作为空分片使用。
+Data Group持久记录写入、交付和 ACK 的计数，以及固定 16 桶哈希摘要，不保留 key 或正文。分离观测来自实际Data Leader的新鲜quorum查询，Combined来自真实健康且已应用的本地提交视图；查询包含进程身份和 owner epoch，重启、owner/布局/组代次变化、计数回退或采样间隔超过三个周期均重建窗口。缺失/过期观测停止相关动作；尚未首次写入的分片，只有新鲜 quorum 明确证明提交位置和消息计数均为零时才能作为空分片使用。
 
 Split 需要连续写入高负载和有收益的哈希切点，两侧至少各占已观测写入字节的 10%。单热点 key 或过窄热点只报告 `HotKeyOrNarrowRange`；读取/ACK 压力和归档停滞分别报告，积压本身不触发切分。目标必须具有不同的实际 Data Leader、完整 RF/故障域、各副本新鲜容量与预留余量；其他未完成布局、成员和权威转移计划占用的资源不能再次分配。无独立容量时报告 `StorageCapacityRequired` 和所需组数，不创建云资源，也不提前 Seal。
 

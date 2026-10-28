@@ -31,6 +31,8 @@ pub enum Error {
         traffic_class: &'static str,
         source: tokio::sync::TryAcquireError,
     },
+    #[snafu(display("Local request memory admission failed"))]
+    LocalMemory { source: crate::budget::Error },
     #[snafu(display("Failed to initialize logging"))]
     Logging {
         source: tracing::subscriber::SetGlobalDefaultError,

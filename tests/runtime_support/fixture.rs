@@ -7,6 +7,46 @@ pub(crate) struct Fixture {
     pub(crate) running: BTreeMap<u64, RunningNode>,
 }
 
+async fn embedded_console(directory: &std::path::Path) -> tidemq::console::EmbeddedConsoleConfig {
+    let static_dir = directory.join("console");
+    tokio::fs::create_dir_all(static_dir.join(".vite"))
+        .await
+        .unwrap();
+    tokio::fs::create_dir(static_dir.join("assets"))
+        .await
+        .unwrap();
+    for (name, content) in [
+        (
+            "index.html",
+            "<html><script type=module src=/assets/fixture.js></script></html>",
+        ),
+        ("assets/fixture.js", "export const ready = true;"),
+        (
+            ".vite/manifest.json",
+            r#"{"index.html":{"file":"assets/fixture.js","isEntry":true}}"#,
+        ),
+    ] {
+        tokio::fs::write(static_dir.join(name), content)
+            .await
+            .unwrap();
+    }
+    let key_file = directory.join("console-session.key");
+    tokio::fs::write(&key_file, [42_u8; 32]).await.unwrap();
+    private_file(key_file.clone()).await;
+    let listen = tcp_address();
+    tidemq::console::EmbeddedConsoleConfig {
+        listen,
+        static_dir,
+        session: tidemq::console::SessionConfig {
+            key_file,
+            previous_key_files: Vec::new(),
+            public_origin: format!("https://localhost:{}", listen.port()),
+            max_age_seconds: 1800,
+        },
+        observability: Default::default(),
+    }
+}
+
 impl Fixture {
     pub(crate) async fn new(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) -> Self {
         let directory =
@@ -67,6 +107,16 @@ impl Fixture {
                 certificate_der: directory.join(format!("node-{node}.der")),
             });
         }
+        let console = if nodes.iter().any(|(_, role)| *role == Role::Combined) {
+            assert_eq!(
+                nodes.len(),
+                1,
+                "Combined fixtures require one local process"
+            );
+            Some(embedded_console(&directory).await)
+        } else {
+            None
+        };
         let cluster = Id::new_v7().unwrap();
         let configs = nodes
             .iter()
@@ -79,7 +129,12 @@ impl Fixture {
                     listen: udp_address(),
                     management_listen: tcp_address(),
                     data_dir: directory.join(format!("data-{node}")),
-                    replication_factor: metadata.len() as u8,
+                    replication_factor: if *role == Role::Combined {
+                        1
+                    } else {
+                        metadata.len() as u8
+                    },
+                    console: console.clone(),
                     tls: TlsConfig {
                         certificate: directory.join(format!("node-{node}.pem")),
                         private_key: directory.join(format!("node-{node}.key")),
@@ -102,6 +157,16 @@ impl Fixture {
                     },
                     ..Config::default()
                 };
+                if *role == Role::Combined {
+                    config.runtime.internal_listen = "127.0.0.1:0".parse().unwrap();
+                    config.runtime.metadata_voters.clear();
+                    config.runtime.peers.clear();
+                    config.runtime.bootstrap = false;
+                    for group in &mut config.runtime.groups {
+                        group.voters.clear();
+                        group.standby.clear();
+                    }
+                }
                 config.memory.total_bytes = 192 * 1024 * 1024;
                 config.memory.control_reserved_bytes = 32 * 1024 * 1024;
                 // Several independently budgeted native runtimes share this test process's RSS.

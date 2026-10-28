@@ -8,8 +8,8 @@ use tokio::time::Instant;
 use crate::metadata::{NodeRole, OwnershipDiagnostic, PartitionKey};
 use crate::ownership::OwnershipPhase;
 
+use super::Result;
 use super::service::Service;
-use super::{Result, wire};
 
 const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 const MIN_OBSERVATION: Duration = Duration::from_secs(1);
@@ -175,6 +175,10 @@ impl Service {
         state: &mut State,
         deadline: Instant,
     ) -> Result<()> {
+        if self.rpc.is_local() {
+            state.reset();
+            return Ok(());
+        }
         let nodes: std::collections::BTreeSet<_> = self
             .registry
             .nodes()?
@@ -195,15 +199,18 @@ impl Service {
             state.reset();
             return Ok(());
         }
-        let term = replica.raft.metrics().borrow().current_term;
+        let term = replica
+            .group
+            .raft()
+            .ok_or_else(super::cluster::unsupported)?
+            .metrics()
+            .borrow()
+            .current_term;
         if state.leader_term != Some(term) {
             state.reset();
             state.leader_term = Some(term);
         }
-        if !matches!(
-            wire::within(deadline, replica.raft.ensure_linearizable()).await,
-            Ok(Ok(_))
-        ) {
+        if replica.group.ensure_read(deadline).await.is_err() {
             state.reset();
             return Ok(());
         }

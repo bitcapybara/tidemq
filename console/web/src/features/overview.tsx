@@ -60,6 +60,7 @@ const components = [
 export function OverviewPage() {
   const { t, language } = useLocale();
   const { session, refresh } = useSession();
+  const local = session?.capabilities.execution === "local";
   const overview = useResource(
     "overview",
     "/api/v1/overview",
@@ -172,7 +173,7 @@ export function OverviewPage() {
               {t("Current component status", "组件当前状态")}
             </h2>
             <Link to="/cluster">
-              {t("View cluster", "查看集群")}
+              {local ? t("View local process", "查看本机进程") : t("View cluster", "查看集群")}
               <ArrowRight size={14} />
             </Link>
           </div>
@@ -192,7 +193,7 @@ export function OverviewPage() {
                   </Badge>
                 </div>
                 <h3>{name}</h3>
-                <p>{actual?.detail ?? t(en, zh)}</p>
+                <p>{actual?.detail ?? (local ? t("Local durable execution and shared process readiness", "本地持久执行与共享进程就绪状态") : t(en, zh))}</p>
                 <ObservationLabel
                   observation={actual}
                   stale={query.isError && Boolean(actual)}

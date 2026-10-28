@@ -5,14 +5,14 @@ umask 077
 mode=${1:-rf1}
 output=${2:-/tmp/tidemq-${mode}}
 if [[ $# -gt 2 ]]; then
-  printf 'Usage: %s [rf1|rf3|rf3-combined] [new-output-directory]\n' "$0" >&2
+  printf 'Usage: %s [rf1|rf1-separated|rf3] [new-output-directory]\n' "$0" >&2
   exit 2
 fi
 case "$mode" in
   rf1) nodes='1:combined'; voters='[1]'; storage='[1]'; factor=1 ;;
-  rf3-combined) nodes='1:combined 2:combined 3:combined'; voters='[1,2,3]'; storage='[1,2,3]'; factor=3 ;;
+  rf1-separated) nodes='11:metadata 21:storage 31:broker 41:gateway'; voters='[11]'; storage='[21]'; factor=1 ;;
   rf3) nodes='11:metadata 12:metadata 13:metadata 21:storage 22:storage 23:storage 31:broker 32:broker 41:gateway 42:gateway'; voters='[11,12,13]'; storage='[21,22,23]'; factor=3 ;;
-  *) printf 'Usage: %s [rf1|rf3|rf3-combined] [new-output-directory]\n' "$0" >&2; exit 2 ;;
+  *) printf 'Usage: %s [rf1|rf1-separated|rf3] [new-output-directory]\n' "$0" >&2; exit 2 ;;
 esac
 if [[ -e "$output" ]]; then printf 'Output directory already exists: %s\n' "$output" >&2; exit 1; fi
 mkdir -p "$output"
@@ -36,6 +36,7 @@ openssl req -new -x509 -sha256 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkey
   -config "$output/ca.cnf" -keyout "$output/ca.key" -out "$output/ca.pem" >/dev/null 2>&1
 printf '%s\n' "$token" > "$output/bootstrap.token"
 printf '%s\n' "$token" > "$output/access.token"
+if [[ $mode == rf1 ]]; then openssl rand 32 > "$output/console-session.key"; fi
 for entry in $nodes; do
   node=${entry%:*}
   cat > "$output/node-$node.cnf" <<EOF
@@ -66,7 +67,11 @@ cluster_id = '$cluster'
 role = '$role'
 management_listen = '127.0.0.1:$management'
 data_dir = '$output/data-$node'
-replication_factor = $factor
+EOF
+  if [[ $role != combined ]]; then
+    printf 'replication_factor = %s\n' "$factor" >> "$output/node-$node.toml"
+  fi
+  cat >> "$output/node-$node.toml" <<EOF
 
 [memory]
 total_bytes = 201326592
@@ -75,11 +80,11 @@ control_reserved_bytes = 33554432
 [tls]
 certificate = '$output/node-$node.pem'
 private_key = '$output/node-$node.key'
-trust_roots = '$output/ca.pem'
-
-[authorization]
-
 EOF
+  if [[ $role != combined ]]; then
+    printf "trust_roots = '%s/ca.pem'\n" "$output" >> "$output/node-$node.toml"
+  fi
+  printf '\n[authorization]\n' >> "$output/node-$node.toml"
   case "$role" in
     combined|metadata)
       printf "bootstrap_admin_token_file = '%s/bootstrap.token'\n" "$output" >> "$output/node-$node.toml"
@@ -103,6 +108,23 @@ archive_interval_ms = 1000
 EOF
       ;;
   esac
+  if [[ $role == combined ]]; then
+    cat >> "$output/node-$node.toml" <<EOF
+
+[console]
+listen = '127.0.0.1:8443'
+static_dir = '$output/console'
+[console.session]
+key_file = '$output/console-session.key'
+public_origin = 'https://localhost:8443'
+
+[runtime]
+metadata_group = 1
+[[runtime.groups]]
+group_id = 2
+EOF
+    continue
+  fi
   cat >> "$output/node-$node.toml" <<EOF
 
 [runtime]
@@ -132,3 +154,7 @@ done
 printf 'Created %s runtime configuration in %s\n' "$mode" "$output"
 printf 'Start each node with: tidemq serve --config %s/node-<id>.toml\n' "$output"
 printf 'Private bootstrap administrator token: %s/access.token\n' "$output"
+if [[ $mode == rf1 ]]; then
+  printf 'Console HTTPS: https://localhost:8443; trust the development CA %s/ca.pem in your browser\n' "$output"
+  printf 'Build assets first: bash scripts/build-console.sh %s/console (run.sh also builds missing assets)\n' "$output"
+fi

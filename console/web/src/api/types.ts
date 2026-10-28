@@ -12,12 +12,22 @@ export const observationSchema = z.object({
 });
 export type Observation = z.infer<typeof observationSchema>;
 
+export const capabilitiesSchema = z.object({
+  execution: z.enum(["local", "remote"]),
+  clusterAdministration: z.boolean(),
+  replicaMembership: z.boolean(),
+  nodeMigration: z.boolean(),
+  raftDiagnostics: z.boolean(),
+  businessShardScaling: z.boolean(),
+});
+
 export const sessionSchema = z.object({
   principal: z.object({ id: z.string(), name: z.string() }),
   cluster: z.object({ id: z.string(), name: z.string() }),
   tenant: z.string().nullable(),
   namespace: z.string().nullable(),
   operator: z.boolean(),
+  capabilities: capabilitiesSchema,
   permissions: z.array(z.string()),
   csrfToken: z.string().min(1),
   credentialId: z.string(),
@@ -352,3 +362,18 @@ export const nodeSchema = z.object({
   logSinkErrors: decimal.nullable(),
 });
 export type Node = z.infer<typeof nodeSchema>;
+
+export const localNodeSchema = z.object({
+  id: decimal,
+  execution: z.literal("local"),
+  instance: z.string(),
+  roles: z.array(z.string()),
+  version: z.string(),
+  phase: z.enum(["starting", "recovering", "ready", "draining", "failed", "stopped"]),
+  ready: z.boolean(),
+  sampledAt: z.string().nullable(),
+  metadataGroups: decimal,
+  dataGroups: decimal,
+  logDroppedEvents: decimal.nullable(),
+  logSinkErrors: decimal.nullable(),
+});

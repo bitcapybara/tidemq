@@ -22,12 +22,51 @@ pub struct ConsoleConfig {
     pub static_dir: PathBuf,
     pub cluster: ClusterConfig,
     pub session: SessionConfig,
+    pub tls: crate::config::TlsConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
     pub tracing: TracingConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddedConsoleConfig {
+    pub listen: SocketAddr,
+    pub static_dir: PathBuf,
+    pub session: SessionConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
+}
+
+impl Default for EmbeddedConsoleConfig {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 7445)),
+            static_dir: "console/web/dist".into(),
+            session: SessionConfig {
+                key_file: "secrets/console-session.key".into(),
+                previous_key_files: Vec::new(),
+                public_origin: "https://localhost:7445".into(),
+                max_age_seconds: default_max_age(),
+            },
+            observability: ObservabilityConfig::default(),
+        }
+    }
+}
+
+impl EmbeddedConsoleConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.static_dir.as_os_str().is_empty() {
+            return Err(Error::Configuration {
+                reason: "console static_dir must not be empty",
+            });
+        }
+        self.session.validate()?;
+        self.observability.validate()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -104,6 +143,13 @@ impl ConsoleConfig {
             }
         }
         self.session.validate()?;
+        if self.tls.certificate.as_os_str().is_empty()
+            || self.tls.private_key.as_os_str().is_empty()
+        {
+            return Err(Error::Configuration {
+                reason: "console HTTPS requires a certificate and private key",
+            });
+        }
         self.observability.validate()?;
         self.logging.validate()?;
         self.tracing.validate()

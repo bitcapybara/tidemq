@@ -159,7 +159,11 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         }
         let schedulable = service.registry.schedulable(service.config.node_id);
         let draining = service.draining.load(Ordering::Acquire);
-        ready &= schedulable && !draining;
+        ready &= schedulable && !draining && service.console_ready.load(Ordering::Acquire);
+        if ready {
+            service.process.ready();
+        }
+        ready &= service.process.phase() == super::process::Phase::Ready;
         health.ready.store(ready, Ordering::Release);
         let logging = service
             .log_health
@@ -405,6 +409,7 @@ async fn serve(mut stream: TcpStream, service: Arc<Service>, health: Arc<Health>
         Ok("/healthz") => (200, "application/json", "{\"alive\":true}".into()),
         Ok("/readyz") => {
             let ready = health.ready.load(Ordering::Acquire)
+                && service.process.phase() == super::process::Phase::Ready
                 && !service.draining.load(Ordering::Acquire)
                 && service.registry.schedulable(service.config.node_id);
             (

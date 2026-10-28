@@ -364,9 +364,11 @@ impl Service {
             }
             Control::Inspect { subscription, .. } => {
                 let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
-                wire::within(deadline, replica.raft.ensure_linearizable())
-                    .await?
-                    .map_err(|_| Error::unavailable())?;
+                replica
+                    .group
+                    .ensure_read(deadline)
+                    .await
+                    .map_err(crate::runtime::wire::execution_error)?;
                 let progress = replica
                     .state
                     .try_with_application(|state| {
@@ -1046,9 +1048,11 @@ impl Service {
             .data
             .get(&route.group_id)
             .ok_or_else(Error::unavailable)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         // Metadata has fenced this exact owner; a reaped data record has no recoverable result left.
         replica
             .state

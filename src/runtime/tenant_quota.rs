@@ -168,20 +168,14 @@ impl Service {
             ControlRequest::Installed(grant) => grant.partition,
         };
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
-        let receiver = replica.raft.metrics();
-        let metadata_voter = receiver
-            .borrow()
-            .membership_config
-            .membership()
-            .voter_ids()
-            .any(|node| node == sender);
+        let metadata_voter = replica.current_placement()?.hosts().contains(&sender);
         let data_voter = replica
             .state
             .try_with_application(|state| {
                 state
                     .partition_group(partition)
                     .and_then(|group| state.group(group))
-                    .is_some_and(|group| group.voters.contains(&sender))
+                    .is_some_and(|group| group.placement.hosts().contains(&sender))
             })
             .await
             .map_err(|source| Error::operation("check quota controller authority", source))?;
@@ -198,9 +192,11 @@ impl Service {
     ) -> Result<ControlReply> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let reply = match request {
             ControlRequest::Status(partition) => {
                 ControlReply::Status(Box::new(self.read_quota_status(partition).await?))
@@ -310,15 +306,19 @@ impl Service {
     // Quota transitions use their own monotone versions; CAS retries never wait on a caller's metadata lock.
     async fn write_quota(&self, command: QuotaCommand, deadline: Instant) -> Result<QuotaGrant> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        let completion = matches!(command, QuotaCommand::Installed { .. });
         for _ in 0..16 {
             self.require_leader(replica)?;
             let operation = Id::new_v7()
                 .map_err(|source| Error::operation("allocate quota transition", source))?;
             let command = Command::quota(operation, self.meta_revision().await?, command.clone());
-            let response = wire::within(deadline, replica.raft.client_write(command))
-                .await?
-                .map_err(|source| Error::operation("persist tenant quota allocation", source))?
-                .data;
+            let applied = if completion {
+                replica.group.commit_completion(command, deadline).await
+            } else {
+                replica.group.commit(command, deadline).await
+            }
+            .map_err(wire::execution_error)?;
+            let response = applied.response;
             match response {
                 metadata::Response::Applied {
                     outcome: metadata::Outcome::Quota(grant),
@@ -442,9 +442,11 @@ impl Service {
     ) -> Result<DataStatus> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let now_ms = super::data::unix_millis()?;
         let status = replica
             .state

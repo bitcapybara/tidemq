@@ -141,7 +141,7 @@ async fn run(cli: Cli) -> Result<()> {
                     Err(source) => { let error = anyhow::Error::new(source); tracing::warn!(event_code = "runtime_heap_sample_failed", error = %format_args!("{error:#}"), "Bounded live-process heap sample failed"); }
                 }
             }));
-            tracing::info!(event_code = "service_started", node_id, role, trace_instance_id = logging.trace_instance_id().unwrap_or("disabled"), internal_address = %node.internal_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ runtime is accepting connections");
+            tracing::info!(event_code = "service_started", node_id, role, trace_instance_id = logging.trace_instance_id().unwrap_or("disabled"), internal_address = ?node.internal_address, console_address = ?node.console_address, management_address = %node.management_address, external_address = ?node.external_address, "Authenticated TideMQ process listeners are bound; readiness follows dependency recovery");
             tokio::select! { result = shutdown_signal() => result?, _ = node.wait_for_shutdown_request() => {} }
             let shutdown_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
             let business_shutdown = node

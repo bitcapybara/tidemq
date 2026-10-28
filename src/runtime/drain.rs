@@ -128,12 +128,17 @@ impl Service {
         deadline: Instant,
     ) -> super::failover::Probe {
         use super::failover::Probe as Observation;
-        let rpc = match self
-            .rpc
-            .pool
-            .connection(node, TrafficClass::Control, deadline)
-            .await
-        {
+        if self.rpc.is_local() {
+            return if node == self.config.node_id && self.local_broker_eligible(deadline).await {
+                Observation::Eligible
+            } else {
+                Observation::Responsive
+            };
+        }
+        let Ok(pool) = self.rpc.pool() else {
+            return Observation::Responsive;
+        };
+        let rpc = match pool.connection(node, TrafficClass::Control, deadline).await {
             Ok(rpc) => rpc,
             Err(error) => {
                 return if connection_unreachable(&error) {
@@ -173,6 +178,38 @@ impl Service {
             Err(_) if rpc.is_closed() => Observation::Unreachable,
             Err(_) => Observation::Responsive,
         }
+    }
+
+    async fn local_broker_eligible(&self, deadline: Instant) -> bool {
+        if !self.config.role.serves_broker()
+            || self.draining.load(std::sync::atomic::Ordering::Acquire)
+            || self.admit_produce().is_err()
+            || self
+                .metadata
+                .as_ref()
+                .is_none_or(|replica| replica.authority_node() != Some(self.config.node_id))
+        {
+            return false;
+        }
+        let capacity =
+            self.scaling.capacity.snapshot().and_then(|sample| {
+                crate::scaling::remote::CapacityReport::from_sample(sample).ok()
+            });
+        if !broker_capacity_available(capacity, self.config.node_id, std::time::Duration::ZERO) {
+            return false;
+        }
+        let Some(metadata) = &self.metadata else {
+            return false;
+        };
+        if metadata.group.ensure_read(deadline).await.is_err() {
+            return false;
+        }
+        for replica in self.data.values() {
+            if replica.group.ensure_read(deadline).await.is_err() {
+                return false;
+            }
+        }
+        true
     }
 
     pub(crate) fn admit_partition(
@@ -237,6 +274,7 @@ impl Service {
         node: u64,
         deadline: Instant,
     ) -> Result<crate::metadata::ClusterAction> {
+        self.require_cluster()?;
         let progress = self.inspect_node_drain(node, deadline).await?;
         if !progress.durable_state_drained() {
             return Err(Error::invalid("Node drain still has durable blockers"));
@@ -244,6 +282,8 @@ impl Service {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         let (generation, drain, voters) = replica
             .state
+            .raft_state()
+            .ok_or_else(super::cluster::unsupported)?
             .try_with_membership(|state, _, membership| {
                 let record = state.node(node).ok_or_else(Error::unavailable)?;
                 let drain = state
@@ -282,9 +322,11 @@ impl Service {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         let _mutation = wire::within(deadline, self.metadata_mutation.lock()).await?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let mut record = replica
             .state
             .try_with_application(|state| state.node(node).cloned())
@@ -312,13 +354,18 @@ impl Service {
         node: u64,
         deadline: Instant,
     ) -> Result<crate::scaling::DrainProgress> {
+        self.require_cluster()?;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         replica
             .state
+            .raft_state()
+            .ok_or_else(super::cluster::unsupported)?
             .try_with_membership(|state, _, membership| {
                 let mut progress = crate::scaling::DrainPlan::inspect(state, node)?;
                 progress.metadata_role = membership
@@ -411,6 +458,9 @@ impl Service {
         if !controller && !matches!(command, Command::Inspect { node } if node == peer.node_id) {
             return Err(forbidden());
         }
+        if !matches!(command, Command::Probe { .. }) {
+            self.require_cluster()?;
+        }
         match command {
             Command::Quiesce {
                 node,
@@ -467,8 +517,11 @@ impl Service {
                     TrafficClass::Delivery,
                     TrafficClass::Bulk,
                 ] {
+                    if self.rpc.is_local() {
+                        break;
+                    }
                     self.rpc
-                        .pool
+                        .pool()?
                         .connection(leader, class, deadline)
                         .await
                         .map_err(|source| {

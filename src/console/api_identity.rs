@@ -1,8 +1,7 @@
+use bytes::Bytes;
 use serde_json::{Value, json};
-use tidemq_protocol::Id;
-use tidemq_sdk::{
-    IdentityStatus, PrincipalInfo, ResourceGrant, ResourceList, ResourceScope, TenantId, TopicId,
-};
+use tidemq_protocol::{Id, public};
+use tidemq_sdk::{PrincipalInfo, ResourceGrant, ResourceScope, TopicId};
 
 use super::api::{ApiError, ApiResult, BTreeParams, Context, page};
 use super::api_query::{cursor, listing_fingerprint, optional_id, parse_id, seal_cursor};
@@ -12,13 +11,8 @@ pub(super) async fn query(
     path: &str,
     params: &BTreeParams,
 ) -> ApiResult<Value> {
-    let tenant = optional_id(params.get("tenantId"))?.or_else(|| {
-        context
-            .identity
-            .principal
-            .tenant
-            .and_then(|id| id.to_string().parse().ok())
-    });
+    let tenant = optional_id(params.get("tenantId"))?
+        .or_else(|| context.identity.principal.tenant.map(Id::from));
     let limit = params
         .get("limit")
         .map(|value| value.parse::<u32>().map_err(|_| ApiError::invalid()))
@@ -27,119 +21,115 @@ pub(super) async fn query(
     if !(1..=32).contains(&limit) {
         return Err(ApiError::invalid());
     }
-    match path {
-        "tenants" => {
-            let mut listing = context.client.admin().tenants().page_size(limit);
-            resume(context, path, params, &mut listing)?;
-            let items=listing.next_page().await.map_err(ApiError::read)?.unwrap_or_default().into_iter().map(|item|json!({"id":item.id.to_string(),"name":item.name,"enabled":item.status==IdentityStatus::Active})).collect();
-            finish(context, path, params, listing, items)
-        }
-        "namespaces" => {
-            let tenant = tenant.ok_or_else(ApiError::invalid)?;
-            let mut listing = context
-                .client
-                .admin()
-                .namespaces(TenantId::from(tenant))
-                .page_size(limit);
-            resume(context, path, params, &mut listing)?;
-            let items=listing.next_page().await.map_err(ApiError::read)?.unwrap_or_default().into_iter().map(|item|json!({"id":item.id.to_string(),"tenantId":item.tenant.to_string(),"name":item.name,"enabled":item.status==IdentityStatus::Active})).collect();
-            finish(context, path, params, listing, items)
-        }
-        "principals" => principals(context, path, params, tenant, limit).await,
-        "credentials" => {
-            let id = parse_id(params.get("principalId").ok_or_else(ApiError::invalid)?)?;
-            let mut listing = context
-                .client
-                .admin()
-                .credentials(id.into())
-                .page_size(limit);
-            resume(context, path, params, &mut listing)?;
-            let items=listing.next_page().await.map_err(ApiError::read)?.unwrap_or_default().into_iter().map(|item|json!({"id":item.id.to_string(),"principalId":item.principal.to_string(),"name":item.id.to_string(),"enabled":item.enabled,"expiresAtMs":item.expires_at_unix_ms.to_string(),"createdAt":null})).collect();
-            finish(context, path, params, listing, items)
-        }
-        "grants" => grants(context, params).await,
-        _ => Err(ApiError::not_found()),
+    if path == "grants" {
+        return grants(context, params, limit).await;
     }
-}
-
-async fn principals(
-    context: &Context<'_>,
-    path: &str,
-    params: &BTreeParams,
-    tenant: Option<Id>,
-    limit: u32,
-) -> ApiResult<Value> {
-    if !context
-        .identity
-        .principal
-        .permissions
-        .contains(&tidemq_sdk::Permission::ManageCredentials)
+    if path == "principals"
+        && !context
+            .identity
+            .principal
+            .permissions
+            .contains(&tidemq_sdk::Permission::ManageCredentials)
     {
+        if tenant
+            .is_some_and(|tenant| context.identity.principal.tenant.map(Id::from) != Some(tenant))
+        {
+            return Err(ApiError::forbidden());
+        }
         return page(
             vec![principal_json(&context.identity.principal)],
             None,
             Some(context.identity.revision),
         );
     }
-    let admin = context.client.admin();
-    let mut listing = if let Some(tenant) = tenant {
-        admin.principals(tenant.into())
-    } else {
-        admin.platform_principals()
-    }
-    .page_size(limit);
-    resume(context, path, params, &mut listing)?;
-    let items = listing
-        .next_page()
-        .await
-        .map_err(ApiError::read)?
-        .unwrap_or_default()
-        .iter()
-        .map(principal_json)
-        .collect();
-    finish(context, path, params, listing, items)
+    let (kind, parent) = match path {
+        "tenants" => (public::IdentityKind::TenantIdentities, None),
+        "namespaces" => (
+            public::IdentityKind::NamespaceIdentities,
+            Some(tenant.ok_or_else(ApiError::invalid)?),
+        ),
+        "principals" => (public::IdentityKind::PrincipalIdentities, tenant),
+        "credentials" => (
+            public::IdentityKind::CredentialIdentities,
+            Some(parse_id(
+                params.get("principalId").ok_or_else(ApiError::invalid)?,
+            )?),
+        ),
+        _ => return Err(ApiError::not_found()),
+    };
+    let listing = listing(
+        context,
+        path,
+        params,
+        public::ListIdentities {
+            kind: kind.into(),
+            parent_id: parent
+                .map(|id| Bytes::copy_from_slice(id.as_bytes()))
+                .unwrap_or_default(),
+            limit,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let items = listing.entries.iter().map(|item| {
+        let id = Id::from_slice(&item.id).map_err(|_| ApiError::unavailable())?.to_string();
+        Ok(match kind {
+            public::IdentityKind::TenantIdentities => json!({"id":id,"name":item.name,"enabled":item.enabled}),
+            public::IdentityKind::NamespaceIdentities => json!({"id":id,"tenantId":Id::from_slice(&item.parent_id).map_err(|_| ApiError::unavailable())?.to_string(),"name":item.name,"enabled":item.enabled}),
+            public::IdentityKind::PrincipalIdentities => principal_json(&super::backend::principal_info(item.clone()).map_err(ApiError::read)?),
+            _ => json!({"id":id,"principalId":Id::from_slice(&item.parent_id).map_err(|_| ApiError::unavailable())?.to_string(),"name":id,"enabled":item.enabled,"expiresAtMs":item.expires_at_ms.to_string(),"createdAt":null}),
+        })
+    }).collect::<ApiResult<Vec<_>>>()?;
+    finish(context, path, params, &listing, items)
 }
 fn principal_json(principal: &PrincipalInfo) -> Value {
     json!({"id":principal.id.to_string(),"name":principal.name,"kind":null,"enabled":principal.enabled,"tenant":principal.tenant.map(|id|id.to_string()),"namespace":principal.namespace.map(|id|id.to_string()),"permissions":principal.permissions.iter().map(|permission|permission.as_str()).collect::<Vec<_>>(),"resourceGrants":principal.resource_grants.iter().map(grant_json).collect::<Vec<_>>()})
 }
 
-fn resume<T>(
+async fn listing(
     context: &Context<'_>,
     path: &str,
     params: &BTreeParams,
-    listing: &mut ResourceList<T>,
-) -> ApiResult<()> {
+    mut request: public::ListIdentities,
+) -> ApiResult<public::IdentityPage> {
     if let Some(cursor) = cursor(context, path, params.get("cursor"))? {
         if cursor.fingerprint != listing_fingerprint(params)? {
             return Err(ApiError::invalid());
         }
         let id = parse_id(&cursor.after)?;
-        listing.set_continuation(id, cursor.revision);
+        request.after_id = Bytes::copy_from_slice(id.as_bytes());
+        request.expected_revision = cursor.revision;
     }
-    Ok(())
+    context
+        .client
+        .identities(&request)
+        .await
+        .map_err(ApiError::read)
 }
-fn finish<T>(
+fn finish(
     context: &Context<'_>,
     path: &str,
     params: &BTreeParams,
-    listing: ResourceList<T>,
+    listing: &public::IdentityPage,
     items: Vec<Value>,
 ) -> ApiResult<Value> {
-    let cursor = listing
-        .continuation()
-        .map_err(ApiError::read)?
-        .map(|(after, revision)| {
-            seal_cursor(
-                context,
-                path,
-                after.to_string(),
-                revision,
-                listing_fingerprint(params)?,
-                None,
-            )
-        })
-        .transpose()?;
-    page(items, cursor, listing.revision())
+    let cursor = if listing.next_after_id.is_empty() {
+        None
+    } else {
+        Some(Id::from_slice(&listing.next_after_id).map_err(|_| ApiError::unavailable())?)
+    }
+    .map(|after| {
+        seal_cursor(
+            context,
+            path,
+            after.to_string(),
+            listing.revision,
+            listing_fingerprint(params)?,
+            None,
+        )
+    })
+    .transpose()?;
+    page(items, cursor, Some(listing.revision))
 }
 
 pub(super) fn grant_json(grant: &ResourceGrant) -> Value {
@@ -231,7 +221,7 @@ pub(super) async fn resolve_scope(
     }
 }
 
-async fn grants(context: &Context<'_>, params: &BTreeParams) -> ApiResult<Value> {
+async fn grants(context: &Context<'_>, params: &BTreeParams, limit: u32) -> ApiResult<Value> {
     if params.keys().any(|key| {
         !matches!(
             key.as_str(),
@@ -310,23 +300,27 @@ async fn grants(context: &Context<'_>, params: &BTreeParams) -> ApiResult<Value>
             Some(value.revision),
         );
     }
-    let mut listing = context
-        .client
-        .admin()
-        .resource_authorizations(scope)
-        .page_size(32);
-    resume(context, "grants", params, &mut listing)?;
-    let rows = listing
-        .next_page()
-        .await
-        .map_err(ApiError::read)?
-        .unwrap_or_default();
-    let revision = listing.revision().ok_or_else(ApiError::unavailable)?;
-    let items = rows
+    let listing = listing(
+        context,
+        "grants",
+        params,
+        public::ListIdentities {
+            kind: public::IdentityKind::ResourceAuthorizations.into(),
+            resource_scope: Some(super::backend::scope_wire(scope)),
+            limit,
+            ..Default::default()
+        },
+    )
+    .await?;
+    let items = listing
+        .entries
         .iter()
-        .map(|row| authorization_json(row, scope, revision))
-        .collect();
-    finish(context, "grants", params, listing, items)
+        .map(|row| {
+            let principal = super::backend::principal_info(row.clone()).map_err(ApiError::read)?;
+            Ok(authorization_json(&principal, scope, listing.revision))
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
+    finish(context, "grants", params, &listing, items)
 }
 
 fn authorization_json(principal: &PrincipalInfo, scope: ResourceScope, revision: u64) -> Value {

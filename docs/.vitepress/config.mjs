@@ -9,6 +9,7 @@ export default defineConfig({
     nav: [
       { text: '使用文档', link: '/README.zh-CN' },
       { text: '快速开始', link: '/guide/quickstart.zh-CN' },
+      { text: 'English', link: '/guide/deployment' },
       { text: 'GitHub', link: 'https://github.com/bitcapybara/tidemq' },
     ],
     sidebar: [

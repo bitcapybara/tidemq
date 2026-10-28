@@ -4,7 +4,6 @@ import { createHash, randomBytes } from 'node:crypto';
 import dgram from 'node:dgram';
 import { createReadStream, createWriteStream } from 'node:fs';
 import fs from 'node:fs/promises';
-import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import os from 'node:os';
@@ -16,24 +15,6 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repository = fileURLToPath(new URL('../..', import.meta.url));
-
-export function proxyRequest(port, request, response) {
-  const upstream = http.request({
-    hostname: '127.0.0.1', port, method: request.method,
-    path: request.url, headers: request.headers,
-  }, (received) => {
-    response.writeHead(received.statusCode ?? 502, received.headers);
-    received.pipe(response);
-    received.on('error', () => response.destroy());
-  });
-  upstream.on('error', () => {
-    if (!response.headersSent) response.writeHead(502);
-    response.end('The test Console is unavailable');
-  });
-  request.on('aborted', () => upstream.destroy());
-  response.on('close', () => upstream.destroy());
-  request.pipe(upstream);
-}
 
 export async function listen(server) {
   await new Promise((resolve, reject) => {
@@ -60,6 +41,17 @@ async function freePort(udp = false) {
   const port = await listen(server);
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   return port;
+}
+
+async function uniquePort(used, udp = false) {
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const port = await freePort(udp);
+    if (!used.has(port)) {
+      used.add(port);
+      return port;
+    }
+  }
+  throw new Error('The fixture could not allocate distinct ports');
 }
 
 async function hashFile(file) {
@@ -139,58 +131,84 @@ async function waitReady(url, managed, signal) {
   throw new Error(`${managed.name} did not become ready before its deadline`);
 }
 
-async function startCore(state, binary, signal) {
+export function rewriteNodeConfiguration(text, ports, staticDir) {
+  return text.replace(/127\.0\.0\.1:(\d+)/g, (address, port) => ports.has(Number(port)) ? '127.0.0.1:' + ports.get(Number(port)) : address)
+    .replace(/localhost:8443/g, 'localhost:' + ports.get(8443))
+    .replace(/^static_dir = .*$/m, 'static_dir = ' + JSON.stringify(staticDir));
+}
+
+export async function verifyHttps(baseURL, caFile, signal) {
+  const ca = await fs.readFile(caFile);
+  await new Promise((resolve, reject) => {
+    const request = https.get(new URL('/', baseURL), {ca, signal}, response => {
+      response.resume();
+      if (response.statusCode === 200) resolve();
+      else reject(new Error('Native HTTPS Console returned ' + response.statusCode));
+    });
+    request.setTimeout(2_000, () => request.destroy(new Error('Native HTTPS verification timed out')));
+    request.once('error', reject);
+  });
+}
+
+async function startCore(state, binary, web, topology, signal) {
   const generated = path.join(state.privateDirectory, 'core');
+  const mode = topology === 'combined' ? 'rf1' : 'rf1-separated';
   const generator = startChild(state, 'generate', 'bash', [
-    path.join(repository, 'deploy/local/generate.sh'), 'rf1', generated,
+    path.join(repository, 'deploy/local/generate.sh'), mode, generated,
   ], repository);
-  assert.deepEqual(await generator.done, { code: 0, signal: null }, 'RF1 configuration generation failed');
+  assert.deepEqual(await generator.done, {code: 0, signal: null}, 'RF1 configuration generation failed');
   state.token = (await fs.readFile(path.join(generated, 'access.token'), 'utf8')).trim();
   assert(/^[0-9a-f]{64}$/.test(state.token), 'The fixture requires a generated bootstrap token');
-  const ports = { external: await freePort(true), internal: await freePort(true), management: await freePort() };
-  assert.notEqual(ports.external, ports.internal, 'The test QUIC listeners require distinct ports');
-  const configuration = path.join(generated, 'node-1.toml');
-  const text = (await fs.readFile(configuration, 'utf8'))
-    .replaceAll('127.0.0.1:7410', `127.0.0.1:${ports.external}`)
-    .replaceAll('127.0.0.1:7411', `127.0.0.1:${ports.internal}`)
-    .replaceAll('127.0.0.1:8410', `127.0.0.1:${ports.management}`);
-  await fs.writeFile(configuration, text, { mode: 0o600 });
-  const core = startChild(state, 'combined', binary, ['serve', '--config', configuration], repository, state.serviceEnvironment);
-  await waitReady(`http://127.0.0.1:${ports.management}/readyz`, core, signal);
-  return { generated, ports, tokenFile: path.join(generated, 'access.token') };
+  const nodes = topology === 'combined' ? [1] : [11, 21, 31, 41];
+  const ports = new Map();
+  for (const node of nodes) {
+    for (const [original, udp] of [[7400 + node * 10, true], [7401 + node * 10, true], [8400 + node * 10, false]]) {
+      ports.set(original, await uniquePort(state.ports, udp));
+    }
+  }
+  ports.set(8443, await uniquePort(state.ports));
+  const processes = [];
+  for (const node of nodes) {
+    const configuration = path.join(generated, 'node-' + node + '.toml');
+    const text = rewriteNodeConfiguration(await fs.readFile(configuration, 'utf8'), ports, path.join(web, 'dist'));
+    await fs.writeFile(configuration, text, {mode: 0o600});
+    processes.push({node, process: startChild(state, 'node-' + node, binary, ['serve', '--config', configuration], repository, state.serviceEnvironment)});
+  }
+  await Promise.all(processes.map(item => waitReady('http://127.0.0.1:' + ports.get(8400 + item.node * 10) + '/readyz', item.process, signal)));
+  return {generated, ports, tokenFile: path.join(generated, 'access.token'), baseURL: 'https://localhost:' + ports.get(8443)};
 }
 
 async function startConsole(state, binary, web, core, signal) {
-  const consolePort = await freePort();
-  const managementPort = await freePort();
-  state.proxy = https.createServer({
-    key: await fs.readFile(path.join(core.generated, 'node-1.key')),
-    cert: await fs.readFile(path.join(core.generated, 'node-1.pem')),
-  }, (request, response) => proxyRequest(consolePort, request, response));
-  const tlsPort = await listen(state.proxy);
-  const baseURL = `https://127.0.0.1:${tlsPort}`;
+  const consolePort = await uniquePort(state.ports);
+  const managementPort = await uniquePort(state.ports);
+  const baseURL = 'https://127.0.0.1:' + consolePort;
   const keyFile = path.join(state.privateDirectory, 'session.key');
-  await fs.writeFile(keyFile, randomBytes(32), { mode: 0o600 });
+  await fs.writeFile(keyFile, randomBytes(32), {mode: 0o600});
   const configuration = path.join(state.privateDirectory, 'console.toml');
   const quote = JSON.stringify;
-  await fs.writeFile(configuration, `role = "console"
-listen = "127.0.0.1:${consolePort}"
-management_listen = "127.0.0.1:${managementPort}"
-static_dir = ${quote(path.join(web, 'dist'))}
-[cluster]
-address = "127.0.0.1:${core.ports.external}"
-server_name = "localhost"
-trust_roots = ${quote(path.join(core.generated, 'ca.pem'))}
-[session]
-key_file = ${quote(keyFile)}
-public_origin = ${quote(baseURL)}
-max_age_seconds = 60
-[logging]
-filter = "warn,tidemq=info"
-json = true
-`, { mode: 0o600 });
+  const text = [
+    'role = "console"',
+    'listen = "127.0.0.1:' + consolePort + '"',
+    'management_listen = "127.0.0.1:' + managementPort + '"',
+    'static_dir = ' + quote(path.join(web, 'dist')),
+    '[tls]',
+    'certificate = ' + quote(path.join(core.generated, 'node-41.pem')),
+    'private_key = ' + quote(path.join(core.generated, 'node-41.key')),
+    '[cluster]',
+    'address = "127.0.0.1:' + core.ports.get(7810) + '"',
+    'server_name = "node-41.local"',
+    'trust_roots = ' + quote(path.join(core.generated, 'ca.pem')),
+    '[session]',
+    'key_file = ' + quote(keyFile),
+    'public_origin = ' + quote(baseURL),
+    'max_age_seconds = 60',
+    '[logging]',
+    'filter = "warn,tidemq=info"',
+    'json = true',
+  ].join('\n');
+  await fs.writeFile(configuration, text, {mode: 0o600});
   const consoleService = startChild(state, 'console', binary, ['serve', '--config', configuration], repository, state.serviceEnvironment);
-  await waitReady(`http://127.0.0.1:${managementPort}/health/ready`, consoleService, signal);
+  await waitReady('http://127.0.0.1:' + managementPort + '/health/ready', consoleService, signal);
   return baseURL;
 }
 
@@ -216,12 +234,6 @@ export async function stopChild(managed) {
 
 export async function cleanup(state) {
   const failures = [];
-  if (state.proxy) {
-    try {
-      state.proxy.closeAllConnections();
-      await new Promise((resolve, reject) => state.proxy.close((error) => error ? reject(error) : resolve()));
-    } catch { failures.push('The HTTPS proxy did not close'); }
-  }
   const children = [];
   for (const managed of [...state.children].reverse()) {
     try { children.push(await stopChild(managed)); }
@@ -240,6 +252,8 @@ export async function cleanup(state) {
 }
 
 export async function run(args = process.argv.slice(2)) {
+  const topology = process.env.TIDEMQ_LIVE_TOPOLOGY ?? 'combined';
+  assert(['combined', 'separated-rf1'].includes(topology), 'Unsupported live test topology');
   const binary = path.resolve(process.env.TIDEMQ_BINARY ?? path.join(repository, 'target/debug/tidemq'));
   const web = path.resolve(process.env.TIDEMQ_WEB_DIR ?? path.join(repository, 'console/web'));
   await fs.access(binary);
@@ -249,7 +263,7 @@ export async function run(args = process.argv.slice(2)) {
   const artifacts = await fs.mkdtemp(path.join(output, 'run-'));
   const privateDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'tidemq-console-browser-'));
   await fs.chmod(privateDirectory, 0o700);
-  const state = { artifacts, privateDirectory, children: [], proxy: null,
+  const state = { artifacts, privateDirectory, children: [], ports: new Set(),
     serviceEnvironment: { ...process.env, LLVM_PROFILE_FILE: path.join(artifacts, 'service-%p-%m.profraw') } };
   const cancellation = new AbortController();
   const stop = () => cancellation.abort(new Error('The browser fixture was interrupted'));
@@ -257,11 +271,12 @@ export async function run(args = process.argv.slice(2)) {
   process.once('SIGTERM', stop);
   try {
     await fs.writeFile(path.join(artifacts, 'identity.json'), JSON.stringify({
-      binary_sha256: await hashFile(binary), topology: 'independent-combined-console-https-proxy',
+      binary_sha256: await hashFile(binary), topology: 'native-' + topology,
       replication_factor: 1, mocked_requests: false, browser_arguments: args,
     }, null, 2));
-    const core = await startCore(state, binary, cancellation.signal);
-    const baseURL = await startConsole(state, binary, web, core, cancellation.signal);
+    const core = await startCore(state, binary, web, topology, cancellation.signal);
+    const baseURL = topology === 'combined' ? core.baseURL : await startConsole(state, binary, web, core, cancellation.signal);
+    await verifyHttps(baseURL, path.join(core.generated, 'ca.pem'), cancellation.signal);
     console.log(`Running real Console browser tests at ${baseURL}; evidence: ${artifacts}`);
     const browser = startChild(state, 'playwright', 'npx', [
       '--no-install', 'playwright', 'test', '--config', 'playwright.live.config.ts', ...args,

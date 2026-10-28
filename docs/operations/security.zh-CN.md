@@ -1,6 +1,6 @@
 # 安全与权限
 
-TideMQ 的公共业务入口是带 TLS 的 QUIC Gateway，内部节点使用绑定 cluster/node/role/group 的 mTLS 身份。部署方负责私有网络、证书签发和轮换、Secret 分发、HTTPS 入口与存储权限。
+TideMQ 的公共业务入口是带 TLS 的 QUIC Gateway，分离内部节点使用绑定cluster/node/role/group的mTLS身份；Combined内部直接调用，以真实用户授权进入同一业务检查，不配置peer/trust root或自连接。部署方负责私有网络、证书签发和轮换、Secret 分发、HTTPS 入口与存储权限。
 
 ## 网络边界
 
@@ -9,7 +9,7 @@ TideMQ 的公共业务入口是带 TLS 的 QUIC Gateway，内部节点使用绑�
 | Gateway / Combined 公共 QUIC | 持有有效作用域凭据的 SDK / Console | 开放实际 UDP 端口；负载均衡支持 QUIC，服务名与证书匹配 |
 | 内部 QUIC | 注册且证书 pin 匹配的集群节点 | 限制节点网络；不能接受客户端自行声明的节点身份 |
 | 管理 HTTP | 本机运维、同网络 namespace 中的采集器，或受保护代理 | 必须 loopback；不把 diagnostics 直接暴露到公网或浏览器 |
-| Console HTTP | 经过 HTTPS 反向代理的浏览器 | 精确 HTTPS Origin、Secure Cookie 与 CSRF；管理端口仍为 loopback |
+| Console HTTPS | 直接访问原生HTTPS的浏览器 | 证书SAN覆盖精确HTTPS Origin，保留Secure Cookie与CSRF；Combined复用节点证书和单一loopback管理口，分离Console另有loopback管理口 |
 | S3 endpoint | 配置对象访问权限的数据节点 | 生产使用 HTTPS、专用桶/前缀和最小权限凭据 |
 
 普通 HTTP 反向代理不能直接转发 QUIC；容器内 `127.0.0.1` 也不指向宿主或其他 Pod。网络调整后同时验证允许与拒绝路径，不以进程启动代替 TLS/权限验证。

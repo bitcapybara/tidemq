@@ -212,6 +212,83 @@ async fn access(service: &Service, frame: &Frame) -> crate::gateway::Access {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn local_business_probes_use_real_capacity_without_raft_identity() {
+    use super::super::{console_read::DataReply, failover::Probe};
+    use crate::{metadata::GroupPlacement, scaling::remote::CapacitySource};
+
+    let (fixture, client) = setup().await;
+    let service = &fixture.running.get(&1).unwrap().service;
+    assert!(service.rpc.is_local());
+    assert!(service.rpc.pool().is_err());
+    assert!(service.scaling.service.is_none());
+    let metadata = service.metadata.as_ref().unwrap();
+    assert!(metadata.group.raft().is_none());
+    assert!(metadata.voters.is_empty());
+    assert_eq!(metadata.authority_node(), Some(1));
+    assert_eq!(
+        metadata.current_placement().unwrap(),
+        GroupPlacement::Local { node_id: 1 }
+    );
+    for replica in service.data.values() {
+        assert!(replica.group.raft().is_none());
+        assert!(replica.voters.is_empty());
+        assert_eq!(replica.authority_node(), Some(1));
+    }
+    let DataReply::NodeProbe { groups, .. } = service.console_node_probe(deadline()).await.unwrap()
+    else {
+        panic!("Local probe must return the actual node groups");
+    };
+    assert_eq!(groups.len(), 2);
+    for group in groups {
+        assert!(group.leader.is_none());
+        assert!(group.voters.is_empty());
+        assert!(group.quorum_confirmed.is_none());
+    }
+    assert_eq!(service.probe_broker(1, deadline()).await, Probe::Eligible);
+    assert_eq!(service.probe_broker(2, deadline()).await, Probe::Responsive);
+    let capacity = service.scaling.capacity.snapshot().unwrap();
+    for sample in [
+        None,
+        Some(crate::scaling::Capacity {
+            cpu_per_mille: 900,
+            ..capacity
+        }),
+        Some(crate::scaling::Capacity {
+            observed_at: std::time::Instant::now() - Duration::from_secs(6),
+            ..capacity
+        }),
+    ] {
+        service.scaling.capacity.replace(sample).unwrap();
+        assert_eq!(service.probe_broker(1, deadline()).await, Probe::Responsive);
+    }
+    service.scaling.capacity.replace(Some(capacity)).unwrap();
+    for error in [
+        service.require_cluster().unwrap_err(),
+        service.hosted_group(b"2").await.unwrap_err(),
+        service.inspect_node_drain(1, deadline()).await.unwrap_err(),
+        service
+            .metadata_membership_action(Id::new_v7().unwrap(), 1, 2, deadline())
+            .await
+            .unwrap_err(),
+        service
+            .start_authority_transfer(Id::new_v7().unwrap(), Id::new_v7().unwrap(), 2, deadline())
+            .await
+            .unwrap_err(),
+    ] {
+        let failure = error.failure();
+        assert_eq!(failure.outcome, i32::from(Outcome::Rejected));
+        assert!(!failure.retryable);
+        assert!(failure.message.contains("unsupported"));
+    }
+    service
+        .draining
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(service.probe_broker(1, deadline()).await, Probe::Responsive);
+    client.close().await.unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_consumer_observation_retries_a_real_resource_lease_revision_conflict() {
     use crate::metadata::{
         Command, ConsumerCommand, ConsumerOutcome, Outcome as MetadataOutcome,
@@ -282,7 +359,12 @@ async fn a_consumer_observation_retries_a_real_resource_lease_revision_conflict(
             now_ms,
         },
     );
-    let response = replica.raft.client_write(competing).await.unwrap().data;
+    let response = replica
+        .group
+        .commit(competing, original_deadline)
+        .await
+        .unwrap()
+        .response;
     assert!(matches!(
         response,
         Response::Applied {
@@ -291,7 +373,12 @@ async fn a_consumer_observation_retries_a_real_resource_lease_revision_conflict(
         }
     ));
     let stale = Command::consumer(operation, revision, command.clone());
-    let response = replica.raft.client_write(stale).await.unwrap().data;
+    let response = replica
+        .group
+        .commit(stale, original_deadline)
+        .await
+        .unwrap()
+        .response;
     assert!(matches!(
         response,
         Response::Rejected {

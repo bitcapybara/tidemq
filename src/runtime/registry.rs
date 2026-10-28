@@ -69,6 +69,68 @@ struct Page {
 }
 
 impl Registry {
+    pub fn local(
+        config: &Config,
+        identity: &NodeGrant,
+        address: std::net::SocketAddr,
+    ) -> Result<Self> {
+        if config.role != crate::config::Role::Combined || identity.node_id != config.node_id {
+            return Err(Error::invalid(
+                "Local directory requires the process-owned identity",
+            ));
+        }
+        let node = RegisteredNode {
+            record: NodeRecord {
+                spec: NodeSpec {
+                    node_id: config.node_id,
+                    zone: "local".into(),
+                    endpoint: address,
+                    roles: super::node::roles(config.role),
+                    schedulable: true,
+                },
+                generation: 1,
+            },
+            identity: NodeIdentity {
+                certificate_name: identity.certificate_name.clone(),
+                certificate_pin: identity.certificate_pin,
+                role: config.role.name().into(),
+                external_endpoint: None,
+                retired: false,
+                drain_operation: None,
+            },
+        };
+        let trust = NodeAuthorizations::new(Vec::new()).map_err(|source| {
+            Error::operation("initialize empty internal trust registry", source)
+        })?;
+        Ok(Self {
+            directory: Mutex::new(Directory {
+                revision: 1,
+                membership_index: 0,
+                nodes: BTreeMap::from([(config.node_id, node)]),
+                groups: config
+                    .runtime
+                    .groups
+                    .iter()
+                    .map(|group| {
+                        (
+                            group.group_id,
+                            DataGroup {
+                                group_id: group.group_id,
+                                generation: 1,
+                                placement: crate::metadata::GroupPlacement::Local {
+                                    node_id: config.node_id,
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+                metadata_voters: BTreeSet::new(),
+            }),
+            update: tokio::sync::Mutex::new(()),
+            trust,
+            changes: watch::channel(()).0,
+        })
+    }
     pub async fn load(
         config: &Config,
         cluster: tidemq_protocol::Id,
@@ -186,7 +248,9 @@ impl Registry {
                             DataGroup {
                                 group_id: group.group_id,
                                 generation: 1,
-                                voters: group.voters.iter().copied().collect(),
+                                placement: crate::metadata::GroupPlacement::Raft {
+                                    voters: group.voters.iter().copied().collect(),
+                                },
                             },
                         )
                     })
@@ -271,7 +335,15 @@ impl Registry {
                 after.map_or(Bound::Unbounded, Bound::Included),
             )))
             .take(directory.groups.len().min(16))
-            .map(|(id, group)| (*id, candidates.difference(&group.voters).copied().collect()))
+            .map(|(id, group)| {
+                (
+                    *id,
+                    candidates
+                        .difference(&group.placement.hosts())
+                        .copied()
+                        .collect(),
+                )
+            })
             .collect())
     }
 
@@ -305,7 +377,7 @@ impl Registry {
         let mut nodes: Vec<_> = directory
             .groups
             .get(&group)
-            .map(|group| group.voters.iter().copied().collect())
+            .map(|group| group.placement.hosts().into_iter().collect())
             .ok_or_else(Error::unavailable)?;
         for (id, node) in &directory.nodes {
             if !node.identity.retired
@@ -335,6 +407,8 @@ impl Service {
         // Discovery may use a follower; every business capability still requires a fresh quorum proof.
         let page = replica
             .state
+            .raft_state()
+            .ok_or_else(|| Error::invalid("Local discovery does not expose Raft membership"))?
             .try_with_membership(|state, _, membership| {
                 let membership_index = membership.log_id().map_or(0, |log| log.index);
                 if membership.membership().get_joint_config().len() != 1
@@ -450,7 +524,7 @@ impl Service {
         let (peers, grants) = directory.targets(&self.config, self.cluster)?;
         self.save_registry(&directory).await?;
         self.rpc
-            .pool
+            .pool()?
             .replace_peers(peers, grants.clone(), deadline)
             .await
             .map_err(|source| Error::operation("replace registered internal peers", source))?;
@@ -460,10 +534,11 @@ impl Service {
             .map_err(|source| Error::operation("replace registered inbound trust", source))?;
         self.authority
             .replace_voters(directory.metadata_voters.clone())?;
-        self.scaling
-            .service
-            .replace_metadata_voters(directory.metadata_voters.clone())
-            .map_err(|source| Error::operation("replace scaling metadata voters", source))?;
+        if let Some(service) = &self.scaling.service {
+            service
+                .replace_metadata_voters(directory.metadata_voters.clone())
+                .map_err(|source| Error::operation("replace scaling metadata voters", source))?;
+        }
         for coordinator in self.objects.values() {
             coordinator
                 .replace_metadata_nodes(directory.metadata_voters.iter().copied().collect())
@@ -618,9 +693,12 @@ impl Directory {
             }
         }
         for group in self.groups.values() {
+            let voters = group.placement.raft_voters().ok_or_else(|| {
+                Error::invalid("Separate discovery requires real Raft group membership")
+            })?;
             if group.group_id == config.runtime.metadata_group
-                || group.voters.len() != usize::from(config.replication_factor)
-                || group.voters.iter().any(|id| {
+                || voters.len() != usize::from(config.replication_factor)
+                || voters.iter().any(|id| {
                     self.nodes.get(id).is_none_or(|node| {
                         node.identity.retired
                             || !node.record.spec.roles.contains(&NodeRole::Storage)
