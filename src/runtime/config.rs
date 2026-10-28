@@ -28,12 +28,12 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            internal_listen: SocketAddr::from(([127, 0, 0, 1], 7444)),
+            internal_listen: SocketAddr::from(([127, 0, 0, 1], 0)),
             metadata_group: 1,
-            metadata_voters: vec![1],
+            metadata_voters: Vec::new(),
             groups: vec![GroupConfig {
                 group_id: 2,
-                voters: vec![1],
+                voters: Vec::new(),
                 standby: Vec::new(),
             }],
             peers: Vec::new(),
@@ -143,6 +143,9 @@ impl RuntimeConfig {
             ));
         }
         self.validate_objects(config)?;
+        if config.role == Role::Combined {
+            return self.validate_local();
+        }
         self.validate_peers(config)?;
         self.validate_voters(&self.metadata_voters, config.replication_factor, true)?;
         self.validate_groups(config.replication_factor)?;
@@ -150,6 +153,36 @@ impl RuntimeConfig {
             return Err(Error::invalid(
                 "runtime.peers must include at least one broker or combined role",
             ));
+        }
+        Ok(())
+    }
+
+    fn validate_local(&self) -> Result<()> {
+        if self.internal_listen.port() != 0
+            || !self.metadata_voters.is_empty()
+            || !self.peers.is_empty()
+            || self.bootstrap
+        {
+            return Err(Error::invalid(
+                "Combined local execution has no internal listener, peers, voters or Raft bootstrap",
+            ));
+        }
+        if self.metadata_group == 0 || !(1..=16).contains(&self.groups.len()) {
+            return Err(Error::invalid(
+                "Combined requires one metadata group and between 1 and 16 data groups",
+            ));
+        }
+        let mut ids = BTreeSet::from([self.metadata_group]);
+        for group in &self.groups {
+            if group.group_id == 0
+                || !ids.insert(group.group_id)
+                || !group.voters.is_empty()
+                || !group.standby.is_empty()
+            {
+                return Err(Error::invalid(
+                    "Local group IDs must be distinct and cannot carry Raft membership",
+                ));
+            }
         }
         Ok(())
     }

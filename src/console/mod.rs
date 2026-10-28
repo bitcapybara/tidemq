@@ -22,7 +22,7 @@ use tokio::time::Instant;
 
 use crate::{Error, Result};
 
-pub use config::{ClusterConfig, ConsoleConfig, ConsoleRole, SessionConfig};
+pub use config::{ClusterConfig, ConsoleConfig, ConsoleRole, EmbeddedConsoleConfig, SessionConfig};
 
 pub struct RunningConsole {
     pub address: SocketAddr,
