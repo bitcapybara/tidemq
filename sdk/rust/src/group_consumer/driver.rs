@@ -38,6 +38,10 @@ pub(super) struct ReadAttempt {
     deadline: Instant,
     token: Bytes,
     progress: Option<ReadProgress>,
+    failures: u64,
+    last_error: Option<crate::ErrorKind>,
+    error_source: Option<&'static str>,
+    remote_code: Option<i32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -46,31 +50,92 @@ struct ReadProgress {
     complete: bool,
 }
 
+#[derive(Clone, Copy)]
+struct ReadSample {
+    shard: Id,
+    operation: Id,
+    epoch: u64,
+    sequence: u64,
+    applied: bool,
+    retiring: bool,
+    failures: u64,
+    last_error: Option<crate::ErrorKind>,
+    error_source: Option<&'static str>,
+    remote_code: Option<i32>,
+}
+
+fn sample_read(state: &State) -> Result<Option<ReadSample>> {
+    let Some((shard, read)) = state
+        .domains
+        .iter()
+        .find_map(|(shard, domain)| domain.read.as_ref().map(|read| (*shard, read)))
+    else {
+        return Ok(None);
+    };
+    let read = read.lock().map_err(|_| Error::Closed)?;
+    Ok(Some(ReadSample {
+        shard,
+        operation: read.operation,
+        epoch: read.request.member_epoch,
+        sequence: read.request.sequence,
+        applied: read.applied,
+        retiring: read.retiring,
+        failures: read.failures,
+        last_error: read.last_error,
+        error_source: read.error_source,
+        remote_code: read.remote_code,
+    }))
+}
+
 pub(super) fn diagnostics(core: &Core) -> Result<ConsumerDiagnostics> {
     let state = core.state()?;
     let counts = scheduling::counts(&state)?;
+    let read = sample_read(&state)?;
     let (long_watches, immediate_probes) = watch::counts(&state);
+    let isolated = core.credit.mode == ConsumerMode::Isolated;
+    let read_limit = if isolated { 7_usize } else { 1 };
+    let recovery_limit = if isolated { 2_usize } else { 1 };
     Ok(ConsumerDiagnostics {
         mode: core.credit.mode,
+        member_epoch: core.epoch.load(Ordering::Acquire),
+        assignment_version: core
+            .info
+            .lock()
+            .map_err(|_| Error::Closed)?
+            .assignment_version,
+        lease_live: *core.lease_until.lock().map_err(|_| Error::Closed)? > Instant::now(),
+        queued_deliveries: state.queue.len(),
+        delivered_unacked: state.ledger.len(),
+        busy_targets: state.domains.values().filter(|domain| domain.busy).count(),
+        complete_targets: state
+            .domains
+            .values()
+            .filter(|domain| domain.complete)
+            .count(),
+        unassigned_targets: state
+            .domains
+            .values()
+            .filter(|domain| !domain.assigned)
+            .count(),
+        sample_read_shard: read.map(|read| read.shard),
+        sample_read_operation: read.map(|read| read.operation),
+        sample_read_epoch: read.map(|read| read.epoch),
+        sample_read_sequence: read.map(|read| read.sequence),
+        sample_read_applied: read.is_some_and(|read| read.applied),
+        sample_read_retiring: read.is_some_and(|read| read.retiring),
+        sample_read_failures: read.map_or(0, |read| read.failures),
+        sample_read_last_error: read.and_then(|read| read.last_error),
+        sample_read_error_source: read.and_then(|read| read.error_source),
+        sample_read_remote_code: read.and_then(|read| read.remote_code),
         ordinary_reads: counts.ordinary,
         protected_reads: counts.protected,
         ordinary_unknown: counts.ordinary_unknown,
         protected_unknown: counts.protected_unknown,
         recovery_queue: counts.recovery_queue,
-        ordinary_rpc: (if core.credit.mode == ConsumerMode::Isolated {
-            7_usize
-        } else {
-            1
-        })
-        .saturating_sub(core.credit.read_rpc.available_permits()),
+        ordinary_rpc: read_limit.saturating_sub(core.credit.read_rpc.available_permits()),
         protected_rpc: usize::from(core.credit.mode == ConsumerMode::Isolated)
             .saturating_sub(core.credit.protected_rpc.available_permits()),
-        recovery_rpc: (if core.credit.mode == ConsumerMode::Isolated {
-            2_usize
-        } else {
-            1
-        })
-        .saturating_sub(core.credit.recovery_rpc.available_permits()),
+        recovery_rpc: recovery_limit.saturating_sub(core.credit.recovery_rpc.available_permits()),
         long_watches,
         immediate_probes,
         ready_targets: state
@@ -112,6 +177,10 @@ pub(super) fn diagnostics(core: &Core) -> Result<ConsumerDiagnostics> {
         ordinary_bytes_free: core.credit.ordinary_bytes.available_permits(),
         protected_slots_free: core.credit.protected_slots.available_permits(),
         protected_bytes_free: core.credit.protected_bytes.available_permits(),
+        client_bytes_free: core.client.inner.bytes.available_permits(),
+        client_requests_free: core.client.inner.requests.available_permits(),
+        execution_slots_free: core.client.inner.admission.execution.available_permits(),
+        frame_bytes_free: core.client.inner.admission.frames.available_permits(),
     })
 }
 
@@ -624,6 +693,11 @@ async fn poll_read(
         .map_err(|error| error.preserve_uncertainty(uncertain));
     if let Err(error) = &result {
         let mut read = work.lock().map_err(|_| Error::Closed)?;
+        let (source, remote_code) = read_failure_origin(error);
+        read.failures = read.failures.saturating_add(1);
+        read.last_error = Some(error.kind());
+        read.error_source = Some(source);
+        read.remote_code = remote_code;
         tracing::debug!(
             target: "tidemq_sdk::consumer_recovery",
             consumer = %core.member,
@@ -644,6 +718,26 @@ async fn poll_read(
             );
     }
     result
+}
+
+fn read_failure_origin(error: &Error) -> (&'static str, Option<i32>) {
+    match error {
+        Error::RequestUnknown { source } | Error::Query { source } => read_failure_origin(source),
+        Error::Background { source } => read_failure_origin(source),
+        Error::Remote { code, .. } => ("remote", Some(i32::from(*code))),
+        Error::Admission { .. } => ("sdk_admission", None),
+        Error::Rpc {
+            source: tidemq_transport::rpc::Error::Admission { .. },
+        } => ("rpc_admission", None),
+        Error::Rpc { .. } => ("rpc", None),
+        Error::Transport {
+            source: tidemq_transport::Error::Admission { .. },
+        } => ("transport_admission", None),
+        Error::Transport { .. } => ("transport", None),
+        Error::Memory { .. } => ("transport_memory", None),
+        Error::Deadline => ("deadline", None),
+        _ => ("sdk", None),
+    }
 }
 
 fn read_gate_pending(error: &Error) -> bool {
