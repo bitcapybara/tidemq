@@ -84,6 +84,8 @@ VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目�
 
 LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://doc.rust-lang.org/rustc/instrument-coverage.html)，外部程序与已有测试合并的方式见 [cargo-llvm-cov 官方说明](https://github.com/taiki-e/cargo-llvm-cov#usage)。VM 断电或 SIGKILL 前来不及写出的计数可能丢失，不能把最终报告当作每次崩溃前执行路径的完整记录；恢复后的全部 10 个实例必须正常退出并产生有效 profile。故障用例是否满足行为契约仍独立断言，不能用覆盖率数字代替。
 
+普通/故障流程失败时，证据采集仍限制为总计2MiB、最多40个文件；新增诊断 JSON 仅允许 `consumer-recovery-after-quorum.json`、`consumer-recovery-timeout.json` 两个精确文件名，不扩大其他 JSON 规则，继续拒绝凭据和符号链接。manifest 保留 `files`，另以 `entries` 记录 `path/sourceBytes/copiedBytes/tailOffset/truncated`；短读只复制实际读到的字节，不补零伪装完整，截尾日志可据此识别。
+
 ## 远程 API 黑盒断言
 
 入口为 [tests/deployment/driver.rs](https://github.com/bitcapybara/tidemq/blob/main/tests/deployment/driver.rs)，保留 `cargo build --example deploy_validation` 构建接口。纯解析/账本单元测试只测试本地逻辑，外部服务行为由 [lab.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/ci/lab.sh) 在部署后显式运行，不混入 lib/bin 单元测试。
