@@ -134,10 +134,13 @@ pub(super) async fn finish_original_ack(
             Err(tidemq_sdk::Error::Acknowledgement { pending, source })
                 if Instant::now() < until
                     && (source.outcome_unknown()
-                        || source.kind() == tidemq_sdk::ErrorKind::ResourceExhausted
-                            && pending.progress()?.pending > 0) =>
+                        || matches!(
+                            source.kind(),
+                            tidemq_sdk::ErrorKind::ResourceExhausted
+                                | tidemq_sdk::ErrorKind::Unavailable
+                        ) && pending.progress()?.pending > 0) =>
             {
-                // Backpressure leaves the same ACK pending; do not submit a new operation.
+                // Backpressure and routing refusals keep the same ACK pending.
                 result = tidemq_sdk::RequestContext::with_deadline(until)
                     .scope(pending.retry())
                     .await;
