@@ -417,6 +417,21 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     fixture.close().await;
 }
 
+async fn node_recovery_diagnostics(
+    address: std::net::SocketAddr,
+    until: Instant,
+) -> Option<serde_json::Value> {
+    tokio::time::timeout_at(until, http(address, "/diagnostics"))
+        .await
+        .ok()
+        .and_then(|response| {
+            response
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body.to_owned())
+        })
+        .and_then(|body| serde_json::from_str(&body).ok())
+}
+
 async fn consumer_recovery_snapshot(
     fixture: &Fixture,
     consumer: &tidemq_sdk::QueueConsumer,
@@ -432,15 +447,7 @@ async fn consumer_recovery_snapshot(
         tasks.push((
             *node,
             tokio::spawn(async move {
-                let diagnostics = tokio::time::timeout_at(until, http(address, "/diagnostics"))
-                    .await
-                    .ok()
-                    .and_then(|response| {
-                        response
-                            .split_once("\r\n\r\n")
-                            .map(|(_, body)| body.to_owned())
-                    })
-                    .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok());
+                let diagnostics = node_recovery_diagnostics(address, until).await;
                 let metrics = tokio::time::timeout_at(until, http(address, "/metrics"))
                     .await
                     .ok();

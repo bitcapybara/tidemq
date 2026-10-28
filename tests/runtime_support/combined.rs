@@ -439,6 +439,116 @@ mod metadata_quic {
     }
 }
 
+async fn rf3_phase_snapshot(
+    fixture: &Fixture,
+    client: &Client,
+    consumers: &[(String, tidemq_sdk::StreamConsumer)],
+    stage: &str,
+) {
+    use tokio::io::AsyncWriteExt;
+    let observed_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|value| value.as_millis());
+    let until = Instant::now() + Duration::from_secs(2);
+    let include_metrics = matches!(stage, "finished" | "failed");
+    let mut tasks = tokio::task::JoinSet::new();
+    for (node, config) in &fixture.configs {
+        let node = *node;
+        let address = config.management_listen;
+        let configured_process_memory = config.runtime.capacity.process_memory;
+        tasks.spawn(async move {
+            let diagnostics = node_recovery_diagnostics(address, until).await;
+            let metrics = if include_metrics {
+                tokio::time::timeout_at(until, http(address, "/metrics")).await.ok()
+            } else { None };
+            (node, serde_json::json!({
+                "configured_process_memory": configured_process_memory,
+                "quota": diagnostics.as_ref().and_then(|value| value.get("quota")),
+                "memory_budget": diagnostics.as_ref().and_then(|value| value.get("memory_budget")),
+                "diagnostics_missing": diagnostics.is_none(),
+                "metrics": metrics,
+            }))
+        });
+    }
+    let sdk: BTreeMap<_, _> = consumers
+        .iter()
+        .map(|(name, consumer)| (name, format!("{:?}", consumer.diagnostics())))
+        .collect();
+    let mut nodes = BTreeMap::new();
+    while let Some(result) = tasks.join_next().await {
+        if let Ok((node, diagnostics)) = result {
+            nodes.insert(node, diagnostics);
+        }
+    }
+    let missing_nodes: Vec<_> = fixture
+        .configs
+        .keys()
+        .filter(|node| !nodes.contains_key(*node))
+        .copied()
+        .collect();
+    eprintln!(
+        "RF3 phase resource ledger: stage={stage} node_count={} missing_nodes={missing_nodes:?}",
+        nodes.len()
+    );
+    let mut bytes = serde_json::to_vec(&serde_json::json!({
+        "stage": stage, "observed_at_unix_ms": observed_at_unix_ms, "nodes": nodes, "sdk": sdk,
+        "missing_nodes": missing_nodes,
+        "transport": format!("{:?}", client.transport_metrics().snapshot()),
+    }))
+    .unwrap();
+    bytes.push(b'\n');
+    let path = std::path::Path::new("target/ci/resource-observations")
+        .join(fixture.directory.file_name().unwrap())
+        .join("rf3-phase-resources.jsonl");
+    let write = async {
+        tokio::fs::create_dir_all(path.parent().unwrap()).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await?;
+        file.write_all(&bytes).await
+    };
+    match tokio::time::timeout(Duration::from_secs(1), write).await {
+        Ok(Ok(())) => {}
+        result => eprintln!("RF3 phase diagnostic write did not complete: {result:?}"),
+    }
+}
+
+#[tokio::test]
+async fn phase_resource_evidence_retains_real_diagnostics_and_appends_complete_records() {
+    let mut fixture = Fixture::new(&[(7, Role::Combined)], &[7], &[7]).await;
+    fixture.start_all().await;
+    let client = fixture.client(7).await;
+    let path = std::path::Path::new("target/ci/resource-observations")
+        .join(fixture.directory.file_name().unwrap())
+        .join("rf3-phase-resources.jsonl");
+    rf3_phase_snapshot(&fixture, &client, &[], "started").await;
+    rf3_phase_snapshot(&fixture, &client, &[], "finished").await;
+    let bytes = tokio::fs::read_to_string(&path).await.unwrap();
+    client.close().await.unwrap();
+    fixture.close().await;
+    let records: Vec<serde_json::Value> = bytes
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records.first().unwrap()["stage"], "started");
+    assert_eq!(records.last().unwrap()["stage"], "finished");
+    for record in records {
+        assert_eq!(record["missing_nodes"], serde_json::json!([]));
+        assert_eq!(record["nodes"]["7"]["diagnostics_missing"], false);
+        assert!(record["nodes"]["7"]["quota"].is_object());
+        assert!(record["nodes"]["7"]["memory_budget"].is_object());
+        assert!(record["observed_at_unix_ms"].is_number());
+    }
+    assert!(
+        !bytes.contains(TOKEN),
+        "Resource evidence exposed an access token"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks() {
     let fixture = Fixture::new(
@@ -484,6 +594,10 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
         let producer = client.new_producer(&name).build().await.unwrap();
         work.push((name, topic.id(), producer, consumer));
     }
+    let observers: Vec<_> = work
+        .iter()
+        .map(|(name, _, _, consumer)| (name.clone(), consumer.clone()))
+        .collect();
     let phase_budget = Duration::from_secs(40);
     let mut running = tokio::task::JoinSet::new();
     for (name, topic, producer, consumer) in work {
@@ -496,10 +610,13 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
             let acknowledged = AtomicU64::new(0);
             let metadata_reads = AtomicU64::new(0);
             let mut metadata_retries = MetadataReadRetries::default();
+            let failed = |stage: &str, error: &dyn std::fmt::Debug| {
+                eprintln!("RF3 worker failure ledger: topic={name} stage={stage} produced={} acknowledged={} metadata_reads={} remaining_ms={} error={error:?} consumer={:?} transport={:?}", produced.load(Ordering::Relaxed), acknowledged.load(Ordering::Relaxed), metadata_reads.load(Ordering::Relaxed), until.saturating_duration_since(Instant::now()).as_millis(), consumer.diagnostics(), client.transport_metrics().snapshot());
+            };
             let produce = async {
                 for sequence in 0..64_u64 {
                     let result = context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await;
-                    finish_original_send(result, until).await.unwrap();
+                    finish_original_send(result, until).await.inspect_err(|error| failed("send", error)).unwrap();
                     produced.store(sequence + 1, Ordering::Relaxed);
                 }
             };
@@ -511,13 +628,13 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
                     assert_eq!(delivery.payload(), &sequence.to_le_bytes());
                     assert!(seen.insert(delivery.message_id()), "A healthy Stream repeated an identity");
                     let result = context.scope(consumer.ack_cumulative(&delivery)).await;
-                    finish_original_ack(result, until).await.unwrap();
+                    finish_original_ack(result, until).await.inspect_err(|error| failed("ack", error)).unwrap();
                     acknowledged.store(sequence + 1, Ordering::Relaxed);
                 }
             };
             let read_metadata = async {
                 for _ in 0..64 {
-                    let info = metadata_read_until(&client, &name, until, &mut metadata_retries).await.unwrap();
+                    let info = metadata_read_until(&client, &name, until, &mut metadata_retries).await.inspect_err(|error| failed("metadata", error)).unwrap();
                     assert_eq!(info.id(), topic);
                     metadata_reads.fetch_add(1, Ordering::Relaxed);
                     tokio::task::yield_now().await;
@@ -533,13 +650,37 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
             producer.close().await.unwrap();
         });
     }
-    tokio::time::timeout(phase_budget + Duration::from_secs(5), async {
-        while let Some(result) = running.join_next().await {
-            result.unwrap();
+    let mut snapshot = Box::pin(rf3_phase_snapshot(&fixture, &client, &observers, "started"));
+    let mut snapshot_pending = true;
+    let mut samples = tokio::time::interval_at(
+        Instant::now() + Duration::from_secs(5),
+        Duration::from_secs(5),
+    );
+    samples.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let completion = tokio::time::timeout(phase_budget + Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                result = running.join_next() => match result {
+                    Some(Ok(())) => {},
+                    Some(Err(error)) => return Err(error),
+                    None => return Ok(()),
+                },
+                _ = &mut snapshot, if snapshot_pending => snapshot_pending = false,
+                _ = samples.tick(), if !snapshot_pending => {
+                    snapshot = Box::pin(rf3_phase_snapshot(&fixture, &client, &observers, "during"));
+                    snapshot_pending = true;
+                },
+            }
         }
-    })
-    .await
-    .unwrap();
+    }).await;
+    drop(snapshot);
+    let stage = if matches!(&completion, Ok(Ok(()))) {
+        "finished"
+    } else {
+        "failed"
+    };
+    rf3_phase_snapshot(&fixture, &client, &observers, stage).await;
+    completion.unwrap().unwrap();
     client.close().await.unwrap();
     for (_, mut process) in processes {
         process.kill().await.unwrap();
