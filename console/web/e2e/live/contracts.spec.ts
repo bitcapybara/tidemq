@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import type { Operation, Session, Topic } from "../../src/api/types";
 import { operationId as newOperationId } from "../../src/features/logic";
-import { liveContext, login, request } from "./context";
+import { discardCommittedResponse, liveContext, login, request } from "./context";
 
 test("real Rust backend: a restricted identity cannot read another namespace or tenant", async ({ page }) => {
   const seed = await liveContext();
@@ -99,15 +99,11 @@ test("real Rust backend: a committed response is lost and Unknown recovers only 
   await page.route("**/api/v1/topics", async route => {
     if (route.request().method() !== "POST") return route.continue();
     writes++;
-    operationId = (route.request().postDataJSON() as { operationId: string }).operationId;
-    try {
-      const response = await route.fetch({ maxRetries: 0 });
-      const result = await response.json() as Operation;
-      committed = response.status() === 200 && result.status === "succeeded" && result.id === operationId;
-      resourceId = result.resourceId ?? "";
-    } finally {
-      await route.abort("failed");
-    }
+    await discardCommittedResponse(route, result => {
+      operationId = result.operationId;
+      committed = result.committed;
+      resourceId = result.resourceId;
+    });
   });
   try {
     await page.goto("/topics");
