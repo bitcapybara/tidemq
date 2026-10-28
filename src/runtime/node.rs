@@ -163,10 +163,7 @@ impl RunningNode {
             .map_err(|source| Error::operation("create shared internal peer pool", source))?
             .with_repair_budget(repair.clone()),
         );
-        let rpc = PeerRpc {
-            pool: pool.clone(),
-            limits: config.protocol.clone(),
-        };
+        let rpc = PeerRpc::remote(pool.clone(), config.protocol.clone());
         let authority = Arc::new(RemoteMetadataAuthority::new(
             rpc.clone(),
             cluster,
@@ -577,6 +574,7 @@ impl RunningNode {
     /// Share the service entry point's original total deadline with optional exporters.
     pub async fn shutdown_until(mut self, deadline: tokio::time::Instant) -> Result<()> {
         self.service.process.drain();
+        self.service.rpc.begin_drain(deadline);
         self.service
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
@@ -612,6 +610,9 @@ impl RunningNode {
 impl Drop for RunningNode {
     fn drop(&mut self) {
         self.service.process.drain();
+        self.service
+            .rpc
+            .begin_drain(tokio::time::Instant::now() + Duration::from_secs(5));
         let _ = self.service.external_stop.send(true);
         let _ = self.shutdown.send(true);
     }

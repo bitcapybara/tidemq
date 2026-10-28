@@ -79,7 +79,7 @@ fn unknown_diagnostic(
         super::Error::CommittedConsumerWriter { .. } => {
             ("consumer_commit_fence", "verify committed consumer writer")
         }
-        super::Error::Invalid { .. } => return None,
+        super::Error::Invalid { .. } | super::Error::LocalNotSubmitted { .. } => return None,
     };
     Some(UnknownDiagnostic {
         error_kind,

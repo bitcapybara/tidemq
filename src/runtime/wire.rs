@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Weak};
 
 use bytes::Bytes;
 use prost::Message;
@@ -128,13 +128,28 @@ pub(crate) fn decode_json<T: DeserializeOwned>(value: &[u8]) -> Result<T> {
 
 #[derive(Clone)]
 pub(crate) struct PeerRpc {
-    pub pool: Arc<PeerPool>,
+    backend: PeerBackend,
     pub limits: ProtocolLimits,
 }
 
+#[derive(Clone)]
+enum PeerBackend {
+    Remote(Arc<PeerPool>),
+    Local {
+        dispatch: crate::server::InProcess,
+        service: Arc<OnceLock<Weak<super::service::Service>>>,
+        identity: Arc<crate::transport::NodeGrant>,
+    },
+}
+
+enum PendingResponse {
+    Remote(RpcResponse),
+    Local(crate::server::LocalResponse),
+}
+
 pub(crate) struct Pending {
-    response: RpcResponse,
-    rpc: RpcClient,
+    response: PendingResponse,
+    rpc: Option<RpcClient>,
     request_id: Bytes,
     operation_id: Bytes,
     class: TrafficClass,
@@ -142,6 +157,59 @@ pub(crate) struct Pending {
 }
 
 impl PeerRpc {
+    pub fn remote(pool: Arc<PeerPool>, limits: ProtocolLimits) -> Self {
+        Self {
+            backend: PeerBackend::Remote(pool),
+            limits,
+        }
+    }
+
+    pub fn local(
+        dispatch: crate::server::InProcess,
+        service: Arc<OnceLock<Weak<super::service::Service>>>,
+        identity: crate::transport::NodeGrant,
+        limits: ProtocolLimits,
+    ) -> Self {
+        Self {
+            backend: PeerBackend::Local {
+                dispatch,
+                service,
+                identity: Arc::new(identity),
+            },
+            limits,
+        }
+    }
+
+    pub fn is_local(&self) -> bool {
+        matches!(self.backend, PeerBackend::Local { .. })
+    }
+
+    pub fn pool(&self) -> Result<&Arc<PeerPool>> {
+        match &self.backend {
+            PeerBackend::Remote(pool) => Ok(pool),
+            PeerBackend::Local { .. } => {
+                Err(Error::invalid("Local execution has no internal peer pool"))
+            }
+        }
+    }
+
+    pub fn begin_drain(&self, deadline: Instant) {
+        if let PeerBackend::Local { dispatch, .. } = &self.backend {
+            dispatch.begin_drain(deadline);
+        }
+    }
+
+    pub async fn close(&self, deadline: Instant) -> Result<()> {
+        match &self.backend {
+            PeerBackend::Remote(pool) => pool
+                .close(deadline)
+                .await
+                .map_err(|source| Error::operation("close internal peer pool", source)),
+            PeerBackend::Local { dispatch, .. } => {
+                dispatch.close(deadline).await.map_err(Error::foundation)
+            }
+        }
+    }
     // These independent identity, class, ordering, and deadline fields bind one wire attempt.
     #[allow(clippy::too_many_arguments)]
     pub async fn submit(
@@ -206,21 +274,58 @@ impl PeerRpc {
         .map_err(|source| Error::operation("frame internal request", source))?;
         frame.traceparent = crate::observability::tracing::current_traceparent();
         drop(payload);
-        let rpc = self
-            .pool
-            .connection(target, class, deadline)
-            .await
-            .map_err(|source| Error::operation("connect internal peer", source))?;
-        let response = if completion {
-            rpc.submit_completion(frame, deadline).await
-        } else if core {
-            rpc.submit_core(frame, deadline).await
-        } else if class == TrafficClass::Control {
-            rpc.submit(frame, deadline).await
-        } else {
-            rpc.submit_affinity(frame, deadline, affinity).await
-        }
-        .map_err(|source| Error::operation("submit internal semantic request", source))?;
+        let (response, rpc) = match &self.backend {
+            PeerBackend::Remote(pool) => {
+                let rpc = pool
+                    .connection(target, class, deadline)
+                    .await
+                    .map_err(|source| Error::operation("connect internal peer", source))?;
+                let response = if completion {
+                    rpc.submit_completion(frame, deadline).await
+                } else if core {
+                    rpc.submit_core(frame, deadline).await
+                } else if class == TrafficClass::Control {
+                    rpc.submit(frame, deadline).await
+                } else {
+                    rpc.submit_affinity(frame, deadline, affinity).await
+                }
+                .map_err(|source| Error::operation("submit internal semantic request", source))?;
+                (PendingResponse::Remote(response), Some(rpc))
+            }
+            PeerBackend::Local {
+                dispatch,
+                service,
+                identity,
+            } => {
+                if target != identity.node_id || !identity.allowed_groups.contains(&group) {
+                    return Err(Error::invalid(
+                        "Local request target is outside this process",
+                    ));
+                }
+                let service = service
+                    .get()
+                    .and_then(Weak::upgrade)
+                    .ok_or_else(Error::unavailable)?;
+                let purpose = if completion {
+                    crate::transport::StreamPurpose::Ack
+                } else if core {
+                    crate::transport::StreamPurpose::Core
+                } else {
+                    crate::transport::StreamPurpose::Request
+                };
+                let response = dispatch
+                    .submit(
+                        &service,
+                        crate::transport::Authorization::Internal(identity.as_ref().clone().into()),
+                        frame,
+                        purpose,
+                        deadline,
+                    )
+                    .await
+                    .map_err(|source| Error::LocalNotSubmitted { source })?;
+                (PendingResponse::Local(response), None)
+            }
+        };
         Ok(Pending {
             response,
             rpc,
@@ -257,23 +362,30 @@ impl PeerRpc {
 
 impl Pending {
     pub async fn receive(self) -> Result<Bytes> {
-        let received = self
-            .response
-            .receive()
-            .await
-            .map_err(|source| Error::operation("receive internal semantic result", source))?;
-        let frame = received.frame();
+        let frame = match self.response {
+            PendingResponse::Remote(response) => response
+                .receive()
+                .await
+                .map_err(|source| Error::operation("receive internal semantic result", source))?
+                .frame()
+                .clone(),
+            PendingResponse::Local(response) => {
+                response.receive().await.map_err(Error::foundation)?
+            }
+        };
         if frame.request_id != self.request_id
             || frame.operation_id != self.operation_id
             || frame.traffic_class != i32::from(self.class)
         {
-            self.rpc.close(Instant::now()).await;
+            if let Some(rpc) = self.rpc {
+                rpc.close(Instant::now()).await;
+            }
             return Err(Error::invalid(
                 "Internal response identity differs from its request",
             ));
         }
         if frame.kind == i32::from(FrameKind::Error) {
-            return Err(decode_error(frame, &self.limits)?);
+            return Err(decode_error(&frame, &self.limits)?);
         }
         if frame.kind != i32::from(FrameKind::InternalResult) {
             return Err(Error::invalid("Internal response kind is invalid"));
