@@ -665,12 +665,12 @@ async fn shutdown_joins_an_active_observation_and_releases_every_charged_resourc
 async fn drain_keeps_attempt_scoped_cancellation_reachable_and_never_reports_unchanged() {
     let _serial = SERIAL.lock().await;
     tokio::time::timeout(Duration::from_secs(30), async {
-        let fixture = WatchFixture::new().await;
+        let fixture = separate_drain_fixture().await;
         let request = fixture.member.watch(fixture.sync().await, 1_000);
         let pause = BeforeWait::install(fixture.member.partition).unwrap();
         let pending = fixture.wire.submit(&request).await;
         pause.wait(deadline()).await.unwrap();
-        let drained = fixture.admin.admin().begin_node_drain(1).await.unwrap();
+        let drained = fixture.admin.admin().begin_node_drain(4).await.unwrap();
         assert!(drained.draining);
         assert!(!drained.schedulable);
         fixture.wire.cancel(&request).await;
@@ -702,12 +702,13 @@ async fn drain_keeps_attempt_scoped_cancellation_reachable_and_never_reports_unc
 async fn committed_node_drain_ends_an_active_watch_without_client_cancellation() {
     let _serial = SERIAL.lock().await;
     tokio::time::timeout(Duration::from_secs(30), async {
-        let fixture = WatchFixture::new().await;
+        let fixture = separate_drain_fixture().await;
         let request = fixture.member.watch(fixture.sync().await, 1_000);
-        let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
+        let observer = fixture.runtime.running.get(&4).unwrap().watch_diagnostics();
+        let leader = fixture.runtime.running.get(&2).unwrap().watch_diagnostics();
         let pause = BeforeWait::install(fixture.member.partition).unwrap();
-        let before = activity(&fixture.metrics(1).await);
-        let cached_before: Vec<_> = observer
+        let before = activity(&fixture.metrics(2).await);
+        let cached_before: Vec<_> = leader
             .snapshot()
             .await
             .groups
@@ -728,12 +729,13 @@ async fn committed_node_drain_ends_an_active_watch_without_client_cancellation()
             .unwrap();
         pause.wait(deadline()).await.unwrap();
         assert_eq!(observer.snapshot().await.active_requests, 1);
-        let drained = fixture.admin.admin().begin_node_drain(1).await.unwrap();
+        let completion_deadline = deadline();
+        let drained = fixture.admin.admin().begin_node_drain(4).await.unwrap();
         assert!(drained.draining);
         assert!(!drained.schedulable);
 
         // The pause keeps its 30-second RPC deadline; completion must precede its release.
-        let reply = tokio::time::timeout_at(deadline(), pending.receive())
+        let reply = tokio::time::timeout_at(completion_deadline, pending.receive())
             .await
             .unwrap()
             .unwrap();
@@ -752,12 +754,16 @@ async fn committed_node_drain_ends_an_active_watch_without_client_cancellation()
             assert_eq!(error.code, i32::from(ErrorCode::Unavailable));
             assert!(error.retryable);
         }
+        // Separate branches join remote cancellation receipts after returning the public result.
+        wait_for_drain_cleanup(&fixture.runtime, completion_deadline).await;
         let after = observer.snapshot().await;
         assert_eq!(after.active_requests, 0);
         assert_eq!(after.forwards, 0);
         assert_eq!(after.cleanup_tasks, 0);
         assert_eq!(
-            after
+            leader
+                .snapshot()
+                .await
                 .groups
                 .iter()
                 .map(|group| (group.group, group.cached_targets, group.dependency_edges))
@@ -765,10 +771,45 @@ async fn committed_node_drain_ends_an_active_watch_without_client_cancellation()
             cached_before,
             "Automatic drain leaked a cached target or dependency"
         );
-        assert_eq!(activity(&fixture.metrics(1).await), before);
+        assert_eq!(activity(&fixture.metrics(2).await), before);
         drop(pause);
         fixture.close().await;
     })
     .await
     .expect("Automatic Watch drain exceeded its total deadline");
+}
+
+async fn separate_drain_fixture() -> WatchFixture {
+    WatchFixture::topology(
+        &[
+            (1, Role::Metadata),
+            (2, Role::Storage),
+            (3, Role::Broker),
+            (4, Role::Gateway),
+        ],
+        &[1],
+        &[2],
+        4,
+    )
+    .await
+}
+
+async fn wait_for_drain_cleanup(runtime: &Fixture, until: Instant) {
+    tokio::time::timeout_at(until, async {
+        loop {
+            let mut pending = false;
+            for node in runtime.running.values() {
+                let snapshot = node.watch_diagnostics().snapshot().await;
+                pending |= snapshot.active_requests != 0
+                    || snapshot.forwards != 0
+                    || snapshot.cleanup_tasks != 0;
+            }
+            if !pending {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("The original drain deadline expired before every Watch branch joined");
 }
