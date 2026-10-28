@@ -291,7 +291,59 @@ pub(crate) struct LocalReadOnlyResponse<T> {
     deadline: Instant,
 }
 
+pub(crate) struct LocalAdmission {
+    _slot: OwnedSemaphorePermit,
+    _memory: MemoryPermit,
+    _active: HandlerGauge,
+}
+
 impl InProcess {
+    /// Direct semantic handlers retain the same class slots and memory as queued work.
+    pub(crate) fn admit_local(
+        &self,
+        purpose: StreamPurpose,
+        bytes: u32,
+        deadline: Instant,
+    ) -> crate::Result<LocalAdmission> {
+        if self.stop.borrow().is_some()
+            || Instant::now() >= deadline
+            || !(1..=65_536).contains(&bytes)
+        {
+            return Err(crate::Error::Configuration {
+                reason: "local semantic work is stopped, expired or exceeds its byte bound",
+            });
+        }
+        let queue = match purpose {
+            StreamPurpose::Core => &self.dispatcher.core,
+            StreamPurpose::Ack => &self.dispatcher.ack,
+            StreamPurpose::Request => &self.dispatcher.data,
+        };
+        let slot =
+            queue
+                .slots
+                .clone()
+                .try_acquire_owned()
+                .map_err(|_| crate::Error::Configuration {
+                    reason: "local semantic handler slots are exhausted",
+                })?;
+        let memory = match purpose {
+            StreamPurpose::Core => self.dispatcher.budget.try_reserve_core(bytes),
+            StreamPurpose::Ack => self.dispatcher.budget.try_reserve_ack(bytes),
+            StreamPurpose::Request => self
+                .dispatcher
+                .budget
+                .try_reserve(TrafficClass::Control, bytes),
+        }
+        .map_err(|source| crate::Error::LocalMemory { source })?;
+        self.dispatcher.health.admitted.inc();
+        self.dispatcher.health.active_handlers.inc();
+        Ok(LocalAdmission {
+            _slot: slot,
+            _memory: memory,
+            _active: HandlerGauge(self.dispatcher.health.active_handlers.clone()),
+        })
+    }
+
     pub fn new(
         config: DispatchConfig,
         budget: MemoryBudget,

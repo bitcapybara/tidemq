@@ -22,6 +22,35 @@ pub(crate) const LEADER: u32 = 4;
 // A full 128-member grant plan needs room for maximum-width counters and both RPC envelopes.
 const MAX_TYPED_BYTES: usize = 14 * 1024;
 
+#[cfg(test)]
+tokio::task_local! {
+    static INTERNAL_CODEC_DISABLED: bool;
+}
+
+#[cfg(test)]
+pub(in crate::runtime) async fn without_remote_encoding<T>(
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    INTERNAL_CODEC_DISABLED.scope(true, work).await
+}
+
+#[cfg(test)]
+fn require_internal_codec() -> Result<()> {
+    if INTERNAL_CODEC_DISABLED
+        .try_with(|disabled| *disabled)
+        .unwrap_or(false)
+    {
+        return Err(Error::invalid(
+            "Remote adapter encoding is disabled for this local request",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "../../tests/runtime_support/semantic_local.rs"]
+pub(in crate::runtime) mod semantic_local_tests;
+
 pub(super) fn native_leader<A: crate::replication::Application>(
     raft: &crate::replication::Raft<A>,
 ) -> Option<u64> {
@@ -71,6 +100,8 @@ impl Request {
 }
 
 pub(crate) fn json<T: Serialize>(value: &T) -> Result<Bytes> {
+    #[cfg(test)]
+    require_internal_codec()?;
     let bytes = serde_json::to_vec(value)
         .map_err(|source| Error::operation("encode internal semantic value", source))?;
     if bytes.len() > 12 * 1024 {
@@ -82,6 +113,8 @@ pub(crate) fn json<T: Serialize>(value: &T) -> Result<Bytes> {
 }
 
 pub(crate) fn binary<T: Serialize>(value: &T) -> Result<Bytes> {
+    #[cfg(test)]
+    require_internal_codec()?;
     let bytes = postcard::to_stdvec(value)
         .map_err(|source| Error::operation("encode internal typed value", source))?;
     if bytes.len() > MAX_TYPED_BYTES {
@@ -182,6 +215,30 @@ impl PeerRpc {
 
     pub fn is_local(&self) -> bool {
         matches!(self.backend, PeerBackend::Local { .. })
+    }
+
+    pub(super) fn admit_local(
+        &self,
+        group: u64,
+        purpose: crate::transport::StreamPurpose,
+        bytes: u32,
+        deadline: Instant,
+    ) -> Result<Option<crate::server::LocalAdmission>> {
+        let PeerBackend::Local {
+            dispatch, identity, ..
+        } = &self.backend
+        else {
+            return Ok(None);
+        };
+        if !identity.allowed_groups.contains(&group) {
+            return Err(Error::invalid(
+                "Local semantic group is outside this process",
+            ));
+        }
+        dispatch
+            .admit_local(purpose, bytes, deadline)
+            .map(Some)
+            .map_err(|source| Error::LocalNotSubmitted { source })
     }
 
     pub fn pool(&self) -> Result<&Arc<PeerPool>> {
