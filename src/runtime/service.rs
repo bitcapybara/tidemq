@@ -583,8 +583,43 @@ impl Service {
         if hops < 2 && !self.config.role.serves_broker() {
             return Err(forbidden());
         }
+        #[cfg(feature = "test-hooks")]
+        if kind == FrameKind::GroupRetireRead && hops == 1 {
+            super::test_hooks::pause_consumer_retirement_route(partition, deadline).await;
+        }
         let leader = self.leader(route.group_id, deadline).await?;
         if leader != self.config.node_id {
+            if hops >= 2 {
+                let retirement = (frame.kind == i32::from(FrameKind::GroupRetireRead))
+                    .then(|| {
+                        decode_payload::<public::GroupRetire>(
+                            frame.payload.clone(),
+                            &self.config.protocol,
+                        )
+                        .ok()
+                    })
+                    .flatten();
+                tracing::info!(
+                    target: "tidemq::consumer_recovery",
+                    event_code = "data_leader_hint_stale",
+                    reason = "final_data_hop_is_not_leader",
+                    node_id = self.config.node_id,
+                    group_id = route.group_id,
+                    leader_id = leader,
+                    topic_id = %route.partition.topic_id,
+                    partition_id = route.partition.partition,
+                    route_generation = route.generation,
+                    route_owner = route.owner_node,
+                    operation_id = ?wire::id(&frame.operation_id).ok(),
+                    request_id = ?wire::id(&frame.request_id).ok(),
+                    member_id = ?retirement.as_ref().and_then(|read| wire::id(&read.member_id).ok()),
+                    member_epoch = ?retirement.as_ref().map(|read| read.member_epoch),
+                    read_sequence = ?retirement.as_ref().map(|read| read.sequence),
+                    "The delegating broker must rediscover the data leader"
+                );
+                // Storage cannot delegate public authority to another Storage after an election.
+                return Err(Error::unavailable());
+            }
             return self
                 .forward(leader, route.group_id, access, frame, deadline, order, 2)
                 .await;
@@ -1046,6 +1081,19 @@ impl Service {
                     || request.principal.len() > 128
                     || request.scope.len() > 128
                 {
+                    tracing::warn!(
+                        target: "tidemq::consumer_recovery",
+                        event_code = "public_forward_delegation_denied",
+                        reason = "delegator_role_or_hops_invalid",
+                        node_id = self.config.node_id,
+                        peer_node_id = peer.node_id,
+                        peer_role = peer.role,
+                        group_id = group,
+                        hops = request.hops,
+                        operation_id = ?wire::id(&frame.operation_id).ok(),
+                        request_id = ?wire::id(&frame.request_id).ok(),
+                        "Public forwarding delegation was denied"
+                    );
                     return Err(forbidden());
                 }
                 let class = TrafficClass::try_from(frame.traffic_class)

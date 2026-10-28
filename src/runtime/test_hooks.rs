@@ -16,6 +16,7 @@ enum PausePoint {
     Publish(u64),
     ConsumerAuthorization,
     ConsumerDelegation,
+    ConsumerRetirementRoute,
     ColdRead,
     Layout,
     TopicCreation,
@@ -89,6 +90,10 @@ impl InstalledPause {
     pub fn consumer_delegation(partition: PartitionKey) -> io::Result<Self> {
         Self::install(partition, PausePoint::ConsumerDelegation)
     }
+
+    pub fn consumer_retirement_route(partition: PartitionKey) -> io::Result<Self> {
+        Self::install(partition, PausePoint::ConsumerRetirementRoute)
+    }
     fn install(partition: PartitionKey, point: PausePoint) -> io::Result<Self> {
         Self::install_target(PauseTarget::Partition(partition), point)
     }
@@ -148,6 +153,10 @@ pub(super) async fn pause_consumer_authorization(partition: PartitionKey, deadli
 }
 pub(super) async fn pause_consumer_delegation(partition: PartitionKey, deadline: Instant) {
     pause(partition, PausePoint::ConsumerDelegation, deadline).await;
+}
+
+pub(super) async fn pause_consumer_retirement_route(partition: PartitionKey, deadline: Instant) {
+    pause(partition, PausePoint::ConsumerRetirementRoute, deadline).await;
 }
 pub(super) async fn pause_cold_read(partition: PartitionKey, deadline: Instant) {
     pause(partition, PausePoint::ColdRead, deadline).await;
