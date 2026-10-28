@@ -35,6 +35,8 @@ test('all five lane selections preserve build and execution arguments', t => {
     assert.deepEqual(calls.find(a => a[0] === 'cargo' && a.includes('list')), ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', ...args]);
     assert.deepEqual(create.slice(-args.length), args);
     const run = create.slice(create.indexOf('/srv/tidemq/tools/cargo-nextest'));
+    assert.deepEqual(create.slice(create.indexOf('/srv/tidemq/tools/cargo-nextest') - 2, create.indexOf('/srv/tidemq/tools/cargo-nextest')),
+      ['/usr/bin/bash', 'scripts/ci/capture-nextest.sh']);
     assert.deepEqual(run, ['/srv/tidemq/tools/cargo-nextest', 'nextest', 'run', '--binaries-metadata', run[4], '--cargo-metadata', run[6], ...args]);
     assert(calls.slice(calls.indexOf(create) + 1).every(a => a[0] !== 'cargo'), 'The execution phase cannot invoke Cargo');
     for (const directory of [f.root, env.CARGO_TARGET_DIR, env.TMPDIR]) assert(create.includes('type=bind,src=' + directory + ',dst=' + directory));
@@ -92,6 +94,7 @@ function fixture(t) {
     'else if(a.includes("create"))console.log("a".repeat(64));',
     'else if(a.includes("wait"))console.log(process.env.TEST_EXIT??0);',
     'else if(a.includes("start")&&process.env.BLOCK_START==="1"){fs.writeFileSync(file,String(process.pid));setInterval(()=>{},1000);}',
+    'else if(a.includes("start"))process.exit(Number(process.env.ATTACH_EXIT??0));',
     'else if(a.includes("rm")&&fs.existsSync(file)){try{process.kill(Number(fs.readFileSync(file,"utf8")),"SIGTERM");}catch(e){if(e.code!=="ESRCH")throw e;}}',
   ].join('\n'));
   executable('id', '#!/usr/bin/env bash\nprintf "1001\\n"\n');
@@ -107,6 +110,16 @@ test('unconfigured local execution preserves the original nextest argv', t => {
   const result = spawnSync('bash', [script, ...args], {cwd: f.root, env: f.env, encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(f.calls(), [['cargo', 'nextest', 'run', ...args]]);
+});
+
+test('console attach errors preserve the actual container result and still fail a successful run', t => {
+  for (const status of [0, 100, 110]) {
+    const f = fixture(t), result = spawnSync('bash', [script, '--lib'], {cwd: f.root,
+      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64), ATTACH_EXIT: '1', TEST_EXIT: String(status)}, encoding: 'utf8'});
+    assert.equal(result.status, status || 1, result.stderr);
+    assert(f.calls().some(args => args.includes('wait')), 'The real container status must be collected after attach fails');
+    assert(f.calls().some(args => args.includes('rm')), 'The owned container must still be cleaned up');
+  }
 });
 
 test('configured execution builds first and reuses metadata in a fresh bounded container', t => {

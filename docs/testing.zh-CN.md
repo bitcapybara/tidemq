@@ -64,6 +64,10 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 固定 nextest 0.9.148，ci profile 逐测试隔离、并发为 1、不重试失败项，保留 JUnit；业务测试内部并发不变。doctest 单独由 cargo test 执行。Linux 的固定 RustFS / Collector 版本与哈希由 inventory 和制品记录，不使用用户既有数据。
 
+CI 的本机与隔离容器执行入口均先把实际 nextest 的 stdout/stderr 写入每次独有的 `target/ci/nextest-output.*/stdout.log`、`stderr.log`，完成后再完整转发控制台。目录随现有 `target/ci` 制品上传；`receipt.json` 分别记录 nextest、控制台转发、取消和最终返回码，以及完整文件字节数和可取得的控制台 FD 类型/flags；转发自身的错误另存文件。nextest 的100/110等非零结果原样保留，nextest成功但转发或记录失败仍使流程失败；取消会转发给当前 owned 命令并等待退出，不新增业务期限或重试。
+
+控制台写失败可能触发 nextest 的 reporter 取消并使 JUnit 缺少事件；因此不能仅以 JUnit 用例数或退出110判定业务失败。0.9.148对 JUnit 建文件/序列化错误有带路径的独立文案，普通输出错误的最终文案不包含底层 errno。保留完整捕获和原返回码，不裁剪失败输出，也不把某次完整 CI 绿灯当作先前 I/O 错误的根因证据。
+
 Linux 保留两个独立 job：Validate 运行原 `native.sh` 的全部静态检查、单元、默认 SDK 和普通集成；Faults 运行原故障钩子、真实外部服务和 K8s 黑盒/VM 故障。两者与 Coverage 由同一个原生 executor 顺序调度，不改变测试列表、features、nextest 并发或重试、业务期限及缓存锁。两个 job 均使用 cargo-llvm-cov 0.9.1 的 `show-env --sh`，复用原生 runner 现有 target，各自在开始时清理一次历史 profile，并用 native/lab 前缀分别打包；前一个 job 的二进制、profile 和 JUnit 已上传后，executor 才会接下一个 job。Cargo registry/git 下载缓存锁保持共享持有，维护清理仍须取得独占锁。K8s 阶段把插桩生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
 
 仅把 job 路由到原生 runner 仍会让编译、Runner 和测试共用其 6GiB cgroup。[CI 40741140950](https://github.com/bitcapybara/tidemq/actions/runs/40741140950) 的五个进程用例在 create_topic 阶段失败，已有日志明确记录 caller_container_blocked=true 和约 90.2%～96.1% 的实际用量。较早同 image、8GiB 干净 cgroup 的 transfer 对照通过，不能代替当前同额度隔离验收，也不能把编译期高水位直接归为运行期拒绝。

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ -z ${TIDEMQ_NEXTEST_IMAGE:-} ]]; then
-  exec cargo nextest run "$@"
+  exec bash "${BASH_SOURCE[0]%/*}/capture-nextest.sh" cargo nextest run "$@"
 fi
 [[ $(uname -s) == Linux && $(id -u) == 1001 && $(id -g) == 1001 ]] || {
   printf 'Isolated nextest requires the Linux actions user\n' >&2; exit 2;
@@ -99,7 +99,7 @@ done < <(compgen -e)
 for variable in "${environment[@]}"; do
   [[ ! ${!variable+x} ]] || options+=(--env "$variable")
 done
-printf 'Nextest execution uses image %s, memory=6442450944 cpu=4, source/target/profile paths unchanged\n' "$TIDEMQ_NEXTEST_IMAGE"
+printf 'Nextest execution uses image %s, memory=6442450944 cpu=4, source/target/profile paths unchanged\n' "$TIDEMQ_NEXTEST_IMAGE" > "$metadata/execution.txt"
 container=$("${docker[@]}" "${options[@]}" --entrypoint /usr/bin/bash "$TIDEMQ_NEXTEST_IMAGE" --noprofile --norc -c '
   receipt=$1; shift
   {
@@ -110,11 +110,13 @@ container=$("${docker[@]}" "${options[@]}" --entrypoint /usr/bin/bash "$TIDEMQ_N
     awk '"'"'$1 == "anon" || $1 == "file" || $1 == "shmem"'"'"' /sys/fs/cgroup/memory.stat
   } > "$receipt"
   exec "$@"
-' nextest "$metadata/scope.txt" /srv/tidemq/tools/cargo-nextest nextest run \
+' nextest "$metadata/scope.txt" /usr/bin/bash scripts/ci/capture-nextest.sh /srv/tidemq/tools/cargo-nextest nextest run \
   --binaries-metadata "$metadata/binaries.json" --cargo-metadata "$metadata/cargo.json" "$@")
 [[ $container =~ ^[a-f0-9]{64}$ ]] || { container=; exit 2; }
 "${docker[@]}" start --attach "$container" &
-wait "$!"
+attach_result=0
+wait "$!" || attach_result=$?
 result=$("${docker[@]}" wait "$container")
 [[ $result =~ ^[0-9]+$ && $result -le 255 ]] || exit 2
+if (( result == 0 && attach_result != 0 )); then result=$attach_result; fi
 exit "$result"

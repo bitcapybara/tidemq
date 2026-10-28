@@ -12,6 +12,7 @@ test('integration lanes select every suite once and keep reports separate', t =>
     for (const directory of ['scripts/ci', 'bin', 'tmp']) fs.mkdirSync(path.join(root, directory), {recursive: true});
     fs.copyFileSync(new URL('./integration.sh', import.meta.url), path.join(root, 'scripts/ci/integration.sh'));
     fs.copyFileSync(new URL('./nextest.sh', import.meta.url), path.join(root, 'scripts/ci/nextest.sh'));
+    fs.copyFileSync(new URL('./capture-nextest.sh', import.meta.url), path.join(root, 'scripts/ci/capture-nextest.sh'));
     fs.writeFileSync(path.join(root, 'bin/cargo'), '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$TRACE"\nmkdir -p target/nextest/ci\nprintf "<testsuites/>" > target/nextest/ci/junit.xml\n', {mode: 0o755});
     fs.writeFileSync(path.join(root, 'bin/node'), '#!/usr/bin/env bash\nexit 0\n', {mode: 0o755});
     for (const name of ['rustfs', 'collector', 'sha256sum']) fs.writeFileSync(path.join(root, 'bin', name), '#!/usr/bin/env bash\nprintf "verified fixture\\n"\n', {mode: 0o755});
