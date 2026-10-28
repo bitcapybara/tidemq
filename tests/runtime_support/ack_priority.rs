@@ -73,13 +73,15 @@ async fn a_forwarded_ack_keeps_authority_queries_and_confirmation_live_under_con
     let broker = &fixture.running.get(&3).unwrap().service;
     let first = gateway
         .rpc
-        .pool
+        .pool()
+        .unwrap()
         .connection(3, TrafficClass::Control, deadline())
         .await
         .unwrap();
     let second = broker
         .rpc
-        .pool
+        .pool()
+        .unwrap()
         .connection(2, TrafficClass::Control, deadline())
         .await
         .unwrap();

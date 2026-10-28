@@ -36,6 +36,7 @@ mod node;
 mod node_retirement;
 mod objects;
 pub(crate) mod physical;
+pub(crate) mod process;
 mod publishing;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod read_trace_test_hooks;

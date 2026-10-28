@@ -15,6 +15,8 @@ pub enum Error {
         operation: &'static str,
         source: std::io::Error,
     },
+    #[snafu(display("Local request was rejected before handler admission"))]
+    LocalNotSubmitted { source: crate::Error },
     #[snafu(display("Failed to verify committed consumer writer"))]
     CommittedConsumerWriter {
         source: crate::ownership::LeaseError,
@@ -90,6 +92,9 @@ impl Error {
                 failure
             }
             Self::Rejected { failure } | Self::TenantGrantExhausted { failure } => failure.clone(),
+            Self::LocalNotSubmitted { .. } => {
+                Failure::new(ErrorCode::Unavailable, Outcome::Rejected, true)
+            }
             Self::Invalid { reason } => {
                 let mut failure = Failure::new(ErrorCode::InvalidRequest, Outcome::Rejected, false);
                 failure.message = reason.clone();

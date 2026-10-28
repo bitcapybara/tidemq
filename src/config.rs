@@ -48,11 +48,6 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let mut runtime = crate::runtime::RuntimeConfig::default();
-        runtime.metadata_voters.clear();
-        for group in &mut runtime.groups {
-            group.voters.clear();
-        }
         Self {
             node_id: 1,
             cluster_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -65,12 +60,9 @@ impl Default for Config {
             protocol: ProtocolLimits::default(),
             logging: LoggingConfig::default(),
             tracing: crate::observability::tracing::TracingConfig::default(),
-            tls: TlsConfig {
-                trust_roots: PathBuf::new(),
-                ..TlsConfig::default()
-            },
+            tls: TlsConfig::default(),
             console: Some(crate::console::EmbeddedConsoleConfig::default()),
-            runtime,
+            runtime: crate::runtime::RuntimeConfig::default(),
         }
     }
 }
@@ -102,41 +94,44 @@ impl Config {
                 reason: "replication_factor must be explicitly 1 or 3",
             });
         }
+        if !self.management_listen.ip().is_loopback() {
+            return Err(Error::Configuration {
+                reason: "management_listen must use a loopback IP; expose remote management through a protected proxy",
+            });
+        }
         if self.role == Role::Combined {
-            if self.replication_factor != 1 {
-                return Err(Error::Configuration {
-                    reason: "combined uses local execution and cannot configure replicas",
-                });
-            }
             let console = self.console.as_ref().ok_or(Error::Configuration {
-                reason: "combined requires console configuration",
+                reason: "combined requires its embedded HTTPS console",
             })?;
             console.validate()?;
-            if console.listen == self.management_listen {
+            if self.replication_factor != 1 || !self.tls.trust_roots.as_os_str().is_empty() {
                 return Err(Error::Configuration {
-                    reason: "console.listen must differ from management_listen",
+                    reason: "combined uses local execution and no internal TLS trust roots",
+                });
+            }
+            if console.listen.port() != 0
+                && console.listen.port() == self.management_listen.port()
+                && (console.listen.ip() == self.management_listen.ip()
+                    || console.listen.ip().is_unspecified())
+            {
+                return Err(Error::Configuration {
+                    reason: "console HTTPS and management TCP listeners conflict",
                 });
             }
         } else if self.console.is_some() {
             return Err(Error::Configuration {
-                reason: "separated MQ roles cannot configure an embedded console",
+                reason: "separate MQ roles do not host an embedded console",
+            });
+        } else if self.tls.trust_roots.as_os_str().is_empty() {
+            return Err(Error::Configuration {
+                reason: "separate MQ roles require internal TLS trust roots",
             });
         }
         if self.tls.certificate.as_os_str().is_empty()
             || self.tls.private_key.as_os_str().is_empty()
         {
             return Err(Error::Configuration {
-                reason: "tls certificate and private_key paths must not be empty",
-            });
-        }
-        if !self.management_listen.ip().is_loopback() {
-            return Err(Error::Configuration {
-                reason: "management_listen must use a loopback IP; expose remote management through a protected proxy",
-            });
-        }
-        if self.role.serves_gateway() && self.listen == self.management_listen {
-            return Err(Error::Configuration {
-                reason: "listen must differ from management_listen for a gateway role",
+                reason: "TLS certificate and private key paths must not be empty",
             });
         }
         self.protocol.validate().context(ProtocolSnafu)?;
@@ -280,12 +275,8 @@ impl LoggingConfig {
 pub struct TlsConfig {
     pub certificate: PathBuf,
     pub private_key: PathBuf,
-    #[serde(skip_serializing_if = "empty_path", default = "PathBuf::new")]
+    #[serde(default, skip_serializing_if = "empty_path")]
     pub trust_roots: PathBuf,
-}
-
-fn empty_path(path: &Path) -> bool {
-    path.as_os_str().is_empty()
 }
 
 impl Default for TlsConfig {
@@ -293,14 +284,91 @@ impl Default for TlsConfig {
         Self {
             certificate: "certs/server.pem".into(),
             private_key: "certs/server-key.pem".into(),
-            trust_roots: "certs/ca.pem".into(),
+            trust_roots: PathBuf::new(),
         }
     }
+}
+
+fn empty_path(path: &Path) -> bool {
+    path.as_os_str().is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_configuration_round_trip_has_no_network_or_raft_fields() {
+        let config = Config::default();
+        let value = toml::Value::try_from(&config).unwrap();
+        assert!(value.get("replication_factor").is_none());
+        assert!(value["tls"].get("trust_roots").is_none());
+        let runtime = &value["runtime"];
+        for field in ["internal_listen", "metadata_voters", "peers", "bootstrap"] {
+            assert!(runtime.get(field).is_none(), "{field}");
+        }
+        let group = &runtime["groups"][0];
+        assert!(group.get("voters").is_none());
+        assert!(group.get("standby").is_none());
+        let parsed: Config = value.try_into().unwrap();
+        parsed.runtime.validate(&parsed).unwrap();
+        assert!(parsed.runtime.peers.is_empty());
+        assert!(parsed.runtime.metadata_voters.is_empty());
+        assert_eq!(parsed.runtime.internal_listen.port(), 0);
+        assert!(parsed.console.is_some());
+    }
+
+    #[test]
+    fn local_configuration_rejects_even_empty_cluster_settings() {
+        let value = toml::Value::try_from(Config::default()).unwrap();
+        for (field, inserted) in [
+            ("internal_listen", toml::Value::String("127.0.0.1:0".into())),
+            ("metadata_voters", toml::Value::Array(Vec::new())),
+            ("peers", toml::Value::Array(Vec::new())),
+            ("bootstrap", toml::Value::Boolean(false)),
+        ] {
+            let mut candidate = value.clone();
+            candidate["runtime"]
+                .as_table_mut()
+                .unwrap()
+                .insert(field.into(), inserted);
+            assert!(candidate.try_into::<Config>().is_err(), "{field}");
+        }
+        for field in ["voters", "standby"] {
+            let mut candidate = value.clone();
+            candidate["runtime"]["groups"][0]
+                .as_table_mut()
+                .unwrap()
+                .insert(field.into(), toml::Value::Array(Vec::new()));
+            assert!(candidate.try_into::<Config>().is_err(), "{field}");
+        }
+        let mut candidate = value.clone();
+        candidate
+            .as_table_mut()
+            .unwrap()
+            .insert("replication_factor".into(), toml::Value::Integer(1));
+        assert!(candidate.try_into::<Config>().is_err());
+        let mut candidate = value;
+        candidate["tls"]
+            .as_table_mut()
+            .unwrap()
+            .insert("trust_roots".into(), toml::Value::String(String::new()));
+        assert!(candidate.try_into::<Config>().is_err());
+    }
+
+    #[test]
+    fn local_console_is_mandatory_and_tcp_udp_port_numbers_can_match() {
+        let mut config = Config::default();
+        config.listen = config.management_listen;
+        config.validate().unwrap();
+        config.console.as_mut().unwrap().listen = config.listen;
+        assert!(config.validate().is_err());
+        config.console = None;
+        assert!(config.validate().is_err());
+        let mut value = toml::Value::try_from(Config::default()).unwrap();
+        value.as_table_mut().unwrap().remove("console");
+        assert!(value.try_into::<Config>().is_err());
+    }
 
     #[test]
     fn defaults_preserve_control_capacity_and_management_isolation() {
@@ -444,9 +512,6 @@ max_time_boundaries = 512
             role: Role::Storage,
             ..Config::default()
         };
-        config.tls.trust_roots = "certs/ca.pem".into();
-        config.console = None;
-        config.runtime.groups = crate::runtime::RuntimeConfig::default().groups;
         config.runtime.internal_listen = config.listen;
         config.runtime.metadata_voters = vec![2];
         config.runtime.peers = [(1, Role::Storage), (2, Role::Metadata), (3, Role::Broker)]
@@ -469,109 +534,5 @@ max_time_boundaries = 512
         config.validate().unwrap();
         config.role = Role::Gateway;
         assert!(config.validate().is_err());
-    }
-}
-
-#[cfg(test)]
-mod local_configuration_tests {
-    use super::*;
-
-    #[test]
-    fn local_defaults_have_no_raft_membership() {
-        let original = Config::default();
-        original.runtime.validate(&original).unwrap();
-        let mut config = original.clone();
-        config.runtime.metadata_voters = vec![config.node_id];
-        assert!(config.runtime.validate(&config).is_err());
-        let mut config = original;
-        config.runtime.groups.first_mut().unwrap().voters = vec![config.node_id];
-        assert!(config.runtime.validate(&config).is_err());
-    }
-
-    #[test]
-    fn combined_rejects_replication_and_remote_fields_even_when_empty() {
-        let original = include_str!("../config/combined.toml");
-        let patches = [
-            ("", "replication_factor", toml::Value::Integer(1)),
-            ("tls", "trust_roots", toml::Value::String(String::new())),
-            ("runtime", "peers", toml::Value::Array(Vec::new())),
-            ("runtime", "metadata_voters", toml::Value::Array(Vec::new())),
-            ("runtime", "bootstrap", toml::Value::Boolean(false)),
-            (
-                "runtime",
-                "internal_listen",
-                toml::Value::String("127.0.0.1:7444".into()),
-            ),
-            (
-                "console",
-                "management_listen",
-                toml::Value::String("127.0.0.1:9420".into()),
-            ),
-            ("console", "cluster", toml::Value::Table(toml::Table::new())),
-        ];
-        for (section, key, value) in patches {
-            let mut document: toml::Table = toml::from_str(original).unwrap();
-            let table = if section.is_empty() {
-                &mut document
-            } else {
-                document.get_mut(section).unwrap().as_table_mut().unwrap()
-            };
-            table.insert(key.into(), value);
-            assert!(
-                toml::Value::Table(document).try_into::<Config>().is_err(),
-                "Accepted {section}.{key}"
-            );
-        }
-        for key in ["voters", "standby"] {
-            let mut document: toml::Value = toml::from_str(original).unwrap();
-            let group = document
-                .get_mut("runtime")
-                .unwrap()
-                .get_mut("groups")
-                .unwrap()
-                .as_array_mut()
-                .unwrap()
-                .first_mut()
-                .unwrap()
-                .as_table_mut()
-                .unwrap();
-            group.insert(key.into(), toml::Value::Array(Vec::new()));
-            assert!(
-                document.try_into::<Config>().is_err(),
-                "Accepted groups.{key}"
-            );
-        }
-    }
-
-    #[test]
-    fn local_ownership_is_derived_and_round_trip_keeps_only_group_ids() {
-        let text = include_str!("../config/combined.toml").replace("node_id = 1", "node_id = 77");
-        let config: Config = toml::from_str(&text).unwrap();
-        config.runtime.validate(&config).unwrap();
-        assert_eq!(config.runtime.metadata_group, 1);
-        assert!(config.runtime.metadata_voters.is_empty());
-        assert!(config.runtime.groups.first().unwrap().voters.is_empty());
-        assert!(config.runtime.peers.is_empty());
-        assert!(!config.runtime.bootstrap);
-        assert!(config.tls.trust_roots.as_os_str().is_empty());
-        assert_eq!(
-            config.console.as_ref().unwrap().server_name().unwrap(),
-            "localhost"
-        );
-        let serialized = toml::to_string(&config).unwrap();
-        for field in [
-            "replication_factor",
-            "metadata_voters",
-            "voters",
-            "standby",
-            "peers",
-            "bootstrap =",
-            "internal_listen",
-            "trust_roots",
-        ] {
-            assert!(!serialized.contains(field), "Serialized {field}");
-        }
-        let parsed: Config = toml::from_str(&serialized).unwrap();
-        parsed.runtime.validate(&parsed).unwrap();
     }
 }
