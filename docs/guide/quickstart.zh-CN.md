@@ -39,10 +39,10 @@ curl --fail http://127.0.0.1:8410/diagnostics
 TIDEMQ_SOURCE=$(pwd)
 cargo new --edition 2024 /tmp/tidemq-client-demo
 cargo add --manifest-path /tmp/tidemq-client-demo/Cargo.toml tidemq-sdk --path "$TIDEMQ_SOURCE/sdk/rust"
-cargo add --manifest-path /tmp/tidemq-client-demo/Cargo.toml tokio --features macros,rt-multi-thread
+cargo add --manifest-path /tmp/tidemq-client-demo/Cargo.toml tokio@=1.53.3 --features macros,rt-multi-thread
 ```
 
-把下列完整程序保存为 `/tmp/tidemq-client-demo/src/main.rs`。在这套全新集群中运行一次；再次创建同名资源应按业务查询已有资源，不能在未知结果后直接重建。
+示例的 Tokio 版本与本仓库 SDK 固定版本一致，避免直接添加更新的同主版本依赖产生解析冲突。把下列完整程序保存为 `/tmp/tidemq-client-demo/src/main.rs`。在这套全新集群中运行一次；再次创建同名资源应按业务查询已有资源，不能在未知结果后直接重建。
 
 ```rust
 use std::time::Duration;
