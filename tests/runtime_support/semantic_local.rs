@@ -18,7 +18,21 @@ pub(in crate::runtime) struct Fixture {
 
 impl Fixture {
     pub async fn new() -> Self {
+        Self::configured(false).await
+    }
+
+    pub async fn retention() -> Self {
+        Self::configured(true).await
+    }
+
+    async fn configured(retention: bool) -> Self {
         let mut runtime = fixture::Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+        if retention {
+            for config in runtime.configs.values_mut() {
+                config.runtime.retention.minimum_age_ms = 1;
+                config.runtime.archive_interval_ms = 60_000;
+            }
+        }
         runtime.start_all().await;
         let service = runtime.running.get(&1).unwrap().service.clone();
         let client = runtime.client(1).await;
