@@ -85,6 +85,8 @@ Network operations use the configured finite request timeout. Each new physical 
 
 Cancellation does not undo a committed operation. An admitted send or ACK is retained by its owned driver. Inspect `producer.pending_sends().await?` or `consumer.pending_acks().await?`, then call `pending.retry().await?` to query or continue the original operation. Snapshots include unresolved work and completed results that the application has not claimed. They do not drain results or acknowledge unprocessed messages. Recover before closing the original Client; there is no SDK persistent outbox.
 
+Retryable route or capacity refusals can leave an ACK pending even when `outcome_unknown()` is false. Inspect `PendingAck::progress()` and retry that original handle within a bounded request context. A recorded final refusal or permission denial remains terminal.
+
 Admin provides `stream_subscription`/`queue_subscription` and `delete_stream_subscription`/`delete_queue_subscription`. Deletion rejects online members, freezes the fixed subscription UUID, and removes protection in every data domain before succeeding. Interrupted deletions remain in `admin.pending_subscription_deletions()?`; retry those handles instead of deleting by name again. A later subscription with the same name has a different identity.
 
 Combined preserves logical groups and true local placement, with no Raft membership. Cross-node registration, replica replacement, drain and retirement below apply to separated deployments.
