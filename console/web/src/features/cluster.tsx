@@ -7,6 +7,7 @@ import {
   alertSchema,
   componentDetailSchema,
   instanceSchema,
+  localNodeSchema,
   nodeSchema,
   pageSchema,
   type Component,
@@ -41,6 +42,7 @@ export function ClusterPage() {
     nodeCursor = usePageCursor(),
     instanceCursor = usePageCursor();
   const allowed = Boolean(session?.operator);
+  const local = session?.capabilities.execution === "local";
   const query = useResource(
     "components",
     "/api/v1/components",
@@ -54,8 +56,11 @@ export function ClusterPage() {
     "/api/v1/cluster",
     pageSchema(nodeSchema),
     !paused,
-    allowed,
+    allowed && !local,
     { cursor: nodeCursor.cursor, limit: "32" },
+  );
+  const process = useResource(
+    "localProcess", "/api/v1/cluster", pageSchema(localNodeSchema), !paused, allowed && local,
   );
   const alerts = useResource(
     "alerts",
@@ -93,8 +98,8 @@ export function ClusterPage() {
   return (
     <>
       <PageHeading
-        title={t("Cluster", "集群")}
-        description={t(
+        title={local ? t("Local process", "本机进程") : t("Cluster", "集群")}
+        description={local ? t("Components and local durable execution in this process.", "查看本进程的组件与本地持久执行状态。") : t(
           "Read-only components, instances, registered nodes and observation sources.",
           "只读查看组件、实例、注册节点与观测来源。",
         )}
@@ -108,11 +113,11 @@ export function ClusterPage() {
         <RefreshButton
           onClick={() => {
             void query.refetch();
-            void nodes.refetch();
+            if (local) void process.refetch(); else void nodes.refetch();
             void alerts.refetch();
             if (selected) void instances.refetch();
           }}
-          loading={query.isFetching || nodes.isFetching}
+          loading={query.isFetching || nodes.isFetching || process.isFetching}
         />
       </PageHeading>
       <Panel
@@ -314,7 +319,30 @@ export function ClusterPage() {
           </div>
         </Panel>
       )}
-      <Panel
+      {local && <Panel title={t("Local execution", "本地执行")} description={t("Current shared process state", "当前共享进程状态")}>
+        <DataTable
+          caption={t("Local process state", "本机进程状态")}
+          data={process.data?.items ?? []}
+          state={<ReadState error={process.error} loading={process.isPending} empty={Boolean(process.data)} />}
+          columns={[
+            { accessorKey: "id", header: t("Node ID", "节点 ID") },
+            { accessorKey: "phase", header: t("Process phase", "进程阶段") },
+            { accessorKey: "ready", header: t("Ready", "就绪"), cell: ({ row }) => row.original.ready ? t("Ready", "就绪") : t("Not ready", "未就绪") },
+            { accessorKey: "metadataGroups", header: t("Metadata groups", "元数据组") },
+            { accessorKey: "dataGroups", header: t("Data groups", "数据组") },
+            { accessorKey: "version", header: t("Version", "版本") },
+          ]}
+        />
+        <ObservationLabel observation={process.data} stale={process.isError && Boolean(process.data)} />
+        <p className="notice">{t("Replica membership, node migration and Raft diagnostics are unavailable for local execution.", "本地执行不支持副本成员调整、节点迁移和 Raft 诊断。")}</p>
+        <div className="inline-actions" role="group" aria-label={t("Unavailable cluster operations", "不支持的集群操作")}>
+          <Button variant="outline" disabled>{t("Replica membership", "副本成员调整")}</Button>
+          <Button variant="outline" disabled>{t("Node migration", "节点迁移")}</Button>
+          <Button variant="outline" disabled>{t("Raft diagnostics", "Raft 诊断")}</Button>
+        </div>
+        {session?.capabilities.businessShardScaling && <p className="panel-copy">{t("Logical shard business controls remain available.", "逻辑 Shard 业务控制继续可用。")}</p>}
+      </Panel>}
+      {!local && <Panel
         title={t("MQ node registry", "MQ 节点注册表")}
         description={t(
           "Combined roles are shown on the same node identity. Registration, liveness and scheduling mode are separate facts.",
@@ -409,8 +437,8 @@ export function ClusterPage() {
             busy={nodes.isFetching}
           />
         </div>
-      </Panel>
-      {groupId && !selectedNode && (
+      </Panel>}
+      {!local && groupId && !selectedNode && (
         <p className="notice" role="status">
           {t(
             "This registry page has no sample for the requested group. Refresh or continue the node pages; this does not confirm that the group is absent.",
@@ -419,7 +447,7 @@ export function ClusterPage() {
           {t("Group", "数据组")}: {groupId}
         </p>
       )}
-      {selectedNode && (
+      {!local && selectedNode && (
         <NodeDetails
           key={selectedNode.id}
           node={selectedNode}
@@ -483,12 +511,12 @@ export function ClusterPage() {
           />
         </div>
       </Panel>
-      <p className="footnote">
+      {!local && <p className="footnote">
         {t(
           "Scaling, draining, scheduling and instance changes remain in the CLI or deployment platform. Viewing never performs cluster operations.",
           "扩缩容、排空、调度和实例调整继续使用 CLI 或部署平台，查看不会执行集群运维操作。",
         )}
-      </p>
+      </p>}
     </>
   );
 }

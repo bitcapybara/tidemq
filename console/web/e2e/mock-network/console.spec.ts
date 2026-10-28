@@ -1,7 +1,28 @@
 import { test, expect } from "./fixture";
-import { ids, operation } from "../../tests/network/data";
+import { ids, operation, localSession, session as remoteSession } from "../../tests/network/data";
 
 test.describe("mocked network UI interactions", () => {
+  test("shows local execution without Raft state and disables cluster-only controls", async ({ page, mockNetwork }, testInfo) => {
+    mockNetwork.identity = structuredClone(localSession);
+    await page.goto("/cluster?nodeId=1&groupId=1");
+    await expect(page.getByRole("heading", { name: "Local process", exact: true })).toBeVisible();
+    await expect(page.getByRole("table", { name: "Local process state" })).toContainText("ready");
+    for (const name of ["Replica membership", "Node migration", "Raft diagnostics"])
+      await expect(page.getByRole("button", { name, exact: true })).toBeDisabled();
+    await expect(page.getByRole("table", { name: "Sampled data groups" })).toHaveCount(0);
+    await expect(page.getByRole("columnheader", { name: "Leader node" })).toHaveCount(0);
+    await expect(page.getByText("Logical shard business controls remain available.")).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("local-process.png"), fullPage: true });
+    const nav = page.getByRole("navigation", { name: "Main navigation" });
+    await nav.getByRole("link", { name: "Topics", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Create topic", exact: true })).toBeEnabled();
+    expect(mockNetwork.writes).toEqual([]);
+    mockNetwork.identity = structuredClone(remoteSession);
+    await page.goto("/cluster?nodeId=1");
+    await expect(page.getByRole("table", { name: "Sampled data groups" })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Leader node" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath("remote-cluster.png"), fullPage: true });
+  });
   test("validates login and rejects a bad token, signs in, navigates and signs out", async ({ page, mockNetwork }) => {
     mockNetwork.authenticated = false;
     await page.goto("/login");

@@ -12,76 +12,60 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tidemq_sdk::{Client, Credentials, ErrorKind, Permission, PrincipalAuthorization, TlsTrust};
+use tidemq_sdk::{ErrorKind, Permission, PrincipalAuthorization};
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 
 use super::{
-    ClusterConfig, ConsoleConfig,
+    ConsoleConfig, EmbeddedConsoleConfig,
+    backend::{Backend, Connection},
     http::StateData,
     session::{Session, SessionError, SessionManager},
 };
 
 pub(crate) struct ApiState {
-    pub cluster: ClusterConfig,
+    cluster_name: String,
     pub sessions: SessionManager,
-    trust: Bytes,
+    backend: Backend,
     admission: Semaphore,
     pub observability: super::observability::Observability,
 }
 
 impl ApiState {
     pub async fn load(config: &ConsoleConfig) -> crate::Result<Arc<Self>> {
-        let trust = tokio::fs::read(&config.cluster.trust_roots)
-            .await
-            .map_err(|source| crate::Error::Io {
-                operation: "read console trust roots",
-                path: config.cluster.trust_roots.clone(),
-                source,
-            })?;
         Ok(Arc::new(Self {
-            cluster: config.cluster.clone(),
+            cluster_name: config.cluster.server_name.clone(),
             sessions: SessionManager::load(&config.session).await?,
-            trust: trust.into(),
+            backend: Backend::load(config).await?,
             admission: Semaphore::new(4),
             observability: super::observability::Observability::load(config)?,
         }))
     }
 
-    async fn client(&self, token: &str) -> ApiResult<Client> {
-        let mut result = self.connect(token).await;
-        if result.as_ref().is_err_and(|error| {
-            matches!(
-                error.kind(),
-                ErrorKind::DeadlineExceeded | ErrorKind::Unavailable | ErrorKind::Closed
-            )
-        }) {
-            // No business request has been submitted while a client is still connecting.
-            result = self.connect(token).await;
-        }
-        result.map_err(ApiError::identity)
+    pub(crate) async fn load_local(
+        config: &EmbeddedConsoleConfig,
+        backend: crate::runtime::LocalConsole,
+    ) -> crate::Result<Arc<Self>> {
+        Ok(Arc::new(Self {
+            cluster_name: "Combined".into(),
+            sessions: SessionManager::load(&config.session).await?,
+            backend: Backend::Local(backend),
+            admission: Semaphore::new(4),
+            observability: super::observability::Observability::load_config(&config.observability)?,
+        }))
     }
 
-    async fn connect(&self, token: &str) -> tidemq_sdk::Result<Client> {
-        Client::builder(
-            self.cluster.address.clone(),
-            TlsTrust::ca_pem(self.trust.clone()),
-            Credentials::token(token),
-        )
-        .server_name(self.cluster.server_name.clone())
-        .request_timeout(Duration::from_secs(8))
-        .connect_timeout(Duration::from_secs(3))
-        .close_timeout(Duration::from_millis(250))
-        .request_lanes(1)
-        .pending_requests(8)
-        .build()
-        .await
+    async fn client(&self, token: &str) -> ApiResult<Connection> {
+        self.backend
+            .connect(token)
+            .await
+            .map_err(ApiError::identity)
     }
 }
 
 pub(super) struct Context<'a> {
     pub state: &'a ApiState,
-    pub client: &'a Client,
+    pub client: &'a Connection,
     pub identity: PrincipalAuthorization,
     pub session: Session,
 }
@@ -109,11 +93,16 @@ impl Context<'_> {
 }
 
 pub(super) type ApiResult<T> = Result<T, ApiError>;
+#[derive(Debug)]
 pub(super) struct ApiError {
     status: StatusCode,
     pub code: &'static str,
     message: &'static str,
 }
+
+#[cfg(test)]
+#[path = "api_local_tests.rs"]
+mod local_tests;
 impl ApiError {
     pub fn invalid() -> Self {
         Self {
@@ -141,6 +130,13 @@ impl ApiError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code: "upstream_unavailable",
             message: "The authoritative service is unavailable",
+        }
+    }
+    pub fn unsupported() -> Self {
+        Self {
+            status: StatusCode::NOT_IMPLEMENTED,
+            code: "unsupported_operation",
+            message: "Cluster administration is unavailable for local execution",
         }
     }
     fn identity(error: tidemq_sdk::Error) -> Self {
@@ -331,7 +327,8 @@ async fn route(
                 &context.identity,
                 context.session.csrf_token(),
                 context.session.expires_at_unix_ms(),
-                &api.cluster,
+                &api.cluster_name,
+                context.client.capabilities(),
             ))
             .into_response());
         }
@@ -345,7 +342,7 @@ async fn route(
             .map(|value| Json(value).into_response())
     }
     .await;
-    let _ = client.close().await;
+    client.close().await;
     result
 }
 
@@ -359,7 +356,7 @@ async fn login(api: &ApiState, headers: &HeaderMap, body: &[u8]) -> ApiResult<Re
     let input: Login = decode(body)?;
     let client = api.client(&input.token).await?;
     let identity = client.current_identity().await.map_err(ApiError::identity);
-    let _ = client.close().await;
+    client.close().await;
     let identity = identity?;
     let issued = api.sessions.establish(
         &input.token,
@@ -370,7 +367,8 @@ async fn login(api: &ApiState, headers: &HeaderMap, body: &[u8]) -> ApiResult<Re
         &identity,
         &issued.csrf_token,
         issued.expires_at_unix_ms,
-        &api.cluster,
+        &api.cluster_name,
+        client.capabilities(),
     );
     Ok(([(header::SET_COOKIE, issued.set_cookie)], Json(value)).into_response())
 }
@@ -379,10 +377,11 @@ fn me(
     identity: &PrincipalAuthorization,
     csrf: &str,
     expires: u64,
-    cluster: &ClusterConfig,
+    cluster_name: &str,
+    capabilities: Value,
 ) -> Value {
     let principal = &identity.principal;
-    json!({ "principal": {"id":principal.id.to_string(),"name":principal.name}, "cluster":{"id":identity.cluster_id.to_string(),"name":cluster.server_name},
+    json!({ "principal": {"id":principal.id.to_string(),"name":principal.name}, "cluster":{"id":identity.cluster_id.to_string(),"name":cluster_name}, "capabilities": capabilities,
         "tenant":principal.tenant.map(|id|id.to_string()),"namespace":principal.namespace.map(|id|id.to_string()),
         "operator":principal.tenant.is_none() && (principal.permissions.contains(&Permission::Inspect)||principal.permissions.contains(&Permission::ManageTenants)),
         "permissions":principal.permissions.iter().map(|permission|permission.as_str()).collect::<Vec<_>>(), "csrfToken":csrf,"expiresAtMs":expires.to_string(),

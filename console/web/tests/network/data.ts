@@ -23,6 +23,7 @@ export const session = {
   tenant: ids.tenant,
   namespace: ids.namespace,
   operator: true,
+  capabilities: { execution: "remote" as "local" | "remote", clusterAdministration: true, replicaMembership: true, nodeMigration: true, raftDiagnostics: true, businessShardScaling: true },
   permissions: ["inspect", "inspect_message_content", "produce", "consume", "manage_topics", "manage_credentials", "manage_tenants"],
   resourceGrants: [],
   csrfToken: "test-csrf-token",
@@ -96,6 +97,15 @@ export const node = {
   ready: true, sampledAt: observation.observedAt,
   groups: [{ id: "1", role: "storage", leader: "1", voters: ["1"], quorumConfirmed: true, hotBytes: "128", hotMessages: "1" }],
   groupsPartial: false, logDroppedEvents: "0", logSinkErrors: "0",
+};
+export const localSession = {
+  ...session,
+  capabilities: { execution: "local" as const, clusterAdministration: false, replicaMembership: false, nodeMigration: false, raftDiagnostics: false, businessShardScaling: true },
+};
+export const localNode = {
+  id: "1", execution: "local", instance: "combined-1", roles: ["metadata", "storage", "broker", "gateway", "console"],
+  version: "test", ready: true, phase: "ready", sampledAt: observation.observedAt,
+  metadataGroups: "1", dataGroups: "2", logDroppedEvents: "0", logSinkErrors: "0",
 };
 export const operation = (id: string, overrides: object = {}) => ({
   ...observation, id, actor: session.principal.name, target: topic.name, scope: "topic",

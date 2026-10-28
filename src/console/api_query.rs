@@ -91,6 +91,12 @@ pub(super) async fn query(
     body: &[u8],
 ) -> ApiResult<Value> {
     let params = parameters(uri)?;
+    if path == "capabilities" {
+        if !params.is_empty() {
+            return Err(ApiError::invalid());
+        }
+        return Ok(context.client.capabilities());
+    }
     if path == "components" || path == "alerts" || path.starts_with("components/") {
         return monitoring(context, path, &params).await;
     }
@@ -176,6 +182,17 @@ pub(super) async fn query(
         },
         ["cluster"] => {
             context.require_operator()?;
+            if context.client.is_local() {
+                if continuation.is_some() {
+                    return Err(ApiError::invalid());
+                }
+                return context
+                    .client
+                    .local_observation()
+                    .await
+                    .map_err(ApiError::read)?
+                    .ok_or_else(ApiError::unavailable);
+            }
             Query::Cluster {
                 after: continuation
                     .as_ref()
@@ -309,6 +326,17 @@ async fn monitoring(context: &Context<'_>, path: &str, params: &BTreeParams) -> 
     if !(1..=32).contains(&limit) {
         return Err(ApiError::invalid());
     }
+    if let Some(snapshot) = context
+        .client
+        .local_observation()
+        .await
+        .map_err(ApiError::read)?
+    {
+        if after.is_some() {
+            return Err(ApiError::invalid());
+        }
+        return local_monitoring(context, path, &snapshot).await;
+    }
     let cluster = match context
         .client
         .console_read(Query::Cluster { after, limit })
@@ -356,6 +384,110 @@ async fn monitoring(context: &Context<'_>, path: &str, params: &BTreeParams) -> 
         );
     }
     Ok(value)
+}
+
+async fn local_monitoring(context: &Context<'_>, path: &str, snapshot: &Value) -> ApiResult<Value> {
+    let node = snapshot
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .ok_or_else(ApiError::unavailable)?;
+    if path == "components" {
+        let mut value = context.state.observability.components(snapshot).await;
+        let items = value
+            .get_mut("items")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(ApiError::unavailable)?;
+        for item in items.iter_mut() {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if matches!(
+                id,
+                "console" | "metadata" | "storage" | "broker" | "gateway"
+            ) {
+                *item = local_component(node, id, snapshot);
+            }
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert("source".into(), json!("local_process_and_fixed_probes"));
+            object.insert(
+                "partial".into(),
+                json!(items_partial(
+                    snapshot,
+                    &object.get("items").cloned().unwrap_or(Value::Null)
+                )),
+            );
+        }
+        return Ok(value);
+    }
+    let parts: Vec<_> = path.split('/').collect();
+    let ["components", id, "instances"] = parts.as_slice() else {
+        return Err(ApiError::not_found());
+    };
+    if !context.state.observability.contains_component(id) {
+        return Err(ApiError::not_found());
+    }
+    if !matches!(
+        *id,
+        "console" | "metadata" | "storage" | "broker" | "gateway"
+    ) {
+        return Ok(context.state.observability.instances(snapshot, id).await);
+    }
+    let mut item = node.clone();
+    let object = item.as_object_mut().ok_or_else(ApiError::unavailable)?;
+    object.insert(
+        "id".into(),
+        json!(format!(
+            "{id}:{}",
+            node.get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(ApiError::unavailable)?
+        )),
+    );
+    object.insert(
+        "nodeId".into(),
+        node.get("id").cloned().unwrap_or(Value::Null),
+    );
+    object.insert("role".into(), json!(id));
+    object.insert("zone".into(), Value::Null);
+    object.insert("health".into(), json!(local_health(node)));
+    object.insert(
+        "detail".into(),
+        json!("Shared process readiness and local durable execution"),
+    );
+    object.insert("source".into(), json!("local_process_authority"));
+    object.insert(
+        "observedAtMs".into(),
+        snapshot.get("observedAtMs").cloned().unwrap_or(Value::Null),
+    );
+    object.insert("partial".into(), json!(false));
+    Ok(
+        json!({"items":[item],"nextCursor":null,"observedAtMs":snapshot.get("observedAtMs"),"source":"local_process_authority","partial":false}),
+    )
+}
+
+fn local_component(node: &Value, id: &str, snapshot: &Value) -> Value {
+    json!({"id":id,"name":id,"health":local_health(node),"detail":"Shared process readiness and local durable execution",
+        "instances":"1","registered":"1","ready": if node.get("ready").and_then(Value::as_bool)==Some(true) {"1"}else{"0"},
+        "links":[],"execution":"local","observedAtMs":snapshot.get("observedAtMs"),"source":"local_process_authority","partial":false})
+}
+
+fn local_health(node: &Value) -> &'static str {
+    if node.get("ready").and_then(Value::as_bool) == Some(true) {
+        "healthy"
+    } else {
+        "unavailable"
+    }
+}
+
+fn items_partial(snapshot: &Value, items: &Value) -> bool {
+    snapshot.get("partial").and_then(Value::as_bool) != Some(false)
+        || items.as_array().is_none_or(|items| {
+            items
+                .iter()
+                .any(|item| item.get("partial").and_then(Value::as_bool) != Some(false))
+        })
 }
 
 #[derive(Deserialize, Serialize)]

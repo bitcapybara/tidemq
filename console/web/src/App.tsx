@@ -102,7 +102,7 @@ function ConsoleLayout() {
       label: t("Identity & access", "身份与权限"),
     },
     ...(!session || session.operator
-      ? [{ to: "/cluster", icon: Server, label: t("Cluster", "集群") }]
+      ? [{ to: "/cluster", icon: Server, label: session?.capabilities.execution === "local" ? t("Local process", "本机进程") : t("Cluster", "集群") }]
       : []),
   ];
   const current =

@@ -27,7 +27,11 @@ pub struct Observability {
 impl Observability {
     /// Building the client does not resolve or contact any configured dependency.
     pub fn load(config: &ConsoleConfig) -> crate::Result<Self> {
-        Self::from_config(config.observability.clone())
+        Self::load_config(&config.observability)
+    }
+
+    pub(super) fn load_config(config: &ObservabilityConfig) -> crate::Result<Self> {
+        Self::from_config(config.clone())
     }
 
     fn from_config(config: ObservabilityConfig) -> crate::Result<Self> {

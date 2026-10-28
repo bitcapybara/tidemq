@@ -31,6 +31,7 @@ const session = {
   tenant,
   namespace,
   operator: false,
+  capabilities: { execution: "remote", clusterAdministration: true, replicaMembership: true, nodeMigration: true, raftDiagnostics: true, businessShardScaling: true },
   permissions: [],
   resourceGrants: [{
     resourceKind: "topic",
@@ -55,7 +56,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each(["resourceGrants", "namespace"] as const)(
+it.each(["resourceGrants", "namespace", "capabilities"] as const)(
   "clears protected data and rejects late messages when only %s changes after login",
   async (field) => {
     const client = new QueryClient();
@@ -73,7 +74,8 @@ it.each(["resourceGrants", "namespace"] as const)(
       ...session,
       ...(field === "resourceGrants"
         ? { resourceGrants: [] }
-        : { namespace: null }),
+        : field === "namespace" ? { namespace: null }
+        : { capabilities: { execution: "local", clusterAdministration: false, replicaMembership: false, nodeMigration: false, raftDiagnostics: false, businessShardScaling: true } }),
     };
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(session)))
