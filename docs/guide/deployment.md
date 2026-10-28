@@ -33,7 +33,7 @@ bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 
 The generated node certificate covers `localhost`, `node-1.local` and `127.0.0.1`. It expires after seven days. The generator also creates a private bootstrap administrator token and an exactly 32-byte random Console session key. Never commit generated material or deploy its CA signing key to a node. Replace development identities with your organization's issued certificates for production.
 
-Combined becomes ready only when MQ, required local storage and Console are ready together. Failure of a required listener or sustained loss of published required assets stops new admissions and drains the process under one shutdown deadline. Optional external observation failures remain partial or unknown.
+Combined becomes ready only when MQ, required local storage and Console are ready together. See [readiness and shutdown](#readiness-and-shutdown) for required dependency failures and recovery.
 
 Restart using the same configuration, identity, certificates and persistent directory. Do not rerun the generator, clear WAL files, or invent new operation identities to resolve an unknown result. Current local and Raft storage formats are distinct and have no automatic old-format migration or conversion.
 
@@ -96,11 +96,24 @@ Separated role files must explicitly provide `replication_factor = 1` or `3` and
 
 ## Console HTTPS and sessions
 
-Both Console forms terminate HTTPS directly. The server certificate SAN must cover the hostname or IP in `public_origin`, and the key must match the certificate. Failed TLS setup never falls back to HTTP. SDK trust in the MQ CA and browser trust in HTTPS certificates are separate client responsibilities.
+Both Console forms terminate HTTPS directly. Startup requires a currently valid leaf certificate suitable for server authentication, a SAN covering the hostname or IP in `public_origin`, and a matching private key. Failed TLS setup never falls back to HTTP. SDK trust in the MQ CA and browser trust in HTTPS certificates are separate client responsibilities; browser trust does not add a `tls.trust_roots` setting to Combined.
 
 Combined reads the node's server identity and `[console]`, and observes local MQ state directly without self HTTP or QUIC polling; an independent Console reads root `[tls]`, remote `[cluster]` and `[session]`. The independent Console never reads peer inventories or mounts MQ data. Use exactly 32 random raw bytes for the current session key and at most two distinct previous verification keys. Default session lifetime is 1800 seconds, bounded to 60–3600 seconds and by real credential expiry. Cookie, Origin and CSRF checks remain active.
 
 Session keys must be shared across independent Console replicas. Use owner access or a read-only service group for session material. Node server private keys retain owner-only permissions. Rotate keys in stages: distribute the new key as verification material, make it current while retaining the old verification key, then remove the old key after outstanding sessions expire. Configuration and keys load at startup.
+
+## Readiness and shutdown
+
+Combined validates the static build, session keys and HTTPS identity before creating its data directory or opening WAL. The static build must include `index.html`, `.vite/manifest.json` and the required JavaScript/CSS referenced by the build. Ship it with the matching binary and replace releases while the process is stopped; the running process retains startup fingerprints.
+
+| Process | Loopback management health | Readiness scope |
+| --- | --- | --- |
+| Combined | `/healthz`, `/readyz`, `/metrics`, `/diagnostics` | MQ, local storage, capacity and embedded Console together |
+| Independent Console | `/health/live`, `/health/ready`, `/metrics` | Local Console resources; remote MQ or optional observation failures are reported by the relevant requests |
+
+A required asset open/read failure or a detected content mismatch starts a bounded, shared recheck with at most one pending check per trusted asset. Recovery within one second keeps the process available; an unrecovered failure marks it Failed and notifies the process supervisor. New work is refused and owned tasks drain under the same shutdown deadline. A late successful read cannot reopen a Failed or Draining process: restore the matching release and restart. Ordinary unknown-path 404s, client disconnects and slow TLS handshakes do not mark MQ failed. TLS connection and handshake admission and timeouts are bounded.
+
+During startup and recovery, new business writes are refused until overall readiness. SIGTERM or a required dependency failure stops new work; eligible ACK, original-result recovery and accepted work can finish only while their authorization and deadlines remain valid. Shutdown has one five-second total budget. Check the exit result and SDK close reports; elapsed time does not prove commitment or rollback. Optional external observation failures remain partial or unknown.
 
 ## Containers and Kubernetes
 

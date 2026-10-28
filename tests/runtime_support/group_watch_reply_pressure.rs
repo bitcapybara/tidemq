@@ -20,6 +20,7 @@ use tidemq_protocol::{
 };
 use tidemq_sdk::Client;
 use tokio::{sync::watch, time::Instant};
+use tokio_rustls::rustls::pki_types::{CertificateDer, pem::PemObject};
 
 use super::{auth, data::consumer_tests::fixture::*, service::Service, wire};
 use crate::{
@@ -214,23 +215,23 @@ struct Endpoint {
     native_bytes: usize,
 }
 
-async fn identity(fixture: &Fixture) -> TlsIdentity {
-    TlsIdentity::new(
-        tokio::fs::read(fixture.directory.join("node-1.pem"))
-            .await
-            .unwrap()
-            .into(),
-        tokio::fs::read(fixture.directory.join("node-1.key"))
-            .await
-            .unwrap()
-            .into(),
+async fn identity(fixture: &Fixture, node: u64) -> (TlsIdentity, [u8; 32]) {
+    let tls = &fixture.configs.get(&node).unwrap().tls;
+    let certificate = tokio::fs::read(&tls.certificate).await.unwrap();
+    let leaf = CertificateDer::from_pem_slice(&certificate).unwrap();
+    let pin = NodeGrant::certificate_pin(leaf.as_ref());
+    let identity = TlsIdentity::new(
+        certificate.into(),
+        tokio::fs::read(&tls.private_key).await.unwrap().into(),
     )
-    .unwrap()
+    .unwrap();
+    (identity, pin)
 }
 
 async fn authorization(
     fixture: &WatchFixture,
     internal: bool,
+    server_pin: [u8; 32],
 ) -> (ServerAuthorization, ClientTls, ClientCredentials) {
     let service = &fixture.runtime.running.get(&1).unwrap().service;
     let mut tls = ClientTls {
@@ -239,29 +240,26 @@ async fn authorization(
         expected_nodes: vec![],
     };
     if internal {
-        let grant = NodeGrant {
-            certificate_pin: NodeGrant::certificate_pin(
-                &tokio::fs::read(fixture.runtime.directory.join("node-1.der"))
-                    .await
-                    .unwrap(),
-            ),
-            certificate_name: "node-1.local".into(),
+        let (client_identity, client_pin) = identity(&fixture.runtime, 3).await;
+        let grant = |certificate_pin, node_id, role: &str| NodeGrant {
+            certificate_pin,
+            certificate_name: format!("node-{node_id}.local"),
             cluster_id: service.cluster,
-            node_id: 1,
-            role: "combined".into(),
-            allowed_groups: vec![1, 2],
+            node_id,
+            role: role.into(),
+            allowed_groups: vec![service.config.runtime.metadata_group],
             allowed_classes: vec![TrafficClass::Control],
         };
-        tls.identity = Some(identity(&fixture.runtime).await);
-        tls.expected_nodes.push(grant.clone());
+        tls.identity = Some(client_identity);
+        tls.expected_nodes.push(grant(server_pin, 1, "metadata"));
         (
-            ServerAuthorization::Internal(vec![grant]),
+            ServerAuthorization::Internal(vec![grant(client_pin, 3, "broker")]),
             tls,
             ClientCredentials::Internal {
                 session_id: id(),
                 cluster_id: service.cluster,
-                node_id: 1,
-                role: "combined".into(),
+                node_id: 3,
+                role: "broker".into(),
             },
         )
     } else {
@@ -300,11 +298,13 @@ impl Endpoint {
         let native_bytes = (config.connection_window_bytes
             + config.max_streams as u32 * config.send_buffer_bytes)
             as usize;
-        let (authorization, client_tls, credentials) = authorization(fixture, internal).await;
+        let (server_identity, server_pin) = identity(&fixture.runtime, 1).await;
+        let (authorization, client_tls, credentials) =
+            authorization(fixture, internal, server_pin).await;
         let server = Server::bind(
             udp_address(),
             ServerTls {
-                identity: identity(&fixture.runtime).await,
+                identity: server_identity,
                 client_trust_roots: internal.then(|| fixture.runtime.roots.clone()),
             },
             authorization,
@@ -344,8 +344,8 @@ impl Endpoint {
                 PeerTarget {
                     address,
                     server_name: "node-1.local".into(),
-                    local_role: if internal { "combined" } else { "sdk" }.into(),
-                    remote_role: if internal { "combined" } else { "gateway" }.into(),
+                    local_role: if internal { "broker" } else { "sdk" }.into(),
+                    remote_role: if internal { "metadata" } else { "gateway" }.into(),
                     cluster_id: internal.then_some(inner.cluster),
                     node_id: internal.then_some(1),
                 },
@@ -538,7 +538,22 @@ async fn read_reply(receiver: &mut FrameReceiver, expected: &mut BTreeMap<Bytes,
 }
 
 async fn pressure(refusal: Refusal) {
-    let fixture = WatchFixture::new().await;
+    let fixture = if matches!(refusal, Refusal::Authority) {
+        WatchFixture::topology(
+            &[
+                (1, Role::Metadata),
+                (2, Role::Storage),
+                (3, Role::Broker),
+                (4, Role::Gateway),
+            ],
+            &[1],
+            &[2],
+            4,
+        )
+        .await
+    } else {
+        WatchFixture::new().await
+    };
     let inner = fixture.runtime.running.get(&1).unwrap().service.clone();
     let member = Id::from_slice(&fixture.member.request.member_id).unwrap();
     let held = hold(&inner, member, refusal).await;

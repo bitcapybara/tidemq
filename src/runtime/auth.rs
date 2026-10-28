@@ -142,6 +142,10 @@ enum AuthQuery {
     },
 }
 
+#[cfg(test)]
+#[path = "../../tests/runtime_support/auth_semantic_local.rs"]
+mod local_tests;
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct AuthReply {
     deletion: Option<DeletionPermit>,
@@ -387,16 +391,26 @@ impl Service {
         let leader = self
             .leader(self.config.runtime.metadata_group, deadline)
             .await?;
-        let bytes = self
-            .rpc
-            .call(
-                leader,
-                self.config.runtime.metadata_group,
-                Request::control(AUTH_QUERY, &query)?,
-                deadline,
-            )
-            .await?;
-        let reply: AuthReply = wire::decode_json(&bytes)?;
+        let reply = if self.rpc.is_local() {
+            use tracing::Instrument;
+            self.execute_auth_query(query.clone(), deadline)
+                .instrument(
+                    tracing::info_span!(target: "tidemq_trace", "auth_query_local",
+                    node_id = self.config.node_id, group_id = self.config.runtime.metadata_group),
+                )
+                .await?
+        } else {
+            let bytes = self
+                .rpc
+                .call(
+                    leader,
+                    self.config.runtime.metadata_group,
+                    Request::control(AUTH_QUERY, &query)?,
+                    deadline,
+                )
+                .await?;
+            wire::decode_json(&bytes)?
+        };
         let remaining =
             Duration::from_millis(reply.expires_ms.saturating_sub(reply.now_ms)).min(LEASE);
         let expires = started
@@ -425,6 +439,18 @@ impl Service {
 
     pub(super) async fn auth_command(&self, bytes: &[u8], deadline: Instant) -> Result<Bytes> {
         let query: AuthQuery = wire::decode_json(bytes)?;
+        let reply = self.execute_auth_query(query, deadline).await?;
+        wire::json(&reply)
+    }
+
+    async fn execute_auth_query(&self, query: AuthQuery, deadline: Instant) -> Result<AuthReply> {
+        let _admission = self.rpc.admit_local(
+            self.config.runtime.metadata_group,
+            crate::transport::StreamPurpose::Core,
+            32 * 1024,
+            deadline,
+        )?;
+        wire::remaining(deadline)?;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         replica
@@ -693,7 +719,7 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("read credential authority", source))??;
-        wire::json(&reply)
+        Ok(reply)
     }
 
     pub(super) async fn console_send_access(

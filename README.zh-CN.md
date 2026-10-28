@@ -6,7 +6,7 @@ TideMQ 是使用 Rust 开发的持久消息队列，面向事件接入、流式�
 
 应用通过同仓库 Rust SDK 使用逻辑 Topic 和持久 Stream / Queue 订阅。单机选择 `combined`：一个进程提供 Gateway、Broker、Metadata、Storage 与原生 HTTPS Console，内部直接调用，不运行 Raft 或内部 QUIC。分离角色保留真实 Raft / QUIC，支持 RF1 / RF3，浏览器通过独立 Console 访问。
 
-**当前处于 `0.1.0` 开发阶段。** API、配置和磁盘格式可能变化。RF1 没有节点级高可用；RF3 失去多数派后不会降为 RF1。功能与故障测试不构成生产 SLA、吞吐或容量承诺，部署前请阅读[产品能力与边界](docs/guide/overview.zh-CN.md)。
+**当前处于 `0.1.0` 开发阶段。** API、配置和磁盘格式可能变化。Combined 与分离 RF1 均没有节点级高可用；RF3 失去多数派后不会降为 RF1。功能与故障测试不构成生产 SLA、吞吐或容量承诺，部署前请阅读[产品能力与边界](docs/guide/overview.zh-CN.md)。
 
 ## 核心能力
 
@@ -14,7 +14,7 @@ TideMQ 是使用 Rust 开发的持久消息队列，面向事件接入、流式�
 - Stream 提供同 key 有效交付有序与累计 ACK；Queue 提供成员分摊、单条 ACK / NACK。交付至少一次，业务副作用须幂等。
 - 数据组持久化消息、offset、去重结果、投递 attempt 与 ACK；对象归档在后台完成，不进入 Producer ACK 路径。
 - 有界准入、背压、保留与租户/Namespace 配额；容量不足时优先保留已有 ACK、恢复和控制工作的资源。
-- TLS、作用域凭据、内部固定身份 mTLS、loopback 管理 HTTP，以及日志、指标和可选 OTLP。
+- 公共 QUIC TLS、作用域凭据、loopback 管理 HTTP，以及日志、指标和可选 OTLP；分离角色间使用固定身份 mTLS，Combined 使用进程内鉴权调用。
 - Combined 内置 Console，分离部署使用独立无状态 Console，用于日常浏览与授权范围内的操作；成员替换、扩缩容和排空使用现有 SDK / CLI。
 
 ## 本地启动
@@ -29,6 +29,8 @@ bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 ```
 
 浏览器信任生成的开发 CA 后打开 `https://localhost:8443`。`run.sh` 首次构建缺少的 Console 资源；已有目录不完整时明确提示重新构建。同一个 PID 提供 QUIC、Console HTTPS 与 loopback 管理入口。
+
+Combined 在打开存储前校验 Console manifest、必需资源、会话密钥和 HTTPS 服务端身份；`/readyz` 表示整个进程就绪。必需依赖确认失效后停止新准入并有界收尾，修复资源或身份后须重新启动，见[Console 就绪与故障](docs/guide/console.zh-CN.md#就绪和故障)。
 
 另一个终端运行 `curl --fail http://127.0.0.1:8410/readyz`。SDK 使用 `127.0.0.1:7410` 和生成目录中的 `ca.pem`、私有 `access.token`；开发证书七天过期。继续按[快速开始](docs/guide/quickstart.zh-CN.md)创建资源、发送、接收并持久 ACK。
 
