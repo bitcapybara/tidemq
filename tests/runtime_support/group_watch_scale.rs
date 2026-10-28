@@ -615,6 +615,10 @@ pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: B
     use tidemq::runtime::watch_test_hooks::AuthorizeQuorumPause;
     let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
     let before = quiescent(&observer).await;
+    eprintln!(
+        "Known observation recovery baseline ledger: {}",
+        serde_json::to_string(&before).unwrap()
+    );
     let cluster = fixture
         .runtime
         .configs
@@ -732,9 +736,18 @@ pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: B
         "Recovery extended the original two-second deadline"
     );
     drop(pause);
-    let after = quiescent(&observer).await;
+    let after = quiescent_from(async || observer.snapshot().await, Some(&before)).await;
+    eprintln!(
+        "Known observation recovery resource ledger: {}",
+        serde_json::to_string(&after).unwrap()
+    );
     assert_eq!(after.charged_bytes, before.charged_bytes);
     assert_eq!(after.target_contexts, before.target_contexts);
+    assert_eq!(after.active_requests, 0);
+    assert_eq!(after.cancellation_watermarks, 0);
+    assert_eq!(after.cleanup_tasks, 0);
+    assert_eq!(after.forwards, 0);
+    assert_eq!(after.timers, before.timers);
     assert_eq!(after.authority_inbound, 0);
     assert_eq!(after.authority_outbound, 0);
     assert_eq!(after.admission_queued, 0);
@@ -836,21 +849,93 @@ fn fail_before_pause(reply: &tidemq_protocol::common::Frame) -> ! {
 }
 
 async fn quiescent(observer: &Diagnostics) -> Snapshot {
-    tokio::time::timeout_at(deadline(), async {
+    quiescent_from(async || observer.snapshot().await, None).await
+}
+
+async fn quiescent_from(
+    mut sample: impl AsyncFnMut() -> Snapshot,
+    baseline: Option<&Snapshot>,
+) -> Snapshot {
+    let mut last = None;
+    let result = tokio::time::timeout_at(deadline(), async {
         let mut tick = tokio::time::interval(Duration::from_millis(10));
+        let mut drained_before_sample = false;
         loop {
             tick.tick().await;
-            let snapshot = observer.snapshot().await;
-            if snapshot.active_requests == 0
+            let snapshot = sample().await;
+            let drained = snapshot.active_requests == 0
                 && snapshot.cancellation_watermarks == 0
                 && snapshot.cleanup_tasks == 0
-            {
+                && snapshot.forwards == 0
+                && snapshot.authority_inbound == 0
+                && snapshot.authority_outbound == 0
+                && snapshot.admission_queued == 0
+                && snapshot.rechecks_queued == 0;
+            let reclaimed = baseline.is_none_or(|before| {
+                snapshot.charged_bytes == before.charged_bytes
+                    && snapshot.target_contexts == before.target_contexts
+                    && snapshot.timers == before.timers
+            });
+            // Diagnostics reads budget before registry; sample again after observing registry expiry.
+            if drained_before_sample && drained && reclaimed {
                 return snapshot;
             }
+            drained_before_sample = drained;
+            last = Some(snapshot);
         }
     })
-    .await
-    .expect("Watch registrations did not expire within their fixed deadlines")
+    .await;
+    result.unwrap_or_else(|_| {
+        panic!(
+            "Watch resources did not quiesce within their fixed deadlines: baseline={baseline:?} last={last:?}"
+        )
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quiescence_resamples_charges_after_registration_expiry() {
+    let _serial = SERIAL.lock().await;
+    let fixture = WatchFixture::new().await;
+    fixture.sync().await;
+    let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
+    let settled = quiescent(&observer).await;
+    let mut baseline_samples = 0;
+    let before = quiescent_from(
+        async || {
+            let mut snapshot = observer.snapshot().await;
+            baseline_samples += 1;
+            // Registry expiry can race the budget read when establishing the baseline too.
+            if baseline_samples == 1 {
+                snapshot.charged_bytes += 7 * 2_048;
+            }
+            snapshot
+        },
+        None,
+    )
+    .await;
+    let mut samples = 0;
+    let after = quiescent_from(
+        async || {
+            let mut snapshot = observer.snapshot().await;
+            samples += 1;
+            // Replay the CI budget sample taken before the registry reaper released seven leases.
+            if samples <= 2 {
+                snapshot.charged_bytes += 7 * 2_048;
+            }
+            snapshot
+        },
+        Some(&before),
+    )
+    .await;
+    fixture.close().await;
+    assert_eq!(before.charged_bytes, settled.charged_bytes);
+    assert!(baseline_samples >= 2);
+    assert_eq!(after.charged_bytes, before.charged_bytes);
+    assert_eq!(after.target_contexts, before.target_contexts);
+    assert!(
+        samples >= 3,
+        "Quiescence accepted an unreclaimed budget sample"
+    );
 }
 
 fn idle_commands(
