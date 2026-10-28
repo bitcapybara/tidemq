@@ -14,7 +14,7 @@ use tokio::time::Instant;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::{
     self,
-    pki_types::{CertificateDer, PrivateKeyDer, ServerName, pem::PemObject},
+    pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, pem::PemObject},
 };
 use tokio_util::task::TaskTracker;
 use zeroize::Zeroizing;
@@ -33,23 +33,26 @@ pub(crate) async fn load(
     public_origin: &str,
 ) -> Result<TlsAcceptor> {
     let certificates = super::certificate_chain(&config.certificate).await?;
-    verify_origin(&certificates, public_origin)?;
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    verify_server_material(&certificates, public_origin, &provider)?;
     let key = Zeroizing::new(super::files::read_bounded(&config.private_key, 65_536).await?);
     let key = PrivateKeyDer::from_pem_slice(&key)
         .map_err(|_| invalid("console TLS private key PEM is invalid"))?;
-    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|_| invalid("console TLS protocol configuration is invalid"))?
-    .with_no_client_auth()
-    .with_single_cert(certificates, key)
-    .map_err(|_| invalid("console TLS certificate and private key must match"))?;
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|_| invalid("console TLS protocol configuration is invalid"))?
+        .with_no_client_auth()
+        .with_single_cert(certificates, key)
+        .map_err(|_| invalid("console TLS certificate and private key must match"))?;
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(TlsAcceptor::from(Arc::new(config)))
 }
 
-fn verify_origin(certificates: &[CertificateDer<'static>], public_origin: &str) -> Result<()> {
+fn verify_server_material(
+    certificates: &[CertificateDer<'static>],
+    public_origin: &str,
+    provider: &rustls::crypto::CryptoProvider,
+) -> Result<()> {
     let origin = reqwest::Url::parse(public_origin)
         .map_err(|_| invalid("console public origin is invalid"))?;
     let host = origin
@@ -68,7 +71,22 @@ fn verify_origin(certificates: &[CertificateDer<'static>], public_origin: &str) 
     let certificate = rustls::server::ParsedCertificate::try_from(leaf)
         .map_err(|_| invalid("console TLS leaf certificate is invalid"))?;
     rustls::client::verify_server_name(&certificate, &name)
-        .map_err(|_| invalid("console TLS certificate SAN must cover session.public_origin"))
+        .map_err(|_| invalid("console TLS certificate SAN must cover session.public_origin"))?;
+    // Pinned WebPKI checks leaf validity, constraints and ServerAuth before issuer lookup.
+    // Empty roots/intermediates isolate material checks without requiring a private CA root.
+    let verified = rustls::client::verify_server_cert_signed_by_trust_anchor(
+        &certificate,
+        &rustls::RootCertStore::empty(),
+        &[],
+        UnixTime::now(),
+        provider.signature_verification_algorithms.all,
+    );
+    match verified {
+        Err(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)) => Ok(()),
+        _ => Err(invalid(
+            "console TLS leaf must be currently valid for server authentication",
+        )),
+    }
 }
 
 pub(crate) async fn certificate_chain(

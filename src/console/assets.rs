@@ -83,15 +83,24 @@ impl AssetHealth {
         }
     }
 
-    pub(super) fn observe(&self, body: Body, name: &str, remaining: Option<u64>) -> Body {
-        if self.0.files.required(name).is_none() {
+    pub(super) fn observe(
+        &self,
+        body: Body,
+        name: &str,
+        remaining: Option<u64>,
+        verify_content: bool,
+    ) -> Body {
+        let Some(asset) = self.0.files.required(name) else {
             return body;
-        }
+        };
+        let digest = (verify_content && remaining == Some(asset.length))
+            .then(|| (blake3::Hasher::new(), asset.digest));
         Body::new(ObservedBody {
             inner: body,
             health: self.clone(),
             name: name.to_owned(),
             remaining,
+            digest,
         })
     }
 
@@ -162,6 +171,29 @@ struct ObservedBody {
     health: AssetHealth,
     name: String,
     remaining: Option<u64>,
+    digest: Option<(blake3::Hasher, blake3::Hash)>,
+}
+
+impl ObservedBody {
+    fn observe_data(&mut self, frame: &Frame<Bytes>) -> bool {
+        let Some(bytes) = frame.data_ref() else {
+            return true;
+        };
+        if let Some(remaining) = self.remaining.as_mut() {
+            *remaining = remaining.saturating_sub(bytes.len() as u64);
+        }
+        if let Some((hasher, _)) = self.digest.as_mut() {
+            hasher.update(bytes);
+        }
+        // Content-Length can finish the body without another poll for EOF.
+        if self.remaining == Some(0) {
+            return self
+                .digest
+                .take()
+                .is_none_or(|(hasher, expected)| hasher.finalize() == expected);
+        }
+        true
+    }
 }
 
 impl HttpBody for ObservedBody {
@@ -178,9 +210,12 @@ impl HttpBody for ObservedBody {
                 Poll::Ready(Some(Err(Box::new(error))))
             }
             Poll::Ready(Some(Ok(frame))) => {
-                if let (Some(remaining), Some(bytes)) = (self.remaining.as_mut(), frame.data_ref())
-                {
-                    *remaining = remaining.saturating_sub(bytes.len() as u64);
+                if !self.observe_data(&frame) {
+                    self.health.report(&self.name, "stream_integrity");
+                    return Poll::Ready(Some(Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Console asset content differs from startup",
+                    )))));
                 }
                 Poll::Ready(Some(Ok(frame)))
             }
