@@ -35,7 +35,9 @@ async fn shutdown(console: RunningConsole) {
         .unwrap();
     assert_eq!(metrics.connections.get(), 0, "A Console connection leaked");
     assert_eq!(metrics.handshakes.get(), 0, "A Console handshake leaked");
-    let rebound = tokio::net::TcpListener::bind(public).await.unwrap();
+    let rebound = tokio::net::TcpListener::bind(public)
+        .await
+        .unwrap_or_else(|error| panic!("Console port {public} could not be rebound: {error}"));
     drop(rebound);
     if let Some(address) = management {
         drop(tokio::net::TcpListener::bind(address).await.unwrap());
@@ -209,6 +211,128 @@ async fn required_index_script_and_css_fail_shared_process_before_the_http_task_
         shutdown(console).await;
         fixture.clean().await;
     }
+}
+
+#[tokio::test]
+async fn same_length_required_asset_corruption_fails_readiness_over_https() {
+    for name in ["index.html", "assets/app-test.js", "assets/app-test.css"] {
+        let fixture = Fixture::new().await;
+        let console = RunningConsole::start(fixture.config.clone()).await.unwrap();
+        let client = fixture.client().await;
+        let process = console.state.process.clone();
+        let path = fixture.config.static_dir.join(name);
+        let contents = tokio::fs::read(&path).await.unwrap();
+        tokio::fs::write(&path, vec![b'!'; contents.len()])
+            .await
+            .unwrap();
+        let response = client
+            .get(format!("https://{}/{name}", address(&console)))
+            .send()
+            .await
+            .unwrap();
+        let _ = response.bytes().await;
+        let failed = tokio::time::timeout(Duration::from_secs(2), async {
+            while process.phase() != Phase::Failed {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        let readiness = client
+            .get(format!(
+                "http://{}/health/ready",
+                console.management_address.unwrap()
+            ))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        let failures = console.state.metrics.asset_failures.get();
+        shutdown(console).await;
+        fixture.clean().await;
+        assert!(failed, "Same-length corruption was not supervised: {name}");
+        assert_eq!(readiness, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(failures, 1);
+    }
+}
+
+#[tokio::test]
+async fn same_length_asset_damage_recovers_inside_the_existing_recheck_deadline() {
+    let fixture = Fixture::new().await;
+    let console = RunningConsole::start(fixture.config.clone()).await.unwrap();
+    let client = fixture.client().await;
+    let path = fixture.config.static_dir.join("assets/app-test.js");
+    let original = tokio::fs::read(&path).await.unwrap();
+    tokio::fs::write(&path, vec![b'!'; original.len()])
+        .await
+        .unwrap();
+    let url = format!("https://{}/assets/app-test.js", address(&console));
+    let response = client.get(&url).send().await.unwrap();
+    let _ = response.bytes().await;
+    tokio::fs::write(&path, &original).await.unwrap();
+    wait_for(|| console.state.metrics.asset_recoveries.get() == 1).await;
+    assert_eq!(console.state.metrics.asset_rechecks.get(), 1);
+    assert_eq!(console.state.metrics.asset_failures.get(), 0);
+    assert_eq!(console.state.process.phase(), Phase::Ready);
+    assert_eq!(
+        client.get(url).send().await.unwrap().bytes().await.unwrap(),
+        original
+    );
+    shutdown(console).await;
+    fixture.clean().await;
+}
+
+#[tokio::test]
+async fn https_partial_conditional_and_cancelled_assets_do_not_report_corruption() {
+    let fixture = Fixture::new().await;
+    tokio::fs::write(
+        fixture.config.static_dir.join("assets/app-test.js"),
+        vec![b'x'; 8_388_608],
+    )
+    .await
+    .unwrap();
+    let console = RunningConsole::start(fixture.config.clone()).await.unwrap();
+    let client = fixture.client().await;
+    let url = format!("https://{}/assets/app-test.js", address(&console));
+    drop(client.get(&url).send().await.unwrap());
+    assert_eq!(
+        client.head(&url).send().await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        client
+            .get(&url)
+            .header("if-modified-since", "Wed, 01 Jan 2098 00:00:00 GMT")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_MODIFIED
+    );
+    let response = client
+        .get(&url)
+        .header("range", "bytes=0-3")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(response.bytes().await.unwrap().len(), 4);
+    assert_eq!(
+        client
+            .get(&url)
+            .header("range", "not-a-range")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::RANGE_NOT_SATISFIABLE
+    );
+    tokio::time::sleep(Duration::from_millis(1_100)).await;
+    assert_eq!(console.state.process.phase(), Phase::Ready);
+    assert_eq!(console.state.metrics.asset_errors.get(), 0);
+    assert_eq!(console.state.metrics.asset_rechecks.get(), 0);
+    shutdown(console).await;
+    fixture.clean().await;
 }
 
 #[tokio::test]
@@ -617,6 +741,123 @@ async fn tls_startup_requires_dns_and_ip_san_coverage_without_peer_trust_roots()
 }
 
 #[tokio::test]
+async fn startup_rejects_expired_future_and_client_only_server_certificates() {
+    for case in ["expired", "future", "client_only"] {
+        let fixture = Fixture::new().await;
+        let key = rcgen::KeyPair::generate().unwrap();
+        let mut params = rcgen::CertificateParams::new(vec![
+            "console.example.test".into(),
+            "localhost".into(),
+            "127.0.0.1".into(),
+        ])
+        .unwrap();
+        match case {
+            "expired" => params.not_after = rcgen::date_time_ymd(2001, 1, 1),
+            "future" => params.not_before = rcgen::date_time_ymd(2099, 1, 1),
+            _ => params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth],
+        }
+        let certificate = params.self_signed(&key).unwrap();
+        tokio::fs::write(&fixture.config.tls.certificate, certificate.pem())
+            .await
+            .unwrap();
+        tokio::fs::write(&fixture.config.tls.private_key, key.serialize_pem())
+            .await
+            .unwrap();
+        let standalone = super::validate_config(&fixture.config).await;
+        let embedded = super::EmbeddedConsoleConfig {
+            listen: fixture.config.listen,
+            static_dir: fixture.config.static_dir.clone(),
+            session: fixture.config.session.clone(),
+            observability: Default::default(),
+        };
+        let embedded = super::validate_embedded(&embedded, &fixture.config.tls).await;
+        let rejected = match RunningConsole::start(fixture.config.clone()).await {
+            Ok(console) => {
+                shutdown(console).await;
+                false
+            }
+            Err(_) => true,
+        };
+        drop(
+            tokio::net::TcpListener::bind(fixture.config.listen)
+                .await
+                .unwrap(),
+        );
+        fixture.clean().await;
+        assert!(
+            standalone.is_err(),
+            "Invalid standalone TLS material accepted: {case}"
+        );
+        assert!(
+            embedded.is_err(),
+            "Invalid embedded TLS material accepted: {case}"
+        );
+        assert!(rejected, "Invalid server TLS material reached bind: {case}");
+    }
+}
+
+#[tokio::test]
+async fn private_ca_server_leaf_is_valid_without_shipping_its_root_certificate() {
+    let mut fixture = Fixture::new().await;
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = ca_params.self_signed(&ca_key).unwrap();
+    let issuer = rcgen::Issuer::new(ca_params, ca_key);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let mut params = rcgen::CertificateParams::new(vec![
+        "console.example.test".into(),
+        "localhost".into(),
+        "127.0.0.1".into(),
+    ])
+    .unwrap();
+    params.extended_key_usages = vec![
+        rcgen::ExtendedKeyUsagePurpose::ServerAuth,
+        rcgen::ExtendedKeyUsagePurpose::ClientAuth,
+    ];
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+    tokio::fs::write(&fixture.config.tls.certificate, leaf.pem())
+        .await
+        .unwrap();
+    tokio::fs::write(&fixture.config.tls.private_key, key.serialize_pem())
+        .await
+        .unwrap();
+    fixture.config.cluster.trust_roots = fixture.root.join("issuer.pem");
+    tokio::fs::write(&fixture.config.cluster.trust_roots, ca.pem())
+        .await
+        .unwrap();
+    fixture.config.tls.trust_roots = fixture.root.join("absent-peer-trust-roots.pem");
+    super::validate_config(&fixture.config).await.unwrap();
+    let embedded = super::EmbeddedConsoleConfig {
+        listen: fixture.config.listen,
+        static_dir: fixture.config.static_dir.clone(),
+        session: fixture.config.session.clone(),
+        observability: Default::default(),
+    };
+    super::validate_embedded(&embedded, &fixture.config.tls)
+        .await
+        .unwrap();
+    let console = RunningConsole::start(fixture.config.clone()).await.unwrap();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .tls_certs_only(vec![
+            reqwest::Certificate::from_pem(ca.pem().as_bytes()).unwrap(),
+        ])
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap();
+    let response = client
+        .get(format!("https://{}/", address(&console)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.bytes().await.unwrap();
+    shutdown(console).await;
+    fixture.clean().await;
+}
+
+#[tokio::test]
 async fn startup_material_validation_never_binds_or_creates_keys_and_checks_rotation() {
     let mut fixture = Fixture::new().await;
     let public = tokio::net::TcpListener::bind(fixture.config.listen)
@@ -695,6 +936,7 @@ async fn actual_local_stream_read_errors_trigger_recheck_but_client_body_drop_do
         Body::new(DirectoryRead(directory)),
         "assets/app-test.js",
         Some(1),
+        false,
     );
     assert!(to_bytes(body, 1024).await.is_err());
     wait_for(|| console.state.metrics.asset_recoveries.get() == 1).await;

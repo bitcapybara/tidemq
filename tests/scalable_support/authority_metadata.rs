@@ -266,6 +266,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
         }),
     );
     advance(&mut state, plan_id, TransferStep::Published);
+    let historical_import = state.topology.transfer(plan_id).unwrap().imported.clone();
     assert_eq!(state.route(partition).unwrap().group_id, 3);
     assert_eq!(state.route(partition).unwrap().generation, 2);
     let binding = state.topology.binding(partition).unwrap();
@@ -347,7 +348,11 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     state.validate_snapshot().unwrap();
     let checkpoint = TransferCheckpoint {
         voter: 3,
-        position: raft_position_at(committed, 6),
+        position: CommitPosition::Raft {
+            term: 2,
+            leader_node: 3,
+            index: 6,
+        },
         manifest_digest: manifest.digest,
     };
     advance(
@@ -362,6 +367,10 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     assert_eq!(
         state.topology.transfer(plan_id).unwrap().checkpoint_voters,
         BTreeSet::from([3])
+    );
+    assert_eq!(
+        state.topology.transfer(plan_id).unwrap().imported,
+        historical_import
     );
     catalog(
         &mut state,

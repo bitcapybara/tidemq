@@ -31,7 +31,7 @@ struct CapacitySnapshot {
 
 pub(crate) async fn start(
     service: Arc<Service>,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: watch::Receiver<bool>,
 ) -> Result<(std::net::SocketAddr, JoinHandle<Result<()>>)> {
     let listener = TcpListener::bind(service.config.management_listen)
         .await
@@ -44,32 +44,54 @@ pub(crate) async fn start(
         snapshot: RwLock::new(serde_json::json!({"status":"starting"})),
     });
     let slots = Arc::new(Semaphore::new(4));
-    let task = tokio::spawn(async move {
-        let mut connections = JoinSet::new();
-        let sampler_service = service.clone();
-        let sampler_health = health.clone();
-        let sampler_shutdown = shutdown.clone();
-        let sampler = tokio::spawn(sample(sampler_service, sampler_health, sampler_shutdown));
-        loop {
-            while connections.try_join_next().is_some() {}
-            tokio::select! {
-                _ = shutdown.changed() => break,
-                accepted = listener.accept() => {
-                    let (stream, peer) = accepted.map_err(|source| Error::operation("accept management connection", source))?;
-                    if !peer.ip().is_loopback() { continue; }
-                    let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
-                    let service = service.clone(); let health = health.clone();
-                    connections.spawn(async move { let _permit = permit; let _ = serve(stream, service, health).await; });
+    let mut required = JoinSet::new();
+    required.spawn(sample(service.clone(), health.clone(), shutdown.clone()));
+    let task = tokio::spawn(run(listener, service, health, slots, shutdown, required));
+    Ok((address, task))
+}
+
+async fn run(
+    listener: TcpListener,
+    service: Arc<Service>,
+    health: Arc<Health>,
+    slots: Arc<Semaphore>,
+    mut shutdown: watch::Receiver<bool>,
+    mut required: JoinSet<()>,
+) -> Result<()> {
+    let mut connections = JoinSet::new();
+    let result = loop {
+        while connections.try_join_next().is_some() {}
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break Ok(()),
+            completed = required.join_next() => {
+                if *shutdown.borrow() {
+                    break Ok(());
                 }
+                health.ready.store(false, Ordering::Release);
+                service.process.fail("readiness_sampler");
+                break Err(match completed {
+                    Some(Err(source)) => Error::operation("sample process readiness", source),
+                    _ => Error::invalid("Required readiness sampler exited unexpectedly"),
+                });
+            }
+            accepted = listener.accept() => {
+                let (stream, peer) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(source) => break Err(Error::operation("accept management connection", source)),
+                };
+                if !peer.ip().is_loopback() { continue; }
+                let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
+                let service = service.clone(); let health = health.clone();
+                connections.spawn(async move { let _permit = permit; let _ = serve(stream, service, health).await; });
             }
         }
-        connections.abort_all();
-        while connections.join_next().await.is_some() {}
-        sampler.abort();
-        let _ = sampler.await;
-        Ok(())
-    });
-    Ok((address, task))
+    };
+    connections.abort_all();
+    required.abort_all();
+    while connections.join_next().await.is_some() {}
+    while required.join_next().await.is_some() {}
+    result
 }
 
 async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch::Receiver<bool>) {
@@ -150,7 +172,21 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         if !service.data.is_empty() {
             ready &= capacity.is_some();
         }
-        for replica in service.data.values() {
+        for (group, replica) in &service.data {
+            if ready && replica.group.is_local() {
+                ready = match service.config.runtime.group(*group) {
+                    Ok(config) => {
+                        let expected =
+                            super::node::data_config(service.cluster, config, &service.config);
+                        replica
+                            .state
+                            .try_with_application(|state| state.config() == Some(&expected))
+                            .await
+                            .unwrap_or(false)
+                    }
+                    Err(_) => false,
+                };
+            }
             if ready && service.require_leader(replica).is_ok() {
                 ready = replica.group.ensure_read(deadline).await.is_ok();
             }
@@ -590,6 +626,171 @@ fn parse_request(bytes: &[u8]) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Role;
+    use crate::runtime::data::consumer_tests::fixture::{Fixture, deadline, http};
+
+    async fn fixture() -> Fixture {
+        let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+        fixture.start_all().await;
+        fixture
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn readiness_sampler_panic_and_unexpected_exit_fail_the_live_process() {
+        for panic in [false, true] {
+            let mut fixture = fixture().await;
+            let node = fixture.running.get(&1).unwrap();
+            let service = node.service.clone();
+            let management = node.management_address;
+            let health = Arc::new(Health {
+                ready: AtomicBool::new(true),
+                snapshot: RwLock::new(Value::Null),
+            });
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (_stop, shutdown) = watch::channel(false);
+            let (release, released) = tokio::sync::oneshot::channel();
+            let mut required = JoinSet::new();
+            required.spawn(async move {
+                released.await.unwrap();
+                assert!(!panic, "Injected readiness sampler panic");
+            });
+            let task = tokio::spawn(run(
+                listener,
+                service.clone(),
+                health.clone(),
+                Arc::new(Semaphore::new(4)),
+                shutdown,
+                required,
+            ));
+            assert!(http(address, "/readyz").await.starts_with("HTTP/1.1 200"));
+            release.send(()).unwrap();
+            assert!(
+                timeout_at(deadline(), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            assert!(!health.ready.load(Ordering::Acquire));
+            assert_eq!(
+                service.process.phase(),
+                super::super::process::Phase::Failed
+            );
+            assert!(
+                http(management, "/readyz")
+                    .await
+                    .starts_with("HTTP/1.1 503")
+            );
+            let rebound = TcpListener::bind(address).await.unwrap();
+            drop(rebound);
+            let node = fixture.running.remove(&1).unwrap();
+            assert!(node.shutdown().await.is_err());
+            fixture.close().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelling_management_aborts_its_owned_sampler_and_releases_the_listener() {
+        struct Sampler(Arc<AtomicBool>);
+        impl Drop for Sampler {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        let fixture = fixture().await;
+        let service = fixture.running.get(&1).unwrap().service.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sampler = Sampler(alive.clone());
+        let mut required = JoinSet::new();
+        required.spawn(async move {
+            let _sampler = sampler;
+            std::future::pending::<()>().await;
+        });
+        let task = tokio::spawn(run(
+            listener,
+            service,
+            Arc::new(Health {
+                ready: AtomicBool::new(true),
+                snapshot: RwLock::new(Value::Null),
+            }),
+            Arc::new(Semaphore::new(4)),
+            shutdown,
+            required,
+        ));
+        assert!(http(address, "/readyz").await.starts_with("HTTP/1.1 200"));
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        timeout_at(deadline(), async {
+            while alive.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let rebound = TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn combined_stays_recovering_until_its_data_initialization_is_applied() {
+        let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+        let config = fixture.configs.get(&1).unwrap().clone();
+        let directory = config.data_dir.join("group-2");
+        let hook = crate::execution::LocalExecutionHook::new(&directory, "before_durable", false);
+        let node = crate::runtime::RunningNode::start(config).await.unwrap();
+        let service = node.service.clone();
+        fixture.running.insert(1, node);
+        hook.entered().await;
+        timeout_at(deadline(), async {
+            while !service.auth_ready(deadline()).await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let previous = service.runtime_metrics.0.lock().unwrap().sampled_at_ms;
+        timeout_at(deadline(), async {
+            loop {
+                let observed = service.runtime_metrics.0.lock().unwrap().sampled_at_ms;
+                if observed.is_some() && observed != previous {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let node = fixture.running.get(&1).unwrap();
+        assert_eq!(
+            service.process.phase(),
+            super::super::process::Phase::Recovering
+        );
+        assert!(
+            http(node.management_address, "/readyz")
+                .await
+                .starts_with("HTTP/1.1 503")
+        );
+        assert!(
+            service
+                .data
+                .get(&2)
+                .unwrap()
+                .state
+                .try_with_application(|state| state.config().is_none())
+                .await
+                .unwrap()
+        );
+        hook.release();
+        fixture.wait_ready().await;
+        assert_eq!(service.process.phase(), super::super::process::Phase::Ready);
+        fixture.close().await;
+    }
+
     #[test]
     fn ownership_path_errors_retain_the_invalid_component() {
         let topic = "f098986a-ecf4-4b23-b9ca-1475d2c51d75";

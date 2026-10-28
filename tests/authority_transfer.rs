@@ -8,6 +8,11 @@ use tidemq::ownership::{
 };
 use tidemq_protocol::Id;
 
+#[path = "replication_support/quic.rs"]
+mod quic;
+#[path = "replication_support/mod.rs"]
+mod support;
+
 fn id() -> Id {
     Id::new_v7().unwrap()
 }
@@ -138,6 +143,12 @@ fn import_checks_the_frozen_digest_destination_fence_and_all_required_checkpoint
     let mut forged = imported(&plan, manifest.clone());
     forged.manifest.digest = [9; 32];
     assert!(plan.advance(TransferStep::Imported(forged)).is_err());
+    let mut forged = imported(&plan, manifest.clone());
+    forged.recovery.committed = CommitPosition::Local { sequence: 5 };
+    assert_eq!(
+        plan.advance(TransferStep::Imported(forged)),
+        Err(Rejection::InvalidEvidence)
+    );
     plan.advance(TransferStep::Imported(imported(&plan, manifest.clone())))
         .unwrap();
     plan.advance(TransferStep::Published).unwrap();
@@ -178,7 +189,8 @@ fn import_checks_the_frozen_digest_destination_fence_and_all_required_checkpoint
 fn checkpoints_can_cover_a_replacement_voter_without_rewriting_the_original_import_proof() {
     let mut plan = plan();
     let manifest = export(&mut plan);
-    plan.advance(TransferStep::Imported(imported(&plan, manifest.clone())))
+    let evidence = imported(&plan, manifest.clone());
+    plan.advance(TransferStep::Imported(evidence.clone()))
         .unwrap();
     plan.advance(TransferStep::Published).unwrap();
     plan.checkpoint_voters = [3].into();
@@ -190,17 +202,186 @@ fn checkpoints_can_cover_a_replacement_voter_without_rewriting_the_original_impo
         }]))
         .is_err()
     );
+    for position in [
+        CommitPosition::Local { sequence: 6 },
+        CommitPosition::Raft {
+            term: 0,
+            leader_node: 3,
+            index: 6,
+        },
+        CommitPosition::Raft {
+            term: 2,
+            leader_node: 0,
+            index: 6,
+        },
+        CommitPosition::Raft {
+            term: 2,
+            leader_node: 3,
+            index: 4,
+        },
+    ] {
+        assert_eq!(
+            plan.advance(TransferStep::Checkpointed(vec![TransferCheckpoint {
+                voter: 3,
+                position,
+                manifest_digest: manifest.digest,
+            }])),
+            Err(Rejection::InvalidEvidence)
+        );
+    }
+    let mut rewritten = plan.clone();
+    rewritten.imported.as_mut().unwrap().recovery.committed = position(5, 3);
+    assert_eq!(rewritten.validate(), Err(Rejection::InvalidEvidence));
+    let mut rewritten = plan.clone();
+    rewritten.imported.as_mut().unwrap().recovery.placement =
+        tidemq::metadata::GroupPlacement::Raft { voters: [3].into() };
+    assert_eq!(rewritten.validate(), Err(Rejection::InvalidEvidence));
     plan.advance(TransferStep::Checkpointed(vec![TransferCheckpoint {
         voter: 3,
         position: position(6, 2),
         manifest_digest: manifest.digest,
     }]))
     .unwrap();
+    assert_eq!(plan.imported, Some(evidence));
+    plan.validate().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replacement_rf1_leaders_real_snapshot_can_checkpoint_the_original_import() {
+    use openraft::BasicNode;
+    use tidemq::execution::GroupHandle;
+    use tidemq::replication::rpc::GroupRole;
+    use tokio::time::Instant;
+
+    let mut plan = plan();
+    let manifest = export(&mut plan);
+    let cluster = quic::Cluster::<support::State>::with_identity(
+        &[2, 3],
+        plan.target.cluster_id,
+        plan.target.group_id,
+        GroupRole::Data,
+    )
+    .await;
+    cluster
+        .node(2)
+        .raft
+        .initialize(BTreeMap::from([(2, BasicNode::new("configured-node-2"))]))
+        .await
+        .unwrap();
+    cluster
+        .node(2)
+        .raft
+        .wait(Some(quic::WAIT))
+        .current_leader(2, "The original RF1 voter becomes leader")
+        .await
+        .unwrap();
+    let original = GroupHandle::from_raft(
+        cluster.node(2).raft.clone(),
+        cluster.node(2).state.clone(),
+        cluster.node(2).log.clone(),
+    );
+    let committed = original
+        .commit(
+            support::Command::Initialize {
+                cluster: plan.target.cluster_id,
+                group: plan.target.group_id,
+            },
+            Instant::now() + quic::WAIT,
+        )
+        .await
+        .unwrap();
+    let mut evidence = imported(&plan, manifest.clone());
+    evidence.recovery.committed = committed.position.into();
     assert!(matches!(
-        plan.imported.as_ref().unwrap().recovery.committed,
+        evidence.recovery.committed,
         CommitPosition::Raft { leader_node: 2, .. }
     ));
+    plan.advance(TransferStep::Imported(evidence.clone()))
+        .unwrap();
+    plan.advance(TransferStep::Published).unwrap();
+
+    cluster
+        .node(2)
+        .raft
+        .add_learner(3, BasicNode::new("configured-node-3"), true)
+        .await
+        .unwrap();
+    let membership = cluster
+        .node(2)
+        .raft
+        .change_membership(BTreeSet::from([3]), false)
+        .await
+        .unwrap();
+    cluster.applied(&[3], membership.log_id.index).await;
+    cluster
+        .node(3)
+        .raft
+        .wait(Some(quic::WAIT))
+        .current_leader(3, "The replacement RF1 voter becomes leader")
+        .await
+        .unwrap();
+    let replacement = GroupHandle::from_raft(
+        cluster.node(3).raft.clone(),
+        cluster.node(3).state.clone(),
+        cluster.node(3).log.clone(),
+    );
+    replacement
+        .ensure_read(Instant::now() + quic::WAIT)
+        .await
+        .unwrap();
+    replacement
+        .commit(support::Command::Fence(1), Instant::now() + quic::WAIT)
+        .await
+        .unwrap();
+    let snapshot = replacement
+        .snapshot(Instant::now() + quic::WAIT)
+        .await
+        .unwrap()
+        .unwrap();
+    let checkpoint = TransferCheckpoint {
+        voter: 3,
+        position: snapshot.position.into(),
+        manifest_digest: manifest.digest,
+    };
+    assert!(matches!(
+        checkpoint.position,
+        CommitPosition::Raft { leader_node: 3, .. }
+    ));
+    assert_eq!(
+        cluster
+            .node(3)
+            .raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .voter_ids()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([3])
+    );
+    println!(
+        "Historical import: {:?}; replacement snapshot: {:?}",
+        evidence.recovery.committed, checkpoint.position
+    );
+    plan.checkpoint_voters = [3].into();
+    let result = plan.advance(TransferStep::Checkpointed(vec![checkpoint]));
+    drop((original, replacement));
+    cluster.shutdown().await;
+
+    assert_eq!(
+        result,
+        Ok(()),
+        "The current RF1 snapshot must cover the historical import"
+    );
+    assert_eq!(plan.stage, TransferStage::Checkpointed);
+    assert_eq!(plan.imported, Some(evidence));
+    assert_eq!(plan.target_voters, BTreeSet::from([2]));
+    plan.advance(TransferStep::Retired(position(1_001, 1)))
+        .unwrap();
     plan.validate().unwrap();
+    let restored: AuthorityTransfer =
+        postcard::from_bytes(&postcard::to_stdvec(&plan).unwrap()).unwrap();
+    restored.validate().unwrap();
+    assert_eq!(restored, plan);
 }
 
 #[test]
