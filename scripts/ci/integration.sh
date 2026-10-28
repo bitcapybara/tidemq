@@ -21,11 +21,11 @@ trap cleanup EXIT
 target_dir=${CARGO_TARGET_DIR:-$PWD/target}
 if [[ "$mode" != faults ]]; then
 node --test tests/lab/*.test.mjs
-cargo nextest run --workspace --all-targets --locked --features "$features" --profile ci -E 'kind(test)'
+bash scripts/ci/nextest.sh --workspace --all-targets --locked --features "$features" --profile ci -E 'kind(test)'
 cp target/nextest/ci/junit.xml target/ci/integration-junit.xml
 fi
 if [[ "$mode" != normal ]]; then
-cargo nextest run -p tidemq --lib --test runtime_queue --test runtime_consumer_reads --test runtime_consumer_close --test runtime_reclamation --test runtime_group_watch --test sdk_consumer_long_poll \
+bash scripts/ci/nextest.sh -p tidemq --lib --test runtime_queue --test runtime_consumer_reads --test runtime_consumer_close --test runtime_reclamation --test runtime_group_watch --test sdk_consumer_long_poll \
   --locked --features "$features,test-hooks" --profile ci
 cp target/nextest/ci/junit.xml target/ci/runtime-faults-junit.xml
 if [[ ${TIDEMQ_REQUIRE_EXTERNAL:-0} == 1 ]]; then
@@ -36,7 +36,7 @@ if [[ ${TIDEMQ_REQUIRE_EXTERNAL:-0} == 1 ]]; then
   cargo build --locked --example deploy_validation
   export TIDEMQ_TEST_DEPLOY_VALIDATION="$target_dir/debug/examples/deploy_validation"
   # These tests own independent dependency processes and data directories under tests/.
-  cargo nextest run -p tidemq --all-targets --locked --features "$features,test-hooks" \
+  bash scripts/ci/nextest.sh -p tidemq --all-targets --locked --features "$features,test-hooks" \
     --profile ci --run-ignored only -E 'kind(test)'
   cp target/nextest/ci/junit.xml target/ci/external-services-junit.xml
 fi
