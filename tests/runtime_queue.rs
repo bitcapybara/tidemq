@@ -246,7 +246,7 @@ async fn logical_consume(
             .scope(consumer.ack(&message))
             .await;
         if let Err(error) = result {
-            if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery {
+            if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery && !error.outcome_unknown() {
                 continue;
             }
             let pending = consumer.pending_acks().await.unwrap();
@@ -264,7 +264,10 @@ async fn logical_consume(
                 .await;
                 match result {
                     Ok(tidemq_sdk::AckReceipt::Acknowledged) => break true,
-                    Err(error) if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery => {
+                    Err(error)
+                        if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery
+                            && !error.outcome_unknown() =>
+                    {
                         break false;
                     }
                     result => assert!(
