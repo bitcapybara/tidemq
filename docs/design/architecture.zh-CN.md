@@ -1,6 +1,6 @@
 # 当前实现设计与提交权威
 
-2026-10-19 用户确认开发计划。本文记录已接入运行时的权威边界；具体功能和验证范围见[实施状态](../implementation-status.zh-CN.md)。
+本文记录当前 Combined 本地执行与分离 RF1 / RF3 的权威边界；具体功能和带版本的验证范围见[实施状态](../implementation-status.zh-CN.md)。Combined 在同一 PID 内提供四个 MQ 职责和原生 HTTPS Console，以本地 WAL 持久提交；分离角色使用真实 Raft / QUIC。
 
 ## 仓库边界
 
@@ -8,12 +8,12 @@
 
 ## 持久权威与安全契约
 
-1. 数据 Raft 组提交正文、offset、producer 去重原结果、writer fence 和发布意图；单消息 offset 与 Raft log index 不同。持久 quorum 后才能成功，失 quorum 不隐式改为 RF1。
-2. 元数据 Raft 维护 Topic/拓扑/路由、授权 epoch、配置、清单和任务生命周期；高频正文/ACK 不进入全局组。新拥有者完成授权、数据组 fence 和恢复后才条件激活路由。
+1. 数据组提交正文、offset、producer 去重原结果、writer fence 和发布意图；单消息 offset 与日志提交位置不同。Combined 等待本地 WAL 持久化，分离角色等待 Raft 提交，失 quorum 不隐式改为 RF1。
+2. 元数据组维护 Topic/拓扑/路由、授权 epoch、配置、清单和任务生命周期；Combined 使用本地有序提交，分离角色使用 Metadata Raft。高频正文/ACK 不进入全局组。新拥有者完成授权、数据组 fence 和恢复后才条件激活路由。
 3. 订阅/分区的 cursor generation、attempt 和 ACK 由所属数据组持久提交。投递前持久记录 attempt，旧 token 不确认新尝试；seek 更换 generation。
 4. 生产 ACK、消费持久 ACK、对象发布、WAL 回收四个完成点分别观测。所有消息数据边界使用排他上界，local_reclaim_end ≤ object_published_end ≤ committed_end；retained_floor 独立表示逻辑保留。
 5. 发布遵循元数据登记保护→数据授权→清单条件发布→数据完成。取消先进入 CancelRequested，再取得不可逆 Aborted 证据；未知结果保留数据。删除等待全部引用、pin、快照/恢复依赖和未完任务解除，DELETING 禁止新增引用。
-6. 控制有效性无法证明时停止新生产/投递、控制变更、清单发布和 GC 授权。有限在途收尾仍需权限、数据 quorum 和 deadline 有效。时钟/期限与重启规则必须验证，旧磁盘证明不能无限续权。
+6. 控制有效性无法证明时停止新生产/投递、控制变更、清单发布和 GC 授权。有限在途收尾仍需权限、相应持久提交能力和 deadline 有效。时钟/期限与重启规则必须验证，旧磁盘证明不能无限续权。
 
 ## 客户端与恢复
 
@@ -27,7 +27,7 @@ SDK 公共网络调用默认使用配置超时；`RequestContext` 通过 `Cancel
 
 本地 RF1 不具备 HA；RF3 内网进程测试不等于三可用区故障。对象依赖使用 aws-sdk-s3，本地统一使用 RustFS，S3 HTTP/HTTPS 与业务 QUIC 分开。生产三区、性能对标及恢复目标必须单独实测；未经确认不创建付费资源。
 
-`serve` 按本节点配置组装角色，内部只接受带 cluster/node/role/group 证据的 mTLS 请求；对外接受经过 scope 校验的语义请求，不能提交原始 Raft 命令。元数据和数据 leader 无须同机，Gateway/Broker/生命周期/成员迁移通过封闭内部协议访问权威。磁盘应用格式为元数据 version 2、数据 version 2；本开发分支没有历史格式自动迁移器，禁止为启动新版本而自动清空旧目录。
+`serve` 按角色组装运行时。Combined 内部通过带可信语义身份的直接调用与有界队列访问权威，不创建内部 Client、PeerPool、Raft 或 QUIC 监听；外部 SDK 仍通过 TLS / QUIC 鉴权。分离角色内部使用绑定 cluster/node/role/group 的 mTLS，元数据和数据 leader 无须同机。两者对外均接受经过 scope 校验的语义请求，不能提交原始状态机命令。Local 与 Raft 存储身份和提交位置分别校验，不能互换目录；没有历史格式自动迁移器，禁止为启动新版本而自动清空旧目录。
 
 角色与部署见[运行时设计](runtime.zh-CN.md)，对象安全见[生命周期](object-lifecycle.zh-CN.md)，容量口径见[保留与配额](retention-quota.zh-CN.md)，迁移见[弹性设计](scaling.zh-CN.md)。
 

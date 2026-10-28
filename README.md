@@ -14,7 +14,7 @@ Applications use logical Topics and durable Stream or Queue subscriptions throug
 - Durable subscriptions: Stream supports ordered delivery for the same key and cumulative ACK; Queue shares work across members and supports individual ACK/NACK. Delivery is at least once; application side effects need idempotency.
 - Storage separation: messages and ACK progress live in data groups; optional immutable S3 objects support archival and cold reads. Object upload is outside the producer acknowledgement path.
 - Bounded resource use: admission budgets, backpressure, retention and tenant/namespace quotas protect existing ACK, recovery and control work.
-- Authenticated access: public QUIC with TLS and scoped credentials, pinned internal mTLS identities, and loopback management endpoints.
+- Authenticated access: public QUIC with TLS and scoped credentials, loopback management endpoints, and pinned internal mTLS identities between separated roles. Combined uses authenticated calls within the process.
 - Operations: structured logs, OpenMetrics, optional OTLP, a browser Console, and SDK/CLI administration for controlled membership changes and drain.
 
 ## Architecture
@@ -36,7 +36,7 @@ Separated:
 | --- | --- |
 | `gateway` | Public connections, authentication, routing and forwarding |
 | `broker` | Serving ownership, publishing coordination and subscription delivery |
-| `storage` | Replicated messages, offsets, producer results, delivery attempts and durable ACKs |
+| `storage` | Messages, offsets, producer results, delivery attempts and durable ACKs; local WAL in Combined, Raft in separated roles |
 | `metadata` | Identities, authorization, Topic topology, ownership, manifests and control plans |
 | `combined` | Local durable execution plus built-in HTTPS Console in one process; no replicas or peer network |
 | `console` | Stateless HTTPS UI and authenticated SDK access; no Raft membership or MQ data volume |
@@ -61,6 +61,8 @@ curl --fail http://127.0.0.1:8410/readyz
 ```
 
 Open `https://localhost:8443` after trusting the generated development CA in your browser. `run.sh` builds missing Console assets once; an incomplete existing asset directory fails with a rebuild instruction. The same process serves QUIC, Console HTTPS and loopback management.
+
+Startup checks the Console manifest, required assets, session keys and HTTPS server identity before opening Combined storage. `/readyz` covers the complete process; a confirmed required dependency failure stops new work and starts a bounded drain. Restore the matching assets or identity and restart after failure. See [Console readiness and shutdown](docs/guide/deployment.md#readiness-and-shutdown).
 
 The generated Gateway is `127.0.0.1:7410`; use `ca.pem` and the private `access.token` from that directory. Generated certificates expire after seven days. RF1 has no node-level high availability. Follow the [quickstart](docs/guide/quickstart.zh-CN.md) to create a tenant, namespace, Topic and subscription, publish a message, and confirm a durable ACK.
 

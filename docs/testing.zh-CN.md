@@ -13,11 +13,25 @@
 
 不使用 `cargo check` 作为 Rust 校验入口；Clippy 有发现时修复并重复到通过。文档站的构建会检查 Markdown 死链及生成 HTML 的本地路径、资源与锚点；它不会查询远程链接或验证服务行为。站点命令见[文档站维护](site.zh-CN.md)。
 
+## Combined 与分离部署的功能回归
+
+Combined 使用真实本地 WAL、同 PID 的 MQ / Console 和原生 HTTPS；分离 RF1 / RF3 使用独立角色、真实 QUIC / Raft。跨节点成员替换、quorum、leader failover 与退休回归必须使用分离拓扑，不能用多个 Combined 进程替代。
+
+| 范围 | 需要保留的断言 |
+| --- | --- |
+| Combined 启动与恢复 | 无内部 peer listener / Raft，整体 Ready 前拒绝新写；原 Producer / Consumer / Pending 身份及持久结果 |
+| HTTPS 与必需素材 | 不匹配 SAN、过期/未来/用途错误证书启动拒绝；index / JS / CSS 缺失、读失败与等长损坏触发有界复核，持续失败不因 late success 重开 |
+| 正常客户端行为 | 未知资源 404、取消/断连、慢 TLS 不触发 MQ fatal；并发握手受限且普通请求能继续 |
+| 关闭与失败 | 必需任务异常主动通知；ACK / completion 共用原期限；owned 任务退出、许可归还、端口可重新绑定 |
+| Separate RF1 / RF3 | 实际角色/voters/quorum、原 ACK 与 receipt、HTTPS 丢响应后按原操作恢复；RF3 实际换主且不降级 |
+
+Console 后端单元入口为 `cargo test --locked -p tidemq --lib console::`，运行时入口为 `tests/runtime_queue.rs`；故障钩子另使用 `--features test-hooks`。各命令实际完成的范围、失败日志和源码/二进制身份分别留证，不把源码中存在用例写成已通过。性能测试已取消，现有功能、故障、覆盖率和浏览器门禁继续保留。
+
 ## Console 前端质量门禁
 
 前端使用 Vitest/V8、React Testing Library、user-event、jsdom 和 MSW。单元测试覆盖协议解析与业务逻辑；DOM 集成测试通过实际组件、React Query 和网络 mock 检查交互、权限失效、表单及原写入结果恢复。覆盖率包含全部应用 `src/**/*.{ts,tsx}`，只排除测试和类型声明：行、语句、函数至少 80%，分支至少 70%；认证、会话、权限、写入恢复和表单模块逐文件要求行至少 90%、分支至少 80%。HTML、LCOV 和 JSON 报告保存在 `console/web/coverage/unit-integration/`。降低阈值或排除未测页面不能代替补测试。
 
-Playwright 的 `mock-network` 套件覆盖确定性的页面操作和故障展示，不计作真实后端验收。`live` 套件通过独立 combined、Console 和 HTTPS 代理进程运行实际登录、导航、刷新、退出与凭据写入结果恢复，使用本次生成的私有身份和数据。真实凭据用例禁用 trace、视频和截图；mock 套件保留失败制品。浏览器结果与 Vitest 源码覆盖率分别统计。
+Playwright 的 `mock-network` 套件覆盖确定性的页面操作和故障展示，不计作真实后端验收。`live` 套件分别运行 Combined 的单 PID 原生 HTTPS，以及 Separate RF1 四角色加独立原生 HTTPS Console，使用本次生成的私有身份和数据检查登录、导航、刷新、退出与凭据写入结果恢复。真实凭据用例禁用 trace、视频和截图；mock 套件保留失败制品。浏览器结果与 Vitest 源码覆盖率分别统计。
 
 mock 浏览器在 CI 中保留一次诊断重试，但 flaky 结果仍使 CI 失败；必须定位并修复首败原因，不能用重试通过解除门禁。`node --test tests/ci/*.test.mjs` 在 `console/web` 中实际启动受控 Playwright 用例，验证首败后重试通过仍返回失败。此负例不启动浏览器或后端，不替代三引擎交互测试。
 
@@ -31,6 +45,7 @@ npm --prefix console/web exec -- playwright install chromium firefox webkit
 npm --prefix console/web run test:e2e
 cargo build --locked -p tidemq -j2
 npm --prefix console/web run test:e2e:live
+TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 ```
 
 真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。PR 运行 Chromium，main 和手动候选验收运行 Chromium/Firefox/WebKit；Rust 最终 gate 同时要求前端覆盖率、mock 浏览器、真实后端浏览器和文档构建/链接检查 job 成功。真实后端 job 校验同一次 Linux 构建制品的源码提交与二进制 SHA256，fork PR 不访问自托管服务。未实际运行的检查不计作该版本验收结果。

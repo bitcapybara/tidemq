@@ -31,7 +31,7 @@
 | `protocol` | 帧、消息、批次条数和解码字段上限联合校验。默认消息 256 KiB 包含 key 与 body，默认帧 1 MiB，消息必须能放进帧 |
 | `logging` | 模块过滤、JSON、有限事件队列与单事件字节。默认 1024×16 KiB；formatter、writer 和活跃事件另占空间，输出交由部署日志管理轮转保留 |
 | `tracing` | 默认关闭。启用后使用官方 OTLP HTTP exporter，默认 1% 采样、128 spans/s、队列 256×4096 字节逻辑许可、batch 32、间隔/期限各 500 ms；完整边界见[链路追踪](../operations/tracing.zh-CN.md)。endpoint 只接受字面 IP，HTTP 限 loopback，HTTPS 要求严格 IP SAN 与内置根离线校验；拒绝任意 OTLP 环境覆盖 |
-| `tls` | Combined 只接受服务端 certificate/private_key，复用于 QUIC 与 HTTPS；SAN 覆盖公开 Origin。分离 MQ 还使用 trust_roots 与 peer DER pin，不信任自行声明的身份 |
+| `tls` | Combined 只接受服务端 certificate/private_key，复用于 QUIC 与 HTTPS；启动检查叶证书当前有效、允许服务端认证、SAN 覆盖公开 Origin 且私钥匹配。分离 MQ 还使用 trust_roots 与 peer DER pin，不信任自行声明的身份 |
 | `runtime.metadata_group` / `metadata_voters` / `groups` / `peers` | Combined 只接受 metadata_group（默认1）和 groups[].group_id（默认数据组2，最多16个），ID非零且不重复，owner由node_id派生；分离角色才接受 voters/peers，RF3 voter 须在三个不同 zone |
 | `runtime.groups[].standby` | 仅分离角色接受。有限空副本候选；不属于 voter，不自行初始化，待安全 learner/joint/stable 迁移 |
 | `runtime.bootstrap` | 仅分离角色接受；在原始身份的全空持久目录初始化；发现 vote/log/commit/snapshot 时走恢复，不能靠删除目录消除未知结果 |
@@ -70,8 +70,8 @@ Combined 本地格式与分离 Raft 格式分别校验身份和提交位置，�
 | 字段 | 含义与边界 |
 | --- | --- |
 | `role` / `listen` / `management_listen` | `console`、原生 HTTPS 地址、不同的 loopback 管理地址；无需额外 TLS 代理 |
-| `tls.certificate` / `tls.private_key` | 服务端 PEM 身份，证书 SAN 覆盖 session.public_origin；与集群 CA 分开 |
-| `static_dir` | 与二进制来自同一源码版本的已构建静态目录；启动验证入口与 manifest 资源 |
+| `tls.certificate` / `tls.private_key` | 服务端 PEM 身份；叶证书当前有效、允许服务端认证、SAN 覆盖 session.public_origin 且私钥匹配；浏览器信任与 SDK 的 MQ CA 信任分别配置 |
+| `static_dir` | 与二进制来自同一源码版本的已构建目录，包含 index.html、.vite/manifest.json 与实际必需 JS/CSS；启动捕获内容指纹，运行中检测故障后有界复核 |
 | `cluster.address` / `server_name` / `trust_roots` | 固定 Gateway 地址、证书匹配的 DNS 服务名、CA 文件；不接受用户提供任意集群 URL |
 | `session.key_file` / `previous_key_files` | 恰好 32 字节的随机当前密钥及最多两个旧验证密钥，所有副本保持一致；启动加载 |
 | `session.public_origin` / `max_age_seconds` | 精确 HTTPS Origin；默认最长 1800 秒，同时受真实凭据到期约束 |
@@ -82,6 +82,8 @@ Combined 本地格式与分离 Raft 格式分别校验身份和提交位置，�
 Combined 中把下表字段放在 `[console]` 下：`listen`、`static_dir`、`session.*`、`observability.*`；不接受 role、management_listen、tls、cluster 或远程 MQ 配置。会话默认最长1800秒、范围60—3600秒，最多两个旧验证密钥。
 
 Combined 明确拒绝 replication_factor、内部监听、peers、metadata_voters、groups[].voters/standby、bootstrap 与 tls.trust_roots；空数组、空字符串和 false 也不视为“未配置”。不能复用过去的多节点 Combined 配置；没有旧配置或数据格式自动转换。
+
+Combined 在创建数据目录和打开 WAL 前只读校验 Console 资源、会话密钥和 HTTPS 身份；不会替部署生成缺失的 key。部署时须先构建资源并供应真实证书，浏览器另行信任签发 CA。资源损坏后的就绪与重启规则见[Console 故障处理](console.zh-CN.md#就绪和故障)。
 
 `validate-config` 只读输入文件并校验结构、角色条件、Group ID 与预算；不绑定端口、不打开 WAL、不创建目录/会话 key，不读取或生成证书、token、key 内容，不连接 MQ/S3。文件存在性、权限、TLS握手和静态资源完整性在 serve 启动检查。六种角色使用同一命令：
 
