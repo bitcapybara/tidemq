@@ -347,7 +347,8 @@ async fn console_http_lost_send_response_recovers_after_restart_without_republis
     for node in [11, 21, 22] {
         fixture.stop(node).await;
     }
-    for node in [11, 21, 22] {
+    // Recover data before restarting the controller, as the single-process fixture did.
+    for node in [21, 22, 11] {
         fixture.running.insert(
             node,
             RunningNode::start(fixture.configs.get(&node).unwrap().clone())

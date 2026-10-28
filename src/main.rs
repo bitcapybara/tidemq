@@ -1,3 +1,6 @@
+// Both execution backends expand the shared async dispatch beyond the default query depth.
+#![recursion_limit = "256"]
+
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
