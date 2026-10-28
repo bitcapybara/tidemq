@@ -1,6 +1,6 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Route } from "@playwright/test";
 import { readFile } from "node:fs/promises";
-import type { Session } from "../../src/api/types";
+import type { Operation, Session } from "../../src/api/types";
 
 export interface LiveContext {
   topology: "combined" | "separated-rf1";
@@ -27,6 +27,34 @@ export async function login(page: Page, file = process.env.TIDEMQ_LIVE_TOKEN_FIL
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   expect((await reply).status()).toBe(200);
   await expect(page.getByRole("navigation", { name: "Main navigation" })).toBeVisible();
+}
+
+export async function discardCommittedResponse(route: Route,
+  receive?: (result: { operationId: string; committed: boolean; resourceId: string }) => void) {
+  let operationId = "unavailable";
+  let phase = "request";
+  let result = { operationId, committed: false, resourceId: "" };
+  let failure: Error | undefined;
+  const safeFailure = () => new Error(`Native HTTPS forwarding failed: phase=${phase} operation_id=${operationId}`);
+  try {
+    const id = (route.request().postDataJSON() as { operationId?: unknown }).operationId;
+    if (typeof id === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) operationId = id;
+    phase = "fetch";
+    const response = await route.fetch({ maxRetries: 0 });
+    phase = "response";
+    const value = await response.json() as Operation;
+    result = { operationId, committed: response.status() === 200 && value.status === "succeeded" && value.id === operationId,
+      resourceId: value.resourceId ?? "" };
+    receive?.(result);
+  } catch {
+    // Transport failures include Cookie and CSRF headers; discard the original error and cause.
+    failure = safeFailure();
+  }
+  phase = "discard";
+  try { await route.abort("failed"); }
+  catch { failure ??= safeFailure(); }
+  if (failure) throw failure;
+  return result;
 }
 
 export async function request<T = Record<string, unknown>>(
