@@ -231,7 +231,8 @@ async fn application_client(
     .await
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// Keep native I/O on one worker so endpoint teardown cannot outrun a queued close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn connection_limits_are_shared_by_gateways_and_return_credit_after_close() {
     let mut fixture = Fixture::new(
         &[
@@ -304,11 +305,12 @@ async fn connection_limits_are_shared_by_gateways_and_return_credit_after_close(
         .await
         .unwrap();
     first.admin().topic_info(topic).await.unwrap();
-    assert!(
-        application_client(&fixture, 2, token.expose_secret())
-            .await
-            .is_err()
-    );
+    let rejected = application_client(&fixture, 2, token.expose_secret())
+        .await
+        .err()
+        .expect("A second gateway must share the tenant connection limit");
+    assert_eq!(rejected.kind(), tidemq_sdk::ErrorKind::ResourceExhausted);
+    assert!(!rejected.outcome_unknown());
     first.close().await.unwrap();
     let until = Instant::now() + Duration::from_secs(5);
     let second = loop {
