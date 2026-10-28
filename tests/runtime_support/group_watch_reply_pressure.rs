@@ -239,12 +239,16 @@ async fn authorization(
         expected_nodes: vec![],
     };
     if internal {
+        use tokio_rustls::rustls::pki_types::{CertificateDer, pem::PemObject};
+        let pem = tokio::fs::read(fixture.runtime.directory.join("node-1.pem"))
+            .await
+            .unwrap();
+        let leaf = CertificateDer::pem_slice_iter(&pem)
+            .next()
+            .unwrap()
+            .unwrap();
         let grant = NodeGrant {
-            certificate_pin: NodeGrant::certificate_pin(
-                &tokio::fs::read(fixture.runtime.directory.join("node-1.der"))
-                    .await
-                    .unwrap(),
-            ),
+            certificate_pin: NodeGrant::certificate_pin(leaf.as_ref()),
             certificate_name: "node-1.local".into(),
             cluster_id: service.cluster,
             node_id: 1,
