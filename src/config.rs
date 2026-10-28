@@ -129,7 +129,7 @@ impl Config {
                     || console.listen.ip().is_unspecified())
             {
                 return Err(Error::Configuration {
-                    reason: "console HTTPS and management TCP listeners conflict",
+                    reason: "console.listen and management_listen TCP listeners conflict",
                 });
             }
         } else if self.console.is_some() {

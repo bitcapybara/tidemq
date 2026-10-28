@@ -92,6 +92,7 @@ pub(super) fn allows_completion(
         | FrameKind::RetirePublishes
         | FrameKind::GetTopic
         | FrameKind::GetTopicLayout
+        | FrameKind::GetConsoleOperation
         | FrameKind::Cancel => true,
         FrameKind::GroupWatchCancel => true,
         FrameKind::ConsumerControl => {
@@ -699,6 +700,79 @@ mod admission_tests {
     use super::*;
     use tidemq_protocol::{ProtocolLimits, common::Frame, framing::encode_payload, public};
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn draining_combined_and_separate_ingress_keep_original_console_receipts_queryable() {
+        use crate::config::Role;
+        use crate::runtime::data::consumer_tests::fixture::Fixture;
+        use tidemq_protocol::console_operation::{Status, WriteCommand, WriteRequest};
+
+        for local in [true, false] {
+            let mut fixture = if local {
+                Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await
+            } else {
+                Fixture::new(
+                    &[
+                        (1, Role::Metadata),
+                        (2, Role::Storage),
+                        (3, Role::Broker),
+                        (4, Role::Gateway),
+                    ],
+                    &[1],
+                    &[2],
+                )
+                .await
+            };
+            fixture.start_all().await;
+            let ingress = if local { 1 } else { 4 };
+            let client = fixture.client(ingress).await;
+            let tenant = client.admin().create_tenant("drain").await.unwrap();
+            let namespace = client
+                .admin()
+                .create_namespace(tenant, "app")
+                .await
+                .unwrap();
+            let request = WriteRequest {
+                operation_id: tidemq_protocol::Id::new_v7().unwrap(),
+                command: WriteCommand::CreateTopic {
+                    tenant: tenant.into(),
+                    namespace: namespace.into(),
+                    name: "original".into(),
+                },
+            };
+            let receipt = client.console_write(&request).await.unwrap();
+            assert_eq!(receipt.status, Status::Succeeded);
+            let service = fixture.running.get(&ingress).unwrap().service.clone();
+            service.process.drain();
+            let recovered = client
+                .console_operation(request.operation_id)
+                .await
+                .unwrap();
+            assert_eq!(recovered.id, receipt.id);
+            assert_eq!(recovered.actor, receipt.actor);
+            assert_eq!(recovered.resource_id, receipt.resource_id);
+            assert_eq!(recovered.status, receipt.status);
+            let new = WriteRequest {
+                operation_id: tidemq_protocol::Id::new_v7().unwrap(),
+                command: WriteCommand::CreateTopic {
+                    tenant: tenant.into(),
+                    namespace: namespace.into(),
+                    name: "must-not-submit".into(),
+                },
+            };
+            assert!(client.console_write(&new).await.is_err());
+            assert_eq!(
+                client
+                    .console_operation(new.operation_id)
+                    .await
+                    .unwrap()
+                    .status,
+                Status::Unknown
+            );
+            client.close().await.unwrap();
+            fixture.close().await;
+        }
+    }
+
     #[test]
     fn broker_targets_need_fresh_capacity_with_network_time_and_reserve_headroom() {
         let sample = crate::scaling::Capacity {
@@ -804,6 +878,8 @@ mod admission_tests {
             (FrameKind::Publish, false),
             (FrameKind::GroupRead, false),
             (FrameKind::CreateLogicalTopic, false),
+            (FrameKind::ConsoleWrite, false),
+            (FrameKind::GetConsoleOperation, true),
             (FrameKind::GroupAck, true),
             (FrameKind::GroupRetireRead, true),
             (FrameKind::GroupRetireAck, true),
