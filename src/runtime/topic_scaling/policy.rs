@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::broker::ShardLoad;
 use crate::runtime::{Error, Result};
 
-/// An operator-supplied capacity profile for one Raft group at the configured RF.
+/// An operator-supplied capacity profile for one execution group at the configured RF.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkCapacity {

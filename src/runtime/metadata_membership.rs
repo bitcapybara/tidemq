@@ -50,6 +50,7 @@ impl Service {
         added: u64,
         deadline: Instant,
     ) -> Result<ClusterAction> {
+        self.require_cluster()?;
         if removed == added
             || added == 0
             || removed == 0
@@ -62,6 +63,8 @@ impl Service {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         let (previous, index) = replica
             .state
+            .raft_state()
+            .ok_or_else(super::cluster::unsupported)?
             .try_with_membership(|_, _, membership| {
                 if membership.membership().get_joint_config().len() != 1 {
                     return Err(Error::unavailable());
@@ -76,7 +79,7 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("read metadata replacement source", source))??;
-        let copy_bound = replica.log.diagnostics().await.replica_file_limit_bytes;
+        let (copy_bound, _) = replica.storage_bound().await?;
         let bytes = self
             .rpc
             .call(
@@ -108,6 +111,7 @@ impl Service {
     }
 
     pub(super) async fn metadata_membership_status(&self) -> Result<bytes::Bytes> {
+        self.require_cluster()?;
         if self.metadata.is_none() {
             return Err(Error::unavailable());
         }
@@ -128,6 +132,7 @@ impl Service {
         body: &[u8],
         deadline: Instant,
     ) -> Result<bytes::Bytes> {
+        self.require_cluster()?;
         let request: CheckpointRequest = wire::decode_json(body)?;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         let allowed = replica
@@ -151,7 +156,11 @@ impl Service {
                 true,
             ));
         }
-        let mut state = replica.state.clone();
+        let mut state = replica
+            .state
+            .raft_state()
+            .ok_or_else(super::cluster::unsupported)?
+            .clone();
         let snapshot = wire::within(deadline, state.build_snapshot())
             .await?
             .map_err(|source| {
@@ -186,6 +195,9 @@ impl Service {
         self: Arc<Self>,
         mut stopped: watch::Receiver<bool>,
     ) -> Result<()> {
+        if self.rpc.is_local() {
+            return Ok(());
+        }
         let mut ticks = tokio::time::interval(Duration::from_secs(1));
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -235,11 +247,15 @@ impl Service {
             super::test_hooks::pause_metadata_membership(self.cluster, added, deadline).await;
         }
         self.metadata_repair(change)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let configs = replica
-            .raft
+            .group
+            .raft()
+            .ok_or_else(super::cluster::unsupported)?
             .metrics()
             .borrow()
             .membership_config
@@ -267,7 +283,9 @@ impl Service {
                     wire::within(
                         deadline,
                         replica
-                            .raft
+                            .group
+                            .raft()
+                            .ok_or_else(super::cluster::unsupported)?
                             .add_learner(*node, BasicNode::new(endpoint.to_string()), true),
                     )
                     .await?
@@ -278,7 +296,11 @@ impl Service {
             }
             wire::within(
                 deadline,
-                replica.raft.change_membership(change.target.clone(), false),
+                replica
+                    .group
+                    .raft()
+                    .ok_or_else(super::cluster::unsupported)?
+                    .change_membership(change.target.clone(), false),
             )
             .await?
             .map_err(|source| Error::operation("commit joint metadata membership", source))?;
@@ -319,6 +341,8 @@ impl Service {
         self.require_leader(replica)?;
         let minimum_index = replica
             .state
+            .raft_state()
+            .ok_or_else(super::cluster::unsupported)?
             .try_with_membership(|_, _, membership| {
                 if membership.membership().get_joint_config().len() != 1
                     || membership.membership().voter_ids().collect::<BTreeSet<_>>() != change.target
@@ -357,9 +381,11 @@ impl Service {
             }
         }
         let _mutation = wire::within(deadline, self.metadata_mutation.lock()).await?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         self.meta_write(
             Command::complete_metadata_change(
                 super::node::random_id()?,

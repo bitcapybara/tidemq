@@ -9,7 +9,7 @@ pub(super) use authority::{before_authority_quorum, core_handlers};
 use crate::metadata::PartitionKey;
 use crate::{
     broker::DataApplication,
-    replication::DiskStateMachine,
+    execution::{ExecutionPosition, GroupState},
     server::group_watch::{Budget, Registry},
 };
 use std::collections::{BTreeMap, VecDeque};
@@ -19,7 +19,7 @@ use tidemq_protocol::Id;
 pub struct Diagnostics {
     budget: Budget,
     registry: Arc<Registry>,
-    groups: BTreeMap<u64, DiskStateMachine<DataApplication>>,
+    groups: BTreeMap<u64, GroupState<DataApplication>>,
     cluster: Id,
     node: u64,
 }
@@ -97,7 +97,10 @@ impl Diagnostics {
                             application.watch_hub().diagnostic_commands();
                         GroupSnapshot {
                             group: *group,
-                            applied_index: applied.map(|log| log.index),
+                            applied_index: applied.map(|position| match position {
+                                ExecutionPosition::Local { sequence } => sequence,
+                                ExecutionPosition::Raft { index, .. } => index,
+                            }),
                             cached_targets,
                             dependency_edges,
                             queued_rechecks,

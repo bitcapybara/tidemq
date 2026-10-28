@@ -32,10 +32,19 @@ struct HostedGroup {
 }
 
 impl Service {
+    pub(super) fn require_cluster(&self) -> Result<()> {
+        if self.rpc.is_local() {
+            return Err(unsupported());
+        }
+        Ok(())
+    }
+
     pub(super) async fn hosted_group(&self, body: &[u8]) -> Result<bytes::Bytes> {
+        self.require_cluster()?;
         let group: u64 = wire::decode_json(body)?;
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
-        let voters = crate::ownership::remote::current_voters(&replica.raft)?;
+        let placement = replica.current_placement()?;
+        let voters = placement.raft_voters().cloned().ok_or_else(unsupported)?;
         let initialized = replica
             .state
             .try_with_application(|state| {
@@ -107,6 +116,7 @@ impl Service {
         frame: &Frame,
         deadline: Instant,
     ) -> Result<Frame> {
+        self.require_cluster()?;
         if frame_kind_action(frame, &self.config.protocol)?
             == public::ClusterAction::InspectAuthorityTransfer
         {
@@ -388,7 +398,12 @@ impl Service {
             }
             loop {
                 match self
-                    .verify_prepared_group(group.group_id, &group.voters, true, deadline)
+                    .verify_prepared_group(
+                        group.group_id,
+                        group.placement.raft_voters().ok_or_else(unsupported)?,
+                        true,
+                        deadline,
+                    )
                     .await
                 {
                     Ok(()) => break,
@@ -451,6 +466,7 @@ impl Service {
         registered: bool,
         deadline: Instant,
     ) -> Result<()> {
+        self.require_cluster()?;
         if group == 0
             || group == self.config.runtime.metadata_group
             || voters.len() != usize::from(self.config.replication_factor)
@@ -493,6 +509,10 @@ fn credential(access: &Access) -> Result<Id> {
         .ok_or_else(forbidden)?
         .parse()
         .map_err(|_| forbidden())
+}
+
+pub(super) fn unsupported() -> Error {
+    super::metadata::metadata_rejection(metadata::Rejection::Unsupported)
 }
 
 fn cluster_action(request: public::ManageCluster, operation: Id) -> Result<ClusterAction> {
@@ -594,7 +614,10 @@ fn group_result(group: metadata::DataGroup) -> public::ClusterGroup {
     public::ClusterGroup {
         group_id: group.group_id,
         generation: group.generation,
-        voters: group.voters.into_iter().collect(),
+        voters: group
+            .placement
+            .raft_voters()
+            .map_or_else(Vec::new, |voters| voters.iter().copied().collect()),
     }
 }
 

@@ -13,6 +13,7 @@ impl Service {
         target_group: u64,
         deadline: Instant,
     ) -> Result<AuthorityTransfer> {
+        self.require_cluster()?;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         {
@@ -70,6 +71,9 @@ impl Service {
         self: Arc<Self>,
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<()> {
+        if self.rpc.is_local() {
+            return Ok(());
+        }
         let mut ticker = tokio::time::interval(Duration::from_secs(1));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut after = None;
@@ -113,6 +117,7 @@ impl Service {
         id: Id,
         deadline: Instant,
     ) -> Result<AuthorityTransfer> {
+        self.require_cluster()?;
         // This lock serializes transfers only; consumer liveness and metadata mutations stay independent.
         let _serial = wire::within(deadline, self.transfer_serial.lock()).await?;
         loop {

@@ -109,10 +109,16 @@ impl Service {
                 .map_err(|source| Error::operation("allocate resource lease mutation", source))?;
             let command =
                 Command::resource_lease(operation, self.meta_revision().await?, action.clone());
-            let reply = wire::within(deadline, replica.raft.client_write(command))
-                .await?
-                .map_err(|source| Error::operation("commit tenant resource lease", source))?
-                .data;
+            let applied = if matches!(
+                action,
+                ResourceLeaseCommand::Renew { .. } | ResourceLeaseCommand::Release { .. }
+            ) {
+                replica.group.commit_completion(command, deadline).await
+            } else {
+                replica.group.commit(command, deadline).await
+            }
+            .map_err(wire::execution_error)?;
+            let reply = applied.response;
             match reply {
                 metadata::Response::Applied {
                     outcome: metadata::Outcome::ResourceLease(lease),

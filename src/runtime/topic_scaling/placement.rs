@@ -227,9 +227,11 @@ impl Service {
 
     async fn scaling_groups(&self, deadline: Instant) -> Result<Vec<DataGroup>> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         replica
             .state
             .try_with_application(|state| {
@@ -258,8 +260,20 @@ impl Service {
         else {
             return Ok(false);
         };
-        self.verify_prepared_group(group, &record.voters, true, deadline)
-            .await?;
+        if let Some(voters) = record.placement.raft_voters() {
+            self.verify_prepared_group(group, voters, true, deadline)
+                .await?;
+        } else {
+            let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
+            if replica.current_placement()? != record.placement {
+                return Err(Error::unavailable());
+            }
+            replica
+                .group
+                .ensure_read(deadline)
+                .await
+                .map_err(wire::execution_error)?;
+        }
         let policy = PlacementPolicy::default();
         let placement = Placement::new(policy)
             .map_err(|source| Error::operation("validate topic scaling capacity policy", source))?;
@@ -284,24 +298,37 @@ impl Service {
             .reserve_bytes
             .checked_add(logical.checked_mul(10).ok_or_else(Error::unavailable)?)
             .ok_or_else(Error::unavailable)?;
-        for node in &record.voters {
+        for node in record.placement.hosts() {
             let started = Instant::now();
-            let Reply::Capacity(report) = self
-                .scaling
-                .rpc
-                .call(*node, Query::Capacity { group, node: *node }, deadline)
-                .await
-                .map_err(|source| {
-                    Error::operation("inspect every destination replica capacity", source)
-                })?
-            else {
-                return Ok(false);
+            let report = if self.rpc.is_local() {
+                use crate::scaling::remote::CapacitySource;
+                if node != self.config.node_id {
+                    return Ok(false);
+                }
+                self.scaling
+                    .capacity
+                    .snapshot()
+                    .and_then(|sample| {
+                        crate::scaling::remote::CapacityReport::from_sample(sample).ok()
+                    })
+                    .ok_or_else(Error::unavailable)?
+            } else {
+                let Reply::Capacity(report) = self
+                    .scaling
+                    .rpc
+                    .call(node, Query::Capacity { group, node }, deadline)
+                    .await
+                    .map_err(|source| {
+                        Error::operation("inspect every destination replica capacity", source)
+                    })?
+                else {
+                    return Ok(false);
+                };
+                report
             };
-            let mut capacity = report
-                .measured(*node, started.elapsed())
-                .map_err(|source| {
-                    Error::operation("verify destination capacity freshness", source)
-                })?;
+            let mut capacity = report.measured(node, started.elapsed()).map_err(|source| {
+                Error::operation("verify destination capacity freshness", source)
+            })?;
             capacity.bytes_per_second = capacity
                 .bytes_per_second
                 .checked_add(logical)
@@ -435,7 +462,11 @@ pub(super) fn merge_group_low(
 }
 
 fn eligible_group(state: &metadata::MetadataState, group: &DataGroup, rf: u8) -> bool {
-    group.voters.len() == usize::from(rf)
+    let hosts = group.placement.hosts();
+    group
+        .placement
+        .mode()
+        .is_ok_and(|mode| mode.replication_factor() == usize::from(rf))
         && !state.topology.pending_transfers().any(|plan| {
             plan.source.group_id == group.group_id || plan.target.group_id == group.group_id
         })
@@ -450,18 +481,17 @@ fn eligible_group(state: &metadata::MetadataState, group: &DataGroup, rf: u8) ->
                 .iter()
                 .any(|shard| shard.route.group == group.group_id)
         })
-        && group.voters.iter().all(|node| {
+        && hosts.iter().all(|node| {
             state.node(*node).is_some_and(|node| {
                 node.spec.schedulable && node.spec.roles.contains(&NodeRole::Storage)
             })
         })
-        && group
-            .voters
+        && hosts
             .iter()
             .filter_map(|node| state.node(*node).map(|node| node.spec.zone.as_str()))
             .collect::<BTreeSet<_>>()
             .len()
-            == group.voters.len()
+            == hosts.len()
 }
 
 pub(super) fn validate_decision(
