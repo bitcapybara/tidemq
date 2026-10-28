@@ -67,6 +67,7 @@ pub(super) struct Shared<A: Application> {
     pub bytes: Arc<Semaphore>,
     ordinary_commands: Arc<Semaphore>,
     ordinary_bytes: Arc<Semaphore>,
+    ordinary_queue_slots: Arc<Semaphore>,
     pub snapshot_requested: AtomicBool,
     pub snapshot_done: watch::Sender<u64>,
     pub abort: Mutex<Option<tokio::task::AbortHandle>>,
@@ -99,6 +100,13 @@ pub(super) struct Payload<A: Application> {
     pub _permits: Vec<OwnedSemaphorePermit>,
     pub enqueued: Instant,
     pub span: tracing::Span,
+    pub subscriber: tracing::Dispatch,
+}
+
+pub(super) struct QueueEntry<A: Application> {
+    pub queued: Arc<Queued<A>>,
+    // Cancellation releases payload budgets; the channel owns this slot until dequeue.
+    _slot: Option<OwnedSemaphorePermit>,
 }
 
 pub(super) struct Queued<A: Application> {
@@ -154,7 +162,7 @@ impl<A: Application> Drop for Wait<A> {
 
 pub struct LocalGroup<A: Application> {
     pub(super) shared: Arc<Shared<A>>,
-    sender: mpsc::Sender<Arc<Queued<A>>>,
+    sender: mpsc::Sender<QueueEntry<A>>,
 }
 
 impl<A: Application> Clone for LocalGroup<A> {
@@ -190,6 +198,7 @@ impl<A: Application> LocalGroup<A> {
         let options = &opened.storage.options;
         let total_commands = options.journal.max_pending_records;
         let total_bytes = options.journal.max_pending_bytes as usize;
+        let ordinary_commands = total_commands - (total_commands / 4).max(1);
         let (sender, receiver) = mpsc::channel(total_commands);
         let (health, _) = watch::channel(LocalHealth::Ready);
         let (stopped, _) = watch::channel(false);
@@ -197,10 +206,9 @@ impl<A: Application> LocalGroup<A> {
         let shared = Arc::new(Shared {
             commands: Arc::new(Semaphore::new(total_commands)),
             bytes: Arc::new(Semaphore::new(total_bytes)),
-            ordinary_commands: Arc::new(Semaphore::new(
-                total_commands - (total_commands / 4).max(1),
-            )),
+            ordinary_commands: Arc::new(Semaphore::new(ordinary_commands)),
             ordinary_bytes: Arc::new(Semaphore::new(total_bytes - total_bytes / 4)),
+            ordinary_queue_slots: Arc::new(Semaphore::new(ordinary_commands)),
             storage: opened.storage,
             view: RwLock::new(View {
                 application: opened.application,
@@ -359,6 +367,17 @@ impl<A: Application> LocalGroup<A> {
             LocalHealth::Failed { reason } => return Err(Error::fatal(reason.clone())),
             _ => return Err(self.reject("Local execution is draining or stopped")),
         }
+        let slot = if completion {
+            None
+        } else {
+            Some(
+                self.shared
+                    .ordinary_queue_slots
+                    .clone()
+                    .try_acquire_owned()
+                    .map_err(|_| self.reject("Production queue slot budget is exhausted"))?,
+            )
+        };
         let mut permits = Vec::new();
         if !completion {
             permits.push(
@@ -417,6 +436,7 @@ impl<A: Application> LocalGroup<A> {
                 _permits: permits,
                 enqueued: Instant::now(),
                 span: tracing::Span::current(),
+                subscriber: tracing::dispatcher::get_default(Clone::clone),
             })),
         });
         let phase = lock(&self.shared.phase);
@@ -426,7 +446,10 @@ impl<A: Application> LocalGroup<A> {
             _ => return Err(self.reject("Local execution is draining or stopped")),
         }
         self.sender
-            .try_send(queued.clone())
+            .try_send(QueueEntry {
+                queued: queued.clone(),
+                _slot: slot,
+            })
             .map_err(|_| self.reject("Local submission queue is unavailable"))?;
         drop(phase);
         lock(&self.shared.stats).queued += 1;
