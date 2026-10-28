@@ -8,9 +8,13 @@
 
 正常 runtime 错误在转换成通用 wire 错误之前，还记录 `event_code=runtime_request_unknown`、`stage=runtime_error`。`error_kind` 只包含固定分类：`broker_post_handoff_unknown`、`broker_commit`、`runtime_operation_unknown`、`runtime_rejected_unknown`；`operation` 为代码内静态阶段名称。它与 dispatch 共用同一个限频器，通常优先留下更具体的 runtime 原因，后续重复 wire 日志会被抑制，Unknown 计数不变。日志不输出底层错误字符串或完整 broker 对象；这些分类仍不能单独区分所有 lease、磁盘和调度原因，应结合阶段指标与原身份恢复证据。
 
+分离角色的数据请求最后一跳发现本节点已不是 leader 时，记录 `event_code=data_leader_hint_stale` 并返回可重试的 Unavailable，上游清除旧路由与 leader 缓存后重新发现。事件包含节点、数据组、路由和原 request/operation ID；RetireRead 另外包含 member ID、epoch 和 read sequence，用于核对同一读取的恢复。已为 Unknown 的操作仍须按原身份恢复，单次 Unavailable 不能证明此前没有提交。
+
+FORWARD 的委托来源角色、跳数或 principal/scope 长度不合法时，记录 `event_code=public_forward_delegation_denied` 并返回 Forbidden；事件只含来源节点/角色、数据组、跳数和原请求标识。这条事件只覆盖该委托检查，其他权限拒绝仍需结合对应请求的错误码和 outcome 诊断；不能把真正的 Forbidden 当成 leader 重试提示。上述事件不输出 principal、scope、payload 或凭据。
+
 默认日志规模按事件数×单事件上限估算队列，再计复制/活跃 formatter/native 余量。容器采集器负责大小轮转、保留和总磁盘预算；当前实现没有内建文件 sink。不得让日志盘占用 WAL/控制预留，也不默认输出双份完整日志。
 
-模块过滤禁用 regex。临时过滤限制 1024 字节与 1—300s，要求活动 Tokio runtime，代次隔离旧恢复计时器；无效表达式不覆盖原过滤。当前 API 在服务端库，管理入口/操作审计由 T10 接入。SDK 不安装该设施。
+模块过滤禁用 regex。临时过滤限制 1024 字节与 1—300s，要求活动 Tokio runtime，代次隔离旧恢复计时器；无效表达式不覆盖原过滤。临时过滤通过服务端库 API 提供，管理入口必须执行认证与操作审计。SDK 不安装该设施。
 
 可选 OTLP 与日志使用同一 subscriber 的独立 per-layer filter。专用 `tidemq_trace` span 不交给 stdout formatter，日志诊断过滤不放大 OTLP target/字段白名单。OTLP 有自己的有限队列、字节/速率/超时和丢弃指标，关闭时不创建导出任务；见[追踪手册](tracing.zh-CN.md)。
 
