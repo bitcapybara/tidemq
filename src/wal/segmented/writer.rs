@@ -91,6 +91,16 @@ impl Writer {
                 },
             };
             if let Some(reason) = &failed {
+                if let Request::Shutdown(completion) = request {
+                    receiver.close();
+                    while let Ok(request) = receiver.try_recv() {
+                        fail(request, reason);
+                    }
+                    let reason = reason.clone();
+                    drop(self);
+                    let _ = completion.send(Err(reason));
+                    return;
+                }
                 fail(request, reason);
                 continue;
             }
@@ -166,6 +176,11 @@ impl Writer {
                     "Segmented writer stopped accepting mutations"
                 );
                 failed = Some(format!("{error:#}"));
+                self.shared
+                    .health
+                    .send_replace(super::JournalHealth::Failed {
+                        reason: format!("{error:#}"),
+                    });
             }
             self.refresh();
         }
