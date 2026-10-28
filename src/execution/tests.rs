@@ -139,12 +139,12 @@ struct Hook {
 }
 static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Hook>>>> = OnceLock::new();
 
-struct HookGuard {
+pub(crate) struct HookGuard {
     directory: PathBuf,
     hook: Arc<Hook>,
 }
 impl HookGuard {
-    fn new(directory: &Path, stage: &'static str, fail: bool) -> Self {
+    pub(crate) fn new(directory: &Path, stage: &'static str, fail: bool) -> Self {
         let hook = Arc::new(Hook {
             stage,
             fail,
@@ -159,12 +159,12 @@ impl HookGuard {
             hook,
         }
     }
-    async fn entered(&self) {
+    pub(crate) async fn entered(&self) {
         tokio::time::timeout_at(deadline(), self.hook.entered.notified())
             .await
             .unwrap();
     }
-    fn release(&self) {
+    pub(crate) fn release(&self) {
         *lock(&self.hook.released) = true;
         self.hook.condition.notify_all();
     }
