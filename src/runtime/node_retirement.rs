@@ -93,6 +93,7 @@ impl Service {
         drain: Id,
         deadline: Instant,
     ) -> Result<Fence> {
+        self.require_cluster()?;
         self.refresh_registry(deadline).await?;
         let local = self
             .registry
@@ -202,6 +203,9 @@ impl Service {
         self: std::sync::Arc<Self>,
         mut stopped: tokio::sync::watch::Receiver<bool>,
     ) -> Result<()> {
+        if self.rpc.is_local() {
+            return Ok(());
+        }
         let mut ticks = tokio::time::interval(Duration::from_secs(1));
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut next_balance = Instant::now();
@@ -240,9 +244,11 @@ impl Service {
     }
     async fn move_draining_owners(&self, deadline: Instant) -> Result<bool> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
-        super::wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let (routes, mut candidates) = replica
             .state
             .try_with_application(drain_targets)

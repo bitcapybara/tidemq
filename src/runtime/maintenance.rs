@@ -16,7 +16,7 @@ use crate::ownership::Work;
 use crate::producer::{MessageData, ProducerState, Rejection};
 
 use super::service::Service;
-use super::{Error, Result, wire};
+use super::{Error, Result};
 
 const ARCHIVE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const ARCHIVE_MAX_MESSAGES: usize = 8192;
@@ -144,13 +144,16 @@ impl Service {
             if self.require_leader(replica).is_err() {
                 continue;
             }
+            let Some(scaling) = &self.scaling.service else {
+                continue;
+            };
             let groups = self.registry.placement_groups(group_after, round)?;
             group_after = groups.keys().next_back().copied();
             round = round.saturating_add(1);
             let deadline = Instant::now() + Duration::from_secs(30);
             let result = tokio::select! {
                 _ = shutdown.changed() => return Ok(()),
-                result = self.scaling.service.tick(&mut placement, &groups, deadline) => result,
+                result = scaling.tick(&mut placement, &groups, deadline) => result,
             };
             let successful = result.is_ok();
             let (last_tick, last_error) = match result {
@@ -595,9 +598,11 @@ impl Service {
         deadline: Instant,
     ) -> Result<()> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let now_ms = super::data::unix_millis()?;
         let (status, fence) = replica
             .state

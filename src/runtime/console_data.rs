@@ -156,30 +156,31 @@ impl Service {
         replica: &super::super::node::Replica<A>,
         deadline: Instant,
     ) -> view::NodeGroup {
-        let metrics = replica.raft.metrics();
-        let (leader, voters) = {
-            let metrics = metrics.borrow();
-            (
-                metrics.current_leader,
-                metrics
-                    .membership_config
-                    .membership()
-                    .voter_ids()
-                    .map(Decimal)
-                    .collect(),
-            )
-        };
-        let quorum_confirmed = if leader == Some(self.config.node_id) {
-            Some(
-                tokio::time::timeout_at(
-                    deadline.min(Instant::now() + std::time::Duration::from_millis(150)),
-                    replica.raft.ensure_linearizable(),
+        let (leader, voters, quorum_confirmed) = if replica.group.raft().is_some() {
+            let leader = replica.authority_node();
+            let voters = replica
+                .current_placement()
+                .ok()
+                .and_then(|placement| placement.raft_voters().cloned())
+                .unwrap_or_default()
+                .into_iter()
+                .map(Decimal)
+                .collect();
+            let quorum = if leader == Some(self.config.node_id) {
+                Some(
+                    tokio::time::timeout_at(
+                        deadline.min(Instant::now() + std::time::Duration::from_millis(150)),
+                        replica.group.ensure_read(deadline),
+                    )
+                    .await
+                    .is_ok_and(|result| result.is_ok()),
                 )
-                .await
-                .is_ok_and(|result| result.is_ok()),
-            )
+            } else {
+                None
+            };
+            (leader, voters, quorum)
         } else {
-            None
+            (None, Vec::new(), None)
         };
         view::NodeGroup {
             id: Decimal(group),
@@ -202,9 +203,11 @@ impl Service {
             return self.console_node_probe(deadline).await;
         }
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         match query {
             DataRead::Summary {
                 partition,
@@ -218,7 +221,10 @@ impl Service {
                     Ok(DataReply::Summary(DataSummary {
                         retained_start: producer.retained_floor(),
                         committed_end: producer.committed_end(),
-                        revision: applied.map(|position| position.index),
+                        revision: applied.map(|position| match position {
+                            crate::execution::ExecutionPosition::Local { sequence } => sequence,
+                            crate::execution::ExecutionPosition::Raft { index, .. } => index,
+                        }),
                         observed_at_ms: super::super::data::unix_millis()?,
                         progress: subscription
                             .and_then(|subscription| {
@@ -437,7 +443,10 @@ impl Service {
                 Ok(DataReply::Summary(DataSummary {
                     retained_start: producer.retained_floor(),
                     committed_end: producer.committed_end(),
-                    revision: applied.map(|position| position.index),
+                    revision: applied.map(|position| match position {
+                        crate::execution::ExecutionPosition::Local { sequence } => sequence,
+                        crate::execution::ExecutionPosition::Raft { index, .. } => index,
+                    }),
                     observed_at_ms: super::super::data::unix_millis()?,
                     progress: None,
                     retention_age_ms: None,

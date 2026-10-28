@@ -225,9 +225,11 @@ impl Service {
             deadline,
         )
         .await;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let now = super::data::unix_millis()?;
         let permit = replica
             .state

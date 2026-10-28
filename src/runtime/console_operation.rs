@@ -213,6 +213,7 @@ fn observe_console_failure(record: &ConsoleRecord, stage: &'static str, error: &
         Error::Invalid { .. } => "invalid",
         Error::Operation { .. } => "operation",
         Error::LocalNotSubmitted { .. } => "local_not_submitted",
+        Error::GroupNotSubmitted { .. } => "group_not_submitted",
         Error::CommittedConsumerWriter { .. } => "committed_writer",
         Error::Rejected { .. } | Error::TenantGrantExhausted { .. } => "rejected",
     };
@@ -484,10 +485,13 @@ impl Service {
                 metadata::Command::console(operation, self.meta_revision().await?, command.clone());
             #[cfg(test)]
             tests::before_metadata_write(&request).await;
-            let response = wire::within(deadline, replica.raft.client_write(request))
-                .await?
-                .map_err(|source| Error::operation("commit console receipt", source))?
-                .data;
+            let applied = if matches!(command, ConsoleCommand::Complete { .. }) {
+                replica.group.commit_completion(request, deadline).await
+            } else {
+                replica.group.commit(request, deadline).await
+            }
+            .map_err(wire::execution_error)?;
+            let response = applied.response;
             match response {
                 metadata::Response::Applied {
                     outcome: metadata::Outcome::ConsoleOperation(_),

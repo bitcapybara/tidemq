@@ -231,10 +231,22 @@ impl Service {
             super::data::consumer_tests::before_consumer_meta_write(operation, revision, &command)
                 .await;
             let request = Command::consumer(operation, revision, command.clone());
-            let response = wire::within(deadline, replica.raft.client_write(request))
-                .await?
-                .map_err(|source| Error::operation("commit consumer metadata command", source))?
-                .data;
+            let applied = if matches!(
+                command,
+                ConsumerCommand::Heartbeat { .. }
+                    | ConsumerCommand::Leave { .. }
+                    | ConsumerCommand::Retire { .. }
+                    | ConsumerCommand::OpenedGate { .. }
+                    | ConsumerCommand::Observe { .. }
+                    | ConsumerCommand::ObserveDeleted { .. }
+                    | ConsumerCommand::FinishDelete { .. }
+            ) {
+                replica.group.commit_completion(request, deadline).await
+            } else {
+                replica.group.commit(request, deadline).await
+            }
+            .map_err(wire::execution_error)?;
+            let response = applied.response;
             match response {
                 metadata::Response::Applied {
                     outcome: metadata::Outcome::Consumer(outcome),

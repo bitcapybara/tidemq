@@ -11,9 +11,11 @@ impl Service {
         use std::sync::atomic::Ordering;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        super::wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let mut candidates = replica
             .state
             .try_with_application(|state| super::node_retirement::drain_targets(state).1)
@@ -55,10 +57,13 @@ impl Service {
     }
 
     pub(super) async fn balance_broker_ownership(&self, deadline: Instant) -> Result<bool> {
+        self.require_cluster()?;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
-        super::wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         let (routes, candidates) = replica
             .state
             .try_with_application(balance_targets)

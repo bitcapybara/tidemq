@@ -82,9 +82,11 @@ impl Service {
     ) -> Result<u64> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
         replica
             .state
             .try_with_application(|state| {
@@ -170,24 +172,19 @@ impl Service {
         let partition = request.partition();
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
-        let metadata_voter = replica
-            .raft
-            .metrics()
-            .borrow()
-            .membership_config
-            .membership()
-            .voter_ids()
-            .any(|node| node == sender);
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(crate::runtime::wire::execution_error)?;
+        let metadata_voter = replica.current_placement()?.hosts().contains(&sender);
         let data_voter = replica
             .state
             .try_with_application(|state| {
                 state
                     .partition_group(partition)
                     .and_then(|group| state.group(group))
-                    .is_some_and(|group| group.voters.contains(&sender))
+                    .is_some_and(|group| group.placement.hosts().contains(&sender))
             })
             .await
             .map_err(|source| Error::operation("validate retention controller", source))?;
@@ -221,10 +218,13 @@ impl Service {
                 self.meta_revision().await?,
                 metadata::Action::Retention(control.clone()),
             );
-            let response = wire::within(deadline, replica.raft.client_write(command))
-                .await?
-                .map_err(|source| Error::operation("commit retention reservation", source))?
-                .data;
+            let applied = if matches!(control, RetentionControl::Finish { .. }) {
+                replica.group.commit_completion(command, deadline).await
+            } else {
+                replica.group.commit(command, deadline).await
+            }
+            .map_err(wire::execution_error)?;
+            let response = applied.response;
             match response {
                 metadata::Response::Applied {
                     outcome: metadata::Outcome::Retention(plan),

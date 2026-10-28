@@ -171,7 +171,7 @@ async fn setup() -> (Fixture, Client, Id, Id) {
         .groups
         .push(GroupConfig {
             group_id: 3,
-            voters: vec![1],
+            voters: Vec::new(),
             standby: Vec::new(),
         });
     fixture.start_all().await;
@@ -276,7 +276,12 @@ async fn conflict_with_resource_lease(
         },
     );
     assert!(matches!(
-        replica.raft.client_write(competing).await.unwrap().data,
+        replica
+            .group
+            .commit(competing, until)
+            .await
+            .unwrap()
+            .response,
         Response::Applied {
             outcome: metadata::Outcome::ResourceLease(None),
             ..
@@ -284,11 +289,11 @@ async fn conflict_with_resource_lease(
     ));
     assert!(matches!(
         replica
-            .raft
-            .client_write(original.clone())
+            .group
+            .commit(original.clone(), until)
             .await
             .unwrap()
-            .data,
+            .response,
         Response::Rejected {
             reason: metadata::Rejection::RevisionConflict,
             ..
@@ -549,6 +554,12 @@ fn retryable_refusals_are_rejected_and_unknown_execution_stays_unknown() {
     for (error, retry) in [
         (Error::unavailable(), true),
         (
+            super::super::wire::execution_error(crate::execution::Error::NotSubmitted {
+                reason: "Admission closed before handoff".into(),
+            }),
+            true,
+        ),
+        (
             Error::reject(ErrorCode::QuotaExceeded, Outcome::Rejected, true),
             false,
         ),
@@ -574,6 +585,12 @@ fn retryable_refusals_are_rejected_and_unknown_execution_stays_unknown() {
     }
     for error in [
         Error::unknown(),
+        super::super::wire::execution_error(crate::execution::Error::Unknown {
+            reason: "Deadline expired after handoff".into(),
+        }),
+        super::super::wire::execution_error(crate::execution::Error::Fatal {
+            reason: "Application failed after persistence".into(),
+        }),
         Error::unavailable().admitted(),
         Error::operation(
             "test network uncertainty",
