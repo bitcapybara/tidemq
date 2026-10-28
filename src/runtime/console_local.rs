@@ -509,4 +509,4 @@ impl LocalConsole {
 
 #[cfg(test)]
 #[path = "../../tests/runtime_support/console_local.rs"]
-mod tests;
+pub(super) mod tests;
