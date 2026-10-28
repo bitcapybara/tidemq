@@ -33,7 +33,7 @@ Console 后端单元入口为 `cargo test --locked -p tidemq --lib console::`，
 
 Playwright 的 `mock-network` 套件覆盖确定性的页面操作和故障展示，不计作真实后端验收。`live` 套件分别运行 Combined 的单 PID 原生 HTTPS，以及 Separate RF1 四角色加独立原生 HTTPS Console，使用本次生成的私有身份和数据检查登录、导航、刷新、退出与凭据写入结果恢复。真实凭据用例禁用 trace、视频和截图；mock 套件保留失败制品。浏览器结果与 Vitest 源码覆盖率分别统计。
 
-mock 浏览器在 CI 中保留一次诊断重试，但 flaky 结果仍使 CI 失败；必须定位并修复首败原因，不能用重试通过解除门禁。`node --test tests/ci/*.test.mjs` 在 `console/web` 中实际启动受控 Playwright 用例，验证首败后重试通过仍返回失败。此负例不启动浏览器或后端，不替代三引擎交互测试。
+mock 浏览器在 CI 中保留一次诊断重试，但 flaky 结果仍使 CI 失败；必须定位并修复首败原因，不能用重试通过解除门禁。`node --test tests/ci/*.test.mjs` 在 `console/web` 中启动受控 Playwright 用例，验证首败后重试通过仍返回失败；其中 flaky 判定负例不依赖浏览器。原生路由隐私负例另启动受控 HTTPS 服务和真实 Chromium，检查断线错误与报告不泄露 cookie / CSRF，因此 CI 先安装 Chromium 再运行这些检查。它们不替代三引擎真实后端交互测试。
 
 ```sh
 npm --prefix console/web ci
@@ -119,7 +119,7 @@ LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://d
 
 其中 62 个故障注入用例与普通集成测试同名；成员迁移和 Shard 转移等同名用例具有条件编译的额外故障断言，不能直接按重名删除。目前 `ci` profile 的 `test-threads = 1` 保持不变；拆分的是两条独立 job，同时保留原断言、五份 JUnit、插桩二进制和 profile。VM/网络故障仍持有实验室独占租约。测试层次的缺口不因增加 runner 自动消失。
 
-功能测试不要求固定 CPU 吞吐。自动 split/merge 的消息 drain 使用 20 秒无进展期限和 2 分钟总上限，继续逐条验证完整消息集合、正文、持久 ACK 和最终 merge；整批运行时间不再共用一个 20 秒期限。曾有失败在整批约 27 秒时发生，但距离上次 ACK 不足 1 毫秒，诊断表明是整批预算耗尽。历史Combined RF3测试中的只读 `topic_info` 查询只对明确的 `QuotaExceeded + Rejected + retryable` 在原 40 秒 phase 内遵守背压；其他错误直接失败，四个 Topic 各 64 次成功查询、发送和 ACK 的断言不变。生产代码、默认 admission 容量和 nextest 的零重试设置均未因此修改。
+功能测试不要求固定 CPU 吞吐。自动 split/merge 的消息 drain 使用 20 秒无进展期限和 2 分钟总上限，继续逐条验证完整消息集合、正文、持久 ACK 和最终 merge；整批运行时间不再共用一个 20 秒期限。曾有失败在整批约 27 秒时发生，但距离上次 ACK 不足 1 毫秒，诊断表明是整批预算耗尽。Separate RF3 并发测试的只读 `topic_info` 查询仅对 `QuotaExceeded` 或 `Unavailable` 且 `Rejected / retryable / !original_outcome_known` 的明确拒绝，在原 40 秒绝对期限内恢复；两类拒绝分别计数，其他错误直接失败。ACK 通过 SDK 保留的原 pending 句柄恢复：结果未知时继续查询或退休原操作；明确的容量或路由拒绝（含 Fenced）则仅在仍有未决批次时继续。已有结果但退休未确认时仍沿原句柄处理 Unknown，不重开已知最终拒绝。四个 Topic 各 64 次成功查询、发送和持久 ACK 的断言、默认 admission 容量和 nextest 零重试设置保持不变。
 
 ## 可复现验证
 

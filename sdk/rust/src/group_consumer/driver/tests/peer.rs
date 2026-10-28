@@ -27,6 +27,7 @@ struct Oracle {
     watch_drop: AtomicBool,
     watch_error: Mutex<Option<tidemq_protocol::common::ErrorCode>>,
     ack_error: Mutex<Option<tidemq_protocol::common::ErrorReply>>,
+    retire_ack_error: Mutex<Option<tidemq_protocol::common::ErrorReply>>,
     watch_dropped: AtomicU64,
     watch_refused: AtomicU64,
     layout_disconnect: AtomicBool,
@@ -265,7 +266,11 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
                 }
             }
             FrameKind::GroupRetireAck => {
-                reply(&frame, FrameKind::GroupRetired, &public::GroupRetired {})
+                let refusal = oracle.retire_ack_error.lock().unwrap().take();
+                match refusal {
+                    Some(refusal) => reply(&frame, FrameKind::Error, &refusal),
+                    None => reply(&frame, FrameKind::GroupRetired, &public::GroupRetired {}),
+                }
             }
             FrameKind::GroupWatch => {
                 let watch: public::GroupWatch = decode_payload(
