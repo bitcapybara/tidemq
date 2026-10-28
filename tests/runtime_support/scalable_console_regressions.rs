@@ -208,13 +208,43 @@ async fn console_http_revoked_session_cannot_recover_or_submit_writes_after_rest
 
 async fn submit_without_reading_response(
     consoles: &Consoles,
+    trust_roots: &[u8],
     session: &BrowserSession,
     path: &str,
     body: &Value,
-) -> tokio::net::TcpStream {
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", consoles.first.address.port()))
+) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+    use std::sync::Arc;
+
+    use tokio_rustls::rustls::{
+        self, RootCertStore,
+        pki_types::{CertificateDer, ServerName, pem::PemObject},
+    };
+
+    let mut roots = RootCertStore::empty();
+    for certificate in CertificateDer::pem_slice_iter(trust_roots) {
+        roots.add(certificate.unwrap()).unwrap();
+    }
+    assert!(!roots.is_empty(), "The fixture CA must be configured");
+    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let socket = tokio::net::TcpStream::connect(("127.0.0.1", consoles.first.address.port()))
         .await
         .unwrap();
+    let mut stream = connector
+        .connect(ServerName::try_from("127.0.0.1").unwrap(), socket)
+        .await
+        .unwrap();
+    assert!(!stream.get_ref().1.is_handshaking());
+    eprintln!(
+        "HTTPS fixture CA and server identity verified before submitting the unread-response request"
+    );
     let body = serde_json::to_vec(body).unwrap();
     let headers = format!(
         "POST /api/v1/{path} HTTP/1.1\r\nHost: localhost\r\nOrigin: {ORIGIN}\r\nCookie: {}\r\nx-csrf-token: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -281,8 +311,11 @@ async fn console_http_lost_send_response_recovers_after_restart_without_republis
     };
     let path = format!("topics/{}/send", topic.id());
     let original = send(operation, "unobserved-response");
-    let abandoned = submit_without_reading_response(&consoles, &session, &path, &original).await;
+    let abandoned =
+        submit_without_reading_response(&consoles, &fixture.roots, &session, &path, &original)
+            .await;
     let expected = committed_console_operation(&direct, operation).await;
+    eprintln!("Original Console receipt observed before discarding the unread HTTPS response");
     drop(abandoned);
     let first = tokio::time::timeout(Duration::from_secs(10), stream.receive())
         .await
@@ -538,10 +571,13 @@ async fn console_http_lost_send_receipt_recovers_across_rf3_leader_failover_with
     };
     let path = format!("topics/{}/send", topic.id());
     let original = send(operation, "original-body");
-    let abandoned = submit_without_reading_response(&consoles, &session, &path, &original).await;
+    let abandoned =
+        submit_without_reading_response(&consoles, &fixture.roots, &session, &path, &original)
+            .await;
     // Observe core admission before discarding the response, avoiding a cancellation-before-submit race.
     let expected = committed_console_operation(&direct, operation).await;
     eprintln!("RF3 Console original send committed: operation={operation}");
+    eprintln!("Original Console receipt observed before discarding the unread HTTPS response");
     drop(abandoned);
     let first = tokio::time::timeout(Duration::from_secs(10), stream.receive())
         .await
