@@ -172,7 +172,7 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
         .map_err(|_| Error::invalid("Local service was installed twice"))?;
     startup.local_rpc = Some(supervise(
         "local_dispatch",
-        tokio::spawn(async move {
+        spawn_required(stopped.clone(), None, async move {
             requests
                 .run(service.clone())
                 .await
@@ -183,7 +183,6 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
             .as_ref()
             .cloned()
             .ok_or_else(Error::unavailable)?,
-        stopped.clone(),
     ));
     let service = startup
         .service
@@ -215,22 +214,22 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
     let external_stopped = service.external_stop.subscribe();
     startup.tasks.push(
         "external_quic",
-        tokio::spawn(async move {
-            let result = crate::server::run(
-                external,
-                external_service.clone(),
-                dispatcher,
-                budget,
-                dispatch,
-                external_stopped,
-            )
-            .await
-            .map_err(Error::foundation);
-            external_service
-                .external_drained
-                .store(if result.is_ok() { 1 } else { 2 }, Ordering::Release);
-            result
-        }),
+        spawn_required(
+            stopped.clone(),
+            Some(external_stopped.clone()),
+            async move {
+                crate::server::run(
+                    external,
+                    external_service.clone(),
+                    dispatcher,
+                    budget,
+                    dispatch,
+                    external_stopped,
+                )
+                .await
+                .map_err(Error::foundation)
+            },
+        ),
     );
     start_business_workers(startup, &service, stopped.clone());
     for handle in startup
@@ -242,10 +241,10 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
     {
         startup.tasks.push(
             "local_group",
-            tokio::spawn(watch_group(handle, stopped.clone())),
+            spawn_required(stopped.clone(), None, watch_group(handle, stopped.clone())),
         );
     }
-    let tasks = startup.tasks.supervised(&service, stopped.clone());
+    let tasks = startup.tasks.supervised(&service);
     service.console_ready.store(true, Ordering::Release);
     startup.committed = true;
     Ok(RunningNode {
@@ -292,23 +291,37 @@ fn start_business_workers(
     if service.config.runtime.topic_scaling.is_some() {
         startup.tasks.push(
             "topic_scaling",
-            tokio::spawn(service.clone().scale_topics(stopped.clone())),
+            spawn_required(
+                stopped.clone(),
+                None,
+                service.clone().scale_topics(stopped.clone()),
+            ),
         );
     }
     startup.tasks.push(
         "data_maintenance",
-        tokio::spawn(service.clone().maintain(stopped.clone())),
+        spawn_required(
+            stopped.clone(),
+            None,
+            service.clone().maintain(stopped.clone()),
+        ),
     );
     if !service.objects.is_empty() {
         startup.tasks.push(
             "lifecycle_pins",
-            tokio::spawn(service.clone().expire_pins(stopped.clone())),
+            spawn_required(
+                stopped.clone(),
+                None,
+                service.clone().expire_pins(stopped.clone()),
+            ),
         );
     }
     let bootstrap = service.clone();
     startup.tasks.push(
         "metadata_reconcile",
-        tokio::spawn(async move { bootstrap.reconcile(stopped).await }),
+        spawn_required(stopped.clone(), None, async move {
+            bootstrap.reconcile(stopped).await
+        }),
     );
 }
 
