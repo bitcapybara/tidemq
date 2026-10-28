@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -7,39 +6,50 @@ use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Serialize;
-use tower::ServiceExt;
 use tower_http::services::ServeFile;
 use tracing::Instrument;
 
+use super::assets::{AssetHealth, Failure};
 use super::files::StaticFiles;
+use super::lifecycle::Metrics;
+use crate::runtime::process::{Phase, Process};
 
 pub(super) struct StateData {
     pub(super) files: StaticFiles,
-    pub(super) ready: AtomicBool,
-    requests: AtomicU64,
+    pub(super) process: Process,
+    pub(super) assets: AssetHealth,
+    pub(super) metrics: Arc<Metrics>,
     pub(super) api: Option<Arc<super::api::ApiState>>,
 }
 
 impl StateData {
     #[cfg(test)]
     pub(super) fn new(files: StaticFiles) -> Arc<Self> {
-        Arc::new(Self {
-            files,
-            ready: AtomicBool::new(true),
-            requests: AtomicU64::new(0),
-            api: None,
-        })
+        let process = Process::default();
+        process.recovering();
+        process.ready();
+        Self::build(files, None, process, Arc::default()).0
     }
 
-    pub(super) fn with_api(files: StaticFiles, api: Arc<super::api::ApiState>) -> Arc<Self> {
-        Arc::new(Self {
-            files,
-            ready: AtomicBool::new(true),
-            requests: AtomicU64::new(0),
-            api: Some(api),
-        })
+    pub(super) fn build(
+        files: StaticFiles,
+        api: Option<Arc<super::api::ApiState>>,
+        process: Process,
+        metrics: Arc<Metrics>,
+    ) -> (Arc<Self>, tokio::sync::mpsc::Receiver<Failure>) {
+        let (assets, receive) = AssetHealth::new(files.clone(), process.clone(), metrics.clone());
+        (
+            Arc::new(Self {
+                files,
+                process,
+                assets,
+                metrics,
+                api,
+            }),
+            receive,
+        )
     }
 }
 
@@ -56,7 +66,10 @@ pub(super) fn public_router(state: Arc<StateData>) -> Router {
         .with_state(state)
 }
 
-pub(super) fn management_router(state: Arc<StateData>) -> Router {
+pub(super) fn management_router(
+    state: Arc<StateData>,
+    registry: Arc<prometheus_client::registry::Registry>,
+) -> Router {
     Router::new()
         .route(
             "/health/live",
@@ -64,6 +77,7 @@ pub(super) fn management_router(state: Arc<StateData>) -> Router {
         )
         .route("/health/ready", get(ready))
         .route("/metrics", get(metrics))
+        .layer(Extension(registry))
         .fallback(|| async { api_error(StatusCode::NOT_FOUND, "not_found", "Endpoint not found") })
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -102,33 +116,90 @@ async fn static_response(State(state): State<Arc<StateData>>, request: Request) 
             "Page or asset not found",
         );
     };
-    let path = match state.files.resolve(name).await {
+    let name = name.to_owned();
+    if let Some(asset) = state.files.required(&name)
+        && !valid_range(request.headers().get(header::RANGE), asset.length)
+    {
+        return invalid_range();
+    }
+    let path = match state.files.resolve(&name).await {
         Ok(path) => path,
-        Err(_) => {
-            return api_error(
-                StatusCode::NOT_FOUND,
-                "asset_unavailable",
-                "Page asset is unavailable; refresh after deployment completes",
-            );
-        }
+        Err(_) => return asset_unavailable(&state, &name, "resolve"),
     };
-    match ServeFile::new(path).oneshot(request).await {
+    serve_asset(&state, &name, path, request).await
+}
+
+async fn serve_asset(
+    state: &StateData,
+    name: &str,
+    path: std::path::PathBuf,
+    request: Request,
+) -> Response {
+    let head = request.method() == Method::HEAD;
+    match ServeFile::new(path).try_call(request).await {
         Ok(response)
             if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED =>
         {
+            let remaining = if head {
+                Some(0)
+            } else {
+                response
+                    .headers()
+                    .get(header::CONTENT_LENGTH)
+                    .and_then(|length| length.to_str().ok())
+                    .and_then(|length| length.parse().ok())
+            };
+            response.map(|body| state.assets.observe(Body::new(body), name, remaining))
+        }
+        Ok(response) if response.status() == StatusCode::RANGE_NOT_SATISFIABLE => invalid_range(),
+        Ok(response)
+            if response.status().is_client_error()
+                && response.status() != StatusCode::NOT_FOUND =>
+        {
             response.map(Body::new)
         }
-        Ok(response) if response.status() == StatusCode::RANGE_NOT_SATISFIABLE => api_error(
-            StatusCode::RANGE_NOT_SATISFIABLE,
-            "invalid_range",
-            "Requested asset byte range is unavailable",
-        ),
-        Ok(_) | Err(_) => api_error(
-            StatusCode::NOT_FOUND,
-            "asset_unavailable",
-            "Page asset is unavailable; refresh after deployment completes",
-        ),
+        Ok(_) | Err(_) => asset_unavailable(state, name, "open_read"),
     }
+}
+
+fn asset_unavailable(state: &StateData, name: &str, class: &'static str) -> Response {
+    state.assets.report(name, class);
+    api_error(
+        StatusCode::NOT_FOUND,
+        "asset_unavailable",
+        "Page asset is unavailable; refresh after deployment completes",
+    )
+}
+
+fn invalid_range() -> Response {
+    api_error(
+        StatusCode::RANGE_NOT_SATISFIABLE,
+        "invalid_range",
+        "Requested asset byte range is unavailable",
+    )
+}
+
+fn valid_range(value: Option<&HeaderValue>, length: u64) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    let Some(value) = value
+        .to_str()
+        .ok()
+        .filter(|value| value.len() <= 512)
+        .and_then(|value| value.strip_prefix("bytes="))
+    else {
+        return false;
+    };
+    let Some((start, end)) = value.split_once('-') else {
+        return false;
+    };
+    if start.is_empty() {
+        return end.parse::<u64>().is_ok_and(|suffix| suffix > 0);
+    }
+    start.parse::<u64>().is_ok_and(|start| {
+        start < length && (end.is_empty() || end.parse::<u64>().is_ok_and(|end| end >= start))
+    })
 }
 
 fn is_page_route(name: &str) -> bool {
@@ -155,10 +226,22 @@ async fn secure_response(
     request: Request,
     next: Next,
 ) -> Response {
-    state.requests.fetch_add(1, Ordering::Relaxed);
+    state.metrics.requests.inc();
+    let reject_write = request.uri().path().starts_with("/api/v1")
+        && !matches!(
+            *request.method(),
+            Method::GET | Method::HEAD | Method::OPTIONS
+        )
+        && state.process.phase() != Phase::Ready;
     let request_id = tidemq_protocol::Id::new_v7().ok().map(|id| id.to_string());
+    let method = match request.method().as_str() {
+        "GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "CONNECT" | "TRACE" => {
+            request.method().as_str()
+        }
+        _ => "OTHER",
+    };
     // Do not record URI, query, headers, or body: they may contain user secrets.
-    let span = tracing::info_span!(target: "tidemq_trace", "console_http_request", request_id, method = %request.method(), status = tracing::field::Empty);
+    let span = tracing::info_span!(target: "tidemq_trace", "console_http_request", request_id, method, status = tracing::field::Empty);
     let parent = request
         .headers()
         .get("traceparent")
@@ -167,7 +250,16 @@ async fn secure_response(
     crate::observability::tracing::set_parent(&span, parent, true);
     let (mut response, traceparent) = async {
         let traceparent = crate::observability::tracing::current_traceparent();
-        (next.run(request).await, traceparent)
+        let response = if reject_write {
+            api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "process_not_ready",
+                "The process is not ready; no business operation was submitted",
+            )
+        } else {
+            next.run(request).await
+        };
+        (response, traceparent)
     }
     .instrument(span.clone())
     .await;
@@ -195,7 +287,7 @@ async fn secure_response(
 }
 
 async fn ready(State(state): State<Arc<StateData>>) -> Response {
-    let ready = state.ready.load(Ordering::Acquire);
+    let ready = state.process.phase() == Phase::Ready;
     let status = if ready {
         StatusCode::OK
     } else {
@@ -208,16 +300,20 @@ async fn ready(State(state): State<Arc<StateData>>) -> Response {
         .into_response()
 }
 
-async fn metrics(State(state): State<Arc<StateData>>) -> impl IntoResponse {
+async fn metrics(
+    State(state): State<Arc<StateData>>,
+    Extension(registry): Extension<Arc<prometheus_client::registry::Registry>>,
+) -> impl IntoResponse {
+    let mut body = String::new();
+    let _ = prometheus_client::encoding::text::encode(&mut body, &registry);
     (
         [(
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
         format!(
-            "# HELP tidemq_console_ready Whether the local Console is ready.\n# TYPE tidemq_console_ready gauge\ntidemq_console_ready {}\n# HELP tidemq_console_http_requests_total Requests served by this Console process.\n# TYPE tidemq_console_http_requests_total counter\ntidemq_console_http_requests_total {}\n",
-            u8::from(state.ready.load(Ordering::Acquire)),
-            state.requests.load(Ordering::Relaxed),
+            "# HELP tidemq_console_ready Whether the local Console is ready.\n# TYPE tidemq_console_ready gauge\ntidemq_console_ready {}\n{body}",
+            u8::from(state.process.phase() == Phase::Ready)
         ),
     )
 }
