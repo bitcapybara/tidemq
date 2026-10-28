@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+#[cfg(test)]
 use prost::Message;
 use tidemq_protocol::common::{ErrorCode, ErrorReply, Frame, FrameKind, Outcome, TrafficClass};
 use tidemq_protocol::framing::{decode_payload, frame_limit, new_frame};
@@ -137,13 +138,18 @@ struct Dispatcher {
 
 enum AdmittedFrame {
     Remote(ReceivedFrame),
-    Local { frame: Frame, deadline: Instant },
+    #[cfg(test)]
+    Local {
+        frame: Frame,
+        deadline: Instant,
+    },
 }
 
 impl AdmittedFrame {
     fn frame(&self) -> &Frame {
         match self {
             Self::Remote(frame) => frame.frame(),
+            #[cfg(test)]
             Self::Local { frame, .. } => frame,
         }
     }
@@ -151,6 +157,7 @@ impl AdmittedFrame {
     fn deadline(&self) -> Instant {
         match self {
             Self::Remote(frame) => frame.deadline(),
+            #[cfg(test)]
             Self::Local { deadline, .. } => *deadline,
         }
     }
@@ -158,6 +165,7 @@ impl AdmittedFrame {
     fn received(self) -> Option<ReceivedFrame> {
         match self {
             Self::Remote(frame) => Some(frame),
+            #[cfg(test)]
             Self::Local { .. } => None,
         }
     }
@@ -273,6 +281,7 @@ pub(crate) struct LocalRequests {
     dispatcher: Arc<Dispatcher>,
 }
 
+#[cfg(test)]
 pub(crate) struct LocalResponse {
     response: mpsc::Receiver<Reply>,
     deadline: Instant,
@@ -456,7 +465,9 @@ impl InProcess {
         Ok(LocalReadOnlyResponse { response, deadline })
     }
 
-    pub async fn submit<S: WireService>(
+    // This frame fixture exercises the shared remote queues without opening a transport.
+    #[cfg(test)]
+    async fn submit<S: WireService>(
         &self,
         service: &Arc<S>,
         peer: Authorization,
@@ -544,6 +555,7 @@ impl InProcess {
     }
 }
 
+#[cfg(test)]
 impl LocalResponse {
     pub async fn receive(mut self) -> crate::Result<Frame> {
         timeout_at(self.deadline, self.response.recv())
@@ -816,7 +828,8 @@ async fn execute<S: WireService>(
     let result = if Instant::now() >= deadline {
         overload(frame.frame(), &limits, ErrorCode::DeadlineExceeded)
     } else {
-        match service.handle(peer, frame.frame(), deadline, order).await {
+        // Keep business future layout outside the bounded dispatcher task's state.
+        match Box::pin(service.handle(peer, frame.frame(), deadline, order)).await {
             Ok(response) => response,
             Err(error) => {
                 health.handler_errors.inc();
@@ -1298,6 +1311,56 @@ mod tests {
                 .is_err()
         );
         assert!(dispatch.dispatcher.raft.is_none());
+        drop(requests);
+        assert_eq!(budget.available_bytes(), before);
+    }
+
+    #[tokio::test]
+    async fn typed_direct_admission_shares_normal_capacity_and_preserves_reserved_classes() {
+        let (dispatch, requests, _service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let normal = dispatch
+            .admit_local(StreamPurpose::Request, 65_536, deadline)
+            .unwrap();
+        assert!(
+            dispatch
+                .admit_local(StreamPurpose::Request, 1, deadline)
+                .is_err()
+        );
+        assert!(
+            dispatch
+                .submit_readonly(1, deadline, async {})
+                .await
+                .is_err()
+        );
+        let core = dispatch
+            .admit_local(StreamPurpose::Core, 1024, deadline)
+            .unwrap();
+        let ack = dispatch
+            .admit_local(StreamPurpose::Ack, 1024, deadline)
+            .unwrap();
+        assert_eq!(budget.available_bytes() + 65_536 + 2048, before);
+        drop((normal, core, ack));
+        assert_eq!(budget.available_bytes(), before);
+        assert!(
+            dispatch
+                .admit_local(StreamPurpose::Request, 65_537, deadline)
+                .is_err()
+        );
+        assert!(
+            dispatch
+                .admit_local(StreamPurpose::Core, 1, Instant::now())
+                .is_err()
+        );
+        dispatch.begin_drain(deadline);
+        for purpose in [
+            StreamPurpose::Request,
+            StreamPurpose::Core,
+            StreamPurpose::Ack,
+        ] {
+            assert!(dispatch.admit_local(purpose, 1, deadline).is_err());
+        }
         drop(requests);
         assert_eq!(budget.available_bytes(), before);
     }

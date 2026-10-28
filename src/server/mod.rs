@@ -6,5 +6,5 @@ mod telemetry;
 mod tenant_admission;
 
 pub use dispatch::{DeferredReply, DispatchConfig, SubmissionOrder, WireService, run};
-pub(crate) use dispatch::{InProcess, LocalAdmission, LocalResponse};
+pub(crate) use dispatch::{InProcess, LocalAdmission};
 pub use telemetry::DispatchMetrics;
