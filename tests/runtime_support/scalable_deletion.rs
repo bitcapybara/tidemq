@@ -137,8 +137,18 @@ async fn deletion_rejects_online_members_and_releases_only_the_original_subscrip
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn partial_domain_deletion_resumes_after_restart_and_old_replay_cannot_delete_a_new_name() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Storage)], &[1], &[1]).await;
-    configure_dynamic_fixture(&mut fixture).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Storage),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (31, Role::Broker),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
     for config in fixture.configs.values_mut() {
         config.runtime.groups.retain(|group| group.group_id != 3);
         config.runtime.groups.push(GroupConfig {
@@ -174,7 +184,7 @@ async fn partial_domain_deletion_resumes_after_restart_and_old_replay_cannot_del
     let operation = Id::new_v7().unwrap();
     let before = fixture
         .running
-        .get(&1)
+        .get(&11)
         .unwrap()
         .delete_consumer_subscription(
             operation,
@@ -232,15 +242,15 @@ async fn partial_domain_deletion_resumes_after_restart_and_old_replay_cannot_del
     assert!(waiting.await.unwrap().unwrap_err().outcome_unknown());
     assert!(pending.retry().await.unwrap_err().outcome_unknown());
     assert_eq!(pending.subscription_id(), old);
-    fixture.stop(1).await;
+    fixture.stop(11).await;
     fixture.running.insert(
         2,
         RunningNode::start(fixture.configs.get(&2).unwrap().clone())
             .await
             .unwrap(),
     );
-    fixture.restart(1).await;
-    let node = fixture.running.get(&1).unwrap();
+    fixture.restart(11).await;
+    let node = fixture.running.get(&11).unwrap();
     let until = Instant::now() + Duration::from_secs(20);
     let after = loop {
         let plan = node
