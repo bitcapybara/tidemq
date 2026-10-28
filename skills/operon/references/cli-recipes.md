@@ -109,6 +109,15 @@ operon task update --profile '<profile-alias>' --input update.json --json
 
 审阅、应用和读回方式与创建一致。不要将 create 的 `{kind,field,value}` 字段项格式用于 update；update 使用 `{field,valueType,value}`。`compact-lines` 的批量 update 在本次版本仅接受同一 inline source 的原子更新，不能用它更新多个独立 File Task；按当前支持能力逐项或使用合法的 typed 操作，不伪造批量成功。
 
+单项非敏感 Note 也可用精确 ID 的 compact argv 生成预览，CLI 1.2.0 已实际应用并逐项读回：
+
+```sh
+operon task update --profile '<profile-alias>' --id '<actual-operon-id>' \
+  'note::Targeted checks passed; full CI pending' --preview-only --json
+```
+
+审阅返回的目标和 `spec.changes`，再应用同一个 `client.planRef`。敏感值仍使用 typed 文件或 stdin；通过脚本调用时用参数数组，不把 Note 插进 shell 代码。当前 help 说明省略 `--preview-only` 会自动应用单项无 warning 且未变化的计划，agent 应保留该选项以显式审阅。脚本须先保存 stdout/stderr 再检查退出码和 JSON 结果；非零退出也可能返回 `ok=true / result.status=failed`，不能让进程包装器先抛异常而遗漏失败收据。
+
 状态、父子关系、依赖不是普通 Note 更新。使用 `task transition --help`、`task complete --help`、`task update --help` 及 `mutation-preview-request` 中相应 spec，分别生成语义操作；例如普通字段更新不要混入 `parentTask` 关系替换。
 
 状态和 Note 可以在一个语义 transition 中提交。复用上例真实 `target`，将 `spec` 改为：
