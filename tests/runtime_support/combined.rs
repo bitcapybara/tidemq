@@ -1,6 +1,7 @@
 use super::read_batches::{finish_original_ack, finish_original_send};
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tidemq_protocol::common::{ErrorCode, Outcome};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks() {
@@ -59,6 +60,7 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
             let acknowledged = AtomicU64::new(0);
             let metadata_reads = AtomicU64::new(0);
             let metadata_admission_rejections = AtomicU64::new(0);
+            let metadata_unavailable_rejections = AtomicU64::new(0);
             let produce = async {
                 for sequence in 0..64_u64 {
                     let result = context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await;
@@ -79,18 +81,26 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
                 }
             };
             let read_metadata = async {
+                let read_context = tidemq_sdk::RequestContext::with_deadline(until);
                 for _ in 0..64 {
-                    // Read-only queries honor explicit admission backpressure within the phase deadline.
+                    // Read-only retries retain the original phase deadline.
                     let info = loop {
-                        match context.scope(client.admin().topic_info(&name)).await {
+                        match read_context.scope(client.admin().topic_info(&name)).await {
                             Err(tidemq_sdk::Error::Remote {
-                                code: tidemq_protocol::common::ErrorCode::QuotaExceeded,
-                                outcome: tidemq_protocol::common::Outcome::Rejected,
+                                code: code @ (ErrorCode::QuotaExceeded | ErrorCode::Unavailable),
+                                outcome: Outcome::Rejected,
                                 retryable: true,
+                                original_outcome_known: false,
                                 ..
-                            }) => {
-                                metadata_admission_rejections.fetch_add(1, Ordering::Relaxed);
-                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }) if Instant::now() < until => {
+                                if code == ErrorCode::QuotaExceeded {
+                                    metadata_admission_rejections.fetch_add(1, Ordering::Relaxed);
+                                } else {
+                                    metadata_unavailable_rejections.fetch_add(1, Ordering::Relaxed);
+                                }
+                                tokio::time::sleep_until(
+                                    until.min(Instant::now() + Duration::from_millis(10)),
+                                ).await;
                             }
                             result => break result.unwrap(),
                         }
@@ -104,7 +114,7 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
             assert_eq!(produced.load(Ordering::Relaxed), 64);
             assert_eq!(acknowledged.load(Ordering::Relaxed), 64);
             assert_eq!(metadata_reads.load(Ordering::Relaxed), 64);
-            eprintln!("Separated RF3 phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads=64, metadata_admission_rejections={}", started.elapsed().as_millis(), metadata_admission_rejections.load(Ordering::Relaxed));
+            eprintln!("Separated RF3 phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads=64, metadata_admission_rejections={}, metadata_unavailable_rejections={}", started.elapsed().as_millis(), metadata_admission_rejections.load(Ordering::Relaxed), metadata_unavailable_rejections.load(Ordering::Relaxed));
             consumer.close().await.unwrap();
             producer.close().await.unwrap();
         });
