@@ -38,6 +38,8 @@ type CancelKey = (Arc<str>, Arc<str>, Option<Id>, Id);
 type LeaseSlot = Arc<Mutex<Option<Arc<crate::ownership::ControlLease>>>>;
 
 pub(crate) struct Service {
+    pub process: super::process::Process,
+    pub(super) console_ready: AtomicBool,
     pub config: Config,
     pub cluster: Id,
     pub(super) instance: Id,
@@ -118,6 +120,9 @@ impl Service {
         external_stop: watch::Sender<bool>,
         has_external: bool,
     ) -> Result<Self> {
+        let process = super::process::Process::default();
+        process.recovering();
+        process.register(metrics.registry_mut());
         let failover_metrics = super::failover::Metrics::register(metrics.registry_mut());
         let scaling = super::scaling::RuntimeScaling::new(
             &config,
@@ -159,6 +164,8 @@ impl Service {
             .start(reaper_memory)
             .map_err(|_| Error::unavailable())?;
         Ok(Self {
+            process,
+            console_ready: AtomicBool::new(config.role != crate::config::Role::Combined),
             watch_budget,
             watch_registry,
             config,
@@ -421,6 +428,15 @@ impl Service {
         order: Option<SubmissionOrder>,
         hops: u32,
     ) -> Result<Frame> {
+        let phase = self.process.phase();
+        if phase != super::process::Phase::Ready
+            && !(matches!(
+                phase,
+                super::process::Phase::Draining | super::process::Phase::Failed
+            ) && super::drain::allows_completion(frame, &self.config.protocol)?)
+        {
+            return Err(Error::unavailable());
+        }
         let _active = self.public_admission.enter()?;
         let operation = match frame_kind(frame)? {
             FrameKind::GroupRead => Operation::Read,

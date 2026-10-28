@@ -338,6 +338,10 @@ impl RunningNode {
         tasks.push(tokio::spawn(
             async move { bootstrap.reconcile(stopped).await },
         ));
+        let tasks = tasks
+            .into_iter()
+            .map(|task| supervise(task, service.clone(), shutdown.subscribe()))
+            .collect();
         Ok(Self {
             external_address,
             internal_address,
@@ -408,8 +412,20 @@ impl RunningNode {
 
     pub async fn wait_for_shutdown_request(&self) {
         let mut stopped = self.shutdown.subscribe();
-        if !*stopped.borrow() {
-            let _ = stopped.changed().await;
+        let mut process = self.service.process.subscribe();
+        loop {
+            if *stopped.borrow()
+                || matches!(
+                    self.service.process.phase(),
+                    super::process::Phase::Failed | super::process::Phase::Stopped
+                )
+            {
+                return;
+            }
+            tokio::select! {
+                _ = stopped.changed() => {},
+                _ = process.changed() => {},
+            }
         }
     }
 
@@ -560,6 +576,7 @@ impl RunningNode {
 
     /// Share the service entry point's original total deadline with optional exporters.
     pub async fn shutdown_until(mut self, deadline: tokio::time::Instant) -> Result<()> {
+        self.service.process.drain();
         self.service
             .draining
             .store(true, std::sync::atomic::Ordering::Release);
@@ -584,15 +601,50 @@ impl RunningNode {
         tokio::time::timeout_at(deadline, self.service.close(deadline))
             .await
             .map_err(|_| Error::invalid("Runtime exceeded its total shutdown deadline"))??;
+        if self.service.process.phase() == super::process::Phase::Failed {
+            failure.get_or_insert_with(|| Error::invalid("A required process dependency failed"));
+        }
+        self.service.process.stopped();
         failure.map_or(Ok(()), Err)
     }
 }
 
 impl Drop for RunningNode {
     fn drop(&mut self) {
+        self.service.process.drain();
         let _ = self.service.external_stop.send(true);
         let _ = self.shutdown.send(true);
     }
+}
+
+struct OwnedTask(JoinHandle<Result<()>>);
+
+impl Drop for OwnedTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn supervise(
+    task: JoinHandle<Result<()>>,
+    service: Arc<Service>,
+    stopped: watch::Receiver<bool>,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let mut task = OwnedTask(task);
+        let result = (&mut task.0)
+            .await
+            .map_err(|source| Error::operation("join required runtime task", source))
+            .and_then(|result| result);
+        if !*stopped.borrow() {
+            service.process.fail("runtime_task");
+            service
+                .draining
+                .store(true, std::sync::atomic::Ordering::Release);
+            let _ = service.external_stop.send(true);
+        }
+        result
+    })
 }
 
 async fn bind_server(
