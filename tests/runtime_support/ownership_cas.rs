@@ -390,3 +390,121 @@ async fn a_permanent_ownership_refusal_is_returned_after_one_attempt() {
     client.close().await.unwrap();
     fixture.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn local_proof_preparation_is_bounded_by_the_original_deadline() {
+    let (fixture, client, service, command) = local_command().await;
+    let metadata::Action::GrantOwnership { partition, .. } = command.action else {
+        panic!("Expected an ownership grant");
+    };
+    let grant = service
+        .metadata
+        .as_ref()
+        .unwrap()
+        .state
+        .try_with_application(|state| state.grant(partition).cloned())
+        .await
+        .unwrap()
+        .unwrap();
+    let replica = service.data.get(&grant.group_id).unwrap();
+    let authority = DataAuthority::new(
+        replica.group.clone(),
+        service.cluster,
+        grant.group_id,
+        replica.current_placement().unwrap(),
+        ControlPolicy::default(),
+    )
+    .unwrap();
+    let hook = crate::execution::LocalExecutionHook::new(
+        &service
+            .config
+            .data_dir
+            .join(format!("group-{}", grant.group_id)),
+        "before_apply",
+        false,
+    );
+    let group = replica.group.clone();
+    let write = DataCommand::Recover {
+        partition,
+        writer: WriterFence {
+            node_id: grant.owner_node,
+            owner_epoch: grant.epoch,
+        },
+    };
+    let held_writer = tokio::spawn(async move { group.commit(write, deadline()).await });
+    hook.entered().await;
+    let until = Instant::now() + Duration::from_millis(50);
+    let mut pending = Box::pin(service.ownership_meta_write(
+        crate::ownership::Transition::Activate,
+        grant.epoch,
+        || async {
+            let revision = service.meta_revision().await?;
+            authority
+                .verify_recovery(&grant)
+                .await
+                .and_then(|proof| proof.into_activate_command(revision))
+                .map_err(|source| Error::operation("verify fresh local route recovery", source))
+        },
+        until,
+    ));
+    let observation =
+        tokio::time::timeout_at(until + Duration::from_millis(200), pending.as_mut()).await;
+    let respected_deadline = observation.is_ok();
+    eprintln!(
+        "Independent prepare deadline ledger: completed_within_deadline_plus_200ms={respected_deadline}"
+    );
+    hook.release();
+    held_writer.await.unwrap().unwrap();
+    match observation {
+        Ok(result) => assert!(result.is_err()),
+        Err(_) => assert!(pending.await.is_err()),
+    }
+    client.close().await.unwrap();
+    fixture.close().await;
+    assert!(
+        respected_deadline,
+        "A real local proof preparation outlived the original ownership deadline by more than 200ms"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revision_retry_preparation_is_bounded_by_the_original_deadline() {
+    let (fixture, client, service, mut command) = local_command().await;
+    let guard = service.metadata_mutation.lock().await;
+    command.expected_revision = command.expected_revision.checked_sub(1).unwrap();
+    let attempts = AtomicUsize::new(0);
+    let until = Instant::now() + Duration::from_millis(300);
+    let mut pending = Box::pin(service.ownership_meta_write(
+        crate::ownership::Transition::Grant,
+        2,
+        || {
+            let attempt = attempts.fetch_add(1, Ordering::AcqRel);
+            let command = command.clone();
+            async move {
+                if attempt > 0 {
+                    std::future::pending::<()>().await;
+                }
+                Ok(command)
+            }
+        },
+        until,
+    ));
+    let observation =
+        tokio::time::timeout_at(until + Duration::from_millis(200), pending.as_mut()).await;
+    let respected_deadline = observation.is_ok();
+    if let Ok(result) = observation {
+        assert_eq!(
+            result.unwrap_err().failure().outcome,
+            i32::from(Outcome::Unknown)
+        );
+    }
+    drop(pending);
+    assert_eq!(attempts.load(Ordering::Acquire), 2);
+    drop(guard);
+    client.close().await.unwrap();
+    fixture.close().await;
+    assert!(
+        respected_deadline,
+        "A rejected ownership CAS retry preparation outlived its original deadline"
+    );
+}

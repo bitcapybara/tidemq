@@ -107,9 +107,9 @@ impl Fixture {
         config.tls.certificate = config.cluster.trust_roots.clone();
         config.tls.private_key = server_key;
         config.session.key_file = key;
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        config.listen = listener.local_addr().unwrap();
-        drop(listener);
+        // Keep both addresses leased across startup, shutdown, and rebind assertions.
+        config.listen = crate::runtime::test_tcp_address();
+        config.management_listen = crate::runtime::test_tcp_address();
         Self { root, config }
     }
 

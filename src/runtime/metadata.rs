@@ -907,7 +907,7 @@ impl Service {
         if Instant::now() >= deadline {
             return Err(Error::unavailable());
         }
-        let mut command = prepare().await?;
+        let mut command = wire::within(deadline, prepare()).await??;
         let operation = command.operation_id();
         let mut timer =
             super::telemetry::OwnershipTimer::new(&self.ownership_metrics, stage, operation, epoch);
@@ -928,7 +928,7 @@ impl Service {
                         if Instant::now() >= deadline {
                             return Err(metadata_rejection(metadata::Rejection::RevisionConflict));
                         }
-                        command = prepare().await?;
+                        command = wire::within(deadline, prepare()).await??;
                         if command.operation_id() != operation {
                             return Err(Error::invalid("Ownership retry changed its original operation identity"));
                         }

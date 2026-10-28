@@ -15,6 +15,86 @@ fn address(console: &RunningConsole) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], console.address.port()))
 }
 
+fn client_ephemeral_ports() -> std::ops::RangeInclusive<u16> {
+    #[cfg(target_os = "macos")]
+    let contents = {
+        let output = std::process::Command::new("sysctl")
+            .args([
+                "-n",
+                "net.inet.ip.portrange.first",
+                "net.inet.ip.portrange.last",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    #[cfg(target_os = "linux")]
+    let contents = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+    let mut values = contents
+        .split_ascii_whitespace()
+        .map(|value| value.parse::<u16>().unwrap());
+    let first = values.next().unwrap();
+    let last = values.next().unwrap();
+    assert!(first <= last);
+    first..=last
+}
+
+#[tokio::test]
+async fn fixture_leases_exclude_automatic_ports_and_survive_shutdown_rebind_checks() {
+    let ephemeral = tokio::task::spawn_blocking(client_ephemeral_ports)
+        .await
+        .unwrap();
+    let first = Fixture::new().await;
+    let second = Fixture::new().await;
+    let addresses = [
+        first.config.listen,
+        first.config.management_listen,
+        second.config.listen,
+        second.config.management_listen,
+    ];
+    let isolated = std::collections::BTreeSet::from(addresses).len() == 4
+        && addresses
+            .iter()
+            .all(|address| address.port() != 0 && !ephemeral.contains(&address.port()));
+    if !isolated {
+        first.clean().await;
+        second.clean().await;
+        panic!("Fixture leases overlap the kernel's automatic port allocation: {addresses:?}");
+    }
+    let console = RunningConsole::start(first.config.clone()).await.unwrap();
+    let public = address(&console);
+    let management = console.management_address.unwrap();
+    let metrics = console.state.metrics.clone();
+    let tasks = console.connections.clone();
+    let client = first.client().await;
+    client
+        .get(format!("https://{public}/"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    console
+        .shutdown_until(Instant::now() + Duration::from_secs(2))
+        .await
+        .unwrap();
+    assert!(
+        tasks.is_empty(),
+        "Accepted connection tasks survived shutdown"
+    );
+    assert_eq!(metrics.connections.get(), 0);
+    assert_eq!(metrics.handshakes.get(), 0);
+    let competing = RunningConsole::start(second.config.clone()).await.unwrap();
+    let rebound_public = tokio::net::TcpListener::bind(public).await.unwrap();
+    let rebound_management = tokio::net::TcpListener::bind(management).await.unwrap();
+    drop((rebound_public, rebound_management));
+    shutdown(competing).await;
+    first.clean().await;
+    second.clean().await;
+}
+
 async fn wait_for(mut condition: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(4), async {
         while !condition() {
