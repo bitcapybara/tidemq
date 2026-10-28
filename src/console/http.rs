@@ -140,6 +140,7 @@ async fn serve_asset(
         Ok(response)
             if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED =>
         {
+            let verify_content = !head && response.status() == StatusCode::OK;
             let remaining = if head {
                 Some(0)
             } else {
@@ -149,7 +150,11 @@ async fn serve_asset(
                     .and_then(|length| length.to_str().ok())
                     .and_then(|length| length.parse().ok())
             };
-            response.map(|body| state.assets.observe(Body::new(body), name, remaining))
+            response.map(|body| {
+                state
+                    .assets
+                    .observe(Body::new(body), name, remaining, verify_content)
+            })
         }
         Ok(response) if response.status() == StatusCode::RANGE_NOT_SATISFIABLE => invalid_range(),
         Ok(response)
