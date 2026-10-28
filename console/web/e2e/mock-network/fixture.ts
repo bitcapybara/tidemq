@@ -39,6 +39,7 @@ export const test = base.extend<{ mockNetwork: MockNetwork }>({
       if (!state.authenticated) return reply({ code: "authentication_required" }, 401);
       if (state.denied.has(path)) return reply({ code: "permission_denied" }, 403);
       if (path === "/me") return reply(state.identity);
+      if (path === "/capabilities") return reply(state.identity.capabilities);
       if (path.endsWith("/messages") && method === "POST") {
         state.scans.push(request.postDataJSON() as Record<string, unknown>);
         return reply(data.messages);
@@ -73,7 +74,7 @@ export const test = base.extend<{ mockNetwork: MockNetwork }>({
         "/namespaces": data.page([{ id: data.ids.namespace, name: "Namespace" }]),
         "/components": data.page([data.component]),
         "/components/storage/instances": data.page([data.instance]),
-        "/cluster": data.page([data.node]),
+        "/cluster": state.identity.capabilities.execution === "local" ? data.page([data.localNode]) : data.page([data.node]),
         "/alerts": data.page([]),
       };
       if (path === "/overview" && state.overviewStatus !== 200) return reply({ code: "upstream_unavailable" }, state.overviewStatus);

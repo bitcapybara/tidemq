@@ -76,6 +76,9 @@ pub(super) async fn write(
     path: &str,
     body: &[u8],
 ) -> ApiResult<Value> {
+    if context.client.is_local() && (path == "cluster" || path.starts_with("cluster/")) {
+        return Err(ApiError::unsupported());
+    }
     let parts: Vec<_> = path.split('/').collect();
     let request = match (method, parts.as_slice()) {
         (&Method::POST, ["topics"]) => {

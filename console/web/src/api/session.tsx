@@ -38,6 +38,7 @@ function authorizationFingerprint(session: Session): string {
     session.resourceGrants,
     session.operator,
     session.credentialId,
+    session.capabilities,
   ]);
 }
 

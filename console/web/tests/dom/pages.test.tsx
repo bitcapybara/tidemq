@@ -112,6 +112,47 @@ it("selects component instances, samples a node and pauses/resumes automatic obs
   await user.click(screen.getByRole("button", { name: "Refresh" }));
 });
 
+it("shows local process facts, disables cluster operations and retains logical shard capabilities", async () => {
+  const user = userEvent.setup();
+  let observations = 0;
+  server.use(
+    http.get(apiUrl("/me"), () => HttpResponse.json(data.localSession)),
+    http.get(apiUrl("/cluster"), () => { observations++; return HttpResponse.json(data.page([data.localNode])); }),
+  );
+  renderConsole(<ClusterPage />, "/cluster?nodeId=1&groupId=1");
+  expect(await screen.findByRole("heading", { name: "Local process", level: 1 })).toBeVisible();
+  const table = await screen.findByRole("table", { name: "Local process state" });
+  await waitFor(() => expect(table).toHaveTextContent("ready"));
+  expect(table).toHaveTextContent("test");
+  for (const name of ["Replica membership", "Node migration", "Raft diagnostics"])
+    expect(screen.getByRole("button", { name })).toBeDisabled();
+  expect(screen.getByText("Logical shard business controls remain available.")).toBeVisible();
+  expect(screen.queryByRole("table", { name: "Sampled data groups" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("columnheader", { name: "Leader node" })).not.toBeInTheDocument();
+  expect(screen.queryByText("MQ node registry")).not.toBeInTheDocument();
+  const before = observations;
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  await waitFor(() => expect(observations).toBeGreaterThan(before));
+  await user.click(screen.getByRole("button", { name: "Pause refresh" }));
+  await user.click(screen.getByRole("button", { name: "Resume refresh" }));
+});
+
+it("preserves failed local observations and reports draining without inventing readiness", async () => {
+  const user = userEvent.setup();
+  server.use(
+    http.get(apiUrl("/me"), () => HttpResponse.json({ ...data.localSession, capabilities: { ...data.localSession.capabilities, businessShardScaling: false } })),
+    http.get(apiUrl("/cluster"), () => HttpResponse.json(data.page([{ ...data.localNode, phase: "draining", ready: false }]))),
+  );
+  renderConsole(<ClusterPage />);
+  expect(await screen.findByText("draining")).toBeVisible();
+  expect(screen.getByText("Not ready")).toBeVisible();
+  expect(screen.queryByText("Logical shard business controls remain available.")).not.toBeInTheDocument();
+  server.use(http.get(apiUrl("/cluster"), () => HttpResponse.json({ code: "upstream_unavailable" }, { status: 503 })));
+  await user.click(screen.getByRole("button", { name: "Refresh" }));
+  expect(await screen.findByText(/Stale observation/)).toBeVisible();
+  expect(screen.getByText("draining")).toBeVisible();
+});
+
 it("retains uncertainty for missing groups and incomplete observations", async () => {
   server.use(http.get(apiUrl("/components"), () => HttpResponse.json(data.page([{ ...data.component, partial: true, health: "degraded" }]))));
   renderConsole(<ClusterPage />, "/cluster?componentId=storage&groupId=999");
