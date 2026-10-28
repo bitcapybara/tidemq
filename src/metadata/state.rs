@@ -325,7 +325,7 @@ impl MetadataState {
         {
             return Err(Rejection::InvalidCommand);
         }
-        validate_command_shape(&command.action, &self.limits)?;
+        validate_command_shape(&command.action, &self.limits, self.mode)?;
         if command.action.control_location().is_some() {
             return command.action.logical_digest();
         }
@@ -409,7 +409,10 @@ impl MetadataState {
                 spec,
                 expected_generation,
             } => self.put_node(spec, *expected_generation),
-            Action::CreateGroup { group_id, voters } => self.create_group(*group_id, voters),
+            Action::CreateGroup {
+                group_id,
+                placement,
+            } => self.create_group(*group_id, placement),
             Action::CreateTopic {
                 topic_id,
                 name,
@@ -483,7 +486,12 @@ impl MetadataState {
         spec: &super::NodeSpec,
         expected: u64,
     ) -> Result<Outcome, Rejection> {
-        spec.validate()?;
+        spec.validate(self.mode.ok_or(Rejection::Uninitialized)?)?;
+        if self.mode == Some(DeploymentMode::Local)
+            && self.nodes.keys().any(|node| *node != spec.node_id)
+        {
+            return Err(Rejection::Unsupported);
+        }
         if !spec.schedulable
             && self.pending_data_replacements().any(|plan| {
                 plan.target()
@@ -497,7 +505,7 @@ impl MetadataState {
             if identity.retired {
                 return Err(Rejection::IdentityRetired);
             }
-            identity.validate(spec)?;
+            identity.validate(spec, self.mode.ok_or(Rejection::Uninitialized)?)?;
             let previous = self
                 .nodes
                 .get(&spec.node_id)
@@ -522,7 +530,7 @@ impl MetadataState {
             || self
                 .groups
                 .values()
-                .any(|group| group.voters.contains(&spec.node_id));
+                .any(|group| group.placement.hosts().contains(&spec.node_id));
         let broker_in_use = self.partitions.values().any(|partition| {
             partition
                 .grant
@@ -550,7 +558,7 @@ impl MetadataState {
     pub(super) fn create_group(
         &mut self,
         group_id: u64,
-        voters: &BTreeSet<u64>,
+        placement: &super::GroupPlacement,
     ) -> Result<Outcome, Rejection> {
         if group_id == 0
             || self.metadata_group_id == Some(group_id)
@@ -561,11 +569,11 @@ impl MetadataState {
         if self.groups.len() >= self.limits.groups {
             return Err(Rejection::Capacity);
         }
-        self.validate_placement(voters, true)?;
+        self.validate_group_placement(placement, true)?;
         let group = DataGroup {
             group_id,
             generation: 1,
-            voters: voters.clone(),
+            placement: placement.clone(),
         };
         self.groups.insert(group_id, group.clone());
         Ok(Outcome::GroupCreated(group))
@@ -576,12 +584,28 @@ impl MetadataState {
         voters: &BTreeSet<u64>,
         require_schedulable: bool,
     ) -> Result<(), Rejection> {
+        if self.mode == Some(DeploymentMode::Local) {
+            return Err(Rejection::Unsupported);
+        }
+        self.validate_group_placement(
+            &super::GroupPlacement::Raft {
+                voters: voters.clone(),
+            },
+            require_schedulable,
+        )
+    }
+
+    pub(super) fn validate_group_placement(
+        &self,
+        placement: &super::GroupPlacement,
+        require_schedulable: bool,
+    ) -> Result<(), Rejection> {
         let mode = self.mode.ok_or(Rejection::Uninitialized)?;
-        if voters.len() != mode.replication_factor() {
+        if placement.mode() != Ok(mode) {
             return Err(Rejection::PlacementViolation);
         }
         let mut zones = BTreeSet::new();
-        for voter in voters {
+        for voter in &placement.hosts() {
             let node = self.nodes.get(voter).ok_or(Rejection::NotFound)?;
             if !node.spec.roles.contains(&NodeRole::Storage) {
                 return Err(Rejection::PlacementViolation);
@@ -591,7 +615,7 @@ impl MetadataState {
             }
             zones.insert(&node.spec.zone);
         }
-        if mode == DeploymentMode::ThreeReplica && zones.len() != 3 {
+        if mode == DeploymentMode::SeparateRf3 && zones.len() != 3 {
             return Err(Rejection::PlacementViolation);
         }
         Ok(())
@@ -826,7 +850,11 @@ impl MetadataState {
     }
 
     fn observe_fence(&mut self, evidence: &FenceEvidence) -> Result<Outcome, Rejection> {
-        self.validate_evidence_identity(&evidence.fence.grant, evidence.committed)?;
+        self.validate_evidence_identity(
+            &evidence.fence.grant,
+            evidence.committed,
+            &evidence.placement,
+        )?;
         if !evidence.committed.validate() || evidence.fence.fence_generation == 0 {
             return Err(Rejection::InvalidEvidence);
         }
@@ -844,7 +872,11 @@ impl MetadataState {
     }
 
     fn observe_recovery(&mut self, evidence: &RecoveryEvidence) -> Result<Outcome, Rejection> {
-        self.validate_evidence_identity(&evidence.recovered.fence.grant, evidence.committed)?;
+        self.validate_evidence_identity(
+            &evidence.recovered.fence.grant,
+            evidence.committed,
+            &evidence.placement,
+        )?;
         let record = self.matching_grant(&evidence.recovered.fence.grant)?;
         validate_recovery(record, evidence)?;
         if let Some(previous) = &record.recovery {
@@ -860,7 +892,11 @@ impl MetadataState {
     }
 
     fn activate_route(&mut self, evidence: &RecoveryEvidence) -> Result<Outcome, Rejection> {
-        self.validate_evidence_identity(&evidence.recovered.fence.grant, evidence.committed)?;
+        self.validate_evidence_identity(
+            &evidence.recovered.fence.grant,
+            evidence.committed,
+            &evidence.placement,
+        )?;
         let record = self.matching_grant(&evidence.recovered.fence.grant)?;
         validate_recovery(record, evidence)?;
         if record
@@ -913,13 +949,16 @@ impl MetadataState {
         &self,
         grant: &Grant,
         position: crate::ownership::CommitPosition,
+        placement: &super::GroupPlacement,
     ) -> Result<(), Rejection> {
-        if !position.validate()
-            || self.cluster_id != Some(grant.cluster_id)
-            || !self
+        let mode = self.mode.ok_or(Rejection::Uninitialized)?;
+        if self.cluster_id != Some(grant.cluster_id)
+            || self
                 .groups
                 .get(&grant.group_id)
-                .is_some_and(|group| group.voters.contains(&position.leader_node))
+                .is_none_or(|group| group.placement != *placement)
+            || !placement.validates(mode, position)
+            || matches!(placement, super::GroupPlacement::Local { node_id } if *node_id != grant.owner_node)
         {
             return Err(Rejection::InvalidEvidence);
         }
@@ -927,11 +966,15 @@ impl MetadataState {
     }
 }
 
-fn validate_command_shape(action: &Action, limits: &MetadataLimits) -> Result<(), Rejection> {
+fn validate_command_shape(
+    action: &Action,
+    limits: &MetadataLimits,
+    mode: Option<DeploymentMode>,
+) -> Result<(), Rejection> {
     match action {
         Action::Bootstrap { limits, .. } => limits.validate(),
-        Action::PutNode { spec, .. } => spec.validate(),
-        Action::CreateGroup { voters, .. } if voters.len() > 3 => Err(Rejection::InvalidGroup),
+        Action::PutNode { spec, .. } => spec.validate(mode.ok_or(Rejection::Uninitialized)?),
+        Action::CreateGroup { placement, .. } => placement.mode().map(|_| ()),
         Action::CreateTopic { name, groups, .. } => {
             if !valid_topic_name(name) {
                 Err(Rejection::InvalidName)
@@ -958,7 +1001,7 @@ pub(super) fn validate_recovery(
     let fence = record.fence.as_ref().ok_or(Rejection::RecoveryRequired)?;
     if fence.fence != evidence.recovered.fence
         || !evidence.committed.validate()
-        || evidence.committed.index < fence.committed.index
+        || !evidence.committed.at_least(fence.committed)
         || !evidence
             .recovered
             .checkpoint
@@ -997,7 +1040,7 @@ impl MetadataState {
             object_id,
             group_id,
             scopes,
-            voters,
+            placement,
             ..
         } = &operation.command
         {
@@ -1006,7 +1049,7 @@ impl MetadataState {
                 .object(*object_id)
                 .ok_or(Rejection::NotFound)?;
             let group = self.group(*group_id).ok_or(Rejection::NotFound)?;
-            if group.voters.iter().copied().collect::<Vec<_>>() != *voters
+            if group.placement != *placement
                 || scopes.is_empty()
                 || scopes.len() > 64
                 || scopes.iter().any(|scope| {

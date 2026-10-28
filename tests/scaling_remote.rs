@@ -169,7 +169,11 @@ impl Rpc for Client {
                     match fault {
                         GroupFault::None => {}
                         GroupFault::Advanced => group.generation += 1,
-                        GroupFault::TargetMismatch => group.voters = [1, 2, 3].into(),
+                        GroupFault::TargetMismatch => {
+                            group.placement = tidemq::metadata::GroupPlacement::Raft {
+                                voters: [1, 2, 3].into(),
+                            }
+                        }
                         GroupFault::Retired => *migration = None,
                     }
                 }
@@ -273,21 +277,25 @@ async fn exercise(scenario: Scenario) {
                 .await
                 .insert(id, meta.node(id).raft.clone());
         }
-        let mut local = vec![(
+        let mut local = vec![tidemq::execution::GroupHandle::from_raft(
             data.node(id).raft.clone(),
-            data.node(id).log.clone(),
             data.node(id).state.clone(),
+            data.node(id).log.clone(),
         )];
         if id < 4 {
-            local.push((
+            local.push(tidemq::execution::GroupHandle::from_raft(
                 healthy.node(id).raft.clone(),
-                healthy.node(id).log.clone(),
                 healthy.node(id).state.clone(),
+                healthy.node(id).log.clone(),
             ));
         }
         let replicas = LocalReplicas::new(
             if id < 4 {
-                Some((meta.node(id).raft.clone(), meta.node(id).state.clone()))
+                Some(tidemq::execution::GroupHandle::from_raft(
+                    meta.node(id).raft.clone(),
+                    meta.node(id).state.clone(),
+                    meta.node(id).log.clone(),
+                ))
             } else {
                 None
             },
@@ -303,7 +311,7 @@ async fn exercise(scenario: Scenario) {
             cluster_id: cluster,
             node_id: id,
             metadata_group: 77,
-            mode: tidemq::metadata::DeploymentMode::ThreeReplica,
+            mode: tidemq::metadata::DeploymentMode::SeparateRf3,
             metadata_voters: [1, 2, 3].into(),
         };
         let service = Service::new(
@@ -340,7 +348,9 @@ async fn exercise(scenario: Scenario) {
     let incompatible = tidemq::metadata::DataGroup {
         group_id: GROUP,
         generation: 2,
-        voters: [1, 2, 4].into(),
+        placement: tidemq::metadata::GroupPlacement::Raft {
+            voters: [1, 2, 4].into(),
+        },
     };
     let incompatible = MembershipPlan::new(cluster, &incompatible, [1, 2, 5].into()).unwrap();
     assert!(matches!(
@@ -469,7 +479,10 @@ async fn exercise(scenario: Scenario) {
             let record = pending.membership_change(GROUP).unwrap();
             assert_eq!(record.plan, plan);
             assert!(!record.is_complete());
-            assert_eq!(pending.group(GROUP).unwrap().voters, *plan.previous());
+            assert_eq!(
+                pending.group(GROUP).unwrap().placement.hosts(),
+                *plan.previous()
+            );
             let leader = client.leader(GROUP, deadline).await.unwrap();
             assert_eq!(
                 data.node(leader)
@@ -516,7 +529,10 @@ async fn exercise(scenario: Scenario) {
         record.copy_bytes > 1024 * 1024,
         "The source reserves actual snapshot and bounded journal/tail growth"
     );
-    assert_eq!(applied.group(GROUP).unwrap().voters, [1, 2, 4].into());
+    assert_eq!(
+        applied.group(GROUP).unwrap().placement.hosts(),
+        [1, 2, 4].into()
+    );
     let new_leader = client.leader(GROUP, Instant::now() + WAIT).await.unwrap();
     assert_eq!(
         data.node(new_leader)

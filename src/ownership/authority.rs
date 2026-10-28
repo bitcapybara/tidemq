@@ -2,14 +2,14 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use openraft::error::{CheckIsLeaderError, RaftError};
-use openraft::{BasicNode, LogId};
 use snafu::{ResultExt, Snafu};
 use tidemq_protocol::Id;
 use tokio::sync::Semaphore;
 
-use crate::metadata::{Action, Command, ControlStage, MetadataState, NodeRole, stage_operation_id};
-use crate::replication::{Application, DiskStateMachine, Raft};
+use crate::execution::{Application, GroupHandle};
+use crate::metadata::{
+    Action, Command, ControlStage, GroupPlacement, MetadataState, NodeRole, stage_operation_id,
+};
 
 use super::{
     CommitPosition, ControlLease, ControlPolicy, FenceCommand, FenceEvidence, FenceState, Grant,
@@ -19,18 +19,18 @@ use super::{
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("The authoritative application is stopped after a local failure"))]
-    ApplicationStopped { source: crate::wal::Error },
+    ApplicationStopped { source: crate::execution::Error },
     #[snafu(display("Ownership authority configuration is invalid"))]
     InvalidConfiguration,
     #[snafu(display("The authoritative linearizable read failed"))]
     LinearizableRead {
-        source: Box<RaftError<u64, CheckIsLeaderError<u64, BasicNode>>>,
+        source: Box<crate::execution::Error>,
     },
     #[snafu(display("The authority read exceeded its validity window"))]
     ReadDeadline { source: tokio::time::error::Elapsed },
     #[snafu(display("The authority view belongs to a different cluster or group"))]
     IdentityMismatch,
-    #[snafu(display("Actual Raft voters do not match the authorized stable topology"))]
+    #[snafu(display("The actual group placement does not match the authorized topology"))]
     MembershipMismatch,
     #[snafu(display("The requested ownership grant is absent, retired, or superseded"))]
     GrantMismatch,
@@ -40,7 +40,7 @@ pub enum Error {
     RecoveryRequired,
     #[snafu(display("The route is not active for this ownership grant"))]
     RouteRequired,
-    #[snafu(display("The applied view has no committed consensus position"))]
+    #[snafu(display("The applied view has no committed execution position"))]
     MissingCommitPosition,
     #[snafu(display("Control validity cannot be established"))]
     Validity { source: LeaseError },
@@ -51,11 +51,10 @@ pub trait OwnershipApplication: Application {
     fn ownership_state(&self) -> Option<&FenceState>;
 }
 
-/// Local authoritative adapter. A remote implementation must additionally authenticate
+/// In-process authoritative adapter. A remote implementation must additionally authenticate
 /// the configured metadata identity and prohibit cached responses and raw command RPCs.
 pub struct MetadataAuthority {
-    pub(super) raft: Raft<MetadataState>,
-    state: DiskStateMachine<MetadataState>,
+    pub(super) group: GroupHandle<MetadataState>,
     cluster_id: Id,
     group_id: u64,
     policy: ControlPolicy,
@@ -64,19 +63,20 @@ pub struct MetadataAuthority {
 
 impl MetadataAuthority {
     pub fn new(
-        raft: Raft<MetadataState>,
-        state: DiskStateMachine<MetadataState>,
+        group: GroupHandle<MetadataState>,
         cluster_id: Id,
         group_id: u64,
         policy: ControlPolicy,
     ) -> Result<Self, Error> {
         policy.validate().context(ValiditySnafu)?;
-        if group_id == 0 {
+        if group_id == 0
+            || group.identity().group.cluster_id != cluster_id
+            || group.identity().group.group_id != group_id
+        {
             return Err(Error::InvalidConfiguration);
         }
         Ok(Self {
-            raft,
-            state,
+            group,
             cluster_id,
             group_id,
             policy,
@@ -136,21 +136,28 @@ impl MetadataAuthority {
 
     pub(super) async fn read<R: Send>(
         &self,
-        query: impl FnOnce(&MetadataState, Option<LogId<u64>>) -> Result<R, Error> + Send,
+        query: impl FnOnce(&MetadataState, Option<CommitPosition>) -> Result<R, Error> + Send,
     ) -> Result<(R, Instant), Error> {
         let started = Instant::now();
         let result = tokio::time::timeout(self.policy.ttl, async {
-            self.raft
-                .ensure_linearizable()
+            self.group
+                .ensure_read(tokio::time::Instant::now() + self.policy.ttl)
                 .await
                 .map_err(|source| Error::LinearizableRead {
                     source: Box::new(source),
                 })?;
-            let voters = stable_voters(&self.raft)?;
-            self.state
+            let placement = authority_placement(&self.group)?;
+            self.group
+                .state()
                 .try_with_applied(|state, position| {
-                    validate_metadata_identity(state, self.cluster_id, self.group_id, &voters)?;
-                    query(state, position)
+                    validate_metadata_identity(
+                        state,
+                        self.cluster_id,
+                        self.group_id,
+                        &self.group,
+                        &placement,
+                    )?;
+                    query(state, position.map(CommitPosition::from))
                 })
                 .await
                 .context(ApplicationStoppedSnafu)?
@@ -161,48 +168,55 @@ impl MetadataAuthority {
     }
 }
 
-/// Authoritative reads from the owning data group, after a real quorum barrier.
+/// Authoritative reads from the owning data group, after the execution barrier.
 pub struct DataAuthority<A: OwnershipApplication> {
-    raft: Raft<A>,
-    state: DiskStateMachine<A>,
+    pub(super) group: GroupHandle<A>,
     cluster_id: Id,
     group_id: u64,
-    expected_voters: BTreeSet<u64>,
+    expected_placement: GroupPlacement,
     policy: ControlPolicy,
 }
 
 impl<A: OwnershipApplication> DataAuthority<A> {
     pub fn new(
-        raft: Raft<A>,
-        state: DiskStateMachine<A>,
+        group: GroupHandle<A>,
         cluster_id: Id,
         group_id: u64,
-        expected_voters: BTreeSet<u64>,
+        expected_placement: GroupPlacement,
         policy: ControlPolicy,
     ) -> Result<Self, Error> {
         policy.validate().context(ValiditySnafu)?;
-        if group_id == 0 || !matches!(expected_voters.len(), 1 | 3) || expected_voters.contains(&0)
+        if group_id == 0
+            || group.identity().group.cluster_id != cluster_id
+            || group.identity().group.group_id != group_id
+            || expected_placement.mode().is_err()
+            || match &expected_placement {
+                GroupPlacement::Local { node_id } => {
+                    !group.is_local() || *node_id != group.local_node()
+                }
+                GroupPlacement::Raft { .. } => group.is_local(),
+            }
         {
             return Err(Error::InvalidConfiguration);
         }
         Ok(Self {
-            raft,
-            state,
+            group,
             cluster_id,
             group_id,
-            expected_voters,
+            expected_placement,
             policy,
         })
     }
 
     pub async fn verify_fence(&self, expected: &Grant) -> Result<VerifiedFence, Error> {
         let (evidence, started) = self
-            .read(|state, position| {
+            .read(|state, position, placement| {
                 let fence = state
                     .fence(expected.partition)
                     .filter(|fence| fence.grant == *expected)
                     .ok_or(Error::FenceRequired)?;
                 Ok(FenceEvidence {
+                    placement: placement.clone(),
                     fence: fence.clone(),
                     committed: commit_position(position)?,
                 })
@@ -216,7 +230,7 @@ impl<A: OwnershipApplication> DataAuthority<A> {
 
     pub async fn verify_recovery(&self, expected: &Grant) -> Result<VerifiedRecovery, Error> {
         let (evidence, started) = self
-            .read(|state, position| {
+            .read(|state, position, placement| {
                 let recovered = state
                     .recovered(expected.partition)
                     .filter(|recovered| {
@@ -225,6 +239,7 @@ impl<A: OwnershipApplication> DataAuthority<A> {
                     })
                     .ok_or(Error::RecoveryRequired)?;
                 Ok(RecoveryEvidence {
+                    placement: placement.clone(),
                     recovered,
                     committed: commit_position(position)?,
                 })
@@ -238,26 +253,29 @@ impl<A: OwnershipApplication> DataAuthority<A> {
 
     pub(super) async fn read<R: Send>(
         &self,
-        query: impl FnOnce(&FenceState, Option<LogId<u64>>) -> Result<R, Error> + Send,
+        query: impl FnOnce(&FenceState, Option<CommitPosition>, &GroupPlacement) -> Result<R, Error>
+        + Send,
     ) -> Result<(R, Instant), Error> {
         let started = Instant::now();
         let result = tokio::time::timeout(self.policy.ttl, async {
-            self.raft
-                .ensure_linearizable()
+            self.group
+                .ensure_read(tokio::time::Instant::now() + self.policy.ttl)
                 .await
                 .map_err(|source| Error::LinearizableRead {
                     source: Box::new(source),
                 })?;
-            if stable_voters(&self.raft)? != self.expected_voters {
+            let placement = authority_placement(&self.group)?;
+            if placement != self.expected_placement {
                 return Err(Error::MembershipMismatch);
             }
-            self.state
+            self.group
+                .state()
                 .try_with_applied(|state, position| {
                     let state = state.ownership_state().ok_or(Error::FenceRequired)?;
                     if state.cluster_id() != self.cluster_id || state.group_id() != self.group_id {
                         return Err(Error::IdentityMismatch);
                     }
-                    query(state, position)
+                    query(state, position.map(CommitPosition::from), &placement)
                 })
                 .await
                 .context(ApplicationStoppedSnafu)?
@@ -292,7 +310,7 @@ impl Freshness {
     }
 }
 
-/// Only a successful fresh metadata quorum read can create this capability.
+/// Only a successful fresh metadata authority read can create this capability.
 ///
 /// ```compile_fail
 /// let _: tidemq::ownership::VerifiedGrant = serde_json::from_str("{}").unwrap();
@@ -362,7 +380,14 @@ impl VerifiedRecovery {
     }
 }
 
-pub(super) fn stable_voters<A: Application>(raft: &Raft<A>) -> Result<BTreeSet<u64>, Error> {
+pub(crate) fn authority_placement<A: Application>(
+    group: &GroupHandle<A>,
+) -> Result<GroupPlacement, Error> {
+    let Some(raft) = group.raft() else {
+        return Ok(GroupPlacement::Local {
+            node_id: group.local_node(),
+        });
+    };
     let receiver = raft.metrics();
     let metrics = receiver.borrow();
     let membership = metrics.membership_config.membership();
@@ -374,27 +399,29 @@ pub(super) fn stable_voters<A: Application>(raft: &Raft<A>) -> Result<BTreeSet<u
     if !matches!(voters.len(), 1 | 3) {
         return Err(Error::MembershipMismatch);
     }
-    Ok(voters)
+    Ok(GroupPlacement::Raft { voters })
 }
 
 fn validate_metadata_identity(
     state: &MetadataState,
     cluster: Id,
     group: u64,
-    voters: &BTreeSet<u64>,
+    handle: &GroupHandle<MetadataState>,
+    placement: &GroupPlacement,
 ) -> Result<(), Error> {
     if state.cluster_id() != Some(cluster) || state.metadata_group_id() != Some(group) {
         return Err(Error::IdentityMismatch);
     }
-    let factor = state
-        .mode
-        .ok_or(Error::IdentityMismatch)?
-        .replication_factor();
-    if factor != voters.len() {
+    let mode = state.mode.ok_or(Error::IdentityMismatch)?;
+    if (mode == crate::metadata::DeploymentMode::Local) != handle.is_local() {
+        return Err(Error::IdentityMismatch);
+    }
+    let factor = mode.replication_factor();
+    if placement.mode() != Ok(mode) {
         return Err(Error::MembershipMismatch);
     }
     let mut zones = BTreeSet::new();
-    for voter in voters {
+    for voter in &placement.hosts() {
         let node = state.node(*voter).ok_or(Error::MembershipMismatch)?;
         if !node.spec.roles.contains(&NodeRole::Metadata) {
             return Err(Error::MembershipMismatch);
@@ -407,11 +434,8 @@ fn validate_metadata_identity(
     Ok(())
 }
 
-fn commit_position(position: Option<LogId<u64>>) -> Result<CommitPosition, Error> {
-    let position = position.ok_or(Error::MissingCommitPosition)?;
-    Ok(CommitPosition {
-        term: position.leader_id.term,
-        leader_node: position.leader_id.node_id,
-        index: position.index,
-    })
+fn commit_position(position: Option<CommitPosition>) -> Result<CommitPosition, Error> {
+    position
+        .filter(|position| position.validate())
+        .ok_or(Error::MissingCommitPosition)
 }

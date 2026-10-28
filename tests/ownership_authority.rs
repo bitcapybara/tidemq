@@ -100,6 +100,14 @@ struct Rf1<A: Application> {
 }
 
 impl<A: Application> Rf1<A> {
+    fn group(&self) -> tidemq::execution::GroupHandle<A> {
+        tidemq::execution::GroupHandle::from_raft(
+            self.raft.clone(),
+            self.state.clone(),
+            self.log.clone(),
+        )
+    }
+
     async fn open(path: &Path, cluster: Id, group: u64, initialize: bool) -> Self {
         let store = DiskStore::<A>::open(
             path,
@@ -182,20 +190,19 @@ async fn revision(meta: &Rf1<MetadataState>) -> u64 {
     meta.state.with_application(MetadataState::revision).await
 }
 
-async fn bootstrap(meta: &Rf1<MetadataState>, mode: DeploymentMode) -> tidemq::ownership::Grant {
+async fn bootstrap(
+    meta: &tidemq::execution::GroupHandle<MetadataState>,
+    mode: DeploymentMode,
+) -> tidemq::ownership::Grant {
     assert!(
-        meta.raft
-            .client_write(Command::bootstrap(
-                id(10),
-                id(2),
-                1,
-                mode,
-                MetadataLimits::default()
-            ))
-            .await
-            .unwrap()
-            .data
-            .is_applied()
+        meta.commit(
+            Command::bootstrap(id(10), id(2), 1, mode, MetadataLimits::default()),
+            tokio::time::Instant::now() + WAIT
+        )
+        .await
+        .unwrap()
+        .response
+        .is_applied()
     );
     let count = mode.replication_factor();
     for node in 1..=count {
@@ -207,49 +214,59 @@ async fn bootstrap(meta: &Rf1<MetadataState>, mode: DeploymentMode) -> tidemq::o
             schedulable: true,
         };
         assert!(
-            meta.raft
-                .client_write(Command::put_node(
+            meta.commit(
+                Command::put_node(
                     id(20 + node as u64),
-                    revision(meta).await,
+                    meta.state().with_application(MetadataState::revision).await,
                     spec,
                     0
-                ))
-                .await
-                .unwrap()
-                .data
-                .is_applied()
+                ),
+                tokio::time::Instant::now() + WAIT
+            )
+            .await
+            .unwrap()
+            .response
+            .is_applied()
         );
     }
     let voters = (1..=count as u64).collect();
     assert!(
-        meta.raft
-            .client_write(Command::create_group(
+        meta.commit(
+            Command::create_group(
                 id(30),
-                revision(meta).await,
+                meta.state().with_application(MetadataState::revision).await,
                 2,
-                voters
-            ))
-            .await
-            .unwrap()
-            .data
-            .is_applied()
+                if mode == DeploymentMode::Local {
+                    tidemq::metadata::GroupPlacement::Local { node_id: 1 }
+                } else {
+                    tidemq::metadata::GroupPlacement::Raft { voters }
+                }
+            ),
+            tokio::time::Instant::now() + WAIT
+        )
+        .await
+        .unwrap()
+        .response
+        .is_applied()
     );
     assert!(
-        meta.raft
-            .client_write(Command::create_topic(
+        meta.commit(
+            Command::create_topic(
                 id(31),
-                revision(meta).await,
+                meta.state().with_application(MetadataState::revision).await,
                 id(3),
                 "orders".into(),
                 vec![2]
-            ))
-            .await
-            .unwrap()
-            .data
-            .is_applied()
+            ),
+            tokio::time::Instant::now() + WAIT
+        )
+        .await
+        .unwrap()
+        .response
+        .is_applied()
     );
     let command = Command::grant_ownership(
-        revision(meta).await,
+        meta.state().with_application(MetadataState::revision).await,
         id(2),
         PartitionKey {
             topic_id: id(3),
@@ -260,7 +277,11 @@ async fn bootstrap(meta: &Rf1<MetadataState>, mode: DeploymentMode) -> tidemq::o
         0,
     )
     .unwrap();
-    let result = meta.raft.client_write(command).await.unwrap().data;
+    let result = meta
+        .commit(command, tokio::time::Instant::now() + WAIT)
+        .await
+        .unwrap()
+        .response;
     match result {
         Response::Applied {
             outcome: Outcome::OwnershipGranted(grant),
@@ -368,25 +389,20 @@ async fn real_rf1_barriers_gate_fences_recovery_activation_and_snapshot_reopen()
     let data_path = directory.0.join("data");
     let meta = Rf1::<MetadataState>::open(&meta_path, id(2), 1, true).await;
     let data = Rf1::<DataFixture>::open(&data_path, id(2), 2, true).await;
-    let grant = bootstrap(&meta, DeploymentMode::LocalRf1).await;
+    let grant = bootstrap(&meta.group(), DeploymentMode::SeparateRf1).await;
     data.raft
         .client_write(DataCommand::Initialize)
         .await
         .unwrap();
-    let authority = MetadataAuthority::new(
-        meta.raft.clone(),
-        meta.state.clone(),
-        id(2),
-        1,
-        ControlPolicy::default(),
-    )
-    .unwrap();
+    let authority =
+        MetadataAuthority::new(meta.group(), id(2), 1, ControlPolicy::default()).unwrap();
     let data_authority = DataAuthority::new(
-        data.raft.clone(),
-        data.state.clone(),
+        data.group(),
         id(2),
         2,
-        BTreeSet::from([1]),
+        tidemq::metadata::GroupPlacement::Raft {
+            voters: BTreeSet::from([1]),
+        },
         ControlPolicy::default(),
     )
     .unwrap();
@@ -509,20 +525,15 @@ async fn real_rf1_barriers_gate_fences_recovery_activation_and_snapshot_reopen()
     data.close().await;
     let meta = Rf1::<MetadataState>::open(&meta_path, id(2), 1, false).await;
     let data = Rf1::<DataFixture>::open(&data_path, id(2), 2, false).await;
-    let authority = MetadataAuthority::new(
-        meta.raft.clone(),
-        meta.state.clone(),
-        id(2),
-        1,
-        ControlPolicy::default(),
-    )
-    .unwrap();
+    let authority =
+        MetadataAuthority::new(meta.group(), id(2), 1, ControlPolicy::default()).unwrap();
     let data_authority = DataAuthority::new(
-        data.raft.clone(),
-        data.state.clone(),
+        data.group(),
         id(2),
         2,
-        BTreeSet::from([1]),
+        tidemq::metadata::GroupPlacement::Raft {
+            voters: BTreeSet::from([1]),
+        },
         ControlPolicy::default(),
     )
     .unwrap();
@@ -544,15 +555,9 @@ async fn real_rf1_barriers_gate_fences_recovery_activation_and_snapshot_reopen()
 async fn declared_rf3_cannot_mint_authority_from_an_actual_rf1_group() {
     let directory = Directory::new().await;
     let meta = Rf1::<MetadataState>::open(&directory.0.join("metadata"), id(2), 1, true).await;
-    let grant = bootstrap(&meta, DeploymentMode::ThreeReplica).await;
-    let authority = MetadataAuthority::new(
-        meta.raft.clone(),
-        meta.state.clone(),
-        id(2),
-        1,
-        ControlPolicy::default(),
-    )
-    .unwrap();
+    let grant = bootstrap(&meta.group(), DeploymentMode::SeparateRf3).await;
+    let authority =
+        MetadataAuthority::new(meta.group(), id(2), 1, ControlPolicy::default()).unwrap();
     assert!(matches!(
         authority.verify_grant(&grant).await,
         Err(AuthorityError::MembershipMismatch)
@@ -565,13 +570,12 @@ async fn declared_rf3_cannot_mint_authority_from_an_actual_rf1_group() {
 async fn stopped_authority_cannot_refresh_a_grant_or_reuse_expired_verification() {
     let directory = Directory::new().await;
     let meta = Rf1::<MetadataState>::open(&directory.0.join("metadata"), id(2), 1, true).await;
-    let grant = bootstrap(&meta, DeploymentMode::LocalRf1).await;
+    let grant = bootstrap(&meta.group(), DeploymentMode::SeparateRf1).await;
     let policy = ControlPolicy {
         ttl: Duration::from_millis(200),
         ..ControlPolicy::default()
     };
-    let authority =
-        MetadataAuthority::new(meta.raft.clone(), meta.state.clone(), id(2), 1, policy).unwrap();
+    let authority = MetadataAuthority::new(meta.group(), id(2), 1, policy).unwrap();
     let verified = authority.verify_grant(&grant).await.unwrap();
     meta.raft.shutdown().await.unwrap();
     assert!(authority.verify_grant(&grant).await.is_err());
@@ -582,4 +586,157 @@ async fn stopped_authority_cannot_refresh_a_grant_or_reuse_expired_verification(
     ));
     drop(authority);
     meta.log.close().await.unwrap();
+}
+
+async fn local_group<A: Application + Default>(
+    path: &Path,
+    group: u64,
+) -> tidemq::execution::GroupHandle<A> {
+    tidemq::execution::GroupHandle::Local(
+        tidemq::execution::LocalGroup::open(
+            path,
+            StorageIdentity::new::<A>(id(2), group, 1),
+            Default::default(),
+            A::default(),
+        )
+        .await
+        .unwrap(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_authority_preserves_proofs_expiry_and_snapshot_recovery_without_raft() {
+    let directory = Directory::new().await;
+    let meta_path = directory.0.join("metadata");
+    let data_path = directory.0.join("data");
+    let meta = local_group::<MetadataState>(&meta_path, 1).await;
+    let data = local_group::<DataFixture>(&data_path, 2).await;
+    let grant = bootstrap(&meta, DeploymentMode::Local).await;
+    assert!(meta.raft().is_none());
+    assert!(data.raft().is_none());
+    let deadline = || tokio::time::Instant::now() + WAIT;
+    data.commit(DataCommand::Initialize, deadline())
+        .await
+        .unwrap();
+    let authority =
+        MetadataAuthority::new(meta.clone(), id(2), 1, ControlPolicy::default()).unwrap();
+    let data_authority = DataAuthority::new(
+        data.clone(),
+        id(2),
+        2,
+        tidemq::metadata::GroupPlacement::Local { node_id: 1 },
+        ControlPolicy::default(),
+    )
+    .unwrap();
+    let fence = authority
+        .verify_grant(&grant)
+        .await
+        .unwrap()
+        .into_fence_command()
+        .unwrap();
+    let committed = data
+        .commit(DataCommand::Fence(fence), deadline())
+        .await
+        .unwrap();
+    assert!(
+        matches!(committed.position, tidemq::execution::ExecutionPosition::Local { sequence } if sequence > 0)
+    );
+    let observed = data_authority
+        .verify_fence(&grant)
+        .await
+        .unwrap()
+        .into_observe_command(meta.state().with_application(MetadataState::revision).await)
+        .unwrap();
+    assert!(
+        meta.commit(observed, deadline())
+            .await
+            .unwrap()
+            .response
+            .is_applied()
+    );
+    assert!(matches!(
+        data_authority.verify_recovery(&grant).await,
+        Err(AuthorityError::RecoveryRequired)
+    ));
+    data.commit_completion(
+        DataCommand::RebuildFixtureCheckpoint(grant.partition),
+        deadline(),
+    )
+    .await
+    .unwrap();
+    let observed = data_authority
+        .verify_recovery(&grant)
+        .await
+        .unwrap()
+        .into_observe_command(meta.state().with_application(MetadataState::revision).await)
+        .unwrap();
+    assert!(
+        meta.commit(observed, deadline())
+            .await
+            .unwrap()
+            .response
+            .is_applied()
+    );
+    let activated = data_authority
+        .verify_recovery(&grant)
+        .await
+        .unwrap()
+        .into_activate_command(meta.state().with_application(MetadataState::revision).await)
+        .unwrap();
+    assert!(
+        meta.commit(activated, deadline())
+            .await
+            .unwrap()
+            .response
+            .is_applied()
+    );
+    assert!(meta.snapshot(deadline()).await.unwrap().is_some());
+    assert!(data.snapshot(deadline()).await.unwrap().is_some());
+    meta.close(deadline()).await.unwrap();
+    assert!(authority.verify_grant(&grant).await.is_err());
+    data.close(deadline()).await.unwrap();
+    assert!(data_authority.verify_fence(&grant).await.is_err());
+    drop((authority, data_authority, meta, data));
+    let meta = local_group::<MetadataState>(&meta_path, 1).await;
+    let data = local_group::<DataFixture>(&data_path, 2).await;
+    let authority =
+        MetadataAuthority::new(meta.clone(), id(2), 1, ControlPolicy::default()).unwrap();
+    let data_authority = DataAuthority::new(
+        data.clone(),
+        id(2),
+        2,
+        tidemq::metadata::GroupPlacement::Local { node_id: 1 },
+        ControlPolicy::default(),
+    )
+    .unwrap();
+    let recovered = data_authority
+        .verify_recovery(&grant)
+        .await
+        .unwrap()
+        .into_activate_command(meta.state().with_application(MetadataState::revision).await)
+        .unwrap();
+    assert!(
+        meta.commit(recovered, deadline())
+            .await
+            .unwrap()
+            .response
+            .is_applied()
+    );
+    assert!(authority.verify_grant(&grant).await.is_ok());
+    let fence = data
+        .state()
+        .try_with_application(|state| {
+            state
+                .ownership
+                .as_ref()
+                .unwrap()
+                .fence(grant.partition)
+                .unwrap()
+                .clone()
+        })
+        .await
+        .unwrap();
+    assert!(authority.active_lease(&fence).await.is_ok());
+    meta.close(deadline()).await.unwrap();
+    data.close(deadline()).await.unwrap();
 }

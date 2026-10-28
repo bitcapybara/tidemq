@@ -132,10 +132,16 @@ async fn real_quic_membership_reconciles_unknown_learner_then_replaces_voter_wit
     let mut registry = Registry::default();
     let metrics = Arc::new(ScalingMetrics::register(&mut registry));
     let coordinator = MembershipCoordinator::new(
-        meta.node(1).raft.clone(),
-        meta.node(1).state.clone(),
-        data.node(1).raft.clone(),
-        data.node(1).state.clone(),
+        tidemq::execution::GroupHandle::from_raft(
+            meta.node(1).raft.clone(),
+            meta.node(1).state.clone(),
+            meta.node(1).log.clone(),
+        ),
+        tidemq::execution::GroupHandle::from_raft(
+            data.node(1).raft.clone(),
+            data.node(1).state.clone(),
+            data.node(1).log.clone(),
+        ),
         budget.clone(),
         metrics,
     );
@@ -160,7 +166,8 @@ async fn real_quic_membership_reconciles_unknown_learner_then_replaces_voter_wit
             .await
             .group(GROUP)
             .unwrap()
-            .voters,
+            .placement
+            .hosts(),
         BTreeSet::from([1, 2, 3])
     );
     // A healthy voter quorum still commits while the learner cannot make progress.
@@ -191,7 +198,7 @@ async fn real_quic_membership_reconciles_unknown_learner_then_replaces_voter_wit
         group.generation + 1
     );
     assert_eq!(
-        current.group(GROUP).unwrap().voters,
+        current.group(GROUP).unwrap().placement.hosts(),
         BTreeSet::from([1, 2, 4])
     );
     assert!(current.membership_change(GROUP).unwrap().is_complete());
@@ -303,10 +310,16 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
     let mut registry = Registry::default();
     let metrics = Arc::new(ScalingMetrics::register(&mut registry));
     let coordinator = MembershipCoordinator::new(
-        meta.node(1).raft.clone(),
-        meta.node(1).state.clone(),
-        data.node(1).raft.clone(),
-        data.node(1).state.clone(),
+        tidemq::execution::GroupHandle::from_raft(
+            meta.node(1).raft.clone(),
+            meta.node(1).state.clone(),
+            meta.node(1).log.clone(),
+        ),
+        tidemq::execution::GroupHandle::from_raft(
+            data.node(1).raft.clone(),
+            data.node(1).state.clone(),
+            data.node(1).log.clone(),
+        ),
         budget.clone(),
         metrics.clone(),
     );
@@ -417,10 +430,16 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
         ready.await
     };
     let resumed = MembershipCoordinator::new(
-        meta.node(metadata_leader).raft.clone(),
-        meta.node(metadata_leader).state.clone(),
-        data.node(leader).raft.clone(),
-        data.node(leader).state.clone(),
+        tidemq::execution::GroupHandle::from_raft(
+            meta.node(metadata_leader).raft.clone(),
+            meta.node(metadata_leader).state.clone(),
+            meta.node(metadata_leader).log.clone(),
+        ),
+        tidemq::execution::GroupHandle::from_raft(
+            data.node(leader).raft.clone(),
+            data.node(leader).state.clone(),
+            data.node(leader).log.clone(),
+        ),
         budget,
         metrics,
     );
@@ -445,10 +464,16 @@ async fn committed_joint_survives_leader_loss_and_finishes_only_the_original_pla
         metadata_leader = next_metadata;
         leader = next;
         let resumed = MembershipCoordinator::new(
-            meta.node(next_metadata).raft.clone(),
-            meta.node(next_metadata).state.clone(),
-            data.node(next).raft.clone(),
-            data.node(next).state.clone(),
+            tidemq::execution::GroupHandle::from_raft(
+                meta.node(next_metadata).raft.clone(),
+                meta.node(next_metadata).state.clone(),
+                meta.node(next_metadata).log.clone(),
+            ),
+            tidemq::execution::GroupHandle::from_raft(
+                data.node(next).raft.clone(),
+                data.node(next).state.clone(),
+                data.node(next).log.clone(),
+            ),
             RepairBudget::new(RepairLimits::default()).unwrap(),
             Arc::new(ScalingMetrics::register(&mut Registry::default())),
         );

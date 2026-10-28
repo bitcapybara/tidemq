@@ -314,7 +314,7 @@ impl QuotaLedger {
         Ok(())
     }
 
-    // Releasing old credit requires confirmation of the data Raft's durable installation.
+    // Releasing old credit requires confirmation of the data group's durable installation.
     pub fn observe(&mut self, grant: &QuotaGrant, now_ms: u64) -> Result<(), Rejection> {
         let now_ms = now_ms.max(self.clock_ms);
         let record = self

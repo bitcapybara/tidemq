@@ -115,7 +115,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
                 binding_generation: 1,
             }],
             generation: 19,
-            voters: vec![1],
+            placement: crate::metadata::GroupPlacement::Raft { voters: [1].into() },
             snapshots: vec![(1, "source-history-snapshot".into(), 100)],
         },
     );
@@ -141,7 +141,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
                 id(701),
                 state.revision(),
                 3,
-                [2].into()
+                crate::metadata::GroupPlacement::Raft { voters: [2].into() }
             ))
             .is_applied()
     );
@@ -196,7 +196,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
         Rejection::RecoveryRequired,
     );
     state.validate_snapshot().unwrap();
-    let source_cut = CommitPosition {
+    let source_cut = CommitPosition::Raft {
         term: 1,
         leader_node: 1,
         index: 1000,
@@ -231,12 +231,17 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
         plan_id,
         TransferStep::Exported(manifest.clone()),
     );
-    let committed = CommitPosition {
+    let committed = CommitPosition::Raft {
         term: 1,
         leader_node: 2,
         index: 5,
     };
     let recovery = RecoveryEvidence {
+        placement: state
+            .group(original.target.group_id)
+            .unwrap()
+            .placement
+            .clone(),
         recovered: RecoveredOwnership {
             fence: FenceRecord {
                 grant: original.target.clone(),
@@ -288,7 +293,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
                         binding_generation: 1,
                     }],
                     generation: 1,
-                    voters: vec![1],
+                    placement: crate::metadata::GroupPlacement::Raft { voters: [1].into() },
                     snapshots: vec![(1, "wrong-authority-snapshot".into(), 10)],
                 },
             }),
@@ -337,15 +342,12 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     );
     // Membership tests cover the Raft replacement; model its completed metadata view here.
     let target = state.groups.get_mut(&3).unwrap();
-    target.voters = [3].into();
+    target.placement = crate::metadata::GroupPlacement::Raft { voters: [3].into() };
     target.generation += 1;
     state.validate_snapshot().unwrap();
     let checkpoint = TransferCheckpoint {
         voter: 3,
-        position: CommitPosition {
-            index: 6,
-            ..committed
-        },
+        position: raft_position_at(committed, 6),
         manifest_digest: manifest.digest,
     };
     advance(
@@ -371,7 +373,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
                 binding_generation: 2,
             }],
             generation: 1,
-            voters: vec![3],
+            placement: crate::metadata::GroupPlacement::Raft { voters: [3].into() },
             snapshots: vec![(3, "target-history-snapshot".into(), 11)],
         },
     );
@@ -396,10 +398,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
             state.revision(),
             TransferCommand::Advance {
                 plan: plan_id,
-                step: Box::new(TransferStep::Retired(CommitPosition {
-                    index: 1001,
-                    ..source_cut
-                })),
+                step: Box::new(TransferStep::Retired(raft_position_at(source_cut, 1001))),
             },
         )),
         Rejection::RecoveryRequired,
@@ -408,10 +407,7 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
     let retired = advance(
         &mut state,
         plan_id,
-        TransferStep::Retired(CommitPosition {
-            index: 1001,
-            ..source_cut
-        }),
+        TransferStep::Retired(raft_position_at(source_cut, 1001)),
     );
     assert_eq!(retired.stage, TransferStage::Retired);
     let restored: MetadataState =
@@ -445,4 +441,18 @@ fn cross_group_publication_installs_only_target_control_proofs_and_preserves_bir
         corrupted.validate_snapshot(),
         Err(Rejection::InvalidEvidence)
     );
+}
+
+fn raft_position_at(position: CommitPosition, index: u64) -> CommitPosition {
+    let CommitPosition::Raft {
+        term, leader_node, ..
+    } = position
+    else {
+        panic!("The cluster transfer fixture requires a Raft position");
+    };
+    CommitPosition::Raft {
+        term,
+        leader_node,
+        index,
+    }
 }

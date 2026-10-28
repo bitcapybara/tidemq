@@ -1,16 +1,14 @@
-use std::collections::BTreeSet;
-
 use serde::{Deserialize, Serialize};
 use tidemq_protocol::Id;
 
 use crate::ownership::{FenceEvidence, Grant, RecoveryEvidence};
 
 use super::{
-    DataGroup, DeploymentMode, MetadataLimits, NodeRecord, NodeSpec, PartitionKey, Route,
-    SubscriptionConfig, SubscriptionRecord, TopicRecord,
+    DataGroup, DeploymentMode, GroupPlacement, MetadataLimits, NodeRecord, NodeSpec, PartitionKey,
+    Route, SubscriptionConfig, SubscriptionRecord, TopicRecord,
 };
 
-/// Only Raft storage and trusted in-process dispatchers deserialize this type.
+/// Only group storage and trusted in-process dispatchers deserialize this type.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Command {
     pub(crate) operation_id: Id,
@@ -40,7 +38,7 @@ pub(crate) enum Action {
     },
     CreateGroup {
         group_id: u64,
-        voters: BTreeSet<u64>,
+        placement: GroupPlacement,
     },
     CreateTopic {
         topic_id: Id,
@@ -210,12 +208,15 @@ impl Command {
         operation_id: Id,
         expected_revision: u64,
         group_id: u64,
-        voters: BTreeSet<u64>,
+        placement: GroupPlacement,
     ) -> Self {
         Self::new(
             operation_id,
             expected_revision,
-            Action::CreateGroup { group_id, voters },
+            Action::CreateGroup {
+                group_id,
+                placement,
+            },
         )
     }
 
@@ -347,7 +348,7 @@ impl Command {
         )
     }
 
-    /// The trusted coordinator must obtain the immutable end from the source Raft leader.
+    /// The trusted coordinator must obtain the immutable end from the authoritative source group.
     pub fn observe_layout_seal(
         operation: Id,
         expected_revision: u64,
@@ -392,6 +393,7 @@ pub enum Rejection {
     InvalidSubscription,
     InvalidEvidence,
     InvalidCommand,
+    Unsupported,
     Capacity,
     RevisionConflict,
     GenerationConflict,
@@ -436,6 +438,7 @@ impl std::fmt::Display for Rejection {
             Self::InvalidEvidence => {
                 "Ownership or recovery evidence does not match the committed state"
             }
+            Self::Unsupported => "Cluster operations are unsupported in local deployment",
             Self::InvalidCommand => {
                 "Metadata command does not match the requested state transition"
             }

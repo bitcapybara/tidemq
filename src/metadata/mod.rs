@@ -1,6 +1,6 @@
-//! Deterministic control-plane state. Raft owns persistence and authoritative reads.
+//! Deterministic control-plane state. Group execution owns persistence and authoritative reads.
 //!
-//! The serialized command is a Raft storage format, never an unrestricted wire RPC.
+//! The serialized command is a group storage format, never an unrestricted wire RPC.
 //! In particular, ownership evidence must enter through the verified authority adapters.
 
 mod auth;
@@ -77,6 +77,7 @@ pub use transfers::{
     TransferStage, TransferStep,
 };
 pub use types::{
-    DataGroup, DeploymentMode, MetadataLimits, NodeRecord, NodeRole, NodeSpec, Ordering,
-    PartitionKey, RecordStatus, Route, SubscriptionConfig, SubscriptionRecord, TopicRecord,
+    DataGroup, DeploymentMode, GroupPlacement, MetadataLimits, NodeRecord, NodeRole, NodeSpec,
+    Ordering, PartitionKey, RecordStatus, Route, SubscriptionConfig, SubscriptionRecord,
+    TopicRecord,
 };

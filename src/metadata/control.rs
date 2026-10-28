@@ -133,6 +133,16 @@ impl Action {
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 
+    pub(super) fn proof_placement(&self) -> Option<&super::GroupPlacement> {
+        match self {
+            Self::ObserveFence(evidence) => Some(&evidence.placement),
+            Self::ObserveRecovery(evidence) | Self::ActivateRoute(evidence) => {
+                Some(&evidence.placement)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn proof_position(&self) -> Option<CommitPosition> {
         match self {
             Self::ObserveFence(evidence) => Some(evidence.committed),
@@ -199,7 +209,7 @@ impl MetadataState {
         }
         if let Some(position) = command.action.proof_position() {
             let minimum = decision.proof_position.ok_or(Rejection::InvalidEvidence)?;
-            if !position.validate() || position.index < minimum.index {
+            if !position.at_least(minimum) {
                 return Err(Rejection::InvalidEvidence);
             }
             let grant = match &command.action {
@@ -209,7 +219,14 @@ impl MetadataState {
                 }
                 _ => return Err(Rejection::InvalidEvidence),
             };
-            self.validate_evidence_identity(grant, position)?;
+            self.validate_evidence_identity(
+                grant,
+                position,
+                command
+                    .action
+                    .proof_placement()
+                    .ok_or(Rejection::InvalidEvidence)?,
+            )?;
         }
         Ok(())
     }
@@ -334,9 +351,13 @@ impl MetadataState {
             (ControlStage::Grant, None) => {}
             (ControlStage::Grant, Some(_)) | (_, None) => return Err(Rejection::InvalidEvidence),
             (_, Some(position)) => {
-                self.validate_recorded_evidence_identity(grant, position)?;
+                self.validate_recorded_evidence_identity(
+                    grant,
+                    position,
+                    action.proof_placement().ok_or(Rejection::InvalidEvidence)?,
+                )?;
                 let minimum = action.proof_position().ok_or(Rejection::InvalidEvidence)?;
-                if position.index < minimum.index {
+                if !position.at_least(minimum) {
                     return Err(Rejection::InvalidEvidence);
                 }
             }

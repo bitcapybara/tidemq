@@ -25,14 +25,13 @@ impl<A: super::OwnershipApplication> super::DataAuthority<A> {
         recovery: bool,
         voters: BTreeSet<u64>,
     ) -> std::result::Result<DataProof, super::AuthorityError> {
+        if self.group.is_local() {
+            return Err(super::AuthorityError::IdentityMismatch);
+        }
         let (evidence, _) = self
-            .read(|state, position| {
+            .read(|state, position, placement| {
                 let position = position.ok_or(super::AuthorityError::MissingCommitPosition)?;
-                let committed = CommitPosition {
-                    term: position.leader_id.term,
-                    leader_node: position.leader_id.node_id,
-                    index: position.index,
-                };
+                let committed = position;
                 if recovery {
                     let recovered = state
                         .recovered(expected.partition)
@@ -42,6 +41,7 @@ impl<A: super::OwnershipApplication> super::DataAuthority<A> {
                         })
                         .ok_or(super::AuthorityError::RecoveryRequired)?;
                     Ok(DataEvidence::Recovery(RecoveryEvidence {
+                        placement: placement.clone(),
                         recovered,
                         committed,
                     }))
@@ -51,7 +51,11 @@ impl<A: super::OwnershipApplication> super::DataAuthority<A> {
                         .filter(|fence| fence.grant == *expected)
                         .cloned()
                         .ok_or(super::AuthorityError::FenceRequired)?;
-                    Ok(DataEvidence::Fence(FenceEvidence { fence, committed }))
+                    Ok(DataEvidence::Fence(FenceEvidence {
+                        placement: placement.clone(),
+                        fence,
+                        committed,
+                    }))
                 }
             })
             .await?;
@@ -115,6 +119,123 @@ pub(crate) struct DataProof {
 pub(crate) enum DataEvidence {
     Fence(FenceEvidence),
     Recovery(RecoveryEvidence),
+}
+
+/// Local reads use the same bounded projections and freshness rules without an RPC envelope.
+pub(crate) enum Authority {
+    Local(MetadataAuthority),
+    Remote(RemoteMetadataAuthority),
+}
+
+impl Authority {
+    pub fn new_local(
+        group: crate::execution::GroupHandle<crate::metadata::MetadataState>,
+        cluster: Id,
+        metadata_group: u64,
+        policy: ControlPolicy,
+    ) -> Result<Self> {
+        if !group.is_local() {
+            return Err(Error::invalid("Local authority requires a local group"));
+        }
+        MetadataAuthority::new(group, cluster, metadata_group, policy)
+            .map(Self::Local)
+            .map_err(|source| Error::operation("create local metadata authority", source))
+    }
+
+    pub fn new(
+        rpc: PeerRpc,
+        cluster: Id,
+        group: u64,
+        placement: crate::metadata::GroupPlacement,
+        policy: ControlPolicy,
+    ) -> Result<Self> {
+        let crate::metadata::GroupPlacement::Raft { voters } = placement else {
+            return Err(Error::invalid(
+                "Local authority must be constructed from its local group",
+            ));
+        };
+        RemoteMetadataAuthority::new(rpc, cluster, group, voters, policy).map(Self::Remote)
+    }
+
+    pub async fn query(&self, query: Query, deadline: Instant) -> Result<Value> {
+        match self {
+            Self::Remote(authority) => authority.query(query, deadline).await,
+            Self::Local(authority) => {
+                tokio::time::timeout_at(deadline, authority.read(|state, _| project(state, query)))
+                    .await
+                    .map_err(|_| Error::unavailable())?
+                    .map(|(value, _)| value)
+                    .map_err(|source| Error::operation("read local metadata authority", source))
+            }
+        }
+    }
+
+    pub fn replace_voters(&self, voters: BTreeSet<u64>) -> Result<()> {
+        match self {
+            Self::Remote(authority) => authority.replace_voters(voters),
+            Self::Local(_) => Err(Error::invalid("Local authority has no voting membership")),
+        }
+    }
+
+    pub async fn verify_grant(&self, expected: &Grant, deadline: Instant) -> Result<VerifiedGrant> {
+        match self {
+            Self::Remote(authority) => authority.verify_grant(expected, deadline).await,
+            Self::Local(authority) => {
+                tokio::time::timeout_at(deadline, authority.verify_grant(expected))
+                    .await
+                    .map_err(|_| Error::unavailable())?
+                    .map_err(|source| Error::operation("verify local metadata grant", source))
+            }
+        }
+    }
+
+    pub async fn active_lease(
+        &self,
+        fence: &FenceRecord,
+        deadline: Instant,
+    ) -> Result<ControlLease> {
+        match self {
+            Self::Remote(authority) => authority.active_lease(fence, deadline).await,
+            Self::Local(authority) => {
+                tokio::time::timeout_at(deadline, authority.active_lease(fence))
+                    .await
+                    .map_err(|_| Error::unavailable())?
+                    .map_err(|source| Error::operation("verify local control lease", source))
+            }
+        }
+    }
+
+    pub fn verified_fence(
+        &self,
+        proof: DataProof,
+        expected: &Grant,
+        voters: &BTreeSet<u64>,
+        started: MonoInstant,
+    ) -> Result<VerifiedFence> {
+        match self {
+            Self::Remote(authority) => authority.verified_fence(proof, expected, voters, started),
+            Self::Local(_) => Err(Error::invalid(
+                "Local authority cannot accept a remote quorum proof",
+            )),
+        }
+    }
+
+    pub fn verified_recovery(
+        &self,
+        proof: DataProof,
+        expected: &Grant,
+        voters: &BTreeSet<u64>,
+        started: MonoInstant,
+    ) -> Result<VerifiedRecovery> {
+        match self {
+            Self::Remote(authority) => {
+                authority.verified_recovery(proof, expected, voters, started)
+            }
+            Self::Local(_) => Err(Error::invalid(
+                "Local authority cannot accept a remote quorum proof",
+            )),
+        }
+    }
 }
 
 /// Only this adapter constructs capabilities from a fresh, certificate-bound authority reply.
@@ -198,6 +319,13 @@ impl RemoteMetadataAuthority {
             };
             let proof: Proof = wire::decode_json(&bytes)?;
             proof.validate(self.cluster, self.group, &voters, started, self.policy.ttl)?;
+            if let Query::Group(expected) = query
+                && !matches!(&proof.value, Value::Group(group) if group.group_id == expected)
+            {
+                return Err(Error::invalid(
+                    "Metadata proof describes a different data group",
+                ));
+            }
             self.preferred.store(node, Ordering::Relaxed);
             return Ok((proof.value, started));
         }
@@ -253,6 +381,13 @@ impl RemoteMetadataAuthority {
         let DataEvidence::Fence(evidence) = proof.evidence else {
             return Err(Error::invalid("Data proof has the wrong kind"));
         };
+        if evidence.placement
+            != (crate::metadata::GroupPlacement::Raft {
+                voters: proof.voters.clone(),
+            })
+        {
+            return Err(Error::unavailable());
+        }
         validate_data_proof(
             proof.cluster,
             proof.group,
@@ -280,6 +415,13 @@ impl RemoteMetadataAuthority {
         let DataEvidence::Recovery(evidence) = proof.evidence else {
             return Err(Error::invalid("Data proof has the wrong kind"));
         };
+        if evidence.placement
+            != (crate::metadata::GroupPlacement::Raft {
+                voters: proof.voters.clone(),
+            })
+        {
+            return Err(Error::unavailable());
+        }
         validate_data_proof(
             proof.cluster,
             proof.group,
@@ -314,14 +456,26 @@ impl Proof {
         started: MonoInstant,
         ttl: std::time::Duration,
     ) -> Result<()> {
-        if self.cluster != cluster || self.group != group || !self.position.validate() {
+        let mode = crate::metadata::GroupPlacement::Raft {
+            voters: voters.clone(),
+        }
+        .mode()
+        .map_err(|_| Error::invalid("Metadata proof topology is invalid"))?;
+        if self.cluster != cluster
+            || self.group != group
+            || !self.position.matches_mode(mode)
+            || matches!(&self.value, Value::Group(data) if data.placement.mode() != Ok(mode))
+        {
             return Err(Error::invalid(
                 "Fresh metadata proof does not match its configured authority",
             ));
         }
         // Discovery and in-flight quorum reads can straddle a membership change or lease expiry.
         if self.voters != *voters
-            || !voters.contains(&self.position.leader_node)
+            || !self
+                .position
+                .raft_leader()
+                .is_some_and(|leader| voters.contains(&leader))
             || started.elapsed() >= ttl
         {
             return Err(Error::unavailable());
@@ -355,7 +509,11 @@ fn validate_data_proof(
             "Data proof does not match its configured consensus authority",
         ));
     }
-    if actual_voters != voters || !voters.contains(&position.leader_node) {
+    if actual_voters != voters
+        || !position
+            .raft_leader()
+            .is_some_and(|leader| voters.contains(&leader))
+    {
         return Err(Error::unavailable());
     }
     Ok(())
@@ -366,6 +524,9 @@ impl MetadataAuthority {
         &self,
         query: Query,
     ) -> std::result::Result<Proof, super::AuthorityError> {
+        if self.group.is_local() {
+            return Err(super::AuthorityError::IdentityMismatch);
+        }
         let ((value, position, cluster, group, voters), _) = self
             .read(|state, position| {
                 let position = position.ok_or(super::AuthorityError::MissingCommitPosition)?;
@@ -375,91 +536,12 @@ impl MetadataAuthority {
                 let group = state
                     .metadata_group_id()
                     .ok_or(super::AuthorityError::IdentityMismatch)?;
-                let voters = super::authority::stable_voters(&self.raft)?;
-                let serviceable_topic = |topic| {
-                    state
-                        .topic(topic)
-                        .filter(|_| state.topic_serviceable(topic))
-                        .cloned()
-                        .ok_or(super::AuthorityError::GrantMismatch)
-                };
-                let value = match query {
-                    Query::Group(group) => Value::Group(
-                        state
-                            .group(group)
-                            .cloned()
-                            .ok_or(super::AuthorityError::MembershipMismatch)?,
-                    ),
-                    Query::TopicName(name) => Value::Topic(
-                        state
-                            .topic_by_name(&name)
-                            .filter(|topic| topic.status == RecordStatus::Active)
-                            .cloned(),
-                    ),
-                    Query::Topic(topic) => Value::Topic(
-                        state
-                            .topic(topic)
-                            .filter(|topic| topic.status == RecordStatus::Active)
-                            .cloned(),
-                    ),
-                    Query::SubscriptionName { topic, name } => {
-                        Value::Subscription(state.subscription_by_name(topic, &name).cloned())
-                    }
-                    Query::Subscription(subscription) => Value::Subscription(
-                        state
-                            .subscription(subscription)
-                            .filter(|record| record.status == RecordStatus::Active)
-                            .cloned(),
-                    ),
-                    Query::Partition(partition) => Value::Partition {
-                        topic: serviceable_topic(partition.topic_id)?,
-                        group: state
-                            .partition_group(partition)
-                            .ok_or(super::AuthorityError::GrantMismatch)?,
-                        grant: state.grant(partition).cloned(),
-                        route: state.route(partition).cloned(),
-                    },
-                    Query::Grant(expected) => {
-                        serviceable_topic(expected.partition.topic_id)?;
-                        let grant = state
-                            .grant(expected.partition)
-                            .filter(|grant| *grant == &expected)
-                            .cloned()
-                            .ok_or(super::AuthorityError::GrantMismatch)?;
-                        Value::Grant(grant)
-                    }
-                    Query::Lease(fence) => {
-                        serviceable_topic(fence.grant.partition.topic_id)?;
-                        let grant = state
-                            .grant(fence.grant.partition)
-                            .filter(|grant| *grant == &fence.grant)
-                            .cloned()
-                            .ok_or(super::AuthorityError::GrantMismatch)?;
-                        let route = state
-                            .route(grant.partition)
-                            .filter(|route| {
-                                route.epoch == grant.epoch
-                                    && route.owner_node == grant.owner_node
-                                    && route.ownership_operation == grant.operation_id
-                            })
-                            .ok_or(super::AuthorityError::RouteRequired)?;
-                        Value::Lease {
-                            grant,
-                            generation: route.generation,
-                        }
-                    }
-                };
-                Ok((
-                    value,
-                    CommitPosition {
-                        term: position.leader_id.term,
-                        leader_node: position.leader_id.node_id,
-                        index: position.index,
-                    },
-                    cluster,
-                    group,
-                    voters,
-                ))
+                let voters = super::authority::authority_placement(&self.group)?
+                    .raft_voters()
+                    .cloned()
+                    .ok_or(super::AuthorityError::MembershipMismatch)?;
+                let value = project(state, query)?;
+                Ok((value, position, cluster, group, voters))
             })
             .await?;
         Ok(Proof {
@@ -473,7 +555,93 @@ impl MetadataAuthority {
 }
 
 pub(crate) fn current_voters<A: crate::replication::Application>(
-    raft: &crate::replication::Raft<A>,
+    group: &crate::execution::GroupHandle<A>,
 ) -> Result<BTreeSet<u64>> {
-    super::authority::stable_voters(raft).map_err(|_| Error::unavailable())
+    if group.is_local() {
+        return Err(Error::unavailable());
+    }
+    super::authority::authority_placement(group)
+        .map_err(|_| Error::unavailable())?
+        .raft_voters()
+        .cloned()
+        .ok_or_else(Error::unavailable)
+}
+
+fn project(
+    state: &crate::metadata::MetadataState,
+    query: Query,
+) -> std::result::Result<Value, super::AuthorityError> {
+    let serviceable_topic = |topic| {
+        state
+            .topic(topic)
+            .filter(|_| state.topic_serviceable(topic))
+            .cloned()
+            .ok_or(super::AuthorityError::GrantMismatch)
+    };
+    Ok(match query {
+        Query::Group(group) => Value::Group(
+            state
+                .group(group)
+                .cloned()
+                .ok_or(super::AuthorityError::MembershipMismatch)?,
+        ),
+        Query::TopicName(name) => Value::Topic(
+            state
+                .topic_by_name(&name)
+                .filter(|topic| topic.status == RecordStatus::Active)
+                .cloned(),
+        ),
+        Query::Topic(topic) => Value::Topic(
+            state
+                .topic(topic)
+                .filter(|topic| topic.status == RecordStatus::Active)
+                .cloned(),
+        ),
+        Query::SubscriptionName { topic, name } => {
+            Value::Subscription(state.subscription_by_name(topic, &name).cloned())
+        }
+        Query::Subscription(subscription) => Value::Subscription(
+            state
+                .subscription(subscription)
+                .filter(|record| record.status == RecordStatus::Active)
+                .cloned(),
+        ),
+        Query::Partition(partition) => Value::Partition {
+            topic: serviceable_topic(partition.topic_id)?,
+            group: state
+                .partition_group(partition)
+                .ok_or(super::AuthorityError::GrantMismatch)?,
+            grant: state.grant(partition).cloned(),
+            route: state.route(partition).cloned(),
+        },
+        Query::Grant(expected) => {
+            serviceable_topic(expected.partition.topic_id)?;
+            let grant = state
+                .grant(expected.partition)
+                .filter(|grant| *grant == &expected)
+                .cloned()
+                .ok_or(super::AuthorityError::GrantMismatch)?;
+            Value::Grant(grant)
+        }
+        Query::Lease(fence) => {
+            serviceable_topic(fence.grant.partition.topic_id)?;
+            let grant = state
+                .grant(fence.grant.partition)
+                .filter(|grant| *grant == &fence.grant)
+                .cloned()
+                .ok_or(super::AuthorityError::GrantMismatch)?;
+            let route = state
+                .route(grant.partition)
+                .filter(|route| {
+                    route.epoch == grant.epoch
+                        && route.owner_node == grant.owner_node
+                        && route.ownership_operation == grant.operation_id
+                })
+                .ok_or(super::AuthorityError::RouteRequired)?;
+            Value::Lease {
+                grant,
+                generation: route.generation,
+            }
+        }
+    })
 }

@@ -25,7 +25,7 @@ pub(crate) const KIND: u32 = 10;
 const SAMPLE_AGE: Duration = Duration::from_secs(5);
 
 pub(crate) struct RuntimeScaling {
-    pub service: remote::Service<RuntimeRpc, CapacityCache>,
+    pub service: Option<remote::Service<RuntimeRpc, CapacityCache>>,
     pub rpc: Arc<RuntimeRpc>,
     pub capacity: Arc<CapacityCache>,
     pub metrics: Arc<ScalingMetrics>,
@@ -48,39 +48,36 @@ impl RuntimeScaling {
         let rpc = Arc::new(RuntimeRpc::new(config, rpc, registry_nodes));
         let capacity = Arc::new(CapacityCache::default());
         let metrics = Arc::new(ScalingMetrics::register(registry));
-        let replicas = remote::LocalReplicas::new(
-            metadata.map(|replica| (replica.raft.clone(), replica.state.clone())),
-            data.values()
-                .map(|replica| {
-                    (
-                        replica.raft.clone(),
-                        replica.log.clone(),
-                        replica.state.clone(),
-                    )
-                })
-                .collect(),
-        )
-        .map_err(|source| Error::operation("bind scaling local replicas", source))?;
-        let mode = match config.replication_factor {
-            1 => DeploymentMode::LocalRf1,
-            3 => DeploymentMode::ThreeReplica,
-            _ => return Err(Error::invalid("Scaling requires explicit RF1 or RF3")),
+        let service = if config.role == crate::config::Role::Combined {
+            None
+        } else {
+            let replicas = remote::LocalReplicas::new(
+                metadata.map(|replica| replica.group.clone()),
+                data.values().map(|replica| replica.group.clone()).collect(),
+            )
+            .map_err(|source| Error::operation("bind scaling local replicas", source))?;
+            let mode = match config.replication_factor {
+                1 => DeploymentMode::SeparateRf1,
+                3 => DeploymentMode::SeparateRf3,
+                _ => return Err(Error::invalid("Scaling requires explicit RF1 or RF3")),
+            };
+            let service = remote::Service::new(
+                remote::ServiceConfig {
+                    cluster_id: cluster,
+                    node_id: config.node_id,
+                    metadata_group: config.runtime.metadata_group,
+                    mode,
+                    metadata_voters: config.runtime.metadata_voters.iter().copied().collect(),
+                },
+                replicas,
+                rpc.clone(),
+                capacity.clone(),
+                repair,
+                metrics.clone(),
+            )
+            .map_err(|source| Error::operation("initialize semantic scaling service", source))?;
+            Some(service)
         };
-        let service = remote::Service::new(
-            remote::ServiceConfig {
-                cluster_id: cluster,
-                node_id: config.node_id,
-                metadata_group: config.runtime.metadata_group,
-                mode,
-                metadata_voters: config.runtime.metadata_voters.iter().copied().collect(),
-            },
-            replicas,
-            rpc.clone(),
-            capacity.clone(),
-            repair,
-            metrics.clone(),
-        )
-        .map_err(|source| Error::operation("initialize semantic scaling service", source))?;
         Ok(Self {
             service,
             rpc,

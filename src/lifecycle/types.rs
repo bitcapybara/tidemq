@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     time::{Duration, Instant},
 };
 
@@ -250,7 +250,7 @@ pub(crate) enum CatalogCommand {
         group_id: u64,
         scopes: Vec<CheckpointScope>,
         generation: u64,
-        voters: Vec<u64>,
+        placement: crate::metadata::GroupPlacement,
         snapshots: Vec<(u64, String, u64)>,
     },
     BeginDelete {
@@ -274,8 +274,8 @@ pub(crate) struct FloorEvidence {
     pub before: u64,
     pub manifest_generation: u64,
     pub published_end: u64,
-    pub position: openraft::LogId<u64>,
-    pub voters: BTreeSet<u64>,
+    pub position: crate::ownership::CommitPosition,
+    pub placement: crate::metadata::GroupPlacement,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -309,10 +309,11 @@ impl MetadataOperation {
         let group = state.group(proof.group_id).ok_or(Rejection::Identity)?;
         if state.cluster_id() != Some(proof.cluster_id)
             || state.partition_group(proof.partition) != Some(proof.group_id)
-            || group.voters != proof.voters
-            || !proof.voters.contains(&proof.position.leader_id.node_id)
-            || !matches!(proof.voters.len(), 1 | 3)
-            || proof.position.index == 0
+            || group.placement != proof.placement
+            || state
+                .mode
+                .is_none_or(|mode| !proof.placement.validates(mode, proof.position))
+            || proof.position.sequence() == 0
         {
             return Err(Rejection::Identity);
         }

@@ -1177,7 +1177,9 @@ async fn exercise_runtime_scaling(automatic: bool) {
                 &tidemq::metadata::DataGroup {
                     group_id: 2,
                     generation: 1,
-                    voters: [21, 22, 23].into(),
+                    placement: tidemq::metadata::GroupPlacement::Raft {
+                        voters: [21, 22, 23].into(),
+                    },
                 },
                 [21, 22, 24].into(),
             )

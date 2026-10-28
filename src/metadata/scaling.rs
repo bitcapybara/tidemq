@@ -30,6 +30,9 @@ impl MetadataState {
     }
 
     pub(super) fn apply_membership(&mut self, command: &Command) -> Response {
+        if self.mode == Some(super::DeploymentMode::Local) {
+            return self.reject(Rejection::Unsupported);
+        }
         let (plan, complete) = match &command.action {
             Action::PrepareMembership { plan, .. } => (plan, false),
             Action::CompleteMembership(proof) => (&proof.plan, true),
@@ -122,14 +125,18 @@ impl MetadataState {
             .groups
             .get_mut(&plan.group_id)
             .ok_or(Rejection::NotFound)?;
-        if group.generation != plan.generation || group.voters != plan.previous {
+        if group.generation != plan.generation
+            || group.placement.raft_voters() != Some(&plan.previous)
+        {
             return Err(Rejection::GenerationConflict);
         }
         group.generation = plan
             .generation
             .checked_add(1)
             .ok_or(Rejection::CounterExhausted)?;
-        group.voters = plan.target.clone();
+        group.placement = super::GroupPlacement::Raft {
+            voters: plan.target.clone(),
+        };
         let record = self
             .migrations
             .get_mut(&plan.group_id)
@@ -139,6 +146,9 @@ impl MetadataState {
     }
 
     pub(super) fn validate_migrations(&self) -> Result<(), Rejection> {
+        if self.mode == Some(super::DeploymentMode::Local) && !self.migrations.is_empty() {
+            return Err(Rejection::Unsupported);
+        }
         if self.migrations.len() > self.groups.len() {
             return Err(Rejection::Capacity);
         }
@@ -172,7 +182,7 @@ impl MetadataState {
             } else {
                 (plan.generation, &plan.previous)
             };
-            if group.generation != generation || group.voters != *voters {
+            if group.generation != generation || group.placement.raft_voters() != Some(voters) {
                 return Err(Rejection::InvalidEvidence);
             }
         }
@@ -183,13 +193,18 @@ impl MetadataState {
         &self,
         grant: &crate::ownership::Grant,
         position: crate::ownership::CommitPosition,
+        placement: &super::GroupPlacement,
     ) -> Result<(), Rejection> {
-        if !position.validate()
-            || self.cluster_id != Some(grant.cluster_id)
+        let mode = self.mode.ok_or(Rejection::Uninitialized)?;
+        if self.cluster_id != Some(grant.cluster_id)
             || !self.groups.contains_key(&grant.group_id)
-            || self
-                .node(position.leader_node)
-                .is_none_or(|node| !node.spec.roles.contains(&super::NodeRole::Storage))
+            || !placement.validates(mode, position)
+            || placement.hosts().iter().any(|node| {
+                self.node(*node)
+                    .is_none_or(|record| !record.spec.roles.contains(&super::NodeRole::Storage))
+            })
+            || matches!(placement, super::GroupPlacement::Local { node_id } if *node_id != grant.owner_node
+                || self.groups.get(&grant.group_id).is_none_or(|group| group.placement != *placement))
         {
             return Err(Rejection::InvalidEvidence);
         }
@@ -234,7 +249,7 @@ mod tests {
                     Id::new_v7().unwrap(),
                     Id::new_v7().unwrap(),
                     77,
-                    DeploymentMode::ThreeReplica,
+                    DeploymentMode::SeparateRf3,
                     limits
                 ))
                 .is_applied()
@@ -264,7 +279,9 @@ mod tests {
                     Id::new_v7().unwrap(),
                     state.revision(),
                     2,
-                    BTreeSet::from([1, 2, 3])
+                    crate::metadata::GroupPlacement::Raft {
+                        voters: BTreeSet::from([1, 2, 3])
+                    }
                 ))
                 .is_applied()
         );
@@ -297,7 +314,7 @@ mod tests {
         let mut first = None;
         for _ in 0..20 {
             let current = state.group(2).unwrap();
-            let target = if current.voters.contains(&3) {
+            let target = if current.placement.hosts().contains(&3) {
                 BTreeSet::from([1, 2, 4])
             } else {
                 BTreeSet::from([1, 2, 3])
@@ -361,11 +378,12 @@ mod tests {
         );
         let grant = state.grant(partition).unwrap().clone();
         let evidence = FenceEvidence {
+            placement: state.group(grant.group_id).unwrap().placement.clone(),
             fence: FenceRecord {
                 grant: grant.clone(),
                 fence_generation: 1,
             },
-            committed: CommitPosition {
+            committed: CommitPosition::Raft {
                 term: 1,
                 leader_node: 3,
                 index: 10,

@@ -174,7 +174,7 @@ fn a_shared_replacement_releases_recovery_only_after_both_authorities_checkpoint
                 binding_generation: 1,
             }],
             generation: 19,
-            voters: vec![1],
+            placement: crate::metadata::GroupPlacement::Raft { voters: [1].into() },
             snapshots: vec![(1, "source-scope-snapshot".into(), 100)],
         })
         .unwrap();
@@ -191,7 +191,7 @@ fn a_shared_replacement_releases_recovery_only_after_both_authorities_checkpoint
                 binding_generation: 2,
             }],
             generation: 1,
-            voters: vec![2],
+            placement: crate::metadata::GroupPlacement::Raft { voters: [2].into() },
             snapshots: vec![(2, "target-scope-snapshot".into(), 7)],
         })
         .unwrap();

@@ -113,8 +113,16 @@ impl MetadataState {
     }
 
     fn validate_nodes_groups(&self) -> Result<(), Rejection> {
+        if self.mode == Some(super::DeploymentMode::Local)
+            && (self.nodes.len() > 1
+                || !self.topology.transfers.is_empty()
+                || !self.metadata_changes.is_empty())
+        {
+            return Err(Rejection::Unsupported);
+        }
         for (id, node) in &self.nodes {
-            node.spec.validate()?;
+            node.spec
+                .validate(self.mode.ok_or(Rejection::Uninitialized)?)?;
             if *id != node.spec.node_id || node.generation == 0 {
                 return Err(Rejection::InvalidNode);
             }
@@ -127,7 +135,7 @@ impl MetadataState {
             {
                 return Err(Rejection::InvalidGroup);
             }
-            self.validate_placement(&group.voters, false)?;
+            self.validate_group_placement(&group.placement, false)?;
         }
         Ok(())
     }
@@ -258,13 +266,17 @@ impl MetadataState {
         grant: &Grant,
     ) -> Result<(), Rejection> {
         if let Some(fence) = &record.fence {
-            self.validate_recorded_evidence_identity(grant, fence.committed)?;
+            self.validate_recorded_evidence_identity(grant, fence.committed, &fence.placement)?;
             if fence.fence.grant != *grant || fence.fence.fence_generation == 0 {
                 return Err(Rejection::InvalidEvidence);
             }
         }
         if let Some(recovery) = &record.recovery {
-            self.validate_recorded_evidence_identity(grant, recovery.committed)?;
+            self.validate_recorded_evidence_identity(
+                grant,
+                recovery.committed,
+                &recovery.placement,
+            )?;
             super::state::validate_recovery(record, recovery)?;
         }
         let expected_generation = if let Some(route) = &record.route {
@@ -359,7 +371,10 @@ impl MetadataState {
                     }
                 }
                 super::ClusterOutcome::Node(node) => {
-                    node.identity.validate(&node.record.spec)?;
+                    node.identity.validate(
+                        &node.record.spec,
+                        self.mode.ok_or(Rejection::Uninitialized)?,
+                    )?;
                     if node.record.generation == 0 {
                         return Err(Rejection::InvalidNode);
                     }
@@ -368,7 +383,7 @@ impl MetadataState {
                     if group.group_id == 0 || group.generation == 0 {
                         return Err(Rejection::InvalidGroup);
                     }
-                    self.validate_placement(&group.voters, false)?;
+                    self.validate_group_placement(&group.placement, false)?;
                 }
             },
             Outcome::MetadataChange(change) => {
@@ -380,7 +395,8 @@ impl MetadataState {
                 }
             }
             Outcome::NodeConfigured(node) => {
-                node.spec.validate()?;
+                node.spec
+                    .validate(self.mode.ok_or(Rejection::Uninitialized)?)?;
                 if node.generation == 0 {
                     return Err(Rejection::InvalidNode);
                 }
@@ -389,7 +405,7 @@ impl MetadataState {
                 if group.group_id == 0 || group.generation == 0 {
                     return Err(Rejection::InvalidGroup);
                 }
-                self.validate_placement(&group.voters, false)?;
+                self.validate_group_placement(&group.placement, false)?;
             }
             Outcome::TopicConfigured(topic) => {
                 if !valid_topic_name(&topic.name)

@@ -28,6 +28,9 @@ impl MetadataState {
             .is_some_and(|group| group.generation > plan.generation())
     }
     pub(super) fn validate_data_replacement(&self, plan: &MembershipPlan) -> Result<(), Rejection> {
+        if self.mode == Some(super::DeploymentMode::Local) {
+            return Err(Rejection::Unsupported);
+        }
         plan.validate()?;
         if self.cluster_id != Some(plan.cluster_id) {
             return Err(Rejection::InvalidGroup);
@@ -39,7 +42,9 @@ impl MetadataState {
         if group.generation > plan.generation() {
             return Err(Rejection::Superseded);
         }
-        if group.generation != plan.generation() || group.voters != *plan.previous() {
+        if group.generation != plan.generation()
+            || group.placement.raft_voters() != Some(plan.previous())
+        {
             return Err(Rejection::GenerationConflict);
         }
         if self
@@ -74,11 +79,15 @@ impl MetadataState {
         &self,
         plan: &MembershipPlan,
     ) -> Result<(), Rejection> {
+        if self.mode == Some(super::DeploymentMode::Local) {
+            return Err(Rejection::Unsupported);
+        }
         plan.validate()?;
         let group = self.group(plan.group_id()).ok_or(Rejection::InvalidGroup)?;
         if self.cluster_id != Some(plan.cluster_id)
             || group.generation < plan.generation()
-            || group.generation == plan.generation() && group.voters != *plan.previous()
+            || group.generation == plan.generation()
+                && group.placement.raft_voters() != Some(plan.previous())
         {
             return Err(Rejection::InvalidEvidence);
         }

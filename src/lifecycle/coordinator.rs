@@ -4,7 +4,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use openraft::LogId;
 use tidemq_protocol::Id;
 use tidemq_transport::budget::MemoryBudget;
 use tokio::sync::Semaphore;
@@ -14,10 +13,10 @@ use crate::{
         ArchivedRecord, ColdReader, CommittedPartition, Pack, PackIdentity, PackLimits, Record,
     },
     broker::{DataApplication, DataCommand as BrokerCommand, DataRejection, DataResponse},
-    metadata::PartitionKey,
+    execution::{Application, GroupHandle, GroupState},
+    metadata::{GroupPlacement, PartitionKey},
     object_store::S3Store,
-    ownership::{ControlLease, ControlPolicy, Grant, Work},
-    replication::{Application, DiskStateMachine, Raft},
+    ownership::{CommitPosition, ControlLease, ControlPolicy, Grant, Work},
 };
 
 use super::{
@@ -36,16 +35,17 @@ pub use compaction::CompactionStep;
 
 #[derive(Clone)]
 pub struct DataReplica {
-    pub(crate) raft: Raft<DataApplication>,
-    pub(crate) state: DiskStateMachine<DataApplication>,
+    pub(crate) group: GroupHandle<DataApplication>,
+    pub(crate) state: GroupState<DataApplication>,
 }
 
 impl DataReplica {
-    pub fn local(raft: Raft<DataApplication>, state: DiskStateMachine<DataApplication>) -> Self {
-        Self { raft, state }
+    pub fn local(group: GroupHandle<DataApplication>) -> Self {
+        let state = group.state();
+        Self { group, state }
     }
     pub(crate) fn node_id(&self) -> u64 {
-        self.state.0.identity.node_id
+        self.state.storage_identity().node_id
     }
 }
 
@@ -174,17 +174,17 @@ impl Coordinator {
         store: S3Store,
         budget: MemoryBudget,
     ) -> Result<Self> {
-        let cluster_id = data.state.0.identity.group.cluster_id;
-        let data_group = data.state.0.identity.group.group_id;
+        let cluster_id = data.state.storage_identity().group.cluster_id;
+        let data_group = data.state.storage_identity().group.group_id;
         let metadata_group = metadata.group_id;
         let unique: BTreeSet<_> = replicas.iter().map(DataReplica::node_id).collect();
         if metadata.cluster_id != cluster_id
             || data_group == metadata_group
             || !matches!(replicas.len(), 1 | 3)
             || unique.len() != replicas.len()
-            || replicas
-                .iter()
-                .any(|replica| replica.state.0.identity.group != data.state.0.identity.group)
+            || replicas.iter().any(|replica| {
+                replica.state.storage_identity().group != data.state.storage_identity().group
+            })
         {
             return Err(Error::Configuration);
         }
@@ -249,11 +249,11 @@ impl Coordinator {
 
     fn selected_checkpoints<'a>(
         &'a self,
-        voters: &'a BTreeSet<u64>,
+        hosts: &'a BTreeSet<u64>,
     ) -> Result<impl Iterator<Item = &'a super::ReplicaCheckpoint> + 'a> {
-        if (self.0.exact_checkpoints && self.0.checkpoints.len() != voters.len())
-            || !matches!(voters.len(), 1 | 3)
-            || voters.iter().any(|node| {
+        if (self.0.exact_checkpoints && self.0.checkpoints.len() != hosts.len())
+            || !matches!(hosts.len(), 1 | 3)
+            || hosts.iter().any(|node| {
                 !self
                     .0
                     .checkpoints
@@ -269,7 +269,7 @@ impl Coordinator {
             .0
             .checkpoints
             .iter()
-            .filter(move |checkpoint| voters.contains(&checkpoint.node_id())))
+            .filter(move |checkpoint| hosts.contains(&checkpoint.node_id())))
     }
 
     pub fn metrics(&self) -> Arc<LifecycleMetrics> {
@@ -674,23 +674,24 @@ impl Coordinator {
         let DataOutcome::Checkpoint { generation } = outcome else {
             return Err(Error::Configuration);
         };
-        let voters = self.expected_data_voters(deadline).await?;
+        let placement = self.expected_data_placement(deadline).await?;
+        let hosts = placement.hosts();
         let mut snapshots = Vec::new();
-        for checkpoint in self.selected_checkpoints(&voters)? {
+        for checkpoint in self.selected_checkpoints(&hosts)? {
             let proof = checkpoint
                 .build(
                     object_id,
                     generation,
                     position,
-                    &voters,
+                    &placement,
                     &partitions,
                     deadline,
                 )
                 .await?;
-            snapshots.push((proof.node_id, proof.snapshot_id, proof.position.index));
+            snapshots.push((proof.node_id, proof.snapshot_id, proof.position.sequence()));
         }
         self.data_read(deadline, |_, _| Ok(())).await?;
-        if self.expected_data_voters(deadline).await? != voters {
+        if self.expected_data_placement(deadline).await? != placement {
             return Err(Error::Rejected {
                 reason: Rejection::Membership,
             });
@@ -701,7 +702,7 @@ impl Coordinator {
                 group_id: self.0.data_group,
                 scopes,
                 generation,
-                voters: voters.into_iter().collect(),
+                placement,
                 snapshots,
             },
             deadline,
@@ -710,9 +711,10 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Retention is read from the actual data quorum; callers cannot supply a deletion floor.
+    /// Retention is read from the authoritative data group; callers cannot supply a deletion floor.
     pub async fn retire_before(&self, partition: PartitionKey, deadline: Instant) -> Result<()> {
-        let voters = self.expected_data_voters(deadline).await?;
+        let placement = self.expected_data_placement(deadline).await?;
+        let hosts = placement.hosts();
         let proof = self
             .data_read(deadline, |state, position| {
                 let producer = state.producer(partition).ok_or(Error::Rejected {
@@ -729,7 +731,7 @@ impl Coordinator {
                         .map_or(0, |manifest| manifest.generation),
                     published_end: state.lifecycle().published_end(partition),
                     position: position.ok_or(Error::Configuration)?,
-                    voters: voters.clone(),
+                    placement: placement.clone(),
                 })
             })
             .await?;
@@ -739,16 +741,16 @@ impl Coordinator {
         self.meta_write(CatalogCommand::RetireBefore(proof.clone()), deadline)
             .await?;
         let mut snapshots = Vec::new();
-        for replica in self.selected_checkpoints(&proof.voters)? {
+        for replica in self.selected_checkpoints(&hosts)? {
             let snapshot = replica.build_floor(&proof, deadline).await?;
             snapshots.push((
                 snapshot.node_id,
                 snapshot.snapshot_id,
-                snapshot.position.index,
+                snapshot.position.sequence(),
             ));
         }
         self.data_read(deadline, |_, _| Ok(())).await?;
-        if self.expected_data_voters(deadline).await? != voters {
+        if self.expected_data_placement(deadline).await? != placement {
             return Err(Error::Rejected {
                 reason: Rejection::Membership,
             });
@@ -1238,9 +1240,23 @@ impl Coordinator {
         Ok(view.view)
     }
 
-    async fn expected_data_voters(&self, deadline: Instant) -> Result<BTreeSet<u64>> {
-        match self.meta_query(Query::DataVoters, deadline).await? {
-            View::DataVoters(group) if group.group_id == self.0.data_group => Ok(group.voters),
+    async fn expected_data_placement(&self, deadline: Instant) -> Result<GroupPlacement> {
+        let view = self
+            .0
+            .metadata
+            .backend
+            .query(self.0.data_group, Query::DataPlacement, deadline)
+            .await?;
+        if view.cluster_id != self.0.cluster_id
+            || view.group_id != self.0.metadata.group_id
+            || (view.mode == crate::metadata::DeploymentMode::Local) != self.0.data.group.is_local()
+        {
+            return Err(Error::Configuration);
+        }
+        match view.view {
+            View::DataPlacement(group) if group.group_id == self.0.data_group => {
+                Ok(group.placement)
+            }
             _ => Err(Error::Configuration),
         }
     }
@@ -1248,17 +1264,17 @@ impl Coordinator {
     async fn data_read<R: Send>(
         &self,
         deadline: Instant,
-        query: impl FnOnce(&DataApplication, Option<LogId<u64>>) -> Result<R> + Send,
+        query: impl FnOnce(&DataApplication, Option<CommitPosition>) -> Result<R> + Send,
     ) -> Result<R> {
-        let expected = self.expected_data_voters(deadline).await?;
+        let expected = self.expected_data_placement(deadline).await?;
         tokio::time::timeout_at(deadline.into(), async {
             self.0
                 .data
-                .raft
-                .ensure_linearizable()
+                .group
+                .ensure_read(deadline.into())
                 .await
-                .map_err(consensus)?;
-            if stable_voters(&self.0.data.raft)? != expected {
+                .map_err(super::backend::execution)?;
+            if group_placement(&self.0.data.group)? != expected {
                 return Err(Error::Rejected {
                     reason: Rejection::Membership,
                 });
@@ -1273,10 +1289,10 @@ impl Coordinator {
                     }) {
                         return Err(Error::Configuration);
                     }
-                    query(state, position)
+                    query(state, position.map(CommitPosition::from))
                 })
                 .await
-                .map_err(|source| Error::Storage { source })?
+                .map_err(super::backend::execution)?
         })
         .await
         .map_err(|_| Error::Deadline)?
@@ -1295,7 +1311,7 @@ impl Coordinator {
         command: DataCommand,
         work: Work,
         deadline: Instant,
-    ) -> Result<(DataOutcome, LogId<u64>)> {
+    ) -> Result<(DataOutcome, CommitPosition)> {
         let partitions = match &command {
             DataCommand::Authorize(plan)
             | DataCommand::Abort(plan)
@@ -1312,18 +1328,21 @@ impl Coordinator {
         let leases = self.partition_leases(&partitions, work, deadline).await?;
         let until = deadline.min(earliest_expiry(&leases)?);
         let grants: Vec<Grant> = leases.iter().map(|lease| lease.grant().clone()).collect();
-        let result = tokio::time::timeout_at(
-            until.into(),
+        let command = BrokerCommand::Lifecycle(DataOperation { command, grants });
+        let result = if command.is_completion() {
             self.0
                 .data
-                .raft
-                .client_write(BrokerCommand::Lifecycle(DataOperation { command, grants })),
-        )
-        .await
-        .map_err(|_| Error::Unknown)?
-        .map_err(consensus)?;
-        match result.data {
-            DataResponse::Lifecycle(result_data) => Ok((result_data.outcome, result.log_id)),
+                .group
+                .commit_completion(command, until.into())
+                .await
+        } else {
+            self.0.data.group.commit(command, until.into()).await
+        }
+        .map_err(super::backend::execution)?;
+        match result.response {
+            DataResponse::Lifecycle(result_data) => {
+                Ok((result_data.outcome, result.position.into()))
+            }
             DataResponse::Rejected(DataRejection::Lifecycle(reason)) => {
                 Err(Error::Rejected { reason })
             }
@@ -1340,11 +1359,7 @@ fn object_result(outcome: CatalogOutcome) -> Result<ObjectRecord> {
     }
     Err(Error::Configuration)
 }
-fn consensus(error: impl std::fmt::Display) -> Error {
-    Error::Consensus {
-        reason: error.to_string(),
-    }
-}
+
 fn earliest_expiry(leases: &[ControlLease]) -> Result<Instant> {
     leases
         .iter()
@@ -1359,20 +1374,18 @@ fn check_deadline(deadline: Instant) -> Result<()> {
         Ok(())
     }
 }
-pub(crate) fn stable_voters<A: Application>(raft: &Raft<A>) -> Result<BTreeSet<u64>> {
-    let receiver = raft.metrics();
-    let metrics = receiver.borrow();
-    let membership = metrics.membership_config.membership();
-    let voters: BTreeSet<_> = membership.voter_ids().take(4).collect();
-    if membership.get_joint_config().len() != 1
-        || !matches!(voters.len(), 1 | 3)
-        || voters.contains(&0)
-    {
-        return Err(Error::Rejected {
+pub(crate) fn group_placement<A: Application>(group: &GroupHandle<A>) -> Result<GroupPlacement> {
+    crate::ownership::authority::authority_placement(group)
+        .map_err(|source| Error::Authority { source })
+}
+
+pub(crate) fn stable_voters<A: Application>(group: &GroupHandle<A>) -> Result<BTreeSet<u64>> {
+    match group_placement(group)? {
+        GroupPlacement::Local { .. } => Err(Error::Rejected {
             reason: Rejection::Membership,
-        });
+        }),
+        GroupPlacement::Raft { voters } => Ok(voters),
     }
-    Ok(voters)
 }
 
 fn copied(bytes: &[u8]) -> Result<bytes::Bytes> {

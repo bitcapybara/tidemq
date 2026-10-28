@@ -104,6 +104,8 @@ pub struct AuthorityTransfer {
     pub retired_cut: Option<CommitPosition>,
 }
 
+// Transfer commands already box this enum; keeping imports inline avoids a second allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum TransferStep {
     Frozen(CommitPosition),
@@ -258,7 +260,12 @@ impl AuthorityTransfer {
         }
     }
     fn source_position(&self, cut: CommitPosition) -> Result<(), Rejection> {
-        if cut.validate() && cut.index > 0 && self.source_voters.contains(&cut.leader_node) {
+        if cut.validate()
+            && cut.sequence() > 0
+            && cut
+                .raft_leader()
+                .is_some_and(|leader| self.source_voters.contains(&leader))
+        {
             Ok(())
         } else {
             Err(Rejection::InvalidEvidence)
@@ -280,11 +287,17 @@ impl AuthorityTransfer {
             || recovered.fence.grant != self.target
             || !recovered.checkpoint.validate(&recovered.fence)
             || recovered.checkpoint.committed_end != imported.manifest.committed_end
+            || imported.recovery.placement
+                != (super::GroupPlacement::Raft {
+                    voters: self.target_voters.clone(),
+                })
             || !imported.recovery.committed.validate()
-            || imported.recovery.committed.index == 0
-            || !self
-                .target_voters
-                .contains(&imported.recovery.committed.leader_node)
+            || imported.recovery.committed.sequence() == 0
+            || !imported
+                .recovery
+                .committed
+                .raft_leader()
+                .is_some_and(|leader| self.target_voters.contains(&leader))
         {
             return Err(Rejection::InvalidEvidence);
         }
@@ -300,8 +313,11 @@ impl AuthorityTransfer {
             || checkpoints.len() != voters.len()
             || checkpoints.iter().any(|row| {
                 row.manifest_digest != imported.manifest.digest
-                    || !row.position.validate()
-                    || row.position.index < imported.recovery.committed.index
+                    || !row
+                        .position
+                        .raft_leader()
+                        .is_some_and(|leader| self.target_voters.contains(&leader))
+                    || !row.position.at_least(imported.recovery.committed)
             })
         {
             return Err(Rejection::InvalidEvidence);
@@ -310,10 +326,7 @@ impl AuthorityTransfer {
     }
     fn check_retirement(&self, cut: CommitPosition) -> Result<(), Rejection> {
         self.source_position(cut)?;
-        if self
-            .frozen_cut
-            .is_none_or(|frozen| cut.index < frozen.index)
-        {
+        if self.frozen_cut.is_none_or(|frozen| !cut.at_least(frozen)) {
             return Err(Rejection::InvalidEvidence);
         }
         Ok(())

@@ -26,6 +26,10 @@ use snafu::Snafu;
 pub enum Error {
     #[snafu(display("Scaling configuration or plan is invalid"))]
     Configuration,
+    #[snafu(display("Cluster membership operations are unsupported for local execution"))]
+    Unsupported,
+    #[snafu(display("Scaling group execution failed"))]
+    Execution { source: crate::execution::Error },
     #[snafu(display("Scaling is blocked by placement, capacity, or cooldown"))]
     Placement,
     #[snafu(display("Scaling capacity is blocked: {reason}"))]

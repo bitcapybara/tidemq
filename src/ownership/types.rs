@@ -42,15 +42,72 @@ pub enum OwnershipPhase {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct CommitPosition {
-    pub term: u64,
-    pub leader_node: u64,
-    pub index: u64,
+#[serde(rename_all = "snake_case")]
+pub enum CommitPosition {
+    Local {
+        sequence: u64,
+    },
+    Raft {
+        term: u64,
+        leader_node: u64,
+        index: u64,
+    },
 }
 
 impl CommitPosition {
     pub(crate) fn validate(self) -> bool {
-        self.term > 0 && self.leader_node > 0
+        match self {
+            Self::Local { sequence } => sequence > 0,
+            Self::Raft {
+                term, leader_node, ..
+            } => term > 0 && leader_node > 0,
+        }
+    }
+
+    pub(crate) fn matches_mode(self, mode: crate::metadata::DeploymentMode) -> bool {
+        use crate::metadata::DeploymentMode;
+        self.validate()
+            && matches!(
+                (self, mode),
+                (Self::Local { .. }, DeploymentMode::Local)
+                    | (
+                        Self::Raft { .. },
+                        DeploymentMode::SeparateRf1 | DeploymentMode::SeparateRf3
+                    )
+            )
+    }
+
+    /// Callers must establish the same group identity before comparing positions.
+    pub(crate) fn at_least(self, minimum: Self) -> bool {
+        if !self.validate() || !minimum.validate() {
+            return false;
+        }
+        match (self, minimum) {
+            (Self::Local { sequence }, Self::Local { sequence: previous }) => sequence >= previous,
+            (
+                Self::Raft { term, index, .. },
+                Self::Raft {
+                    term: previous_term,
+                    index: previous_index,
+                    ..
+                },
+            ) => term >= previous_term && index >= previous_index,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn sequence(self) -> u64 {
+        match self {
+            Self::Local { sequence } => sequence,
+            Self::Raft { index, .. } => index,
+        }
+    }
+
+    pub(crate) fn raft_leader(self) -> Option<u64> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Raft { leader_node, .. } => Some(leader_node),
+        }
     }
 }
 
@@ -62,6 +119,7 @@ pub struct FenceRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FenceEvidence {
+    pub placement: crate::metadata::GroupPlacement,
     pub fence: FenceRecord,
     pub committed: CommitPosition,
 }
@@ -109,6 +167,34 @@ pub struct RecoveredOwnership {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct RecoveryEvidence {
+    pub placement: crate::metadata::GroupPlacement,
     pub recovered: RecoveredOwnership,
     pub committed: CommitPosition,
+}
+
+impl From<crate::execution::ExecutionPosition> for CommitPosition {
+    fn from(position: crate::execution::ExecutionPosition) -> Self {
+        match position {
+            crate::execution::ExecutionPosition::Local { sequence } => Self::Local { sequence },
+            crate::execution::ExecutionPosition::Raft {
+                term,
+                leader_node,
+                index,
+            } => Self::Raft {
+                term,
+                leader_node,
+                index,
+            },
+        }
+    }
+}
+
+impl From<openraft::LogId<u64>> for CommitPosition {
+    fn from(position: openraft::LogId<u64>) -> Self {
+        Self::Raft {
+            term: position.leader_id.term,
+            leader_node: position.leader_id.node_id,
+            index: position.index,
+        }
+    }
 }

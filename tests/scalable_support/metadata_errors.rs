@@ -31,3 +31,12 @@ fn identity_validation_failures_keep_their_specific_public_error_kind() {
         assert!(!failure.retryable);
     }
 }
+
+#[test]
+fn local_cluster_operations_return_an_explicit_permanent_rejection() {
+    let failure = metadata_rejection(metadata::Rejection::Unsupported).failure();
+    assert_eq!(failure.code, i32::from(ErrorCode::InvalidRequest));
+    assert!(!failure.retryable);
+    assert_eq!(failure.outcome, i32::from(Outcome::Rejected));
+    assert!(failure.message.contains("unsupported"));
+}

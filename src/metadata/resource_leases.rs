@@ -222,7 +222,9 @@ impl MetadataState {
                     .partition_group(partition)
                     .and_then(|group| self.group(group))
                     .ok_or(Rejection::NotFound)?;
-                if !group.voters.contains(&owner) || !node.spec.roles.contains(&NodeRole::Storage) {
+                if !group.placement.hosts().contains(&owner)
+                    || !node.spec.roles.contains(&NodeRole::Storage)
+                {
                     return Err(Rejection::InvalidEvidence);
                 }
                 let topic = self.topic(partition.topic_id).ok_or(Rejection::NotFound)?;

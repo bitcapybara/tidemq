@@ -141,3 +141,29 @@ fn fence_identity_conflicts_and_snapshot_capacity_cannot_bypass_checks() {
     );
     state.validate_snapshot().unwrap();
 }
+
+#[test]
+fn execution_positions_round_trip_without_ordering_across_kinds() {
+    use super::CommitPosition;
+    let local = CommitPosition::Local { sequence: 9 };
+    let raft = CommitPosition::Raft {
+        term: 2,
+        leader_node: 1,
+        index: 9,
+    };
+    for position in [local, raft] {
+        assert_eq!(
+            postcard::from_bytes::<CommitPosition>(&postcard::to_stdvec(&position).unwrap())
+                .unwrap(),
+            position
+        );
+        assert_eq!(
+            serde_json::from_value::<CommitPosition>(serde_json::to_value(position).unwrap())
+                .unwrap(),
+            position
+        );
+    }
+    assert!(!local.at_least(raft));
+    assert!(!raft.at_least(local));
+    assert!(!CommitPosition::Local { sequence: 0 }.validate());
+}
