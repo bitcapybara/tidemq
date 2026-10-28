@@ -46,6 +46,7 @@ operon setup --vault '<absolute-vault-path>' --name '<profile-alias>' --live --j
 - 计划过期且确认未应用时，重新读当前状态再生成新预览。不要盲目重放旧计划，也不要手改 sealed plan。
 - 成功后用 `live-verified` 查询核对任务 ID 集合、数量、字段、父子关系、无重复和 `truncated=false`；查看实际查询时间，不能只引用旧的预览结果。
 - `ok=true` 仍可能伴随 `result.status=failed`。本次实际遇到 `stale-context`：只有确认 `mutationMayHaveApplied=false`、没有已提交分组后，才重新读状态并生成新预览。UI、父子任务或设置变化都可能使上下文过期，审阅后应及时应用；未知或部分生效仍走同计划恢复。
+- 同一 vault 的相互影响写入按“读取 → 预览 → 审阅 → 应用 → 读回”逐项完成，避免先收集多份计划再依次应用。状态及 Note 需要同时更新时，可使用下方配方中的语义 transition 附带 allowlisted changes。
 
 ## Kanban、Table、Tasks
 
