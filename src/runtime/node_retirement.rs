@@ -116,23 +116,24 @@ impl Service {
         };
         let mut saved = super::wire::within(deadline, self.retirement.lock()).await?;
         if let Some(previous) = &*saved {
-            return if previous == &fence {
-                Ok(previous.clone())
-            } else {
-                Err(Error::invalid(
+            if previous != &fence {
+                return Err(Error::invalid(
                     "Node retirement fence changed its original drain",
-                ))
-            };
+                ));
+            }
+        } else {
+            // Admission must remain fenced after a crash during listener cleanup.
+            self.save_retirement_fence(&fence).await?;
+            *saved = Some(fence.clone());
         }
         self.stop_public_admission(deadline).await?;
-        self.save_retirement_fence(&fence).await?;
-        *saved = Some(fence.clone());
         #[cfg(feature = "test-hooks")]
         super::test_hooks::pause_node_retirement(self.cluster, self.config.node_id, deadline).await;
         Ok(fence)
     }
     async fn stop_public_admission(&self, deadline: Instant) -> Result<()> {
         self.public_admission.stop()?;
+        self.process.drain();
         self.draining
             .store(true, std::sync::atomic::Ordering::Release);
         let _ = self.external_stop.send(true);
@@ -195,6 +196,124 @@ impl Service {
             return Err(Error::unavailable());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use crate::config::Role;
+    use crate::runtime::data::consumer_tests::fixture::{Fixture, deadline};
+
+    async fn gateway_fixture() -> Fixture {
+        let mut fixture = Fixture::new(
+            &[
+                (1, Role::Gateway),
+                (2, Role::Gateway),
+                (11, Role::Metadata),
+                (21, Role::Storage),
+                (31, Role::Broker),
+            ],
+            &[11],
+            &[21],
+        )
+        .await;
+        fixture.start_all().await;
+        fixture
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn failed_retirement_fence_write_preserves_external_admission() {
+        let mut fixture = gateway_fixture().await;
+        let client = fixture.client(1).await;
+        client.admin().begin_node_drain(2).await.unwrap();
+        let node = fixture.running.get(&2).unwrap();
+        let service = &node.service;
+        service.refresh_registry(deadline()).await.unwrap();
+        let registration = service
+            .registry
+            .nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.record.spec.node_id == 2)
+            .unwrap();
+        let temporary = service.config.data_dir.join("node-retirement.next");
+        tokio::fs::create_dir(&temporary).await.unwrap();
+        let result = service
+            .retirement_proof(
+                registration.record.generation,
+                registration.identity.drain_operation.unwrap(),
+                deadline(),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "A retirement fence write unexpectedly succeeded"
+        );
+        assert!(
+            !*service.external_stop.borrow(),
+            "Failed persistence must not request external listener cleanup"
+        );
+        assert!(service.public_admission.enter().is_ok());
+        assert!(service.retirement.lock().await.is_none());
+        assert!(
+            !service
+                .config
+                .data_dir
+                .join("node-retirement.json")
+                .exists()
+        );
+        tokio::fs::remove_dir(temporary).await.unwrap();
+        assert!(client.admin().retire_node(2).await.unwrap().retired);
+        client.close().await.unwrap();
+        fixture.stop(2).await;
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn persisted_retirement_fence_does_not_bypass_incomplete_cleanup() {
+        let mut fixture = gateway_fixture().await;
+        let client = fixture.client(1).await;
+        client.admin().begin_node_drain(2).await.unwrap();
+        let service = &fixture.running.get(&2).unwrap().service;
+        service.refresh_registry(deadline()).await.unwrap();
+        let registration = service
+            .registry
+            .nodes()
+            .unwrap()
+            .into_iter()
+            .find(|node| node.record.spec.node_id == 2)
+            .unwrap();
+        let generation = registration.record.generation;
+        let drain = registration.identity.drain_operation.unwrap();
+        let active = service.public_admission.enter().unwrap();
+        for _ in 0..2 {
+            let result = service
+                .retirement_proof(
+                    generation,
+                    drain,
+                    Instant::now() + Duration::from_millis(100),
+                )
+                .await;
+            assert!(
+                result.is_err(),
+                "Retirement skipped an active admission guard"
+            );
+            let saved = service.retirement.lock().await;
+            let persisted = load(&service.config, service.cluster).await.unwrap();
+            assert!(persisted.is_some());
+            assert_eq!(*saved, persisted);
+        }
+        drop(active);
+        let proof = service
+            .retirement_proof(generation, drain, deadline())
+            .await
+            .unwrap();
+        assert_eq!(Some(proof), *service.retirement.lock().await);
+        assert!(client.admin().retire_node(2).await.unwrap().retired);
+        client.close().await.unwrap();
+        fixture.stop(2).await;
+        fixture.close().await;
     }
 }
 
