@@ -794,6 +794,12 @@ fn trace_durable(item: &Pending) {
         .with_subscriber(|(_, dispatch)| tracing::dispatcher::with_default(dispatch, emit))
         .is_none()
     {
-        emit();
+        // Unscoped writers must not cache this callsite's interest as Never for scoped writers.
+        let has_subscriber = tracing::dispatcher::get_default(|dispatch| {
+            !dispatch.is::<tracing::subscriber::NoSubscriber>()
+        });
+        if has_subscriber {
+            emit();
+        }
     }
 }

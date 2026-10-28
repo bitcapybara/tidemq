@@ -10,6 +10,8 @@ mod worker;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tracing_tests;
 
 pub use error::{Error, Result};
 pub use group::{GroupHandle, GroupState};
