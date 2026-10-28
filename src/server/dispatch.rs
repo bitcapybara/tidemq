@@ -185,6 +185,32 @@ impl ClassQueue {
 }
 
 impl Dispatcher {
+    fn rejected_frame(
+        &self,
+        frame: AdmittedFrame,
+        purpose: StreamPurpose,
+        reason: &'static str,
+    ) -> Box<AdmittedFrame> {
+        if self.health.may_log_rejection(std::time::Instant::now()) {
+            tracing::info!(
+                target: "tidemq::server::admission",
+                event_code = "dispatch_admission_rejected",
+                reason,
+                purpose = ?purpose,
+                frame_kind = frame.frame().kind,
+                traffic_class = frame.frame().traffic_class,
+                request_id = ?Id::from_slice(&frame.frame().request_id).ok(),
+                operation_id = ?Id::from_slice(&frame.frame().operation_id).ok(),
+                core_slots_available = self.core.slots.available_permits(),
+                ack_slots_available = self.ack.slots.available_permits(),
+                data_slots_available = self.data.slots.available_permits(),
+                raft_slots_available = ?self.raft.as_ref().map(|queue| queue.slots.available_permits()),
+                "The dispatcher refused a frame before handler admission"
+            );
+        }
+        Box::new(frame)
+    }
+
     async fn submit(
         &self,
         peer: Authorization,
@@ -203,23 +229,23 @@ impl Dispatcher {
         let queue = match purpose {
             StreamPurpose::Core if raft_control => match &self.raft {
                 Some(queue) => queue,
-                None => return Err(Box::new(frame)),
+                None => return Err(self.rejected_frame(frame, purpose, "raft_queue_unavailable")),
             },
             StreamPurpose::Core => &self.core,
             StreamPurpose::Ack => &self.ack,
             StreamPurpose::Request => &self.data,
         };
         let Ok(class) = TrafficClass::try_from(frame.frame().traffic_class) else {
-            return Err(Box::new(frame));
+            return Err(self.rejected_frame(frame, purpose, "invalid_traffic_class"));
         };
         let Some(bytes) = frame_limit(class, &self.config.protocol).checked_mul(2) else {
-            return Err(Box::new(frame));
+            return Err(self.rejected_frame(frame, purpose, "frame_charge_overflow"));
         };
         let tenant = if purpose == StreamPurpose::Request {
             match tenant {
                 Some(tenant) => match self.tenants.try_reserve(tenant, bytes as usize) {
                     Some(permit) => Some(permit),
-                    None => return Err(Box::new(frame)),
+                    None => return Err(self.rejected_frame(frame, purpose, "tenant_admission")),
                 },
                 None => None,
             }
@@ -230,12 +256,12 @@ impl Dispatcher {
             // The reader retains one transport-charged frame while existing Raft work completes.
             match timeout_at(frame.deadline(), queue.slots.clone().acquire_owned()).await {
                 Ok(Ok(slot)) => slot,
-                _ => return Err(Box::new(frame)),
+                _ => return Err(self.rejected_frame(frame, purpose, "raft_slot_deadline")),
             }
         } else {
             match queue.slots.clone().try_acquire_owned() {
                 Ok(slot) => slot,
-                Err(_) => return Err(Box::new(frame)),
+                Err(_) => return Err(self.rejected_frame(frame, purpose, "handler_slots")),
             }
         };
         let memory = match purpose {
@@ -244,7 +270,7 @@ impl Dispatcher {
             StreamPurpose::Request => self.budget.try_reserve(class, bytes),
         };
         let Ok(memory) = memory else {
-            return Err(Box::new(frame));
+            return Err(self.rejected_frame(frame, purpose, "handler_memory"));
         };
         let job = Job {
             peer,
@@ -256,10 +282,9 @@ impl Dispatcher {
             tenant,
         };
         self.health.admitted.inc();
-        queue
-            .sender
-            .try_send(job)
-            .map_err(|error| Box::new(error.into_inner().frame))
+        queue.sender.try_send(job).map_err(|error| {
+            self.rejected_frame(error.into_inner().frame, purpose, "handler_queue")
+        })
     }
 }
 

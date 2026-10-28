@@ -12,8 +12,10 @@ pub struct DispatchMetrics {
     pub(super) rejected: Counter,
     pub(super) handler_errors: Counter,
     pub(super) suppressed_logs: Counter,
+    admission_suppressed_logs: Counter,
     pub(super) active_handlers: Gauge,
     last_error_log: Mutex<Option<Instant>>,
+    last_rejection_log: Mutex<Option<Instant>>,
 }
 
 impl DispatchMetrics {
@@ -40,6 +42,11 @@ impl DispatchMetrics {
             self.suppressed_logs.clone(),
         );
         registry.register(
+            "tidemq_dispatch_admission_suppressed_logs",
+            "Admission diagnostics suppressed by their independent rate limit",
+            self.admission_suppressed_logs.clone(),
+        );
+        registry.register(
             "tidemq_dispatch_active_handlers",
             "Currently executing owned wire handlers",
             self.active_handlers.clone(),
@@ -47,12 +54,24 @@ impl DispatchMetrics {
     }
 
     pub(crate) fn may_log(&self, now: Instant) -> bool {
-        let Ok(mut last) = self.last_error_log.lock() else {
-            self.suppressed_logs.inc();
+        Self::may_log_window(&self.last_error_log, now, &self.suppressed_logs)
+    }
+
+    pub(crate) fn may_log_rejection(&self, now: Instant) -> bool {
+        Self::may_log_window(
+            &self.last_rejection_log,
+            now,
+            &self.admission_suppressed_logs,
+        )
+    }
+
+    fn may_log_window(window: &Mutex<Option<Instant>>, now: Instant, suppressed: &Counter) -> bool {
+        let Ok(mut last) = window.lock() else {
+            suppressed.inc();
             return false;
         };
         if last.is_some_and(|last| now.saturating_duration_since(last) < Duration::from_secs(1)) {
-            self.suppressed_logs.inc();
+            suppressed.inc();
             return false;
         }
         *last = Some(now);
@@ -70,6 +89,20 @@ impl Drop for HandlerGauge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admission_logs_do_not_consume_the_handler_error_window() {
+        let metrics = DispatchMetrics::default();
+        let now = Instant::now();
+        assert!(metrics.may_log_rejection(now));
+        assert!(metrics.may_log(now));
+        assert!(!metrics.may_log_rejection(now));
+        assert!(!metrics.may_log(now));
+        assert!(metrics.may_log_rejection(now + Duration::from_secs(1)));
+        assert!(metrics.may_log(now + Duration::from_secs(1)));
+        assert_eq!(metrics.suppressed_logs.get(), 1);
+        assert_eq!(metrics.admission_suppressed_logs.get(), 1);
+    }
 
     #[test]
     fn error_logs_are_rate_limited_and_counters_remain_complete() {

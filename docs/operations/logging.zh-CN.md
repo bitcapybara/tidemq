@@ -14,6 +14,8 @@ FORWARD 的委托来源角色、跳数或 principal/scope 长度不合法时，�
 
 默认日志规模按事件数×单事件上限估算队列，再计复制/活跃 formatter/native 余量。容器采集器负责大小轮转、保留和总磁盘预算；当前实现没有内建文件 sink。不得让日志盘占用 WAL/控制预留，也不默认输出双份完整日志。
 
+处理前的 dispatcher 拒绝记录 `event_code=dispatch_admission_rejected`，包含固定 `reason`、执行队列 `purpose`、数值 frame kind、原请求标识及各队列可用槽位。可据此区分租户准入、处理槽位、处理内存和队列关闭，不能把所有 QuotaExceeded 都解释为进程或容器内存不足。该事件独立按每秒一次限频，不占用 handler Unknown 日志的窗口；其抑制数记入 `tidemq_dispatch_admission_suppressed_logs_total`，拒绝总数不采样。不记录正文、凭据或完整 frame。
+
 模块过滤禁用 regex。临时过滤限制 1024 字节与 1—300s，要求活动 Tokio runtime，代次隔离旧恢复计时器；无效表达式不覆盖原过滤。临时过滤通过服务端库 API 提供，管理入口必须执行认证与操作审计。SDK 不安装该设施。
 
 可选 OTLP 与日志使用同一 subscriber 的独立 per-layer filter。专用 `tidemq_trace` span 不交给 stdout formatter，日志诊断过滤不放大 OTLP target/字段白名单。OTLP 有自己的有限队列、字节/速率/超时和丢弃指标，关闭时不创建导出任务；见[追踪手册](tracing.zh-CN.md)。
