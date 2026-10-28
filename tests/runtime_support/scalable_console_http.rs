@@ -152,7 +152,7 @@ impl Consoles {
         let text = format!(
             r#"
 role = "console"
-listen = "0.0.0.0:0"
+listen = "127.0.0.1:8443"
 management_listen = "127.0.0.1:0"
 static_dir = {}
 [cluster]
@@ -169,14 +169,31 @@ max_age_seconds = 1800
             serde_json::to_string(&node.tls.trust_roots).unwrap(),
             serde_json::to_string(&key).unwrap(),
         );
+        let text = format!(
+            "{text}\n[tls]\ncertificate = {}\nprivate_key = {}\n",
+            serde_json::to_string(&node.tls.certificate).unwrap(),
+            serde_json::to_string(&node.tls.private_key).unwrap()
+        );
         let mut config: ConsoleConfig = toml::from_str(&text).unwrap();
         if let Some(path) = std::env::var_os("TIDEMQ_CONSOLE_BROWSER_STATIC_DIR") {
             config.static_dir = PathBuf::from(path);
         }
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.listen = reservation.local_addr().unwrap();
+        drop(reservation);
         let first = RunningConsole::start(config.clone()).await.unwrap();
+        let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.listen = reservation.local_addr().unwrap();
+        drop(reservation);
         let second = RunningConsole::start(config).await.unwrap();
         let client = reqwest::Client::builder()
             .no_proxy()
+            .tls_certs_only(
+                reqwest::Certificate::from_pem_bundle(
+                    &tokio::fs::read(&node.tls.trust_roots).await.unwrap(),
+                )
+                .unwrap(),
+            )
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(15))
             .build()
@@ -194,7 +211,7 @@ max_age_seconds = 1800
         } else {
             self.second.address.port()
         };
-        format!("http://127.0.0.1:{port}/api/v1/{path}")
+        format!("https://127.0.0.1:{port}/api/v1/{path}")
     }
 
     fn request(
@@ -583,7 +600,7 @@ async fn console_http_stateless_sessions_recheck_credentials_and_distinguish_ups
     .await;
     assert_eq!(failed.get("code").unwrap(), "upstream_unavailable");
     let static_url = format!(
-        "http://127.0.0.1:{}/topics/example",
+        "https://127.0.0.1:{}/topics/example",
         consoles.first.address.port()
     );
     assert_eq!(
@@ -601,7 +618,7 @@ async fn console_http_stateless_sessions_recheck_credentials_and_distinguish_ups
             .client
             .get(format!(
                 "http://{}/health/ready",
-                consoles.second.management_address
+                consoles.second.management_address.unwrap()
             ))
             .send()
             .await

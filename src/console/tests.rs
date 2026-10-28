@@ -11,9 +11,12 @@ use crate::config::{Config, ProcessConfig, Role};
 
 const CONFIG: &str = r#"
 role = "console"
-listen = "0.0.0.0:0"
+listen = "127.0.0.1:8443"
 management_listen = "127.0.0.1:0"
 static_dir = "dist"
+[tls]
+certificate = "ca.pem"
+private_key = "server.key"
 [cluster]
 address = "gateway.invalid:7443"
 server_name = "gateway.tidemq.local"
@@ -24,19 +27,24 @@ public_origin = "https://console.example.test"
 "#;
 
 #[test]
-fn process_configuration_preserves_mq_diagnostic_and_startup_validation() {
+fn process_configuration_validates_combined_for_startup_and_diagnosis() {
     let config = ProcessConfig::Node(Box::default());
     config.validate_for_diagnosis().unwrap();
+    config.validate_for_startup().unwrap();
+    let mut node = Config::default();
+    node.console.as_mut().unwrap().static_dir = PathBuf::new();
+    let config = ProcessConfig::Node(Box::new(node));
+    assert!(config.validate_for_diagnosis().is_err());
     assert!(config.validate_for_startup().is_err());
 }
 
-struct Fixture {
-    root: PathBuf,
-    config: ConsoleConfig,
+pub(super) struct Fixture {
+    pub(super) root: PathBuf,
+    pub(super) config: ConsoleConfig,
 }
 
 impl Fixture {
-    async fn new() -> Self {
+    pub(super) async fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
             "tidemq-console-{}",
             tidemq_protocol::Id::new_v7().unwrap()
@@ -48,7 +56,7 @@ impl Fixture {
         tokio::fs::create_dir(directory.join("assets"))
             .await
             .unwrap();
-        tokio::fs::write(directory.join("index.html"), "<html>Console shell</html>")
+        tokio::fs::write(directory.join("index.html"), "<html><script type=\"module\" src=\"/assets/app-test.js\"></script><link rel=\"stylesheet\" href=\"/assets/app-test.css\"></html>")
             .await
             .unwrap();
         tokio::fs::write(
@@ -58,8 +66,14 @@ impl Fixture {
         .await
         .unwrap();
         tokio::fs::write(
+            directory.join("assets/app-test.css"),
+            "body { color: black; }",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
             directory.join(".vite/manifest.json"),
-            r#"{"index.html":{"file":"assets/app-test.js","isEntry":true}}"#,
+            r#"{"index.html":{"file":"assets/app-test.js","isEntry":true,"css":["assets/app-test.css"]}}"#,
         )
         .await
         .unwrap();
@@ -73,19 +87,72 @@ impl Fixture {
                 .unwrap();
         }
         let roots = root.join("ca.pem");
-        let certificate =
-            rcgen::generate_simple_self_signed(vec!["gateway.tidemq.local".into()]).unwrap();
+        let certificate = rcgen::generate_simple_self_signed(vec![
+            "gateway.tidemq.local".into(),
+            "console.example.test".into(),
+            "localhost".into(),
+            "127.0.0.1".into(),
+        ])
+        .unwrap();
         tokio::fs::write(&roots, certificate.cert.pem())
+            .await
+            .unwrap();
+        let server_key = root.join("server.key");
+        tokio::fs::write(&server_key, certificate.signing_key.serialize_pem())
             .await
             .unwrap();
         let mut config: ConsoleConfig = toml::from_str(CONFIG).unwrap();
         config.static_dir = directory;
         config.cluster.trust_roots = roots;
+        config.tls.certificate = config.cluster.trust_roots.clone();
+        config.tls.private_key = server_key;
         config.session.key_file = key;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        config.listen = listener.local_addr().unwrap();
+        drop(listener);
         Self { root, config }
     }
 
-    async fn clean(self) {
+    pub(super) async fn client(&self) -> reqwest::Client {
+        let certificate = tokio::fs::read(&self.config.tls.certificate).await.unwrap();
+        reqwest::Client::builder()
+            .no_proxy()
+            .tls_certs_only(vec![reqwest::Certificate::from_pem(&certificate).unwrap()])
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap()
+    }
+
+    pub(super) async fn connect(
+        &self,
+        address: SocketAddr,
+    ) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+        use tokio_rustls::rustls::{
+            self,
+            pki_types::{CertificateDer, ServerName, pem::PemObject},
+        };
+        let mut roots = rustls::RootCertStore::empty();
+        let certificates = tokio::fs::read(&self.config.tls.certificate).await.unwrap();
+        roots
+            .add(CertificateDer::from_pem_slice(&certificates).unwrap())
+            .unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        tokio_rustls::TlsConnector::from(std::sync::Arc::new(config))
+            .connect(
+                ServerName::try_from("localhost").unwrap(),
+                tokio::net::TcpStream::connect(address).await.unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    pub(super) async fn clean(self) {
         tokio::fs::remove_dir_all(self.root).await.unwrap();
     }
 }
@@ -232,10 +299,10 @@ async fn console_readiness_is_local_and_shutdown_releases_both_listeners() {
     let fixture = Fixture::new().await;
     let console = RunningConsole::start(fixture.config.clone()).await.unwrap();
     let public = SocketAddr::from(([127, 0, 0, 1], console.address.port()));
-    let management = console.management_address;
-    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let management = console.management_address.unwrap();
+    let client = fixture.client().await;
     let page = client
-        .get(format!("http://{public}/topics/topic-id"))
+        .get(format!("https://{public}/topics/topic-id"))
         .send()
         .await
         .unwrap();
@@ -268,7 +335,7 @@ async fn console_readiness_is_local_and_shutdown_releases_both_listeners() {
         entries.push(entry.file_name().to_string_lossy().into_owned());
     }
     entries.sort();
-    assert_eq!(entries, ["ca.pem", "dist", "session.key"]);
+    assert_eq!(entries, ["ca.pem", "dist", "server.key", "session.key"]);
     fixture.clean().await;
 }
 
@@ -332,19 +399,15 @@ async fn console_slow_request_bodies_expire_before_submission_and_release_admiss
     let address = SocketAddr::from(([127, 0, 0, 1], console.address.port()));
     let mut stalled = Vec::new();
     for _ in 0..4 {
-        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut stream = fixture.connect(address).await;
         stream
             .write_all(format!("POST /api/v1/topics HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{{").as_bytes())
             .await
             .unwrap();
         stalled.push(stream);
     }
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(2))
-        .build()
-        .unwrap();
-    let url = format!("http://{address}/api/v1/me");
+    let client = fixture.client().await;
+    let url = format!("https://{address}/api/v1/me");
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let response = client.get(&url).send().await.unwrap();
