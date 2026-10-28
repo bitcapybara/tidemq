@@ -46,7 +46,7 @@ async fn generator_validates_only_canonical_role_configuration() {
     tokio::fs::create_dir(&root).await.unwrap();
     for (mode, nodes) in [
         ("rf1", vec![1]),
-        ("rf3-combined", vec![1, 2, 3]),
+        ("rf1-separated", vec![11, 21, 31, 41]),
         ("rf3", vec![11, 12, 13, 21, 22, 23, 31, 32, 41, 42]),
     ] {
         let directory = root.join(mode);
@@ -161,6 +161,10 @@ fn node_schema(role: Role) -> Config {
         logging: defaults.logging,
         tracing: defaults.tracing,
         tls: defaults.tls,
+        console: tidemq::console::EmbeddedConsoleConfig {
+            observability: console_schema().observability,
+            ..defaults.console
+        },
         runtime,
     }
 }
@@ -168,9 +172,13 @@ fn node_schema(role: Role) -> Config {
 fn console_schema() -> ConsoleConfig {
     let mut config = ConsoleConfig {
         role: ConsoleRole::Console,
-        listen: "127.0.0.1:8080".parse().unwrap(),
+        listen: "127.0.0.1:8443".parse().unwrap(),
         management_listen: "127.0.0.1:9420".parse().unwrap(),
         static_dir: "console/web/dist".into(),
+        tls: tidemq::config::TlsConfig {
+            trust_roots: PathBuf::new(),
+            ..Default::default()
+        },
         cluster: ClusterConfig {
             address: "gateway.tidemq.local:7443".into(),
             server_name: "gateway.tidemq.local".into(),
@@ -401,7 +409,7 @@ async fn startup_commands_reject_invalid_runtime_and_unknown_fields() {
     tokio::fs::create_dir(&root).await.unwrap();
     let path = root.join("invalid.toml");
     for text in [
-        node_template(Role::Combined).replace("metadata_voters = [1]", "metadata_voters = [9]"),
+        node_template(Role::Combined).replace("group_id = 2", "group_id = 0"),
         format!("unknown_setting = true\n{}", node_template(Role::Combined)),
     ] {
         tokio::fs::write(&path, text).await.unwrap();
@@ -423,5 +431,37 @@ async fn startup_commands_reject_invalid_runtime_and_unknown_fields() {
         !root.join("data").exists(),
         "Validation must precede storage creation"
     );
+    tokio::fs::remove_dir_all(root).await.unwrap();
+}
+
+#[tokio::test]
+async fn validation_does_not_bind_listeners_or_create_runtime_materials() {
+    let root =
+        std::env::temp_dir().join(format!("tidemq-pure-validation-{}", Id::new_v7().unwrap()));
+    tokio::fs::create_dir(&root).await.unwrap();
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let text = node_template(Role::Combined).replace(
+        "127.0.0.1:8443",
+        &occupied.local_addr().unwrap().to_string(),
+    );
+    let path = root.join("config.toml");
+    tokio::fs::write(&path, text).await.unwrap();
+    let result = Command::new(env!("CARGO_BIN_EXE_tidemq"))
+        .args(["validate-config", "--config", "config.toml"])
+        .current_dir(&root)
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let mut entries = tokio::fs::read_dir(&root).await.unwrap();
+    assert_eq!(
+        entries.next_entry().await.unwrap().unwrap().file_name(),
+        "config.toml"
+    );
+    assert!(entries.next_entry().await.unwrap().is_none());
     tokio::fs::remove_dir_all(root).await.unwrap();
 }

@@ -42,6 +42,7 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub tracing: crate::observability::tracing::TracingConfig,
     pub tls: TlsConfig,
+    pub console: crate::console::EmbeddedConsoleConfig,
     pub runtime: crate::runtime::RuntimeConfig,
 }
 
@@ -59,7 +60,11 @@ impl Default for Config {
             protocol: ProtocolLimits::default(),
             logging: LoggingConfig::default(),
             tracing: crate::observability::tracing::TracingConfig::default(),
-            tls: TlsConfig::default(),
+            tls: TlsConfig {
+                trust_roots: PathBuf::new(),
+                ..TlsConfig::default()
+            },
+            console: crate::console::EmbeddedConsoleConfig::default(),
             runtime: crate::runtime::RuntimeConfig::default(),
         }
     }
@@ -90,6 +95,26 @@ impl Config {
         if !matches!(self.replication_factor, 1 | 3) {
             return Err(Error::Configuration {
                 reason: "replication_factor must be explicitly 1 or 3",
+            });
+        }
+        if self.role == Role::Combined {
+            if self.replication_factor != 1 {
+                return Err(Error::Configuration {
+                    reason: "combined uses local execution and cannot configure replicas",
+                });
+            }
+            self.console.validate()?;
+            if self.console.listen == self.management_listen {
+                return Err(Error::Configuration {
+                    reason: "console.listen must differ from management_listen",
+                });
+            }
+        }
+        if self.tls.certificate.as_os_str().is_empty()
+            || self.tls.private_key.as_os_str().is_empty()
+        {
+            return Err(Error::Configuration {
+                reason: "tls certificate and private_key paths must not be empty",
             });
         }
         if !self.management_listen.ip().is_loopback() {
@@ -243,7 +268,12 @@ impl LoggingConfig {
 pub struct TlsConfig {
     pub certificate: PathBuf,
     pub private_key: PathBuf,
+    #[serde(skip_serializing_if = "empty_path", default = "PathBuf::new")]
     pub trust_roots: PathBuf,
+}
+
+fn empty_path(path: &Path) -> bool {
+    path.as_os_str().is_empty()
 }
 
 impl Default for TlsConfig {
@@ -402,6 +432,7 @@ max_time_boundaries = 512
             role: Role::Storage,
             ..Config::default()
         };
+        config.tls.trust_roots = "certs/ca.pem".into();
         config.runtime.internal_listen = config.listen;
         config.runtime.metadata_voters = vec![2];
         config.runtime.peers = [(1, Role::Storage), (2, Role::Metadata), (3, Role::Broker)]
@@ -424,5 +455,94 @@ max_time_boundaries = 512
         config.validate().unwrap();
         config.role = Role::Gateway;
         assert!(config.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod local_configuration_tests {
+    use super::*;
+
+    #[test]
+    fn combined_rejects_replication_and_remote_fields_even_when_empty() {
+        let original = include_str!("../config/combined.toml");
+        let patches = [
+            ("", "replication_factor", toml::Value::Integer(1)),
+            ("tls", "trust_roots", toml::Value::String(String::new())),
+            ("runtime", "peers", toml::Value::Array(Vec::new())),
+            ("runtime", "metadata_voters", toml::Value::Array(Vec::new())),
+            ("runtime", "bootstrap", toml::Value::Boolean(false)),
+            (
+                "runtime",
+                "internal_listen",
+                toml::Value::String("127.0.0.1:7444".into()),
+            ),
+            (
+                "console",
+                "management_listen",
+                toml::Value::String("127.0.0.1:9420".into()),
+            ),
+            ("console", "cluster", toml::Value::Table(toml::Table::new())),
+        ];
+        for (section, key, value) in patches {
+            let mut document: toml::Table = toml::from_str(original).unwrap();
+            let table = if section.is_empty() {
+                &mut document
+            } else {
+                document.get_mut(section).unwrap().as_table_mut().unwrap()
+            };
+            table.insert(key.into(), value);
+            assert!(
+                toml::Value::Table(document).try_into::<Config>().is_err(),
+                "Accepted {section}.{key}"
+            );
+        }
+        for key in ["voters", "standby"] {
+            let mut document: toml::Value = toml::from_str(original).unwrap();
+            let group = document
+                .get_mut("runtime")
+                .unwrap()
+                .get_mut("groups")
+                .unwrap()
+                .as_array_mut()
+                .unwrap()
+                .first_mut()
+                .unwrap()
+                .as_table_mut()
+                .unwrap();
+            group.insert(key.into(), toml::Value::Array(Vec::new()));
+            assert!(
+                document.try_into::<Config>().is_err(),
+                "Accepted groups.{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_ownership_is_derived_and_round_trip_keeps_only_group_ids() {
+        let text = include_str!("../config/combined.toml").replace("node_id = 1", "node_id = 77");
+        let config: Config = toml::from_str(&text).unwrap();
+        config.runtime.validate(&config).unwrap();
+        assert_eq!(config.runtime.metadata_group, 1);
+        assert_eq!(config.runtime.metadata_voters, [77]);
+        assert_eq!(config.runtime.groups.first().unwrap().voters, [77]);
+        assert!(config.runtime.peers.is_empty());
+        assert!(!config.runtime.bootstrap);
+        assert!(config.tls.trust_roots.as_os_str().is_empty());
+        assert_eq!(config.console.server_name().unwrap(), "localhost");
+        let serialized = toml::to_string(&config).unwrap();
+        for field in [
+            "replication_factor",
+            "metadata_voters",
+            "voters",
+            "standby",
+            "peers",
+            "bootstrap =",
+            "internal_listen",
+            "trust_roots",
+        ] {
+            assert!(!serialized.contains(field), "Serialized {field}");
+        }
+        let parsed: Config = toml::from_str(&serialized).unwrap();
+        parsed.runtime.validate(&parsed).unwrap();
     }
 }
