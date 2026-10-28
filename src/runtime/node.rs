@@ -778,7 +778,7 @@ async fn join_workers(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ExitCause {
+pub(super) enum ExitCause {
     Unexpected,
     ProcessShutdown,
     ExternalAdmission,
@@ -788,6 +788,21 @@ pub(crate) struct RequiredWorker {
     task: JoinHandle<Result<()>>,
     exit: Arc<std::sync::OnceLock<ExitCause>>,
     external: bool,
+    _owner: WorkerOwner,
+}
+
+struct WorkerOwner(tokio::task::AbortHandle);
+
+impl Drop for WorkerOwner {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+impl RequiredWorker {
+    pub(super) fn abort_handle(&self) -> tokio::task::AbortHandle {
+        self.task.abort_handle()
+    }
 }
 
 pub(super) fn spawn_required(
@@ -813,10 +828,12 @@ pub(super) fn spawn_required(
         let _ = completed.set(cause);
         result
     });
+    let owner = WorkerOwner(task.abort_handle());
     RequiredWorker {
         task,
         exit,
         external,
+        _owner: owner,
     }
 }
 
@@ -860,59 +877,53 @@ impl Drop for RequiredTasks {
     }
 }
 
-struct OwnedTask(RequiredWorker);
-
-impl Drop for OwnedTask {
-    fn drop(&mut self) {
-        self.0.task.abort();
-    }
-}
-
 fn supervise(
     dependency: &'static str,
     worker: RequiredWorker,
     service: Arc<Service>,
 ) -> JoinHandle<Result<()>> {
-    tokio::spawn(async move {
-        let mut worker = OwnedTask(worker);
-        let result = (&mut worker.0.task)
-            .await
-            .map_err(|source| Error::operation("join required runtime task", source))
-            .and_then(|result| result);
-        let cause = worker
-            .0
-            .exit
-            .get()
-            .copied()
-            .unwrap_or(ExitCause::Unexpected);
-        let expected = result.is_ok() && cause != ExitCause::Unexpected;
-        if worker.0.external {
-            service.external_drained.store(
-                if expected { 1 } else { 2 },
-                std::sync::atomic::Ordering::Release,
-            );
-        }
-        if !expected {
-            service.process.fail(dependency);
-            service
-                .draining
-                .store(true, std::sync::atomic::Ordering::Release);
-            let _ = service.external_stop.send(true);
-            if let Err(source) = result {
-                let error = anyhow::Error::new(source);
-                tracing::error!(event_code = "required_runtime_task_failed", dependency,
+    let observed = observe_required(dependency, worker, service);
+    tokio::spawn(async move { observed.await.map(|_| ()) })
+}
+
+pub(super) async fn observe_required(
+    dependency: &'static str,
+    worker: RequiredWorker,
+    service: Arc<Service>,
+) -> Result<ExitCause> {
+    let mut worker = worker;
+    let result = (&mut worker.task)
+        .await
+        .map_err(|source| Error::operation("join required runtime task", source))
+        .and_then(|result| result);
+    let cause = worker.exit.get().copied().unwrap_or(ExitCause::Unexpected);
+    let expected = result.is_ok() && cause != ExitCause::Unexpected;
+    if worker.external {
+        service.external_drained.store(
+            if expected { 1 } else { 2 },
+            std::sync::atomic::Ordering::Release,
+        );
+    }
+    if !expected {
+        service.process.fail(dependency);
+        service
+            .draining
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = service.external_stop.send(true);
+        if let Err(source) = result {
+            let error = anyhow::Error::new(source);
+            tracing::error!(event_code = "required_runtime_task_failed", dependency,
                     error = %format_args!("{error:#}"), "A required runtime task returned an error");
-                return Err(Error::Operation {
-                    operation: "run required runtime task",
-                    source: std::io::Error::other(error),
-                });
-            }
-        } else {
-            tracing::debug!(event_code = "required_runtime_task_stopped", dependency,
-                cause = ?cause, "A required runtime task completed its requested stop");
+            return Err(Error::Operation {
+                operation: "run required runtime task",
+                source: std::io::Error::other(error),
+            });
         }
-        result
-    })
+    } else {
+        tracing::debug!(event_code = "required_runtime_task_stopped", dependency,
+                cause = ?cause, "A required runtime task completed its requested stop");
+    }
+    result.map(|()| cause)
 }
 
 async fn bind_server(
