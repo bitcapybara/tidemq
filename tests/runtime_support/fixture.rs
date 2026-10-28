@@ -18,12 +18,13 @@ async fn embedded_console(directory: &std::path::Path) -> tidemq::console::Embed
     for (name, content) in [
         (
             "index.html",
-            "<html><script type=module src=/assets/fixture.js></script></html>",
+            "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/assets/fixture.css\"></head><body><script type=\"module\" src=\"/assets/fixture.js\"></script></body></html>",
         ),
         ("assets/fixture.js", "export const ready = true;"),
+        ("assets/fixture.css", "body { color: #222; }"),
         (
             ".vite/manifest.json",
-            r#"{"index.html":{"file":"assets/fixture.js","isEntry":true}}"#,
+            r#"{"index.html":{"file":"assets/fixture.js","isEntry":true,"css":["assets/fixture.css"]}}"#,
         ),
     ] {
         tokio::fs::write(static_dir.join(name), content)
@@ -31,7 +32,9 @@ async fn embedded_console(directory: &std::path::Path) -> tidemq::console::Embed
             .unwrap();
     }
     let key_file = directory.join("console-session.key");
-    tokio::fs::write(&key_file, [42_u8; 32]).await.unwrap();
+    let mut key = [0_u8; 32];
+    getrandom::fill(&mut key).unwrap();
+    tokio::fs::write(&key_file, key).await.unwrap();
     private_file(key_file.clone()).await;
     let listen = tcp_address();
     tidemq::console::EmbeddedConsoleConfig {
@@ -49,9 +52,33 @@ async fn embedded_console(directory: &std::path::Path) -> tidemq::console::Embed
 
 impl Fixture {
     pub(crate) async fn new(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]) -> Self {
+        assert!(
+            !nodes.is_empty(),
+            "Runtime fixtures require at least one node"
+        );
+        let local = nodes.iter().any(|(_, role)| *role == Role::Combined);
+        if local {
+            let [(node, Role::Combined)] = nodes else {
+                panic!("Combined fixtures require one local process and cannot mix roles");
+            };
+            // These inputs name the actual local host, not Raft membership.
+            assert_eq!(
+                metadata,
+                &[*node],
+                "Combined metadata must use its local host"
+            );
+            assert_eq!(storage, &[*node], "Combined data must use its local host");
+        }
         let directory =
             std::env::temp_dir().join(format!("tidemq-runtime-{}", Id::new_v7().unwrap()));
         tokio::fs::create_dir_all(&directory).await.unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .await
+                .unwrap();
+        }
         let ca_key = KeyPair::generate().unwrap();
         let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
         params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
@@ -95,6 +122,9 @@ impl Fixture {
             .await
             .unwrap();
             private_file(directory.join(format!("node-{node}.key"))).await;
+            if local {
+                continue;
+            }
             tokio::fs::write(directory.join(format!("node-{node}.der")), cert.der())
                 .await
                 .unwrap();
@@ -107,12 +137,7 @@ impl Fixture {
                 certificate_der: directory.join(format!("node-{node}.der")),
             });
         }
-        let console = if nodes.iter().any(|(_, role)| *role == Role::Combined) {
-            assert_eq!(
-                nodes.len(),
-                1,
-                "Combined fixtures require one local process"
-            );
+        let console = if local {
             Some(embedded_console(&directory).await)
         } else {
             None
@@ -121,7 +146,15 @@ impl Fixture {
         let configs = nodes
             .iter()
             .map(|(node, role)| {
-                let peer = peers.iter().find(|peer| peer.node_id == *node).unwrap();
+                let internal_listen = if local {
+                    SocketAddr::from(([127, 0, 0, 1], 0))
+                } else {
+                    peers
+                        .iter()
+                        .find(|peer| peer.node_id == *node)
+                        .unwrap()
+                        .internal_address
+                };
                 let mut config = Config {
                     node_id: *node,
                     cluster_id: cluster.to_string(),
@@ -138,35 +171,31 @@ impl Fixture {
                     tls: TlsConfig {
                         certificate: directory.join(format!("node-{node}.pem")),
                         private_key: directory.join(format!("node-{node}.key")),
-                        trust_roots: directory.join("ca.pem"),
+                        trust_roots: if local {
+                            PathBuf::new()
+                        } else {
+                            directory.join("ca.pem")
+                        },
                     },
                     runtime: RuntimeConfig {
-                        internal_listen: peer.internal_address,
+                        internal_listen,
                         metadata_group: 1,
-                        metadata_voters: metadata.to_vec(),
+                        metadata_voters: if local { Vec::new() } else { metadata.to_vec() },
                         groups: vec![GroupConfig {
                             group_id: 2,
-                            voters: storage.to_vec(),
+                            voters: if local { Vec::new() } else { storage.to_vec() },
                             standby: Vec::new(),
                         }],
                         peers: peers.clone(),
-                        bootstrap_admin_token_file: Some(bootstrap.clone()),
-                        bootstrap: true,
+                        bootstrap_admin_token_file: role
+                            .stores_metadata()
+                            .then(|| bootstrap.clone()),
+                        bootstrap: !local,
                         objects: None,
                         ..RuntimeConfig::default()
                     },
                     ..Config::default()
                 };
-                if *role == Role::Combined {
-                    config.runtime.internal_listen = "127.0.0.1:0".parse().unwrap();
-                    config.runtime.metadata_voters.clear();
-                    config.runtime.peers.clear();
-                    config.runtime.bootstrap = false;
-                    for group in &mut config.runtime.groups {
-                        group.voters.clear();
-                        group.standby.clear();
-                    }
-                }
                 config.memory.total_bytes = 192 * 1024 * 1024;
                 config.memory.control_reserved_bytes = 32 * 1024 * 1024;
                 // Several independently budgeted native runtimes share this test process's RSS.
@@ -241,6 +270,7 @@ impl Fixture {
             tidemq_sdk::TlsTrust::ca_pem(self.roots.clone()),
             tidemq_sdk::Credentials::token(TOKEN),
         )
+        .server_name(format!("node-{gateway}.local"))
         .request_timeout(request)
         .close_timeout(close)
         .build()
