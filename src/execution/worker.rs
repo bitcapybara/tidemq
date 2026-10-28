@@ -297,14 +297,14 @@ async fn apply<A: Application>(shared: &Shared<A>, inflight: Vec<InFlight<A>>) -
         }
         checked(shared, boundary(&shared.storage.directory, "after_durable"))?;
         let start = Instant::now();
-        let response = async {
+        let (response, observations) = async {
             let mut view = shared.view.write().await;
             if view.sequence.checked_add(1) != Some(sequence) {
                 return checked(shared, Err(Error::fatal("Local apply sequence differs")));
             }
             checked(shared, boundary(&shared.storage.directory, "before_apply"))?;
             let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                view.application.try_apply(payload.command)
+                crate::broker::apply_committed(&mut view.application, payload.command)
             })) {
                 Ok(Ok(response)) => response,
                 Ok(Err(source)) => {
@@ -332,6 +332,9 @@ async fn apply<A: Application>(shared: &Shared<A>, inflight: Vec<InFlight<A>>) -
         }
         checked(shared, boundary(&shared.storage.directory, "after_apply"))?;
         checked(shared, shared.ensure_readable())?;
+        if let Some(observations) = observations {
+            observations.notify();
+        }
         let _ = payload.reply.send(Ok(Applied {
             position: ExecutionPosition::Local { sequence },
             response,

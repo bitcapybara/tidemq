@@ -1,4 +1,4 @@
-//! Broker admission and durable production through the authoritative data Raft group.
+//! Broker admission and durable production through the authoritative durable data group.
 
 mod admission;
 mod application;
@@ -22,7 +22,7 @@ pub use application::{
     ShardLoad, ShardLoadReport, TransferCapacity, TransferDataRejection, TransferOutcome,
     TransferPage, WriterFence,
 };
-pub(crate) use application::{WatchHub, WatchIncarnation, WatchKey, WatchSample, WatchSignal};
+pub(crate) use application::{WatchIncarnation, WatchKey, WatchSample, apply_committed};
 pub use error::{Error, Result};
 pub use runtime::{Broker, HotRead, ProducerStatus, ProducerSubmission, RequestContext};
 pub(crate) use telemetry::AttemptOutcome;
