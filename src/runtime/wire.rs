@@ -358,6 +358,70 @@ impl PeerRpc {
         .receive()
         .await
     }
+
+    pub(super) async fn authorize_watch(
+        &self,
+        target: u64,
+        group: u64,
+        operation: Id,
+        request: &super::consumer_watch_authority::Membership,
+        deadline: Instant,
+    ) -> Result<super::consumer_watch_authority::Permit> {
+        if let PeerBackend::Local {
+            dispatch,
+            service,
+            identity,
+        } = &self.backend
+        {
+            if target != identity.node_id || !identity.allowed_groups.contains(&group) {
+                return Err(Error::invalid(
+                    "Local watch authority target is outside this process",
+                ));
+            }
+            let service = service
+                .get()
+                .and_then(Weak::upgrade)
+                .ok_or_else(Error::unavailable)?;
+            if group != service.config.runtime.metadata_group
+                || identity.cluster_id != service.cluster
+            {
+                return Err(Error::invalid(
+                    "Local watch authority metadata identity is invalid",
+                ));
+            }
+            request.validate()?;
+            let request_id = Id::new_v7()
+                .map_err(|source| Error::operation("allocate local watch request", source))?;
+            let work = service.local_watch_authority(
+                request.clone(),
+                request_id,
+                operation,
+                deadline,
+                crate::observability::tracing::current_traceparent(),
+            );
+            return dispatch
+                .submit_readonly(65_536, deadline, work)
+                .await
+                .map_err(|source| Error::LocalNotSubmitted { source })?
+                .receive()
+                .await
+                .map_err(Error::foundation)?;
+        }
+        let bytes = self
+            .submit(
+                target,
+                group,
+                TrafficClass::Control,
+                operation,
+                Request::typed(super::consumer_watch_authority::AUTHORIZE, request)?,
+                deadline,
+                group,
+            )
+            .await?
+            .receive()
+            .await?;
+        decode_binary(&bytes)
+    }
 }
 
 impl Pending {
