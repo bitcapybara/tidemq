@@ -66,6 +66,8 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 CI 的本机与隔离容器执行入口均先把实际 nextest 的 stdout/stderr 写入每次独有的 `target/ci/nextest-output.*/stdout.log`、`stderr.log`，完成后再完整转发控制台。目录随现有 `target/ci` 制品上传；`receipt.json` 分别记录 nextest、控制台转发、取消和最终返回码，以及完整文件字节数和可取得的控制台 FD 类型/flags；转发自身的错误另存文件。nextest 的100/110等非零结果原样保留，nextest成功但转发或记录失败仍使流程失败；取消会转发给当前 owned 命令并等待退出，不新增业务期限或重试。
 
+捕获入口由一个 Node owner 管理命令与转发两个阶段，容器复用已挂载的 Node24。POSIX pipe 转发逐块等待标准流写回调，临时背压解除后继续同一笔部分写；stdout/stderr共用一个30秒总转发截止，不逐流或逐块续期。永久EPIPE、文件错误和超时仍失败，转发阶段的SIGINT/SIGTERM返回取消状态。每路首次排队会留存小型背压状态；`acknowledged_bytes`仅计完整成功回调，失败时不能把它解释为精确送达字节数。该转发截止不修改nextest或业务原期限。
+
 控制台写失败可能触发 nextest 的 reporter 取消并使 JUnit 缺少事件；因此不能仅以 JUnit 用例数或退出110判定业务失败。0.9.148对 JUnit 建文件/序列化错误有带路径的独立文案，普通输出错误的最终文案不包含底层 errno。保留完整捕获和原返回码，不裁剪失败输出，也不把某次完整 CI 绿灯当作先前 I/O 错误的根因证据。
 
 Linux 保留两个独立 job：Validate 运行原 `native.sh` 的全部静态检查、单元、默认 SDK 和普通集成；Faults 运行原故障钩子、真实外部服务和 K8s 黑盒/VM 故障。两者与 Coverage 由同一个原生 executor 顺序调度，不改变测试列表、features、nextest 并发或重试、业务期限及缓存锁。两个 job 均使用 cargo-llvm-cov 0.9.1 的 `show-env --sh`，复用原生 runner 现有 target，各自在开始时清理一次历史 profile，并用 native/lab 前缀分别打包；前一个 job 的二进制、profile 和 JUnit 已上传后，executor 才会接下一个 job。Cargo registry/git 下载缓存锁保持共享持有，维护清理仍须取得独占锁。K8s 阶段把插桩生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。

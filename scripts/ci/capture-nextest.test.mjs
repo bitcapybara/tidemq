@@ -19,6 +19,7 @@ function fixture(t) {
     '  const files = [fs.fstatSync(1).isFile(), fs.fstatSync(2).isFile()];',
     '  fs.writeSync(1, JSON.stringify({files, args: process.argv.slice(2), umask: process.umask()}) + "\\n");',
     '  fs.writeSync(2, "Complete diagnostic output: \\u03bb\\nSYNTHETIC_FINAL_FAILURE_MARKER\\n");',
+    '  if (process.env.TIDEMQ_TEST_STDERR_BYTES) { const data = Buffer.alloc(Number(process.env.TIDEMQ_TEST_STDERR_BYTES), 88); let offset = 0; while (offset < data.length) offset += fs.writeSync(2, data, offset); }',
     '  if (process.env.GATE) fs.writeFileSync(process.env.GATE + ".done", "done");',
     '  process.exit(files.every(Boolean) ? Number(process.env.TEST_EXIT ?? 0) : 42);',
     '};',
@@ -153,30 +154,26 @@ test('regular-file write errors remain failures instead of being treated as cons
 });
 
 test('cancellation also joins an owned console forwarder and records the skipped stream', {timeout: 10000}, async t => {
-  const f = fixture(t), gate = path.join(f.root, 'forward');
-  fs.writeFileSync(path.join(f.root, 'bin', 'cat'), [
-    '#!/usr/bin/env node', 'const fs = require("node:fs"), gate = process.env.FORWARD_GATE;',
-    'process.on("SIGTERM", () => { fs.writeFileSync(gate + ".done", "cancelled"); process.exit(143); });',
-    'fs.writeFileSync(gate + ".ready", "ready");',
-    'const tick = setInterval(() => { if (fs.existsSync(gate)) { clearInterval(tick); fs.writeFileSync(gate + ".done", "released"); process.exit(0); } }, 2);',
-  ].join('\n'), {mode: 0o755});
-  const child = spawn('bash', [nextest, '--lib'], {cwd: f.root, env: {...f.env, FORWARD_GATE: gate}, stdio: ['ignore', 'pipe', 'pipe']});
-  child.stdout.resume(); child.stderr.resume();
-  const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({code, signal})); });
-  const waitFor = async file => {
-    const until = Date.now() + 3000;
-    while (!fs.existsSync(file)) { assert(Date.now() < until, 'The owned forwarder must reach its lifecycle boundary'); await new Promise(resolve => setTimeout(resolve, 2)); }
-  };
+  const f = fixture(t);
+  const child = spawn('bash', [nextest, '--lib'], {cwd: f.root, env: {...f.env, TIDEMQ_TEST_STDERR_BYTES: '1048576'}, stdio: ['ignore', 'pipe', 'pipe']});
+  child.stdout.resume();
+  const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', (code, signal) => resolve({code, signal})); });
   try {
-    await waitFor(gate + '.ready');
-    child.kill('SIGTERM');
-    assert.deepEqual(await exited, {code: 143, signal: null});
+    const until = Date.now() + 3000;
+    let ready = false;
+    while (!ready) {
+      assert(Date.now() < until, 'The owned forwarder must reach stderr backpressure');
+      const directory = path.join(f.root, 'target/ci');
+      ready = fs.existsSync(directory) && fs.readdirSync(directory).some(name => fs.existsSync(path.join(directory, name, 'console-forward-stderr.json')));
+      if (!ready) await new Promise(resolve => setTimeout(resolve, 2));
+    }
+    child.kill('SIGINT');
+    assert.deepEqual(await exited, {code: 130, signal: null});
     const output = f.output();
     assert.equal(output.receipt.nextest_exit, 0);
-    assert.equal(output.receipt.stdout_forward_exit, 143);
-    assert.equal(output.receipt.stderr_forward_exit, 143);
-    assert.equal(fs.readFileSync(gate + '.done', 'utf8'), 'cancelled');
-  } finally { fs.writeFileSync(gate, 'release'); await waitFor(gate + '.done'); }
+    assert.equal(output.receipt.stdout_forward_exit, 0);
+    assert.equal(output.receipt.stderr_forward_exit, 130);
+  } finally { child.stderr.resume(); }
 });
 
 test('receipt write failure cannot turn a completed command into a successful job', t => {
