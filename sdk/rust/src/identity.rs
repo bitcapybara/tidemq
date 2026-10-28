@@ -60,7 +60,8 @@ impl Permission {
         }
     }
 
-    pub(crate) fn from_name(value: &str) -> Result<Self> {
+    /// Parses an exact current protocol permission name; aliases and unknown names are rejected.
+    pub fn from_name(value: &str) -> Result<Self> {
         match value {
             "manage_tenants" => Ok(Self::ManageTenants),
             "manage_credentials" => Ok(Self::ManageCredentials),
