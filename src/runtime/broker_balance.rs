@@ -88,7 +88,6 @@ impl Service {
         let container = quota.and_then(|quota| quota.container);
         tracing::warn!(
             event_code = "initial_route_broker_unavailable",
-            topic_creation_operation_id = %partition.topic_id,
             topic_id = %partition.topic_id,
             birth_partition = partition.partition,
             stage = "select_initial_broker",
