@@ -3,6 +3,442 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tidemq_protocol::common::{ErrorCode, Outcome};
 
+#[derive(Default, Debug)]
+struct MetadataReadRetries {
+    admission_rejected: u64,
+    unavailable_rejected: u64,
+    unavailable_unknown: u64,
+}
+
+fn metadata_read_retry(error: &tidemq_sdk::Error) -> Option<(ErrorCode, Outcome)> {
+    match error {
+        tidemq_sdk::Error::Remote {
+            code: code @ (ErrorCode::QuotaExceeded | ErrorCode::Unavailable),
+            outcome: Outcome::Rejected,
+            retryable: true,
+            original_outcome_known: false,
+            ..
+        } => Some((*code, Outcome::Rejected)),
+        // Query marks a read-only unknown; no publish or ACK identity is recreated.
+        tidemq_sdk::Error::Query { source }
+            if matches!(
+                source.as_ref(),
+                tidemq_sdk::Error::Remote {
+                    code: ErrorCode::Unavailable,
+                    outcome: Outcome::Unknown,
+                    retryable: true,
+                    original_outcome_known: false,
+                    ..
+                }
+            ) =>
+        {
+            Some((ErrorCode::Unavailable, Outcome::Unknown))
+        }
+        _ => None,
+    }
+}
+
+async fn metadata_read_until(
+    client: &Client,
+    name: &str,
+    until: Instant,
+    retries: &mut MetadataReadRetries,
+) -> tidemq_sdk::Result<tidemq_sdk::TopicInfo> {
+    let context = tidemq_sdk::RequestContext::with_deadline(until);
+    loop {
+        if Instant::now() >= until {
+            return Err(tidemq_sdk::Error::Deadline);
+        }
+        let error = match context.scope(client.admin().topic_info(name)).await {
+            Ok(info) => return Ok(info),
+            Err(error) => error,
+        };
+        if Instant::now() >= until {
+            return Err(tidemq_sdk::Error::Deadline);
+        }
+        let Some((code, outcome)) = metadata_read_retry(&error) else {
+            return Err(error);
+        };
+        match (code, outcome) {
+            (ErrorCode::QuotaExceeded, _) => retries.admission_rejected += 1,
+            (_, Outcome::Rejected) => retries.unavailable_rejected += 1,
+            _ => retries.unavailable_unknown += 1,
+        }
+        eprintln!(
+            "RF3 metadata read retry ledger: code={code:?} outcome={outcome:?} remaining_ms={}",
+            until.saturating_duration_since(Instant::now()).as_millis()
+        );
+        tokio::time::sleep_until(until.min(Instant::now() + Duration::from_millis(10))).await;
+    }
+}
+
+#[test]
+fn metadata_read_retry_accepts_only_explicit_temporary_read_failures() {
+    let error = tidemq_sdk::Error::Query {
+        source: Box::new(tidemq_sdk::Error::Remote {
+            code: ErrorCode::Unavailable,
+            outcome: Outcome::Unknown,
+            retryable: true,
+            original_outcome_known: false,
+            message: "The internal read result was lost".into(),
+            expected_sequence: None,
+            expected_registration_epoch: None,
+            retry_after_ms: None,
+        }),
+    };
+    assert_eq!(
+        metadata_read_retry(&error),
+        Some((ErrorCode::Unavailable, Outcome::Unknown))
+    );
+}
+
+// This peer exercises the real SDK/QUIC error boundary; the RF3 phase proves Raft progress.
+mod metadata_quic {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    use tidemq::server::{DispatchConfig, DispatchMetrics, SubmissionOrder, WireService};
+    use tidemq_protocol::{
+        common::{ErrorReply, Frame, FrameKind, TrafficClass},
+        framing::{decode_payload, new_frame},
+    };
+    use tidemq_transport::{
+        Authorization, Server, ServerAuthorization, ServerTls, TlsIdentity, TokenGrant,
+        TransportConfig,
+        budget::{MemoryBudget, MemoryLimits},
+    };
+    use tokio::sync::watch;
+
+    const NAME: &str = "test/app/metadata";
+
+    struct Oracle {
+        topic: Id,
+        failure: Mutex<Option<(ErrorReply, bool)>>,
+        frames: Mutex<Vec<(Instant, Frame)>>,
+    }
+
+    fn reply(frame: &Frame, kind: FrameKind, body: &impl prost::Message) -> Frame {
+        new_frame(
+            kind,
+            TrafficClass::Control,
+            Id::from_slice(&frame.request_id).unwrap(),
+            Id::from_slice(&frame.operation_id).unwrap(),
+            body,
+            5_000,
+            &tidemq_protocol::ProtocolLimits::default(),
+        )
+        .unwrap()
+    }
+
+    impl Oracle {
+        fn respond(&self, frame: &Frame) -> Frame {
+            let mut frames = self.frames.lock().unwrap();
+            assert!(
+                frames.len() < 256,
+                "Metadata retry exceeded its finite frame ledger"
+            );
+            frames.push((Instant::now(), frame.clone()));
+            drop(frames);
+            match FrameKind::try_from(frame.kind).unwrap() {
+                FrameKind::GetTopic => {
+                    let request: public::GetTopic = decode_payload(
+                        frame.payload.clone(),
+                        &tidemq_protocol::ProtocolLimits::default(),
+                    )
+                    .unwrap();
+                    assert_eq!(request.name, NAME);
+                    let mut failure = self.failure.lock().unwrap();
+                    let error = failure.as_ref().map(|(reply, _)| reply.clone());
+                    if failure.as_ref().is_some_and(|(_, once)| *once) {
+                        *failure = None;
+                    }
+                    match error {
+                        Some(error) => reply(frame, FrameKind::Error, &error),
+                        None => reply(
+                            frame,
+                            FrameKind::TopicResult,
+                            &public::TopicResult {
+                                topic_id: Bytes::copy_from_slice(self.topic.as_bytes()),
+                                name: NAME.into(),
+                            },
+                        ),
+                    }
+                }
+                FrameKind::GetTopicLayout => reply(
+                    frame,
+                    FrameKind::TopicLayoutResult,
+                    &public::TopicLayoutResult {
+                        topic_id: Bytes::copy_from_slice(self.topic.as_bytes()),
+                        revision: 1,
+                        total_shards: 1,
+                        active: vec![public::ShardRoute {
+                            shard_id: Bytes::from_static(&[1; 16]),
+                            group_id: 1,
+                            authority_epoch: 1,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ),
+                other => panic!("A read-only metadata retry submitted {other:?}"),
+            }
+        }
+    }
+
+    impl WireService for Oracle {
+        type Error = std::io::Error;
+
+        async fn handle(
+            &self,
+            _peer: Authorization,
+            frame: &Frame,
+            _deadline: Instant,
+            _order: Option<SubmissionOrder>,
+        ) -> Result<Option<Frame>, Self::Error> {
+            Ok(Some(self.respond(frame)))
+        }
+    }
+
+    fn server() -> (Server, Bytes, MemoryBudget) {
+        let key = KeyPair::generate().unwrap();
+        let certificate = CertificateParams::new(vec!["localhost".into()])
+            .unwrap()
+            .self_signed(&key)
+            .unwrap();
+        let ca = Bytes::from(certificate.pem());
+        let budget = MemoryBudget::new(MemoryLimits {
+            total_bytes: 64 * 1024 * 1024,
+            control_reserved_bytes: 8 * 1024 * 1024,
+        })
+        .unwrap();
+        let server = Server::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            ServerTls {
+                identity: TlsIdentity::new(ca.clone(), Bytes::from(key.serialize_pem())).unwrap(),
+                client_trust_roots: None,
+            },
+            ServerAuthorization::External(vec![
+                TokenGrant::new(
+                    TOKEN,
+                    "metadata-test".into(),
+                    "metadata-test".into(),
+                    vec![FrameKind::GetTopic, FrameKind::GetTopicLayout],
+                )
+                .unwrap(),
+            ]),
+            TransportConfig::default(),
+            budget.clone(),
+        )
+        .unwrap();
+        (server, ca, budget)
+    }
+
+    struct Peer {
+        client: Client,
+        oracle: Arc<Oracle>,
+        stop: watch::Sender<bool>,
+        task: tokio::task::JoinHandle<tidemq::Result<()>>,
+    }
+
+    impl Peer {
+        async fn new() -> Self {
+            let (server, ca, budget) = server();
+            let endpoint = format!("localhost:{}", server.local_addr().port());
+            let oracle = Arc::new(Oracle {
+                topic: Id::new_v7().unwrap(),
+                failure: Mutex::new(None),
+                frames: Mutex::new(Vec::new()),
+            });
+            let (stop, shutdown) = watch::channel(false);
+            let task = tokio::spawn(tidemq::server::run(
+                server,
+                oracle.clone(),
+                DispatchConfig::default(),
+                budget,
+                Arc::new(DispatchMetrics::default()),
+                shutdown,
+            ));
+            let client = Client::builder(
+                endpoint,
+                tidemq_sdk::TlsTrust::ca_pem(ca),
+                tidemq_sdk::Credentials::token(TOKEN),
+            )
+            .build()
+            .await
+            .unwrap();
+            Self {
+                client,
+                oracle,
+                stop,
+                task,
+            }
+        }
+
+        fn fail(
+            &self,
+            code: ErrorCode,
+            outcome: Outcome,
+            retryable: bool,
+            known: bool,
+            once: bool,
+        ) {
+            *self.oracle.failure.lock().unwrap() = Some((
+                ErrorReply {
+                    code: code.into(),
+                    outcome: outcome.into(),
+                    retryable,
+                    original_outcome_known: known,
+                    message: "Injected metadata semantic-result failure".into(),
+                    ..Default::default()
+                },
+                once,
+            ));
+        }
+
+        async fn close(&mut self) {
+            assert!(self.client.close().await.unwrap().local_cleanup_complete());
+            self.stop.send_replace(true);
+            (&mut self.task).await.unwrap().unwrap();
+            assert_eq!(
+                self.client
+                    .transport_metrics()
+                    .snapshot()
+                    .active_connections,
+                0
+            );
+        }
+    }
+
+    impl Drop for Peer {
+        fn drop(&mut self) {
+            self.stop.send_replace(true);
+            self.task.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_metadata_result_recovers_over_real_quic() {
+        let mut peer = Peer::new().await;
+        peer.fail(ErrorCode::Unavailable, Outcome::Unknown, true, false, true);
+        let error = peer.client.admin().topic_info(NAME).await.unwrap_err();
+        assert!(matches!(error, tidemq_sdk::Error::Query { .. }));
+        peer.fail(ErrorCode::Unavailable, Outcome::Unknown, true, false, true);
+        let until = Instant::now() + Duration::from_secs(40);
+        let mut retries = MetadataReadRetries::default();
+        let result = metadata_read_until(&peer.client, NAME, until, &mut retries).await;
+        peer.close().await;
+        assert_eq!(Id::from(result.unwrap().id()), peer.oracle.topic);
+        assert_eq!(retries.unavailable_unknown, 1);
+        assert!(Instant::now() < until);
+        let frames = peer.oracle.frames.lock().unwrap();
+        assert_eq!(frames.len(), 4);
+        assert!(
+            frames
+                .iter()
+                .all(|(_, frame)| frame.traffic_class == i32::from(TrafficClass::Control))
+        );
+        eprintln!(
+            "Metadata QUIC recovery ledger: topic={} frames={} unknown_retries={} original_deadline_preserved=true",
+            peer.oracle.topic,
+            frames.len(),
+            retries.unavailable_unknown
+        );
+    }
+
+    #[tokio::test]
+    async fn permanent_metadata_failures_do_not_start_another_query() {
+        let mut peer = Peer::new().await;
+        for (code, outcome, retryable, known) in [
+            (ErrorCode::Forbidden, Outcome::Rejected, false, false),
+            (ErrorCode::Forbidden, Outcome::Unknown, true, false),
+            (ErrorCode::InvalidRequest, Outcome::Rejected, false, false),
+            (ErrorCode::Unavailable, Outcome::Rejected, false, false),
+            (ErrorCode::Unavailable, Outcome::Unknown, false, false),
+            (ErrorCode::Unavailable, Outcome::Unknown, true, true),
+            (ErrorCode::QuotaExceeded, Outcome::Unknown, true, false),
+        ] {
+            peer.oracle.frames.lock().unwrap().clear();
+            peer.fail(code, outcome, retryable, known, false);
+            let mut retries = MetadataReadRetries::default();
+            let error = metadata_read_until(
+                &peer.client,
+                NAME,
+                Instant::now() + Duration::from_secs(2),
+                &mut retries,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(metadata_read_retry(&error), None);
+            assert_eq!(peer.oracle.frames.lock().unwrap().len(), 1);
+            assert_eq!(
+                (
+                    retries.admission_rejected,
+                    retries.unavailable_rejected,
+                    retries.unavailable_unknown
+                ),
+                (0, 0, 0)
+            );
+            eprintln!(
+                "Metadata QUIC terminal ledger: code={code:?} outcome={outcome:?} retryable={retryable} known={known} requests=1"
+            );
+        }
+        peer.close().await;
+    }
+
+    #[tokio::test]
+    async fn repeated_unknown_metadata_results_cannot_extend_the_original_deadline() {
+        let mut peer = Peer::new().await;
+        peer.client.admin().topic_info(NAME).await.unwrap();
+        peer.oracle.frames.lock().unwrap().clear();
+        peer.fail(ErrorCode::Unavailable, Outcome::Unknown, true, false, false);
+        let until = Instant::now() + Duration::from_millis(200);
+        let mut retries = MetadataReadRetries::default();
+        let error = tokio::time::timeout_at(
+            until + Duration::from_secs(1),
+            metadata_read_until(&peer.client, NAME, until, &mut retries),
+        )
+        .await
+        .expect("Metadata retry outlived its original deadline")
+        .unwrap_err();
+        // A native lane can close at its wire cutoff before the enclosing context reports Deadline.
+        assert!(
+            matches!(
+                error.kind(),
+                tidemq_sdk::ErrorKind::DeadlineExceeded | tidemq_sdk::ErrorKind::Unavailable
+            ),
+            "Unexpected fixed-deadline result: {error:?}"
+        );
+        assert!(retries.unavailable_unknown > 0);
+        tokio::time::sleep_until(until).await;
+        let before = peer.oracle.frames.lock().unwrap().len();
+        let expired = metadata_read_until(&peer.client, NAME, until, &mut retries)
+            .await
+            .unwrap_err();
+        assert!(matches!(expired, tidemq_sdk::Error::Deadline));
+        assert_eq!(peer.oracle.frames.lock().unwrap().len(), before);
+        peer.close().await;
+        let frames = peer.oracle.frames.lock().unwrap();
+        assert!(
+            frames
+                .iter()
+                .all(|(sent, frame)| *sent < until && frame.remaining_timeout_ms <= 200)
+        );
+        assert!(
+            frames
+                .windows(2)
+                .all(|pair| pair.first().unwrap().1.remaining_timeout_ms
+                    >= pair.last().unwrap().1.remaining_timeout_ms)
+        );
+        assert!(
+            frames.last().unwrap().1.remaining_timeout_ms
+                < frames.first().unwrap().1.remaining_timeout_ms
+        );
+        eprintln!(
+            "Metadata QUIC deadline ledger: original_budget_ms=200 attempts={before} expired_attempts=0 cutoff_error_kind={:?}",
+            error.kind()
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks() {
     let fixture = Fixture::new(
@@ -59,8 +495,7 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
             let produced = AtomicU64::new(0);
             let acknowledged = AtomicU64::new(0);
             let metadata_reads = AtomicU64::new(0);
-            let metadata_admission_rejections = AtomicU64::new(0);
-            let metadata_unavailable_rejections = AtomicU64::new(0);
+            let mut metadata_retries = MetadataReadRetries::default();
             let produce = async {
                 for sequence in 0..64_u64 {
                     let result = context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await;
@@ -81,40 +516,19 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
                 }
             };
             let read_metadata = async {
-                let read_context = tidemq_sdk::RequestContext::with_deadline(until);
                 for _ in 0..64 {
-                    // Read-only retries retain the original phase deadline.
-                    let info = loop {
-                        match read_context.scope(client.admin().topic_info(&name)).await {
-                            Err(tidemq_sdk::Error::Remote {
-                                code: code @ (ErrorCode::QuotaExceeded | ErrorCode::Unavailable),
-                                outcome: Outcome::Rejected,
-                                retryable: true,
-                                original_outcome_known: false,
-                                ..
-                            }) if Instant::now() < until => {
-                                if code == ErrorCode::QuotaExceeded {
-                                    metadata_admission_rejections.fetch_add(1, Ordering::Relaxed);
-                                } else {
-                                    metadata_unavailable_rejections.fetch_add(1, Ordering::Relaxed);
-                                }
-                                tokio::time::sleep_until(
-                                    until.min(Instant::now() + Duration::from_millis(10)),
-                                ).await;
-                            }
-                            result => break result.unwrap(),
-                        }
-                    };
+                    let info = metadata_read_until(&client, &name, until, &mut metadata_retries).await.unwrap();
                     assert_eq!(info.id(), topic);
                     metadata_reads.fetch_add(1, Ordering::Relaxed);
                     tokio::task::yield_now().await;
                 }
             };
             tokio::join!(produce, consume, read_metadata);
+            assert!(Instant::now() < until, "The RF3 phase extended its original forty-second deadline");
             assert_eq!(produced.load(Ordering::Relaxed), 64);
             assert_eq!(acknowledged.load(Ordering::Relaxed), 64);
             assert_eq!(metadata_reads.load(Ordering::Relaxed), 64);
-            eprintln!("Separated RF3 phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads=64, metadata_admission_rejections={}, metadata_unavailable_rejections={}", started.elapsed().as_millis(), metadata_admission_rejections.load(Ordering::Relaxed), metadata_unavailable_rejections.load(Ordering::Relaxed));
+            eprintln!("Separated RF3 phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads=64, metadata_admission_rejections={}, metadata_unavailable_rejections={}, metadata_unavailable_unknown={}", started.elapsed().as_millis(), metadata_retries.admission_rejected, metadata_retries.unavailable_rejected, metadata_retries.unavailable_unknown);
             consumer.close().await.unwrap();
             producer.close().await.unwrap();
         });
