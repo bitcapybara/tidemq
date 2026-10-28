@@ -22,7 +22,7 @@ use super::{
     session::{Session, SessionError, SessionManager},
 };
 
-pub(super) struct ApiState {
+pub(crate) struct ApiState {
     pub cluster: ClusterConfig,
     pub sessions: SessionManager,
     trust: Bytes,
