@@ -14,7 +14,7 @@ fn refusal(code: ErrorCode, known: bool) -> ErrorReply {
         outcome: Outcome::Rejected.into(),
         retryable: true,
         original_outcome_known: known,
-        message: "The ACK owner is unavailable".into(),
+        message: "The original ACK received a server refusal".into(),
         ..Default::default()
     }
 }
@@ -38,7 +38,11 @@ async fn close(peer: &Peer, core: &Arc<Core>) {
 
 #[tokio::test]
 async fn a_retryable_ack_refusal_keeps_the_original_batch_pending_until_recovery() {
-    for code in [ErrorCode::Fenced, ErrorCode::Unavailable] {
+    for code in [
+        ErrorCode::Fenced,
+        ErrorCode::Unavailable,
+        ErrorCode::QuotaExceeded,
+    ] {
         let peer = peer().await;
         let core = core(&peer.client, 1, 256, 8 * 1024 * 1024);
         native_registered(&core).await;
@@ -87,7 +91,11 @@ async fn a_retryable_ack_refusal_keeps_the_original_batch_pending_until_recovery
 
 #[tokio::test]
 async fn known_ack_decisions_and_permission_denials_are_not_reopened_for_recovery() {
-    for (code, known) in [(ErrorCode::Fenced, true), (ErrorCode::Forbidden, false)] {
+    for (code, known) in [
+        (ErrorCode::Fenced, true),
+        (ErrorCode::QuotaExceeded, true),
+        (ErrorCode::Forbidden, false),
+    ] {
         let peer = peer().await;
         let core = core(&peer.client, 1, 256, 8 * 1024 * 1024);
         native_registered(&core).await;
