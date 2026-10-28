@@ -34,6 +34,7 @@ Queue NACK 成功只表示已持久安排重投，不表示业务成功。业务
 | --- | --- |
 | 成功 ACK 回执 | 对应确认范围已持久；可释放已处理的本地数据 |
 | ACK / NACK 结果未知 | 检查 `outcome_unknown()` 和原 consumer 的 `pending_acks().await?`，对原 PendingAck 调用 `retry()` |
+| 所有权切换的临时拒绝，原结果尚未确定 | 保留错误携带的原 PendingAck；可重试 Fenced / Unavailable 不等于交付退休，按[SDK 恢复规则](rust-sdk.zh-CN.md#总期限、取消和恢复)重试原确认 |
 | 代次或 attempt 已失效 | 停止使用旧交付；不自行改 token 或代次，按结构化错误恢复成员状态 |
 | 容量或在途窗口受限 | 减少新接收并发，继续完成已有业务和 ACK，检查最早未确认项 |
 | 接收被取消或超时 | 不推断远端无积压；保留原逻辑 consumer，检查关闭/恢复报告 |

@@ -6,11 +6,12 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::Instrument;
+use tracing::instrument::WithSubscriber;
 
 use crate::observability::metrics::Stage;
 use crate::wal::{self, RecordId, SegmentedDurability};
 
-use super::local::{LocalHealth, Payload, Queued, Shared};
+use super::local::{LocalHealth, Payload, QueueEntry, Queued, Shared};
 use super::options::{RECORD_RESERVE, SEGMENT_HEADER};
 use super::storage::{FORMAT, Record, boundary, lock};
 use super::{Application, Applied, Error, ExecutionPosition, Result};
@@ -26,7 +27,7 @@ struct InFlight<A: Application> {
 
 pub(super) async fn run<A: Application>(
     shared: Arc<Shared<A>>,
-    mut receiver: mpsc::Receiver<Arc<Queued<A>>>,
+    mut receiver: mpsc::Receiver<QueueEntry<A>>,
     mut retained: VecDeque<(u64, RecordId)>,
 ) -> Result<()> {
     let mut carry: Option<Arc<Queued<A>>> = None;
@@ -50,8 +51,8 @@ pub(super) async fn run<A: Application>(
                 queued.reject("Group stopped before handoff");
             }
             receiver.close();
-            while let Some(queued) = receiver.recv().await {
-                queued.reject("Group stopped before handoff");
+            while let Some(entry) = receiver.recv().await {
+                entry.queued.reject("Group stopped before handoff");
             }
             return Ok(());
         }
@@ -68,7 +69,7 @@ pub(super) async fn run<A: Application>(
                 _ = shared.storage.notify.notified() => continue,
                 _ = writer.changed() => continue,
                 _ = tokio::time::sleep(MAINTENANCE_RETRY), if blocked => continue,
-                queued = receiver.recv() => match queued { Some(queued) => queued, None => return Ok(()) },
+                entry = receiver.recv() => match entry { Some(entry) => entry.queued, None => return Ok(()) },
             },
         };
         let (batch, next, bytes) = collect(&shared, first, &mut receiver);
@@ -105,7 +106,7 @@ type Batch<A> = (Vec<Arc<Queued<A>>>, Option<Arc<Queued<A>>>, u64);
 fn collect<A: Application>(
     shared: &Shared<A>,
     first: Arc<Queued<A>>,
-    receiver: &mut mpsc::Receiver<Arc<Queued<A>>>,
+    receiver: &mut mpsc::Receiver<QueueEntry<A>>,
 ) -> Batch<A> {
     let mut batch = Vec::new();
     let mut bytes = 0u64;
@@ -130,7 +131,7 @@ fn collect<A: Application>(
         if batch.len() >= shared.storage.options.batch_records() {
             break;
         }
-        next = receiver.try_recv().ok();
+        next = receiver.try_recv().ok().map(|entry| entry.queued);
     }
     (batch, next, bytes)
 }
@@ -261,6 +262,8 @@ async fn append<A: Application>(
                 .storage
                 .journal
                 .append_retained(bytes)
+                .instrument(payload.span.clone())
+                .with_subscriber(payload.subscriber.clone())
                 .await
                 .map_err(Into::into),
         )?;
@@ -294,14 +297,14 @@ async fn apply<A: Application>(shared: &Shared<A>, inflight: Vec<InFlight<A>>) -
         }
         checked(shared, boundary(&shared.storage.directory, "after_durable"))?;
         let start = Instant::now();
-        let response = async {
+        let (response, observations) = async {
             let mut view = shared.view.write().await;
             if view.sequence.checked_add(1) != Some(sequence) {
                 return checked(shared, Err(Error::fatal("Local apply sequence differs")));
             }
             checked(shared, boundary(&shared.storage.directory, "before_apply"))?;
             let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                view.application.try_apply(payload.command)
+                crate::broker::apply_committed(&mut view.application, payload.command)
             })) {
                 Ok(Ok(response)) => response,
                 Ok(Err(source)) => {
@@ -322,12 +325,16 @@ async fn apply<A: Application>(shared: &Shared<A>, inflight: Vec<InFlight<A>>) -
             Ok(response)
         }
         .instrument(payload.span)
+        .with_subscriber(payload.subscriber)
         .await?;
         if let Some(metrics) = &shared.storage.options.metrics {
             metrics.observe(Stage::Apply, start.elapsed().as_secs_f64());
         }
         checked(shared, boundary(&shared.storage.directory, "after_apply"))?;
         checked(shared, shared.ensure_readable())?;
+        if let Some(observations) = observations {
+            observations.notify();
+        }
         let _ = payload.reply.send(Ok(Applied {
             position: ExecutionPosition::Local { sequence },
             response,

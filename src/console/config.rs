@@ -118,8 +118,8 @@ impl ConsoleConfig {
                 "console management_listen must use a loopback IP",
             ),
             (
-                self.listen != self.management_listen,
-                "console listen must differ from management_listen",
+                !crate::config::listeners_conflict(self.listen, self.management_listen),
+                "console listen and management_listen TCP listeners conflict",
             ),
             (
                 !self.static_dir.as_os_str().is_empty(),

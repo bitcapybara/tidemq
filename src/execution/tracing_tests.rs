@@ -8,7 +8,7 @@ use tracing_subscriber::registry::LookupSpan;
 const REQUEST: &str = "local_durability_trace_request";
 const CHILD: &str = "execution::tracing_tests::scoped_durability_trace_child";
 
-struct Capture(Arc<Mutex<Vec<bool>>>);
+pub(super) struct Capture(pub(super) Arc<Mutex<Vec<bool>>>);
 impl<S> tracing_subscriber::Layer<S> for Capture
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,

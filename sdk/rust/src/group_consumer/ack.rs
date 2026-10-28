@@ -420,8 +420,9 @@ async fn drive(work: &Arc<Work>, deadline: Instant) -> Result<AckReceipt> {
                 let mut batches = work.batches.lock().map_err(|_| Error::Closed)?;
                 let batch = batches.get_mut(index).ok_or(Error::Closed)?;
                 match result {
-                    Err(error) if error.outcome_unknown() => {
-                        batch.uncertain = true;
+                    Err(error) if error.outcome_unknown() || error.retry_original() => {
+                        // A route refusal is not a durable decision about the original ACK.
+                        batch.uncertain |= error.outcome_unknown();
                         return Err(error);
                     }
                     result => {

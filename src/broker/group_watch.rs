@@ -99,6 +99,34 @@ pub(crate) struct WatchSignal {
     pub(crate) partition: Option<PartitionKey>,
 }
 
+/// Apply only durable commands under the application lock; notify after releasing that lock.
+pub(crate) fn apply_committed<A: Application>(
+    application: &mut A,
+    command: A::Command,
+) -> std::io::Result<(A::Response, Option<Arc<WatchHub>>)> {
+    let observation = (application as &dyn std::any::Any)
+        .downcast_ref::<DataApplication>()
+        .and_then(|data| {
+            (&command as &dyn std::any::Any)
+                .downcast_ref::<DataCommand>()
+                .map(|command| (data.watch_hub(), WatchHub::before(data, command)))
+        });
+    let response = application.try_apply(command)?;
+    let notifications = observation.and_then(|(hub, change)| {
+        let data = (application as &dyn std::any::Any).downcast_ref::<DataApplication>()?;
+        #[cfg(feature = "test-hooks")]
+        hub.committed_command(change.partition);
+        if !matches!(
+            (&response as &dyn std::any::Any).downcast_ref::<DataResponse>(),
+            Some(DataResponse::Rejected(_))
+        ) {
+            hub.applied(data, change);
+        }
+        Some(hub)
+    });
+    Ok((response, notifications))
+}
+
 impl WatchHub {
     #[cfg(feature = "test-hooks")]
     pub(crate) fn diagnostic_commands(&self) -> (Vec<(PartitionKey, u64)>, u64) {
@@ -604,6 +632,136 @@ impl DataApplication {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-hooks")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn local_committed_commands_publish_observations_without_notifying_rejections() {
+        use crate::execution::{LocalGroup, LocalOptions, StorageIdentity};
+        use std::future::Future;
+        use std::task::{Context, Waker};
+        use tokio::time::{Duration, Instant};
+
+        let application = DataApplication::default();
+        let hub = application.watch_hub();
+        let mut key = key();
+        key.incarnation = WatchIncarnation::Local {
+            process: Id::new_v7().unwrap(),
+        };
+        let sample = hub
+            .observe(
+                key,
+                projection(BTreeSet::new(), false),
+                &[],
+                &budget(),
+                None,
+            )
+            .unwrap();
+        let mut notified = Box::pin(sample.signal.notified());
+        assert!(
+            notified
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        let recover = DataCommand::Recover {
+            partition: key.partition,
+            writer: WriterFence {
+                node_id: 1,
+                owner_epoch: 1,
+            },
+        };
+        let mut staged = application.clone();
+        staged.try_apply(recover.clone()).unwrap();
+        let staged_counts = hub.diagnostic_commands();
+        let cluster_id = Id::new_v7().unwrap();
+        let directory = std::env::temp_dir().join(format!("tidemq-watch-commit-{cluster_id}"));
+        let group = LocalGroup::open(
+            &directory,
+            StorageIdentity::new::<DataApplication>(cluster_id, 2, 1),
+            LocalOptions::default(),
+            application,
+        )
+        .await
+        .unwrap();
+        let initialize = DataCommand::Initialize(DataGroupConfig {
+            cluster_id,
+            group_id: 2,
+            max_partitions: 8,
+            max_hot_bytes: 32 * 1024 * 1024,
+            max_hot_messages: 65_536,
+            producer: ProducerLimits::default(),
+            subscription: subscription::Limits::default(),
+            retention: crate::retention::Policy::default(),
+        });
+        group
+            .submit(initialize, Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        let rejected = group
+            .submit(recover, Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        let counts = hub.diagnostic_commands();
+        let rejection_notified = notified
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready();
+        let fenced = group
+            .submit(
+                DataCommand::InstallFence(FenceCommand {
+                    grant: crate::ownership::Grant {
+                        cluster_id,
+                        partition: key.partition,
+                        group_id: 2,
+                        operation_id: crate::metadata::grant_operation_id(
+                            cluster_id,
+                            key.partition,
+                            1,
+                            1,
+                            0,
+                        )
+                        .unwrap(),
+                        epoch: 1,
+                        owner_node: 1,
+                        expected_route_generation: 0,
+                        metadata_revision: 1,
+                    },
+                }),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        let committed_notified = notified
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready();
+        group
+            .drain(Instant::now() + Duration::from_secs(5))
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(&directory).await.unwrap();
+        assert!(matches!(rejected.response, DataResponse::Rejected(_)));
+        assert_eq!(
+            staged_counts,
+            (Vec::new(), 0),
+            "Staged clones must not publish committed observations"
+        );
+        assert_eq!(
+            counts,
+            (vec![(key.partition, 1)], 1),
+            "Every committed Local data command must enter the Watch ledger"
+        );
+        assert!(
+            !rejection_notified,
+            "A rejected command must not dirty or notify Watch targets"
+        );
+        assert!(matches!(fenced.response, DataResponse::Fenced(_)));
+        assert!(
+            committed_notified,
+            "A committed Local change must wake its Watch target"
+        );
+    }
+
     fn budget() -> Budget {
         Budget::new(
             crate::budget::MemoryBudget::new(crate::budget::MemoryLimits {

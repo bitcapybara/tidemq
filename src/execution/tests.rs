@@ -139,12 +139,12 @@ struct Hook {
 }
 static HOOKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Hook>>>> = OnceLock::new();
 
-struct HookGuard {
+pub(crate) struct HookGuard {
     directory: PathBuf,
     hook: Arc<Hook>,
 }
 impl HookGuard {
-    fn new(directory: &Path, stage: &'static str, fail: bool) -> Self {
+    pub(crate) fn new(directory: &Path, stage: &'static str, fail: bool) -> Self {
         let hook = Arc::new(Hook {
             stage,
             fail,
@@ -159,12 +159,12 @@ impl HookGuard {
             hook,
         }
     }
-    async fn entered(&self) {
+    pub(crate) async fn entered(&self) {
         tokio::time::timeout_at(deadline(), self.hook.entered.notified())
             .await
             .unwrap();
     }
-    fn release(&self) {
+    pub(crate) fn release(&self) {
         *lock(&self.hook.released) = true;
         self.hook.condition.notify_all();
     }
@@ -407,6 +407,130 @@ async fn completion_admission_is_reserved_and_batches_share_durability() {
         "Concurrent commands must use the existing WAL group commit"
     );
     assert_eq!(stats.journal.written_records, 13);
+    group.drain(deadline()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canceled_queue_entries_cannot_consume_completion_reserve() {
+    let directory = Directory::new();
+    let identity = identity();
+    let configured = options();
+    let pending = configured.journal.max_pending_records;
+    let ordinary = pending - (pending / 4).max(1);
+    let group = LocalGroup::open(
+        &directory.0,
+        identity.clone(),
+        configured.clone(),
+        State::default(),
+    )
+    .await
+    .unwrap();
+    let hook = HookGuard::new(&directory.0, "before_durable", false);
+    let client = group.clone();
+    let first = tokio::spawn(async move { client.submit(command(1), deadline()).await });
+    hook.entered().await;
+    let mut admitted = 0;
+    for operation in 2..=2 * pending as u64 + 1 {
+        let queued = group.statistics().queued;
+        let client = group.clone();
+        let mut caller =
+            tokio::spawn(async move { client.submit(command(operation), deadline()).await });
+        tokio::select! {
+            result = &mut caller => {
+                assert!(matches!(result.unwrap(), Err(Error::NotSubmitted { .. })));
+            }
+            _ = wait_for(&group, |stats| stats.queued > queued) => {
+                caller.abort();
+                assert!(caller.await.unwrap_err().is_cancelled());
+                admitted += 1;
+            }
+        }
+        assert_eq!(group.statistics().available_commands, pending - 1);
+    }
+    let queued = group.statistics().queued;
+    let client = group.clone();
+    let mut ack = tokio::spawn(async move {
+        client
+            .submit_completion(
+                Command::Ack {
+                    operation: 100,
+                    offset: 1,
+                },
+                deadline(),
+            )
+            .await
+    });
+    tokio::select! {
+        result = &mut ack => panic!("Completion reserve was unavailable: {result:?}"),
+        _ = wait_for(&group, |stats| stats.queued > queued) => {}
+    }
+    assert_eq!(admitted, ordinary);
+    hook.release();
+    first.await.unwrap().unwrap();
+    assert_eq!(ack.await.unwrap().unwrap().response, (1, 1));
+    wait_for(&group, |stats| stats.available_commands == pending).await;
+    assert_eq!(group.statistics().journal.written_records, 2);
+    group.drain(deadline()).await.unwrap();
+    let reopened = LocalGroup::open(&directory.0, identity, configured, State::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.try_with_application(Clone::clone).await.unwrap(),
+        State {
+            value: 1,
+            ack: 1,
+            operation: 100,
+            applications: 2,
+        }
+    );
+    assert_eq!(
+        reopened.applied(),
+        Some(ExecutionPosition::Local { sequence: 2 })
+    );
+    reopened.drain(deadline()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn local_durability_preserves_canceled_callers_scoped_subscribers() {
+    use tracing::instrument::WithSubscriber;
+    use tracing::{Dispatch, Instrument};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    let directory = Directory::new();
+    // Open outside either request subscriber so the worker cannot inherit their context.
+    let group = LocalGroup::open(&directory.0, identity(), options(), State::default())
+        .await
+        .unwrap();
+    for operation in 1..=2 {
+        let evidence = Arc::new(Mutex::new(Vec::new()));
+        let dispatch = Dispatch::new(
+            tracing_subscriber::registry().with(super::tracing_tests::Capture(evidence.clone())),
+        );
+        let request = tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info_span!("local_durability_trace_request")
+        });
+        let hook = HookGuard::new(&directory.0, "before_append", false);
+        let client = group.clone();
+        let caller = tokio::spawn(
+            async move { client.submit(command(operation), deadline()).await }
+                .instrument(request)
+                .with_subscriber(dispatch),
+        );
+        hook.entered().await;
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        hook.release();
+        wait_for(&group, |stats| {
+            stats.applied_sequence == operation && stats.available_commands == 16
+        })
+        .await;
+        assert_eq!(
+            *evidence.lock().unwrap(),
+            vec![true],
+            "Canceled local callers must retain their own request span and subscriber through durability"
+        );
+    }
+    assert_eq!(group.statistics().journal.written_records, 2);
     group.drain(deadline()).await.unwrap();
 }
 

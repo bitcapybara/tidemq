@@ -4,6 +4,7 @@ use tidemq_protocol::{
     console_operation::WriteCommand,
     framing::{decode_payload, new_frame},
 };
+use tracing::instrument::WithSubscriber;
 
 const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 
@@ -20,6 +21,12 @@ impl Fixture {
             &[1],
         )
         .await;
+        assert!(
+            inner
+                .configs
+                .values()
+                .all(|config| config.tls.trust_roots.as_os_str().is_empty())
+        );
         inner.start_all().await;
         let service = inner.running.get(&1).unwrap().service.clone();
         Self {
@@ -46,6 +53,10 @@ impl Fixture {
 
     pub(crate) fn process(&self) -> super::super::process::Process {
         self.backend.service.process.clone()
+    }
+
+    pub(crate) fn service(&self) -> Arc<Service> {
+        self.backend.service.clone()
     }
 
     pub(crate) fn console_config(&self) -> crate::console::EmbeddedConsoleConfig {
@@ -560,5 +571,73 @@ async fn combined_https_authentication_business_writes_and_recovery_use_the_loca
     assert_eq!(recovered["resourceId"], created["resourceId"]);
     assert_eq!(recovered["actor"], created["actor"]);
     assert_eq!(fixture.connections(), before);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn local_message_content_refusal_keeps_audit_identity_without_logging_secrets_or_filters() {
+    let fixture = Fixture::new().await;
+    let (tenant, namespace) = fixture.tenant("audit").await;
+    let created = fixture
+        .root()
+        .await
+        .write(&WriteRequest {
+            operation_id: Id::new_v7().unwrap(),
+            command: WriteCommand::CreateTopic {
+                tenant,
+                namespace,
+                name: "orders".into(),
+            },
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.status, Status::Succeeded);
+    let (_, _, token) = fixture.principal(tenant, namespace, &["inspect"]).await;
+    let context = fixture.backend.authenticate(&token).await.unwrap();
+    let buffer = crate::observability::logging::tests::Buffer(Arc::default());
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .json()
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
+    let private_filter = "cHJpdmF0ZS1rZXktZmlsdGVy";
+    let result = context
+        .read(Query::Messages {
+            topic: created.resource_id.unwrap(),
+            shard: Id::new_v7().unwrap(),
+            start: None,
+            end: None,
+            observed_end: None,
+            limit: 32,
+            scan_limit: 512,
+            key_base64: Some(private_filter.into()),
+            properties_base64: Default::default(),
+        })
+        .with_subscriber(subscriber)
+        .await;
+    assert_eq!(
+        result.unwrap_err().failure().code,
+        i32::from(ErrorCode::Forbidden)
+    );
+    let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    assert!(!output.contains(&token));
+    assert!(!output.contains(private_filter));
+    let audit = output
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|event| event["fields"]["event_code"] == "console_message_inspection")
+        .collect::<Vec<_>>();
+    assert_eq!(audit.len(), 2);
+    assert_eq!(audit[0]["fields"]["result"], "started");
+    assert_eq!(audit[1]["fields"]["result"], "rejected");
+    assert_eq!(
+        audit[1]["fields"]["credential"],
+        context.credential.to_string()
+    );
+    assert_eq!(
+        audit[1]["fields"]["operation_id"],
+        context.operation.to_string()
+    );
     fixture.close().await;
 }

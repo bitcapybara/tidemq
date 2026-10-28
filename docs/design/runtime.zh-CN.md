@@ -1,17 +1,19 @@
 # 运行时装配与语义边界
 
-运行时在一个进程拥有监听器、共享预算、统一指标 Registry 和后台任务。库不安装全局日志 subscriber、分配器或 exporter；进程入口选择这些设施。Combined 装配完整 RF1，其他角色只创建其托管的真实组件。Storage 只有本组磁盘副本，Broker 不创建假的本地数据状态。
+运行时在一个进程拥有监听器、共享预算、统一指标 Registry 和后台任务。库不安装全局日志 subscriber、分配器或 exporter；进程入口选择这些设施。Combined 装配本地持久元数据/数据组、四个 MQ 职责及原生 HTTPS Console，不创建内部 Client、PeerPool、Raft 或 QUIC 监听。分离 RF1 / RF3 只创建各角色托管的真实组件；Storage 只有本组磁盘副本，Broker 不创建假的本地数据状态。
 
-TOML 的角色边界在配置反序列化时校验并归一化，运行时消费者继续使用同一份 `Config` / `RuntimeConfig`。`role` 显式选择单角色或 Combined；Gateway 的外部监听位于 `[gateway]`，数据角色的 retention、归档间隔与 S3 位于 `[storage]`。未启用角色的表会被拒绝，未启用外部监听也不占用或冲突检查其默认地址。Broker/Metadata 没有额外本地参数，不造空表。可信拓扑、内部监听、bootstrap、容量水位留在共享 `[runtime]`；各角色内部 delegated 授权和 Metadata 派生投递密钥需要的秘密文件路径留在共享 `[authorization]`，不能因分角色而绕过检查。当前开发阶段只接受这一种布局，删除旧配置读取与输出分支；旧字段、新旧混合和多余生成器参数都失败。已有开发环境按[配置指南](../guide/configuration.zh-CN.md)更新配置并保留原身份与数据，不自动清理已有持久目录。
+TOML 的角色边界在反序列化时校验，运行时继续使用同一份 `Config` / `RuntimeConfig`。外部监听位于 `[gateway]`，retention、归档与 S3 位于 `[storage]`；Combined 另需 `[console]` / `[console.session]`。Combined 的 `[runtime]` 只接受逻辑组、容量和业务策略；可信 peer/voter 拓扑、内部监听、bootstrap 与 TLS trust_roots 仅属于分离角色。`[authorization]` 提供首次初始化管理员 token 路径，业务凭据和授权在线持久管理，投递密钥由数据组持久保存。未知、旧字段及未启用角色的表均拒绝。完整字段见[配置指南](../guide/configuration.zh-CN.md)；调整配置须保留原身份与数据。
 
 ## 请求路径
 
-1. Gateway 使用 TLS 与 scoped 静态令牌检查外部操作，解析主题和分区，读取路由，将外部 `owner_epoch=0` 替换成可信路由 epoch。
-2. Gateway 将同一业务身份转发给 owner Broker，Broker 转发给当前数据 Leader。内部每跳由 mTLS 叶证书指纹绑定 cluster、node、role、group 与流量类别，再按静态授权表解析 delegated principal/scope。
-3. 数据 Leader 重新检查原业务权限、新鲜控制 lease、数据 fence 和实际稳定 membership。业务只通过封闭的语义请求构造状态机命令；客户不能反序列化并提交 Raft Command。
-4. Producer 的提交顺序只保持到本地有界队列或下游 RPC 成功入队，随后释放顺序令牌并独立等待 ACK。同一 P lane 不在整个 quorum 等待期间被一个请求占据。
+1. Gateway 使用 TLS 和真实凭据检查外部操作，解析主题和分区，读取路由，将外部 `owner_epoch=0` 替换成可信路由 epoch。
+2. Combined 在同进程传递可信 actor 和原业务身份，使用有界请求队列、共享准入和原 deadline；Console 直接调用本地业务接口。本地语义调用不经内部网络 envelope 编解码，该封装仅由 Remote 适配器使用。分离角色由 Gateway 转发给 owner Broker，再访问数据 Leader，每跳验证 mTLS 身份与 delegated principal/scope。
+3. 数据权威重新检查原业务权限、新鲜控制 lease 和 fence；分离角色另检查实际稳定 membership。业务只通过封闭的语义请求构造状态机命令，客户不能直接提交命令。
+4. Producer 的提交顺序只保持到本地有界队列或下游 RPC 成功入队，随后释放顺序令牌并独立等待持久 ACK。
 
-连接按 peer、身份、协议和流量类别共享。C 有核心 lane，P/D/R 为有限四 lane，B 为两 lane。P 按完整 producer 业务域散列；D/B 按 subscription/cursor/assignment 业务域分配。R 只用于真实非空 Raft 日志，不将 Gateway 业务伪装成 Raft。大快照和对象清单走 B；投票与 heartbeat 使用原生 Raft C 硬保留执行槽，避免语义控制等待 quorum 时占尽自身所需的复制控制能力。
+分离角色的连接按 peer、身份、协议和流量类别共享。C 有核心 lane，P/D/R 为有限四 lane，B 为两 lane。P 按完整 producer 业务域散列；D/B 按 subscription/cursor/assignment 业务域分配。R 只用于真实非空 Raft 日志，不将 Gateway 业务伪装成 Raft。大快照和对象清单走 B；投票与 heartbeat 使用原生 Raft C 硬保留执行槽，避免语义控制等待 quorum 时占尽自身所需的复制控制能力。下文涉及远端 leader、voter 与成员迁移的步骤适用于分离部署；Combined 以实际本地提交位置和恢复健康为依据。
+
+Combined 在打开 WAL 前校验 Console 素材、会话与 HTTPS 身份；整体 Ready 前拒绝新业务写入。必需 worker 意外退出或 panic、监听失效及确认的资源故障主动触发共享 Failed，迟到的 ready 不会覆盖 Failed / Draining。关闭保留有效 ACK / completion，所有 owned 任务、监听与存储共用一个五秒总期限。入口与观测见[Console 就绪](../guide/console.zh-CN.md#就绪和故障)。
 
 ## 新鲜权限与故障
 

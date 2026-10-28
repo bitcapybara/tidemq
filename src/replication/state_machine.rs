@@ -85,26 +85,8 @@ fn apply_entry<A: Application>(state: &mut Applied<A>, entry: LogEntry<A>) -> Re
             A::Response::default()
         }
         EntryPayload::Normal(command) => {
-            // Observation hooks are volatile and run only on committed apply, never staged clones.
-            let observation = watch_change(&state.application, &command);
-            match state.application.try_apply(command) {
-                Ok(response) => {
-                    if let Some(change) = observation
-                        && let Some(data) = (&state.application as &dyn std::any::Any)
-                            .downcast_ref::<crate::broker::DataApplication>()
-                    {
-                        #[cfg(feature = "test-hooks")]
-                        data.watch_hub().committed_command(change.partition);
-                        if !matches!(
-                            (&response as &dyn std::any::Any)
-                                .downcast_ref::<crate::broker::DataResponse>(),
-                            Some(crate::broker::DataResponse::Rejected(_))
-                        ) {
-                            data.watch_hub().applied(data, change);
-                        }
-                    }
-                    response
-                }
+            match crate::broker::apply_committed(&mut state.application, command) {
+                Ok((response, _)) => response,
                 Err(source) => {
                     state.failed = true;
                     return Err(Error::io("application apply", source));
@@ -114,16 +96,6 @@ fn apply_entry<A: Application>(state: &mut Applied<A>, entry: LogEntry<A>) -> Re
     };
     state.last_applied = Some(entry.log_id);
     Ok(response)
-}
-
-fn watch_change<A: Application>(
-    application: &A,
-    command: &A::Command,
-) -> Option<crate::broker::WatchSignal> {
-    let data =
-        (application as &dyn std::any::Any).downcast_ref::<crate::broker::DataApplication>()?;
-    let command = (command as &dyn std::any::Any).downcast_ref::<crate::broker::DataCommand>()?;
-    Some(crate::broker::WatchHub::before(data, command))
 }
 
 impl<A: Application> RaftStateMachine<TypeConfig<A>> for DiskStateMachine<A> {

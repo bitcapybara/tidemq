@@ -42,8 +42,25 @@ async fn command(fixture: &Fixture, arguments: &[&str]) -> serde_json::Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn operator_cli_lists_transfers_changes_layout_and_retires_a_broker_before_shutdown() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Broker)], &[1], &[1]).await;
-    configure_dynamic_fixture(&mut fixture).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Broker),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (31, Role::Broker),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.groups.push(GroupConfig {
+            group_id: 3,
+            voters: vec![21],
+            standby: Vec::new(),
+        });
+    }
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let tenant = command(&fixture, &["create-tenant", "test"]).await;
@@ -76,7 +93,7 @@ async fn operator_cli_lists_transfers_changes_layout_and_retires_a_broker_before
             .as_array()
             .unwrap()
             .len(),
-        2
+        5
     );
     assert_eq!(
         command(&fixture, &["groups"])

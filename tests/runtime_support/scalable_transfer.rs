@@ -1,8 +1,6 @@
 use super::*;
 
-#[cfg(feature = "test-hooks")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn broker_ack_delegation_refreshes_the_original_operation_when_the_authority_group_changes() {
+async fn separated_transfer_topology() -> Fixture {
     let mut fixture = Fixture::new(
         &[
             (1, Role::Metadata),
@@ -22,6 +20,13 @@ async fn broker_ack_delegation_refreshes_the_original_operation_when_the_authori
             standby: Vec::new(),
         });
     }
+    fixture
+}
+
+#[cfg(feature = "test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn broker_ack_delegation_refreshes_the_original_operation_when_the_authority_group_changes() {
+    let mut fixture = separated_transfer_topology().await;
     fixture.start_all().await;
     let client = fixture.client(5).await;
     create_logical_resources(&client).await;
@@ -81,11 +86,17 @@ async fn broker_ack_delegation_refreshes_the_original_operation_when_the_authori
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cancelled_operator_waiter_recovers_the_original_public_transfer_after_process_kill() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    configure_dynamic_fixture(&mut fixture).await;
-    let mut process = start_process(&fixture, 1).await;
+    let fixture = separated_transfer_topology().await;
+    let mut services = BTreeMap::new();
+    for node in [1, 2, 3, 4, 5] {
+        services.insert(node, spawn_process(&fixture, node).await);
+    }
+    for (node, child) in &mut services {
+        wait_process(&fixture, *node, child).await;
+    }
+    let mut process = services.remove(&1).unwrap();
     let client = fixture
-        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .client_with_timeouts(5, Duration::from_secs(30), Duration::from_secs(5))
         .await;
     create_logical_resources(&client).await;
     let queue = client
@@ -181,30 +192,16 @@ async fn cancelled_operator_waiter_recovers_the_original_public_transfer_after_p
     client.close().await.unwrap();
     process.kill().await.unwrap();
     process.wait().await.unwrap();
+    for mut child in services.into_values() {
+        child.kill().await.unwrap();
+        let _ = child.wait().await.unwrap();
+    }
     fixture.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn operator_sdk_transfers_live_authority_and_tenant_credentials_cannot_move_or_inspect_it() {
-    let mut fixture = Fixture::new(
-        &[
-            (1, Role::Metadata),
-            (2, Role::Storage),
-            (3, Role::Storage),
-            (4, Role::Broker),
-            (5, Role::Gateway),
-        ],
-        &[1],
-        &[2],
-    )
-    .await;
-    for config in fixture.configs.values_mut() {
-        config.runtime.groups.push(GroupConfig {
-            group_id: 3,
-            voters: vec![3],
-            standby: Vec::new(),
-        });
-    }
+    let mut fixture = separated_transfer_topology().await;
     fixture.start_all().await;
     let client = fixture.client(5).await;
     let tenant = client.admin().create_tenant("test").await.unwrap();
@@ -347,9 +344,10 @@ async fn operator_sdk_transfers_live_authority_and_tenant_credentials_cannot_mov
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_transfer_waiter_resumes_the_original_manifest_automatically_after_restart() {
-    let mut fixture = dynamic_fixture().await;
+    let mut fixture = separated_transfer_topology().await;
+    fixture.start_all().await;
     let client = fixture
-        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .client_with_timeouts(5, Duration::from_secs(30), Duration::from_secs(5))
         .await;
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
@@ -466,18 +464,14 @@ async fn a_cancelled_transfer_waiter_resumes_the_original_manifest_automatically
 async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_after_restart() {
     let rustfs = rustfs::RustFs::start().await;
     rustfs.create_bucket().await;
-    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
-    configure_dynamic_fixture(&mut fixture).await;
+    let mut fixture = separated_transfer_topology().await;
     enable_objects(&mut fixture, &rustfs).await;
-    fixture
-        .configs
-        .get_mut(&1)
-        .unwrap()
-        .runtime
-        .archive_interval_ms = 60_000;
+    for config in fixture.configs.values_mut() {
+        config.runtime.archive_interval_ms = 60_000;
+    }
     fixture.start_all().await;
     let client = fixture
-        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .client_with_timeouts(5, Duration::from_secs(30), Duration::from_secs(5))
         .await;
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
@@ -525,8 +519,9 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
             .unwrap(),
         partition: 0,
     };
-    let node = fixture.running.get(&1).unwrap();
-    let object = node
+    let source = fixture.running.get(&2).unwrap();
+    let controller = fixture.running.get(&1).unwrap();
+    let object = source
         .archive(
             2,
             vec![tidemq::lifecycle::RangeRequest {
@@ -537,7 +532,10 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         )
         .await
         .unwrap();
-    node.reclaim_local(partition, 3, deadline()).await.unwrap();
+    source
+        .reclaim_local(partition, 3, deadline())
+        .await
+        .unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)
@@ -578,41 +576,46 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         .unwrap()
         .parse()
         .unwrap();
-    let report = transfer_retry(node, Id::new_v7().unwrap(), shard, 3).await;
+    let report = transfer_retry(controller, Id::new_v7().unwrap(), shard, 3).await;
     assert_eq!(report.stage, tidemq::metadata::TransferStage::Retired);
     queue.ack(&held_queue).await.unwrap();
     stream.ack_cumulative(&held_stream).await.unwrap();
-    node.archive(
-        3,
-        vec![tidemq::lifecycle::RangeRequest {
-            partition,
-            offsets: tidemq_protocol::state::OffsetRange { start: 3, end: 4 },
-        }],
-        deadline(),
-    )
-    .await
-    .unwrap();
+    let target = fixture.running.get(&3).unwrap();
+    target
+        .archive(
+            3,
+            vec![tidemq::lifecycle::RangeRequest {
+                partition,
+                offsets: tidemq_protocol::state::OffsetRange { start: 3, end: 4 },
+            }],
+            deadline(),
+        )
+        .await
+        .unwrap();
     assert!(
-        node.reclaim_local(partition, 4, deadline()).await.is_err(),
+        target
+            .reclaim_local(partition, 4, deadline())
+            .await
+            .is_err(),
         "Historical reclaim requires the target's own object checkpoint"
     );
     producer.close().await.unwrap();
     queue.close().await.unwrap();
     stream.close().await.unwrap();
     client.close().await.unwrap();
-    fixture.stop(1).await;
+    fixture.stop(3).await;
     fixture
         .configs
-        .get_mut(&1)
+        .get_mut(&3)
         .unwrap()
         .runtime
         .archive_interval_ms = 1000;
-    fixture.restart(1).await;
+    fixture.restart(3).await;
     let until = Instant::now() + Duration::from_secs(20);
     loop {
         if fixture
             .running
-            .get(&1)
+            .get(&3)
             .unwrap()
             .reclaim_local(partition, 4, until)
             .await
@@ -626,7 +629,7 @@ async fn transferred_cold_history_keeps_birth_object_keys_and_online_ack_state_a
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let client = fixture.client(1).await;
+    let client = fixture.client(5).await;
     let queue = client
         .new_queue_consumer(topic, "jobs")
         .prefetch_messages(1)
@@ -713,22 +716,29 @@ async fn transfer_retry(
 async fn an_independent_three_replica_target_snapshots_every_voter_before_source_retirement() {
     let mut fixture = Fixture::new(
         &[
-            (1, Role::Combined),
-            (2, Role::Combined),
-            (3, Role::Combined),
+            (1, Role::Metadata),
+            (2, Role::Metadata),
+            (3, Role::Metadata),
+            (11, Role::Storage),
+            (12, Role::Storage),
+            (13, Role::Storage),
+            (21, Role::Broker),
+            (22, Role::Broker),
+            (31, Role::Gateway),
             (4, Role::Storage),
             (5, Role::Storage),
             (6, Role::Storage),
         ],
         &[1, 2, 3],
-        &[1, 2, 3],
+        &[11, 12, 13],
     )
     .await;
     let bootstrap = fixture.directory.join("bootstrap.token");
     tokio::fs::write(&bootstrap, TOKEN).await.unwrap();
     private_file(bootstrap.clone()).await;
     for config in fixture.configs.values_mut() {
-        config.runtime.bootstrap_admin_token_file = Some(bootstrap.clone());
+        config.runtime.bootstrap_admin_token_file =
+            config.role.stores_metadata().then(|| bootstrap.clone());
         config.runtime.groups.push(GroupConfig {
             group_id: 3,
             voters: vec![4, 5, 6],
@@ -737,7 +747,7 @@ async fn an_independent_three_replica_target_snapshots_every_voter_before_source
     }
     fixture.start_all().await;
     let client = fixture
-        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(10))
+        .client_with_timeouts(31, Duration::from_secs(30), Duration::from_secs(10))
         .await;
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
@@ -800,7 +810,7 @@ async fn an_independent_three_replica_target_snapshots_every_voter_before_source
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(report.stage, tidemq::metadata::TransferStage::Retired);
-    assert_eq!(report.source_voters, BTreeSet::from([1, 2, 3]));
+    assert_eq!(report.source_voters, BTreeSet::from([11, 12, 13]));
     assert_eq!(report.checkpoint_voters, BTreeSet::from([4, 5, 6]));
     assert_eq!(
         report.checkpoints.keys().copied().collect::<BTreeSet<_>>(),
@@ -813,10 +823,10 @@ async fn an_independent_three_replica_target_snapshots_every_voter_before_source
             .all(|proof| proof.manifest_digest == report.manifest.as_ref().unwrap().digest)
     );
     queue.ack(&held).await.unwrap();
-    for node in 1..=3 {
+    for node in 11..=13 {
         fixture.stop(node).await;
     }
-    for node in 1..=3 {
+    for node in 11..=13 {
         let config = fixture.configs.get(&node).unwrap().clone();
         fixture
             .running
@@ -849,9 +859,10 @@ async fn an_independent_three_replica_target_snapshots_every_voter_before_source
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn online_stream_and_queue_keep_original_deliveries_across_authority_transfer_and_move_back()
 {
-    let mut fixture = dynamic_fixture().await;
+    let mut fixture = separated_transfer_topology().await;
+    fixture.start_all().await;
     let client = fixture
-        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .client_with_timeouts(5, Duration::from_secs(30), Duration::from_secs(5))
         .await;
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
@@ -952,7 +963,7 @@ async fn online_stream_and_queue_keep_original_deliveries_across_authority_trans
     client.close().await.unwrap();
     fixture.stop(1).await;
     fixture.restart(1).await;
-    let client = fixture.client(1).await;
+    let client = fixture.client(5).await;
     let producer = client.new_producer(topic).build().await.unwrap();
     let queue = client
         .new_queue_consumer(topic, "jobs")

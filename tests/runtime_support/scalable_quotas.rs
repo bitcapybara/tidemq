@@ -233,7 +233,18 @@ async fn application_client(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn connection_limits_are_shared_by_gateways_and_return_credit_after_close() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Gateway)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Gateway),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (31, Role::Broker),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
     fixture.start_all().await;
     let admin = fixture.client(1).await;
     let tenant = admin.admin().create_tenant("acme").await.unwrap();

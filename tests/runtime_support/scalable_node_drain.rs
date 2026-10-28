@@ -188,13 +188,19 @@ async fn new_topics_use_surviving_registered_brokers_after_the_bootstrap_broker_
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_broker_receives_existing_topic_ownership_and_drain_bypasses_balance_cooldown() {
     let mut fixture = metadata_membership::fixture_without_candidate(
-        &[(1, Role::Combined), (2, Role::Broker)],
-        &[1],
-        &[1],
+        &[
+            (1, Role::Broker),
+            (2, Role::Broker),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (41, Role::Gateway),
+        ],
+        &[11],
+        &[21],
         2,
     )
     .await;
-    let client = fixture.client(1).await;
+    let client = fixture.client(41).await;
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
         .admin()
@@ -317,7 +323,18 @@ async fn a_new_broker_receives_existing_topic_ownership_and_drain_bypasses_balan
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gateway_drain_proves_local_cleanup_and_retirement_rejects_the_original_identity() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Gateway)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Gateway),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (31, Role::Broker),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let connected = fixture.client(2).await;
@@ -386,9 +403,20 @@ async fn gateway_drain_proves_local_cleanup_and_retirement_rejects_the_original_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn draining_broker_hands_off_existing_ownership_before_reporting_clear_blockers() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Broker)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Broker),
+            (2, Role::Broker),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (41, Role::Gateway),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
     fixture.start_all().await;
-    let client = fixture.client(1).await;
+    let client = fixture.client(41).await;
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
         .admin()
@@ -409,7 +437,7 @@ async fn draining_broker_hands_off_existing_ownership_before_reporting_clear_blo
         .unwrap();
     fixture
         .running
-        .get(&1)
+        .get(&11)
         .unwrap()
         .takeover(partition, 2, route.epoch, route.generation, deadline())
         .await
@@ -470,7 +498,18 @@ async fn draining_broker_hands_off_existing_ownership_before_reporting_clear_blo
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lost_local_retirement_proof_survives_a_restart_without_reopening_business_admission() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Gateway)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Gateway),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (31, Role::Broker),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
     let internal = fixture.configs.get(&2).unwrap().runtime.internal_listen;
     let proxy = udp_proxy::Proxy::start([internal, internal]).await;
     for config in fixture.configs.values_mut() {
@@ -521,10 +560,24 @@ async fn lost_local_retirement_proof_survives_a_restart_without_reopening_busine
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn combined_node_retires_all_roles_and_rejects_retirement_through_its_own_gateway() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Combined)], &[1], &[1]).await;
+async fn separated_nodes_retire_each_role_and_reject_retirement_through_their_own_gateway() {
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Gateway),
+            (11, Role::Metadata),
+            (12, Role::Metadata),
+            (21, Role::Storage),
+            (22, Role::Storage),
+            (31, Role::Broker),
+            (32, Role::Broker),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
     for config in fixture.configs.values_mut() {
-        config.runtime.groups.first_mut().unwrap().standby = vec![2];
+        config.runtime.groups.first_mut().unwrap().standby = vec![22];
     }
     fixture.start_all().await;
     let ingress = fixture.client(1).await;
@@ -543,25 +596,39 @@ async fn combined_node_retires_all_roles_and_rejects_retirement_through_its_own_
         .message_id();
     let held = stream.receive().await.unwrap();
     assert_eq!(held.message_id(), first);
-    client.admin().replace_data_replica(2, 1, 2).await.unwrap();
-    client.admin().replace_metadata_replica(1, 2).await.unwrap();
-    client.admin().begin_node_drain(1).await.unwrap();
-    let until = deadline();
-    loop {
-        if client
-            .admin()
-            .node_drain_status(1)
-            .await
-            .unwrap()
-            .durable_state_drained()
-        {
-            break;
+    client
+        .admin()
+        .replace_data_replica(2, 21, 22)
+        .await
+        .unwrap();
+    client
+        .admin()
+        .replace_metadata_replica(11, 12)
+        .await
+        .unwrap();
+    for retiring in [11, 21, 31, 1] {
+        client.admin().begin_node_drain(retiring).await.unwrap();
+        let until = deadline();
+        loop {
+            if client
+                .admin()
+                .node_drain_status(retiring)
+                .await
+                .unwrap()
+                .durable_state_drained()
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "Separated node {retiring} retained a role blocker"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        assert!(
-            Instant::now() < until,
-            "Combined node retained a role blocker"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        if retiring != 1 {
+            assert!(client.admin().retire_node(retiring).await.unwrap().retired);
+            fixture.stop(retiring).await;
+        }
     }
     let rejected = ingress.admin().retire_node(1).await.unwrap_err();
     assert!(

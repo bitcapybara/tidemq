@@ -244,12 +244,9 @@ impl RuntimeConfig {
                 "runtime.internal_listen port must be nonzero",
             ),
             (
-                !config.role.serves_gateway() || self.internal_listen != config.listen,
-                "runtime.internal_listen must differ from listen for a gateway role",
-            ),
-            (
-                self.internal_listen != config.management_listen,
-                "runtime.internal_listen must differ from management_listen",
+                !config.role.serves_gateway()
+                    || !crate::config::listeners_conflict(self.internal_listen, config.listen),
+                "runtime.internal_listen and listen UDP listeners conflict for a gateway role",
             ),
         ] {
             if !valid {
@@ -259,6 +256,10 @@ impl RuntimeConfig {
         let mut ids = BTreeSet::new();
         for peer in &self.peers {
             for (valid, reason) in [
+                (
+                    peer.role != Role::Combined,
+                    "combined nodes cannot join a separated topology",
+                ),
                 (peer.node_id != 0, "node_id must be nonzero"),
                 (ids.insert(peer.node_id), "node_id is duplicated"),
                 (

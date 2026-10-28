@@ -27,6 +27,10 @@ use crate::{
 pub(super) const GROUP_CONTROL: u32 = 1_003;
 
 #[cfg(test)]
+#[path = "../../tests/runtime_support/consumer_control_semantic_local.rs"]
+mod local_tests;
+
+#[cfg(test)]
 mod frame_tests {
     use super::*;
     use tidemq_protocol::topic::{HashRange, STREAM_FENCE_COUNT, STREAM_FENCE_SHIFT};
@@ -150,6 +154,35 @@ struct Deleted {
     domain: Id,
 }
 
+enum ControlReply {
+    Applied,
+    Deleted(Deleted),
+    Progress(Progress),
+}
+
+impl Control {
+    fn validate_local_bound(&self) -> Result<()> {
+        if let Self::Install { grants, .. } = self {
+            let bytes = grants
+                .iter()
+                .try_fold(std::mem::size_of::<Self>(), |bytes, grant| {
+                    grant
+                        .lanes
+                        .len()
+                        .checked_mul(std::mem::size_of::<tidemq_protocol::topic::HashRange>())
+                        .and_then(|lanes| lanes.checked_add(std::mem::size_of::<MemberGrant>()))
+                        .and_then(|grant| bytes.checked_add(grant))
+                });
+            if bytes.is_none_or(|bytes| bytes > 65_536) {
+                return Err(Error::invalid(
+                    "Local consumer control exceeds its memory bound",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Service {
     pub(super) async fn delete_consumer_domain(
         &self,
@@ -161,31 +194,24 @@ impl Service {
             .consumer_deletion_permit(plan.subscription, plan.id, domain, deadline)
             .await?;
         let route = self.ensure_route(permit.route.partition, deadline).await?;
-        let target = self.leader(route.group_id, deadline).await?;
         let expected = Deleted {
             subscription: plan.subscription,
             deletion: plan.id,
             domain,
         };
-        let response = self
-            .rpc
-            .call(
-                target,
+        let reply = self
+            .consumer_control(
                 route.group_id,
-                Request::typed(
-                    GROUP_CONTROL,
-                    &Control::Delete {
-                        partition: route.partition,
-                        domain,
-                        subscription: plan.subscription,
-                        deletion: plan.id,
-                    },
-                )?,
+                Control::Delete {
+                    partition: route.partition,
+                    domain,
+                    subscription: plan.subscription,
+                    deletion: plan.id,
+                },
                 deadline,
             )
             .await?;
-        let reply: Deleted = wire::decode_binary(&response)?;
-        if reply != expected {
+        if !matches!(reply, ControlReply::Deleted(reply) if reply == expected) {
             return Err(Error::invalid(
                 "Data deletion result differs from its durable plan",
             ));
@@ -211,36 +237,30 @@ impl Service {
             .map_err(|source| Error::operation("read consumer birth domain", source))?
             .ok_or_else(super::metadata::not_found)?;
         let route = self.ensure_route(shard.partition, deadline).await?;
-        let target = self.leader(route.group_id, deadline).await?;
-        self.rpc
-            .call(
-                target,
-                route.group_id,
-                Request::typed(
-                    GROUP_CONTROL,
-                    &Control::Install {
-                        partition: shard.partition,
-                        shard: domain,
-                        subscription: row.id,
-                        model: row.members.model(),
-                        initial: row.members.initial_position(),
-                        version,
-                        grants,
-                        blocked: row.members.model() == SubscriptionKind::Stream
-                            && !shard.predecessors.is_empty(),
-                    },
-                )?,
-                deadline,
-            )
-            .await
-            .map_err(|error| match error {
-                Error::Rejected { failure }
-                    if failure.code == i32::from(ErrorCode::StaleGeneration) =>
-                {
-                    Error::unavailable()
-                }
-                error => error,
-            })?;
+        self.consumer_control(
+            route.group_id,
+            Control::Install {
+                partition: shard.partition,
+                shard: domain,
+                subscription: row.id,
+                model: row.members.model(),
+                initial: row.members.initial_position(),
+                version,
+                grants,
+                blocked: row.members.model() == SubscriptionKind::Stream
+                    && !shard.predecessors.is_empty(),
+            },
+            deadline,
+        )
+        .await
+        .map_err(|error| match error {
+            Error::Rejected { failure }
+                if failure.code == i32::from(ErrorCode::StaleGeneration) =>
+            {
+                Error::unavailable()
+            }
+            error => error,
+        })?;
         Ok(())
     }
 
@@ -308,6 +328,69 @@ impl Service {
         deadline: Instant,
     ) -> Result<Bytes> {
         let control: Control = wire::decode_binary(body)?;
+        match self.execute_group_control(group, control, deadline).await? {
+            ControlReply::Applied => wire::binary(&()),
+            ControlReply::Deleted(reply) => wire::binary(&reply),
+            ControlReply::Progress(reply) => wire::binary(&reply),
+        }
+    }
+
+    async fn consumer_control(
+        &self,
+        group: u64,
+        control: Control,
+        deadline: Instant,
+    ) -> Result<ControlReply> {
+        let target = self.leader(group, deadline).await?;
+        if self.rpc.is_local() {
+            use tracing::Instrument;
+            let operation = Id::new_v7().map_err(|source| {
+                Error::operation("allocate local consumer control identity", source)
+            })?;
+            return wire::within(
+                deadline,
+                Box::pin(
+                    self.execute_group_control(group, control, deadline)
+                        .instrument(
+                            tracing::info_span!(target: "tidemq_trace", "consumer_control_local",
+                    node_id = self.config.node_id, group_id = group, operation_id = %operation),
+                        ),
+                ),
+            )
+            .await?;
+        }
+        let bytes = self
+            .rpc
+            .call(
+                target,
+                group,
+                Request::typed(GROUP_CONTROL, &control)?,
+                deadline,
+            )
+            .await?;
+        match control {
+            Control::Delete { .. } => wire::decode_binary(&bytes).map(ControlReply::Deleted),
+            Control::Inspect { .. } => wire::decode_binary(&bytes).map(ControlReply::Progress),
+            _ => wire::decode_binary::<()>(&bytes).map(|()| ControlReply::Applied),
+        }
+    }
+
+    async fn execute_group_control(
+        &self,
+        group: u64,
+        control: Control,
+        deadline: Instant,
+    ) -> Result<ControlReply> {
+        if self.rpc.is_local() {
+            control.validate_local_bound()?;
+        }
+        let _admission = self.rpc.admit_local(
+            group,
+            crate::transport::StreamPurpose::Request,
+            65_536,
+            deadline,
+        )?;
+        wire::remaining(deadline)?;
         let partition = match &control {
             Control::Install { partition, .. }
             | Control::Renew { partition, .. }
@@ -356,11 +439,11 @@ impl Service {
                         "Data deletion did not return its durable tombstone",
                     ));
                 }
-                return wire::binary(&Deleted {
+                return Ok(ControlReply::Deleted(Deleted {
                     subscription,
                     deletion,
                     domain,
-                });
+                }));
             }
             Control::Inspect { subscription, .. } => {
                 let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
@@ -384,7 +467,7 @@ impl Service {
                         Error::operation("read durable predecessor progress", source)
                     })?
                     .ok_or_else(super::metadata::not_found)?;
-                return wire::binary(&progress);
+                return Ok(ControlReply::Progress(progress));
             }
             Control::OpenGate { subscription, .. } => {
                 self.group_commit(&route, GroupCommand::OpenGate { subscription }, deadline)
@@ -484,7 +567,7 @@ impl Service {
                 .await?;
             }
         }
-        wire::binary(&())
+        Ok(ControlReply::Applied)
     }
 
     // The complete creation context binds one data domain and its immutable start policy.
@@ -565,26 +648,20 @@ impl Service {
             .map_err(|source| Error::operation("read subscription protections", source))?;
         for shard in &plan.successors {
             let route = self.ensure_route(shard.partition, deadline).await?;
-            let target = self.leader(route.group_id, deadline).await?;
             for row in &rows {
-                self.rpc
-                    .call(
-                        target,
-                        route.group_id,
-                        Request::typed(
-                            GROUP_CONTROL,
-                            &Control::Ensure {
-                                partition: shard.partition,
-                                shard: shard.route.id,
-                                subscription: row.id,
-                                model: row.members.model(),
-                                initial: InitialPosition::EarliestAvailable,
-                                blocked: row.members.model() == SubscriptionKind::Stream,
-                            },
-                        )?,
-                        deadline,
-                    )
-                    .await?;
+                self.consumer_control(
+                    route.group_id,
+                    Control::Ensure {
+                        partition: shard.partition,
+                        shard: shard.route.id,
+                        subscription: row.id,
+                        model: row.members.model(),
+                        initial: InitialPosition::EarliestAvailable,
+                        blocked: row.members.model() == SubscriptionKind::Stream,
+                    },
+                    deadline,
+                )
+                .await?;
             }
         }
         Ok(())
@@ -647,21 +724,15 @@ impl Service {
                     .is_some_and(|end| progress.frontier >= end);
             }
             if complete {
-                let target = self.leader(shard.route.group, deadline).await?;
-                self.rpc
-                    .call(
-                        target,
-                        shard.route.group,
-                        Request::typed(
-                            GROUP_CONTROL,
-                            &Control::OpenGate {
-                                partition: shard.partition,
-                                subscription: row.id,
-                            },
-                        )?,
-                        deadline,
-                    )
-                    .await?;
+                self.consumer_control(
+                    shard.route.group,
+                    Control::OpenGate {
+                        partition: shard.partition,
+                        subscription: row.id,
+                    },
+                    deadline,
+                )
+                .await?;
                 self.record_open_consumer_gate(row.id, shard.route.id, deadline)
                     .await?;
             }
@@ -675,23 +746,22 @@ impl Service {
         subscription: Id,
         deadline: Instant,
     ) -> Result<Progress> {
-        let target = self.leader(shard.route.group, deadline).await?;
-        let bytes = self
-            .rpc
-            .call(
-                target,
+        let reply = self
+            .consumer_control(
                 shard.route.group,
-                Request::typed(
-                    GROUP_CONTROL,
-                    &Control::Inspect {
-                        partition: shard.partition,
-                        subscription,
-                    },
-                )?,
+                Control::Inspect {
+                    partition: shard.partition,
+                    subscription,
+                },
                 deadline,
             )
             .await?;
-        wire::decode_binary(&bytes)
+        match reply {
+            ControlReply::Progress(progress) => Ok(progress),
+            _ => Err(Error::invalid(
+                "Consumer progress returned an invalid reply",
+            )),
+        }
     }
 
     async fn record_open_consumer_gate(

@@ -171,7 +171,8 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
         .set(Arc::downgrade(&service))
         .map_err(|_| Error::invalid("Local service was installed twice"))?;
     startup.local_rpc = Some(supervise(
-        tokio::spawn(async move {
+        "local_dispatch",
+        spawn_required(stopped.clone(), None, async move {
             requests
                 .run(service.clone())
                 .await
@@ -182,7 +183,6 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
             .as_ref()
             .cloned()
             .ok_or_else(Error::unavailable)?,
-        stopped.clone(),
     ));
     let service = startup
         .service
@@ -209,25 +209,28 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
     let console_address = startup.console.as_ref().map(|console| console.address);
     let (management_address, management) =
         super::super::management::start(service.clone(), stopped.clone()).await?;
-    startup.tasks.push(management);
+    startup.tasks.push("management", management);
     let external_service = service.clone();
     let external_stopped = service.external_stop.subscribe();
-    startup.tasks.push(tokio::spawn(async move {
-        let result = crate::server::run(
-            external,
-            external_service.clone(),
-            dispatcher,
-            budget,
-            dispatch,
-            external_stopped,
-        )
-        .await
-        .map_err(Error::foundation);
-        external_service
-            .external_drained
-            .store(if result.is_ok() { 1 } else { 2 }, Ordering::Release);
-        result
-    }));
+    startup.tasks.push(
+        "external_quic",
+        spawn_required(
+            stopped.clone(),
+            Some(external_stopped.clone()),
+            async move {
+                crate::server::run(
+                    external,
+                    external_service.clone(),
+                    dispatcher,
+                    budget,
+                    dispatch,
+                    external_stopped,
+                )
+                .await
+                .map_err(Error::foundation)
+            },
+        ),
+    );
     start_business_workers(startup, &service, stopped.clone());
     for handle in startup
         .metadata
@@ -236,14 +239,12 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
         .map(LocalHandle::Metadata)
         .chain(startup.data.iter().cloned().map(LocalHandle::Data))
     {
-        startup
-            .tasks
-            .push(tokio::spawn(watch_group(handle, stopped.clone())));
+        startup.tasks.push(
+            "local_group",
+            spawn_required(stopped.clone(), None, watch_group(handle, stopped.clone())),
+        );
     }
-    let tasks = std::mem::take(&mut startup.tasks)
-        .into_iter()
-        .map(|task| supervise(task, service.clone(), stopped.clone()))
-        .collect();
+    let tasks = startup.tasks.supervised(&service);
     service.console_ready.store(true, Ordering::Release);
     startup.committed = true;
     Ok(RunningNode {
@@ -287,19 +288,41 @@ fn start_business_workers(
     service: &Arc<Service>,
     stopped: watch::Receiver<bool>,
 ) {
-    startup
-        .tasks
-        .push(tokio::spawn(service.clone().scale_topics(stopped.clone())));
-    startup
-        .tasks
-        .push(tokio::spawn(service.clone().maintain(stopped.clone())));
-    startup
-        .tasks
-        .push(tokio::spawn(service.clone().expire_pins(stopped.clone())));
+    if service.config.runtime.topic_scaling.is_some() {
+        startup.tasks.push(
+            "topic_scaling",
+            spawn_required(
+                stopped.clone(),
+                None,
+                service.clone().scale_topics(stopped.clone()),
+            ),
+        );
+    }
+    startup.tasks.push(
+        "data_maintenance",
+        spawn_required(
+            stopped.clone(),
+            None,
+            service.clone().maintain(stopped.clone()),
+        ),
+    );
+    if !service.objects.is_empty() {
+        startup.tasks.push(
+            "lifecycle_pins",
+            spawn_required(
+                stopped.clone(),
+                None,
+                service.clone().expire_pins(stopped.clone()),
+            ),
+        );
+    }
     let bootstrap = service.clone();
-    startup.tasks.push(tokio::spawn(
-        async move { bootstrap.reconcile(stopped).await },
-    ));
+    startup.tasks.push(
+        "metadata_reconcile",
+        spawn_required(stopped.clone(), None, async move {
+            bootstrap.reconcile(stopped).await
+        }),
+    );
 }
 
 enum LocalHandle {
@@ -339,7 +362,7 @@ struct LocalStartup {
     committed: bool,
     metadata: Option<GroupHandle<MetadataState>>,
     data: Vec<GroupHandle<DataApplication>>,
-    tasks: Vec<JoinHandle<Result<()>>>,
+    tasks: RequiredTasks,
     local_rpc: Option<JoinHandle<Result<()>>>,
     console: Option<crate::console::RunningConsole>,
     service: Option<Arc<Service>>,
@@ -355,12 +378,7 @@ impl LocalStartup {
         if let Some(console) = self.console.take() {
             let _ = tokio::time::timeout_at(deadline, console.shutdown_until(deadline)).await;
         }
-        for task in &self.tasks {
-            task.abort();
-        }
-        for mut task in std::mem::take(&mut self.tasks) {
-            let _ = tokio::time::timeout_at(deadline, &mut task).await;
-        }
+        let _ = self.tasks.abort_and_join(deadline).await;
         if let Some(service) = &self.service {
             service.rpc.begin_drain(deadline);
         }
@@ -388,9 +406,7 @@ impl Drop for LocalStartup {
                 let _ = service.external_stop.send(true);
                 let _ = service.shutdown_requested.send(true);
             }
-            for task in &self.tasks {
-                task.abort();
-            }
+            self.tasks.abort();
             if let Some(task) = &self.local_rpc {
                 task.abort();
             }

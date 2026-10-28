@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tidemq::config::{Config, ProcessConfig, Role};
 use tidemq::console::{ClusterConfig, ConsoleConfig, ConsoleRole, SessionConfig};
-use tidemq::runtime::{ObjectConfig, PeerConfig, RuntimeConfig, TopicScalingPolicy, WorkCapacity};
+use tidemq::runtime::{ObjectConfig, RuntimeConfig, TopicScalingPolicy, WorkCapacity};
 use tidemq_protocol::Id;
 use tokio::process::Command;
 
@@ -118,20 +118,14 @@ fn field_paths(value: &serde_json::Value) -> BTreeSet<String> {
 
 fn node_schema(role: Role) -> Config {
     let defaults = RuntimeConfig::default();
+    let configured: Config = toml::from_str(node_template(role)).unwrap();
     // No struct update: new optional runtime fields must be considered explicitly.
     let runtime = RuntimeConfig {
-        internal_listen: defaults.internal_listen,
-        metadata_group: defaults.metadata_group,
-        metadata_voters: defaults.metadata_voters,
-        groups: defaults.groups,
-        peers: vec![PeerConfig {
-            node_id: 1,
-            role,
-            zone: "local".into(),
-            internal_address: defaults.internal_listen,
-            server_name: "node-1.local".into(),
-            certificate_der: "certs/node-1.der".into(),
-        }],
+        internal_listen: configured.runtime.internal_listen,
+        metadata_group: configured.runtime.metadata_group,
+        metadata_voters: configured.runtime.metadata_voters,
+        groups: configured.runtime.groups,
+        peers: configured.runtime.peers,
         bootstrap_admin_token_file: Some("secrets/bootstrap.token".into()),
         bootstrap: defaults.bootstrap,
         objects: role.stores_data().then(|| ObjectConfig {
@@ -147,23 +141,22 @@ fn node_schema(role: Role) -> Config {
         archive_interval_ms: defaults.archive_interval_ms,
         topic_scaling: role.stores_metadata().then(TopicScalingPolicy::default),
     };
-    let defaults = Config::default();
     Config {
-        node_id: defaults.node_id,
-        cluster_id: defaults.cluster_id,
+        node_id: configured.node_id,
+        cluster_id: configured.cluster_id,
         role,
-        listen: defaults.listen,
-        management_listen: defaults.management_listen,
-        data_dir: defaults.data_dir,
-        replication_factor: defaults.replication_factor,
-        memory: defaults.memory,
-        protocol: defaults.protocol,
-        logging: defaults.logging,
-        tracing: defaults.tracing,
-        tls: defaults.tls,
+        listen: configured.listen,
+        management_listen: configured.management_listen,
+        data_dir: configured.data_dir,
+        replication_factor: configured.replication_factor,
+        memory: configured.memory,
+        protocol: configured.protocol,
+        logging: configured.logging,
+        tracing: configured.tracing,
+        tls: configured.tls,
         console: (role == Role::Combined).then(|| tidemq::console::EmbeddedConsoleConfig {
             observability: console_schema().observability,
-            ..defaults.console.unwrap()
+            ..configured.console.unwrap()
         }),
         runtime,
     }
@@ -434,34 +427,113 @@ async fn startup_commands_reject_invalid_runtime_and_unknown_fields() {
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
 
+async fn filesystem_snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(directory) = pending.pop() {
+        let mut entries = tokio::fs::read_dir(directory).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            let path = entry.path();
+            let contents = if entry.file_type().await.unwrap().is_dir() {
+                pending.push(path.clone());
+                None
+            } else {
+                Some(tokio::fs::read(&path).await.unwrap())
+            };
+            snapshot.insert(path.strip_prefix(root).unwrap().to_owned(), contents);
+        }
+    }
+    snapshot
+}
+
 #[tokio::test]
 async fn validation_does_not_bind_listeners_or_create_runtime_materials() {
     let root =
         std::env::temp_dir().join(format!("tidemq-pure-validation-{}", Id::new_v7().unwrap()));
     tokio::fs::create_dir(&root).await.unwrap();
-    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let text = node_template(Role::Combined).replace(
-        "127.0.0.1:8443",
-        &occupied.local_addr().unwrap().to_string(),
-    );
-    let path = root.join("config.toml");
-    tokio::fs::write(&path, text).await.unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_tidemq"))
-        .args(["validate-config", "--config", "config.toml"])
-        .current_dir(&root)
-        .output()
+    let data = root.join("existing-data");
+    tokio::fs::create_dir(&data).await.unwrap();
+    tokio::fs::write(data.join("manifest.bin"), b"Not a runtime manifest")
         .await
         .unwrap();
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let mut entries = tokio::fs::read_dir(&root).await.unwrap();
-    assert_eq!(
-        entries.next_entry().await.unwrap().unwrap().file_name(),
-        "config.toml"
-    );
-    assert!(entries.next_entry().await.unwrap().is_none());
+    let certificate = root.join("invalid-certificate.pem");
+    let key = root.join("invalid-private.key");
+    let session = root.join("invalid-session.key");
+    for file in [&certificate, &key, &session] {
+        tokio::fs::write(file, b"Invalid startup material")
+            .await
+            .unwrap();
+    }
+    let public = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let https = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let management = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut names: Vec<_> = NODE_ROLES.iter().map(|role| role.name()).collect();
+    names.push("console");
+    for name in names {
+        let mut config: ProcessConfig = toml::from_str(
+            &tokio::fs::read_to_string(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("config/{name}.toml")),
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        match &mut config {
+            ProcessConfig::Node(node) => {
+                node.data_dir = data.clone();
+                node.listen = public.local_addr().unwrap();
+                node.management_listen = management.local_addr().unwrap();
+                node.tls.certificate = certificate.clone();
+                node.tls.private_key = key.clone();
+                node.runtime.bootstrap_admin_token_file = Some(root.join("absent/bootstrap.token"));
+                if let Some(console) = &mut node.console {
+                    console.listen = https.local_addr().unwrap();
+                    console.static_dir = root.join("absent-web");
+                    console.session.key_file = session.clone();
+                    console.session.public_origin =
+                        format!("https://localhost:{}", console.listen.port());
+                } else {
+                    node.tls.trust_roots = certificate.clone();
+                }
+            }
+            ProcessConfig::Console(console) => {
+                console.listen = https.local_addr().unwrap();
+                console.management_listen = management.local_addr().unwrap();
+                console.static_dir = root.join("absent-web");
+                console.tls.certificate = certificate.clone();
+                console.tls.private_key = key.clone();
+                console.cluster.trust_roots = certificate.clone();
+                console.session.key_file = session.clone();
+                console.session.public_origin =
+                    format!("https://localhost:{}", console.listen.port());
+            }
+        }
+        let path = root.join(format!("{name}.toml"));
+        tokio::fs::write(&path, toml::to_string(&config).unwrap())
+            .await
+            .unwrap();
+        let before = filesystem_snapshot(&root).await;
+        let result = Command::new(env!("CARGO_BIN_EXE_tidemq"))
+            .args(["validate-config", "--config"])
+            .arg(&path)
+            .current_dir(&root)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&result.stdout).unwrap(),
+            serde_json::json!({"valid": true})
+        );
+        assert_eq!(
+            filesystem_snapshot(&root).await,
+            before,
+            "Validation changed {name} filesystem state"
+        );
+    }
     tokio::fs::remove_dir_all(root).await.unwrap();
 }

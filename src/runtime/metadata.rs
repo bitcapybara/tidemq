@@ -26,6 +26,10 @@ use super::{Error, Result};
 #[path = "../../tests/scalable_support/metadata_errors.rs"]
 mod error_tests;
 
+#[cfg(test)]
+#[path = "../../tests/runtime_support/ownership_cas.rs"]
+mod ownership_cas_tests;
+
 #[derive(Serialize, Deserialize)]
 pub(crate) struct OwnershipRequest {
     pub grant: Grant,
@@ -298,21 +302,13 @@ impl Service {
         deadline: Instant,
     ) -> Result<metadata::Outcome> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
-        self.require_leader(replica)?;
         let binding = command.management_binding.or(match &command.action {
             metadata::Action::Identity(request) => Some(request.request_digest),
             metadata::Action::Cluster(request) => Some(request.request_digest),
             _ => None,
         });
         let operation = command.operation_id;
-        #[cfg(test)]
-        super::console_operation::tests::before_metadata_write(&command).await;
-        let response = replica
-            .group
-            .commit(command, deadline)
-            .await
-            .map_err(wire::execution_error)?
-            .response;
+        let response = self.commit_metadata(command, deadline).await?;
         match response {
             Response::Applied { outcome, .. } => Ok(outcome),
             Response::Rejected { reason, .. } => {
@@ -334,6 +330,21 @@ impl Service {
                 Err(metadata_rejection(reason))
             }
         }
+    }
+
+    async fn commit_metadata(&self, command: Command, deadline: Instant) -> Result<Response> {
+        let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
+        self.require_leader(replica)?;
+        #[cfg(test)]
+        super::console_operation::tests::before_metadata_write(&command).await;
+        #[cfg(test)]
+        ownership_cas_tests::before_write(&command).await;
+        Ok(replica
+            .group
+            .commit(command, deadline)
+            .await
+            .map_err(wire::execution_error)?
+            .response)
     }
 
     pub async fn metadata_public(
@@ -451,20 +462,21 @@ impl Service {
             } else {
                 self.select_initial_broker(deadline).await?
             };
-            let command = Command::grant_ownership(
-                self.meta_revision().await?,
-                self.cluster,
-                partition,
-                owner,
-                diagnostic.epoch,
-                diagnostic.route_generation,
-            )
-            .map_err(metadata_rejection)?;
             let metadata::Outcome::OwnershipGranted(grant) = self
                 .ownership_meta_write(
                     crate::ownership::Transition::Grant,
                     diagnostic.epoch.saturating_add(1),
-                    command,
+                    || async {
+                        Command::grant_ownership(
+                            self.meta_revision().await?,
+                            self.cluster,
+                            partition,
+                            owner,
+                            diagnostic.epoch,
+                            diagnostic.route_generation,
+                        )
+                        .map_err(metadata_rejection)
+                    },
                     deadline,
                 )
                 .await?
@@ -506,84 +518,29 @@ impl Service {
             .raft_voters()
             .cloned()
             .ok_or_else(Error::unavailable)?;
-        let target = self.leader(grant.group_id, deadline).await?;
         if phase < crate::ownership::OwnershipPhase::Fenced {
-            let started = MonoInstant::now();
-            let bytes = self
-                .rpc
-                .call(
-                    target,
-                    grant.group_id,
-                    Request::control(
-                        wire::OWNERSHIP,
-                        &OwnershipRequest {
-                            grant: grant.clone(),
-                            recover: false,
-                        },
-                    )?,
-                    deadline,
-                )
-                .await?;
-            let proof: DataProof = wire::decode_json(&bytes)?;
-            let observed = self
-                .authority
-                .verified_fence(proof, &grant, &voters, started)?
-                .into_observe_command(self.meta_revision().await?)
-                .map_err(|source| Error::operation("validate fresh fence evidence", source))?;
-            self.meta_write(observed, deadline).await?;
-        }
-        if phase < crate::ownership::OwnershipPhase::Recovered {
-            let started = MonoInstant::now();
-            let bytes = self
-                .rpc
-                .call(
-                    target,
-                    grant.group_id,
-                    Request::control(
-                        wire::OWNERSHIP,
-                        &OwnershipRequest {
-                            grant: grant.clone(),
-                            recover: true,
-                        },
-                    )?,
-                    deadline,
-                )
-                .await?;
-            let proof: DataProof = wire::decode_json(&bytes)?;
-            let observed = self
-                .authority
-                .verified_recovery(proof, &grant, &voters, started)?
-                .into_observe_command(self.meta_revision().await?)
-                .map_err(|source| Error::operation("validate fresh recovery evidence", source))?;
-            self.meta_write(observed, deadline).await?;
-        }
-        let started = MonoInstant::now();
-        let bytes = self
-            .rpc
-            .call(
-                target,
-                grant.group_id,
-                Request::control(
-                    wire::OWNERSHIP,
-                    &OwnershipRequest {
-                        grant: grant.clone(),
-                        recover: true,
-                    },
-                )?,
+            self.remote_ownership_write(
+                &grant,
+                &voters,
+                crate::ownership::Transition::Fence,
                 deadline,
             )
             .await?;
-        let proof: DataProof = wire::decode_json(&bytes)?;
-        let activate = self
-            .authority
-            .verified_recovery(proof, &grant, &voters, started)?
-            .into_activate_command(self.meta_revision().await?)
-            .map_err(|source| Error::operation("validate route activation evidence", source))?;
+        }
+        if phase < crate::ownership::OwnershipPhase::Recovered {
+            self.remote_ownership_write(
+                &grant,
+                &voters,
+                crate::ownership::Transition::Recover,
+                deadline,
+            )
+            .await?;
+        }
         let metadata::Outcome::RouteActivated(route) = self
-            .ownership_meta_write(
+            .remote_ownership_write(
+                &grant,
+                &voters,
                 crate::ownership::Transition::Activate,
-                grant.epoch,
-                activate,
                 deadline,
             )
             .await?
@@ -594,6 +551,64 @@ impl Service {
         };
         self.routes.write().await.remove(&partition);
         Ok(route)
+    }
+
+    async fn remote_ownership_write(
+        &self,
+        grant: &Grant,
+        voters: &std::collections::BTreeSet<u64>,
+        stage: crate::ownership::Transition,
+        deadline: Instant,
+    ) -> Result<metadata::Outcome> {
+        self.ownership_meta_write(
+            stage,
+            grant.epoch,
+            || async {
+                let target = self.leader(grant.group_id, deadline).await?;
+                let started = MonoInstant::now();
+                let bytes = self
+                    .rpc
+                    .call(
+                        target,
+                        grant.group_id,
+                        Request::control(
+                            wire::OWNERSHIP,
+                            &OwnershipRequest {
+                                grant: grant.clone(),
+                                recover: stage != crate::ownership::Transition::Fence,
+                            },
+                        )?,
+                        deadline,
+                    )
+                    .await?;
+                let proof: DataProof = wire::decode_json(&bytes)?;
+                let revision = self.meta_revision().await?;
+                match stage {
+                    crate::ownership::Transition::Fence => self
+                        .authority
+                        .verified_fence(proof, grant, voters, started)?
+                        .into_observe_command(revision),
+                    crate::ownership::Transition::Recover => self
+                        .authority
+                        .verified_recovery(proof, grant, voters, started)?
+                        .into_observe_command(revision),
+                    crate::ownership::Transition::Activate => self
+                        .authority
+                        .verified_recovery(proof, grant, voters, started)?
+                        .into_activate_command(revision),
+                    crate::ownership::Transition::Grant => {
+                        return Err(Error::invalid(
+                            "A data proof cannot create an ownership grant",
+                        ));
+                    }
+                }
+                .map_err(|source| {
+                    Error::operation("validate fresh ownership stage evidence", source)
+                })
+            },
+            deadline,
+        )
+        .await
     }
 
     pub(crate) async fn execute_takeover(
@@ -655,20 +670,21 @@ impl Service {
         {
             return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, false));
         }
-        let command = Command::grant_ownership(
-            self.meta_revision().await?,
-            self.cluster,
-            partition,
-            target_owner,
-            expected_epoch,
-            expected_route_generation,
-        )
-        .map_err(metadata_rejection)?;
         let metadata::Outcome::OwnershipGranted(grant) = self
             .ownership_meta_write(
                 crate::ownership::Transition::Grant,
                 desired_epoch,
-                command,
+                || async {
+                    Command::grant_ownership(
+                        self.meta_revision().await?,
+                        self.cluster,
+                        partition,
+                        target_owner,
+                        expected_epoch,
+                        expected_route_generation,
+                    )
+                    .map_err(metadata_rejection)
+                },
                 deadline,
             )
             .await?
@@ -823,46 +839,48 @@ impl Service {
             if phase >= required {
                 continue;
             }
-            let verified = self.authority.verify_grant(&grant, deadline).await?;
-            let request = OwnershipRequest {
-                grant: grant.clone(),
-                recover,
-            };
-            let mut timer = super::telemetry::OwnershipTimer::new(
-                &self.ownership_metrics,
+            self.ownership_meta_write(
                 stage,
-                grant.operation_id,
                 grant.epoch,
-            );
-            let result = self
-                .apply_ownership_stage(grant.group_id, &request, verified, deadline)
-                .await;
-            timer.finish(&result);
-            result?;
-            let revision = self.meta_revision().await?;
-            let observed = if recover {
-                data.verify_recovery(&grant)
-                    .await
-                    .and_then(|proof| proof.into_observe_command(revision))
-            } else {
-                data.verify_fence(&grant)
-                    .await
-                    .and_then(|proof| proof.into_observe_command(revision))
-            }
-            .map_err(|source| Error::operation("verify local ownership evidence", source))?;
-            self.meta_write(observed, deadline).await?;
+                || async {
+                    let verified = self.authority.verify_grant(&grant, deadline).await?;
+                    let request = OwnershipRequest {
+                        grant: grant.clone(),
+                        recover,
+                    };
+                    self.apply_ownership_stage(grant.group_id, &request, verified, deadline)
+                        .await?;
+                    let revision = self.meta_revision().await?;
+                    if recover {
+                        data.verify_recovery(&grant)
+                            .await
+                            .and_then(|proof| proof.into_observe_command(revision))
+                    } else {
+                        data.verify_fence(&grant)
+                            .await
+                            .and_then(|proof| proof.into_observe_command(revision))
+                    }
+                    .map_err(|source| {
+                        Error::operation("verify fresh local ownership evidence", source)
+                    })
+                },
+                deadline,
+            )
+            .await?;
         }
-        let revision = self.meta_revision().await?;
-        let activated = data
-            .verify_recovery(&grant)
-            .await
-            .and_then(|proof| proof.into_activate_command(revision))
-            .map_err(|source| Error::operation("verify local route recovery", source))?;
         let metadata::Outcome::RouteActivated(route) = self
             .ownership_meta_write(
                 crate::ownership::Transition::Activate,
                 grant.epoch,
-                activated,
+                || async {
+                    let revision = self.meta_revision().await?;
+                    data.verify_recovery(&grant)
+                        .await
+                        .and_then(|proof| proof.into_activate_command(revision))
+                        .map_err(|source| {
+                            Error::operation("verify fresh local route recovery", source)
+                        })
+                },
                 deadline,
             )
             .await?
@@ -875,20 +893,51 @@ impl Service {
         Ok(route)
     }
 
-    async fn ownership_meta_write(
+    async fn ownership_meta_write<F, Fut>(
         &self,
         stage: crate::ownership::Transition,
         epoch: u64,
-        command: Command,
+        mut prepare: F,
         deadline: Instant,
-    ) -> Result<metadata::Outcome> {
-        let mut timer = super::telemetry::OwnershipTimer::new(
-            &self.ownership_metrics,
-            stage,
-            command.operation_id(),
-            epoch,
-        );
-        let result = self.meta_write(command, deadline).await;
+    ) -> Result<metadata::Outcome>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<Command>>,
+    {
+        if Instant::now() >= deadline {
+            return Err(Error::unavailable());
+        }
+        let mut command = wire::within(deadline, prepare()).await??;
+        let operation = command.operation_id();
+        let mut timer =
+            super::telemetry::OwnershipTimer::new(&self.ownership_metrics, stage, operation, epoch);
+        let result = async {
+            let mut retry = false;
+            loop {
+                if Instant::now() >= deadline {
+                    return Err(metadata_rejection(metadata::Rejection::RevisionConflict));
+                }
+                if retry {
+                    self.ownership_metrics.cas_retry(stage);
+                    tracing::debug!(event_code = "ownership_metadata_revision_retry", operation_id = %operation, ?stage, "Retrying a rejected ownership CAS with fresh evidence");
+                }
+                match self.commit_metadata(command, deadline).await? {
+                    Response::Applied { outcome, .. } => return Ok(outcome),
+                    Response::Rejected { reason: metadata::Rejection::RevisionConflict, .. } => {
+                        tokio::task::yield_now().await;
+                        if Instant::now() >= deadline {
+                            return Err(metadata_rejection(metadata::Rejection::RevisionConflict));
+                        }
+                        command = wire::within(deadline, prepare()).await??;
+                        if command.operation_id() != operation {
+                            return Err(Error::invalid("Ownership retry changed its original operation identity"));
+                        }
+                        retry = true;
+                    }
+                    Response::Rejected { reason, .. } => return Err(metadata_rejection(reason)),
+                }
+            }
+        }.await;
         timer.finish(&result);
         result
     }

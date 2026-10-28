@@ -117,6 +117,8 @@ context.cancellation_token() 可接入宿主取消。嵌套调用使用更早期
 | admin.pending_subscription_deletions() | PendingSubscriptionDeletion::retry().await 继续固定 UUID 的删除 |
 | admin.pending_operations() | PendingAdmin::retry().await 查询或继续原资源创建、凭据变更、Topic 拆分/合并/删除 |
 
+ACK / NACK 在所有权切换期间收到可重试的 `Fenced` / `Unavailable`，且服务端尚不能确定原结果时，SDK 保留原 `PendingAck` 和未完成批次，不将交付当作已退休或确认失败。检查错误携带的 pending 句柄或 `consumer.pending_acks().await?`，再对原句柄调用 `retry().await`；`progress()?` 可区分 pending、持久成功与明确拒绝。`outcome_unknown()` 为 false 也可能仍有可恢复的原 ACK，不能只凭此值丢弃句柄。重试沿用原 operation ID、交付身份和确认范围；已知的最终拒绝或权限拒绝不会重新发出，明确失效的交付仍按结构化错误处理，不能换 token、扩大累计确认范围或新建 consumer 冒充原确认。
+
 管理操作成功仍返回对应的强类型结果；未知结果返回携带原 PendingAdmin 的 Error::Administration。retry 返回 AdminReceipt，保持原操作、资源身份和布局条件。管理恢复共享 Client 的资源预留，最多保留 16 项，每项预留 128 KiB；其他逻辑实例占用预留时可能更早拒绝新操作。凭据原值只交付一次，回包丢失后只返回已提交的 Credential ID；收到 CredentialSecretUnavailable 后先撤销该凭据，再签发新值。
 
 快照包含仍在处理、未知或部分完成，以及完成但尚未领取的结果。查询不 drain、不自动重试、不替业务确认。未知结果保留原身份和范围，不能为了腾空间静默丢弃。恢复句柄与正文均计入预算；没有 SDK 持久 outbox，跨进程重启不会自动找回本地账本。网络恢复须在原 Client 关闭前完成。

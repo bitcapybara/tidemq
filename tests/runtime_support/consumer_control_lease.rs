@@ -308,7 +308,7 @@ async fn retired(prepared: &Prepared) -> bool {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retire_read_refreshes_a_near_expiry_control_lease_before_the_original_raft_write() {
+async fn retire_read_refreshes_a_near_expiry_control_lease_before_the_original_durable_write() {
     let prepared = prepared().await;
     assert!(!retired(&prepared).await);
     let probe = LeaseProbe::new(prepared.route.partition, Duration::from_millis(200));
@@ -376,7 +376,7 @@ async fn retire_read_reuses_a_fresh_control_lease_with_the_original_writer() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retirement_keeps_unknown_when_the_original_business_deadline_expires() {
+async fn retirement_rejects_without_submission_when_the_original_deadline_expires_before_handoff() {
     let prepared = prepared().await;
     let probe = LeaseProbe::new(prepared.route.partition, Duration::from_secs(2));
     let original_deadline = Instant::now() + Duration::from_millis(200);
@@ -396,9 +396,61 @@ async fn retirement_keeps_unknown_when_the_original_business_deadline_expires() 
     let error = pending.await.unwrap().unwrap_err();
     assert_eq!(
         error.failure().outcome,
-        i32::from(tidemq_protocol::common::Outcome::Unknown)
+        i32::from(tidemq_protocol::common::Outcome::Rejected)
     );
     assert!(lease.expires_at() > std::time::Instant::now());
+    assert!(!retired(&prepared).await);
+    assert!(matches!(
+        prepared
+            .service
+            .group_commit(&prepared.route, prepared.retire.clone(), deadline())
+            .await
+            .unwrap(),
+        GroupOutcome::ReadRetired
+    ));
+    assert!(retired(&prepared).await);
+    prepared.client.close().await.unwrap();
+    prepared.fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retirement_keeps_unknown_after_handoff_and_recovers_the_original_read() {
+    let prepared = prepared().await;
+    let directory = prepared.service.config.data_dir.join("group-2");
+    let hook = crate::execution::LocalExecutionHook::new(&directory, "before_durable", false);
+    let service = prepared.service.clone();
+    let route = prepared.route.clone();
+    let command = prepared.retire.clone();
+    let original_deadline = Instant::now() + Duration::from_millis(200);
+    let pending = tokio::spawn(async move {
+        service
+            .group_commit(&route, command, original_deadline)
+            .await
+    });
+    hook.entered().await;
+    let error = pending.await.unwrap().unwrap_err();
+    assert_eq!(
+        error.failure().outcome,
+        i32::from(tidemq_protocol::common::Outcome::Unknown)
+    );
+    assert!(!retired(&prepared).await);
+    hook.release();
+    tokio::time::timeout_at(deadline(), async {
+        while !retired(&prepared).await {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        prepared
+            .service
+            .group_commit(&prepared.route, prepared.retire.clone(), deadline())
+            .await
+            .unwrap(),
+        GroupOutcome::ReadRetired
+    ));
+    assert!(retired(&prepared).await);
     prepared.client.close().await.unwrap();
     prepared.fixture.close().await;
 }

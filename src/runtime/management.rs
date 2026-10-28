@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{RwLock, Semaphore, watch};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout_at};
 
 use crate::ownership::remote::Query;
@@ -31,8 +31,8 @@ struct CapacitySnapshot {
 
 pub(crate) async fn start(
     service: Arc<Service>,
-    mut shutdown: watch::Receiver<bool>,
-) -> Result<(std::net::SocketAddr, JoinHandle<Result<()>>)> {
+    shutdown: watch::Receiver<bool>,
+) -> Result<(std::net::SocketAddr, super::node::RequiredWorker)> {
     let listener = TcpListener::bind(service.config.management_listen)
         .await
         .map_err(|source| Error::operation("bind management listener", source))?;
@@ -44,35 +44,93 @@ pub(crate) async fn start(
         snapshot: RwLock::new(serde_json::json!({"status":"starting"})),
     });
     let slots = Arc::new(Semaphore::new(4));
-    let task = tokio::spawn(async move {
-        let mut connections = JoinSet::new();
-        let sampler_service = service.clone();
-        let sampler_health = health.clone();
-        let sampler_shutdown = shutdown.clone();
-        let sampler = tokio::spawn(sample(sampler_service, sampler_health, sampler_shutdown));
-        loop {
-            while connections.try_join_next().is_some() {}
-            tokio::select! {
-                _ = shutdown.changed() => break,
-                accepted = listener.accept() => {
-                    let (stream, peer) = accepted.map_err(|source| Error::operation("accept management connection", source))?;
-                    if !peer.ip().is_loopback() { continue; }
-                    let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
-                    let service = service.clone(); let health = health.clone();
-                    connections.spawn(async move { let _permit = permit; let _ = serve(stream, service, health).await; });
-                }
-            }
-        }
-        connections.abort_all();
-        while connections.join_next().await.is_some() {}
-        sampler.abort();
-        let _ = sampler.await;
-        Ok(())
-    });
+    let sampler = spawn_sampler(service.clone(), health.clone(), shutdown.clone());
+    let task = super::node::spawn_required(
+        shutdown.clone(),
+        None,
+        run(listener, service, health, slots, shutdown, sampler),
+    );
     Ok((address, task))
 }
 
+fn spawn_sampler(
+    service: Arc<Service>,
+    health: Arc<Health>,
+    shutdown: watch::Receiver<bool>,
+) -> super::node::RequiredWorker {
+    super::node::spawn_required(shutdown.clone(), None, async move {
+        sample(service, health, shutdown).await;
+        Ok(())
+    })
+}
+
+async fn run(
+    listener: TcpListener,
+    service: Arc<Service>,
+    health: Arc<Health>,
+    slots: Arc<Semaphore>,
+    mut shutdown: watch::Receiver<bool>,
+    sampler: super::node::RequiredWorker,
+) -> Result<()> {
+    let mut connections = JoinSet::new();
+    let sampler_abort = sampler.abort_handle();
+    let observed = super::node::observe_required("readiness_sampler", sampler, service.clone());
+    let mut observed = std::pin::pin!(observed);
+    let mut sampler_finished = false;
+    let result = loop {
+        while connections.try_join_next().is_some() {}
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break Ok(()),
+            completed = &mut observed => {
+                sampler_finished = true;
+                break sampler_result(&service, completed);
+            }
+            accepted = listener.accept() => {
+                let (stream, peer) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(source) => break Err(Error::operation("accept management connection", source)),
+                };
+                if !peer.ip().is_loopback() { continue; }
+                let Ok(permit) = slots.clone().try_acquire_owned() else { continue; };
+                let service = service.clone(); let health = health.clone();
+                connections.spawn(async move { let _permit = permit; let _ = serve(stream, service, health).await; });
+            }
+        }
+    };
+    health.ready.store(false, Ordering::Release);
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
+    let cleanup = if sampler_finished {
+        Ok(())
+    } else {
+        if result.is_err() {
+            service.process.fail("management");
+            sampler_abort.abort();
+        }
+        // The outer worker deadline also bounds this owned sampler drain.
+        sampler_result(&service, observed.await)
+    };
+    result.and(cleanup)
+}
+
+fn sampler_result(service: &Service, result: Result<super::node::ExitCause>) -> Result<()> {
+    match result {
+        Ok(super::node::ExitCause::ProcessShutdown) => Ok(()),
+        Ok(_) => {
+            service.process.fail("readiness_sampler");
+            Err(Error::invalid(
+                "Required readiness sampler exited unexpectedly",
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
 async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
     let sampler = crate::quota::memory::MemorySampler::default();
     let physical = super::physical::PhysicalSampler::new(service.config.data_dir.clone());
     let disk = crate::quota::disk::DiskSampler::new(service.config.data_dir.clone()).ok();
@@ -150,7 +208,21 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         if !service.data.is_empty() {
             ready &= capacity.is_some();
         }
-        for replica in service.data.values() {
+        for (group, replica) in &service.data {
+            if ready && replica.group.is_local() {
+                ready = match service.config.runtime.group(*group) {
+                    Ok(config) => {
+                        let expected =
+                            super::node::data_config(service.cluster, config, &service.config);
+                        replica
+                            .state
+                            .try_with_application(|state| state.config() == Some(&expected))
+                            .await
+                            .unwrap_or(false)
+                    }
+                    Err(_) => false,
+                };
+            }
             if ready && service.require_leader(replica).is_ok() {
                 ready = replica.group.ensure_read(deadline).await.is_ok();
             }
@@ -590,6 +662,424 @@ fn parse_request(bytes: &[u8]) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Role;
+    use crate::runtime::data::consumer_tests::fixture::{Fixture, deadline, http};
+
+    async fn fixture() -> Fixture {
+        let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+        fixture.start_all().await;
+        fixture
+    }
+
+    struct SamplerLifetime(Arc<AtomicBool>);
+
+    impl Drop for SamplerLifetime {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+
+    fn pending_sampler(
+        shutdown: watch::Receiver<bool>,
+    ) -> (super::super::node::RequiredWorker, Arc<AtomicBool>) {
+        let alive = Arc::new(AtomicBool::new(true));
+        let owner = SamplerLifetime(alive.clone());
+        let worker = super::super::node::spawn_required(shutdown, None, async move {
+            let _owner = owner;
+            std::future::pending::<Result<()>>().await
+        });
+        (worker, alive)
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum SamplerFault {
+        Returned,
+        Error,
+        Panic,
+        Abort,
+    }
+
+    async fn assert_completed_sampler_failure(fault: SamplerFault, stop_first: bool) {
+        let mut fixture = fixture().await;
+        let node = fixture.running.remove(&1).unwrap();
+        let service = node.service.clone();
+        let health = Arc::new(Health {
+            ready: AtomicBool::new(true),
+            snapshot: RwLock::new(Value::Null),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, shutdown) = watch::channel(false);
+        if stop_first {
+            stop.send(true).unwrap();
+        }
+        let sampler = super::super::node::spawn_required(shutdown.clone(), None, async move {
+            match fault {
+                SamplerFault::Returned => Ok(()),
+                SamplerFault::Error => Err(Error::invalid("Injected readiness sampler error")),
+                SamplerFault::Panic => panic!("Injected readiness sampler panic"),
+                SamplerFault::Abort => std::future::pending().await,
+            }
+        });
+        let completed = sampler.abort_handle();
+        if matches!(fault, SamplerFault::Abort) {
+            completed.abort();
+        }
+        timeout_at(deadline(), async {
+            while !completed.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(*shutdown.borrow(), stop_first);
+        stop.send(true).unwrap();
+        let result = run(
+            listener,
+            service.clone(),
+            health.clone(),
+            Arc::new(Semaphore::new(4)),
+            shutdown,
+            sampler,
+        )
+        .await;
+        let phase = service.process.phase();
+        let rebound = TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+        let node_result = node.shutdown().await;
+        fixture.close().await;
+        assert!(
+            result.is_err(),
+            "A late shutdown hid sampler fault {fault:?}"
+        );
+        assert!(!health.ready.load(Ordering::Acquire));
+        assert_eq!(phase, super::super::process::Phase::Failed);
+        assert!(node_result.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn completed_sampler_panic_must_not_be_hidden_by_late_shutdown() {
+        assert_completed_sampler_failure(SamplerFault::Panic, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn completed_sampler_error_return_and_abort_survive_late_shutdown() {
+        for fault in [
+            SamplerFault::Returned,
+            SamplerFault::Error,
+            SamplerFault::Abort,
+        ] {
+            assert_completed_sampler_failure(fault, false).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sampler_errors_panics_and_aborts_after_stop_remain_fatal() {
+        for fault in [
+            SamplerFault::Error,
+            SamplerFault::Panic,
+            SamplerFault::Abort,
+        ] {
+            assert_completed_sampler_failure(fault, true).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sampler_that_observes_stop_closes_cleanly_without_reclassification() {
+        let fixture = fixture().await;
+        let service = fixture.running.get(&1).unwrap().service.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, shutdown) = watch::channel(false);
+        let mut observed_stop = shutdown.clone();
+        let sampler = super::super::node::spawn_required(shutdown.clone(), None, async move {
+            observed_stop.changed().await.unwrap();
+            assert!(*observed_stop.borrow());
+            Ok(())
+        });
+        stop.send(true).unwrap();
+        let completed = sampler.abort_handle();
+        timeout_at(deadline(), async {
+            while !completed.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        run(
+            listener,
+            service.clone(),
+            Arc::new(Health {
+                ready: AtomicBool::new(true),
+                snapshot: RwLock::new(Value::Null),
+            }),
+            Arc::new(Semaphore::new(4)),
+            shutdown,
+            sampler,
+        )
+        .await
+        .unwrap();
+        assert_ne!(
+            service.process.phase(),
+            super::super::process::Phase::Failed
+        );
+        drop(TcpListener::bind(address).await.unwrap());
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sampler_started_with_stop_already_observed_closes_cleanly() {
+        let fixture = fixture().await;
+        let service = fixture.running.get(&1).unwrap().service.clone();
+        let (stop, shutdown) = watch::channel(true);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let health = Arc::new(Health {
+            ready: AtomicBool::new(true),
+            snapshot: RwLock::new(Value::Null),
+        });
+        let sampler = spawn_sampler(service.clone(), health.clone(), shutdown.clone());
+        let worker = super::super::node::spawn_required(
+            shutdown.clone(),
+            None,
+            run(
+                listener,
+                service.clone(),
+                health,
+                Arc::new(Semaphore::new(4)),
+                shutdown,
+                sampler,
+            ),
+        );
+        let result =
+            super::super::node::observe_required("management_probe", worker, service.clone()).await;
+        assert_eq!(
+            result.unwrap(),
+            super::super::node::ExitCause::ProcessShutdown
+        );
+        assert_ne!(
+            service.process.phase(),
+            super::super::process::Phase::Failed
+        );
+        drop(stop);
+        drop(TcpListener::bind(address).await.unwrap());
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn readiness_sampler_panic_and_unexpected_exit_fail_the_live_process() {
+        for panic in [false, true] {
+            let mut fixture = fixture().await;
+            let node = fixture.running.get(&1).unwrap();
+            let service = node.service.clone();
+            let management = node.management_address;
+            let health = Arc::new(Health {
+                ready: AtomicBool::new(true),
+                snapshot: RwLock::new(Value::Null),
+            });
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (_stop, shutdown) = watch::channel(false);
+            let (release, released) = tokio::sync::oneshot::channel();
+            let sampler = super::super::node::spawn_required(shutdown.clone(), None, async move {
+                released.await.unwrap();
+                assert!(!panic, "Injected readiness sampler panic");
+                Ok(())
+            });
+            let task = tokio::spawn(run(
+                listener,
+                service.clone(),
+                health.clone(),
+                Arc::new(Semaphore::new(4)),
+                shutdown,
+                sampler,
+            ));
+            assert!(http(address, "/readyz").await.starts_with("HTTP/1.1 200"));
+            release.send(()).unwrap();
+            assert!(
+                timeout_at(deadline(), task)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .is_err()
+            );
+            assert!(!health.ready.load(Ordering::Acquire));
+            assert_eq!(
+                service.process.phase(),
+                super::super::process::Phase::Failed
+            );
+            assert!(
+                http(management, "/readyz")
+                    .await
+                    .starts_with("HTTP/1.1 503")
+            );
+            let rebound = TcpListener::bind(address).await.unwrap();
+            drop(rebound);
+            let node = fixture.running.remove(&1).unwrap();
+            assert!(node.shutdown().await.is_err());
+            fixture.close().await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelling_management_aborts_its_owned_sampler_and_releases_the_listener() {
+        let fixture = fixture().await;
+        let service = fixture.running.get(&1).unwrap().service.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let (sampler, alive) = pending_sampler(shutdown.clone());
+        let task = tokio::spawn(run(
+            listener,
+            service,
+            Arc::new(Health {
+                ready: AtomicBool::new(true),
+                snapshot: RwLock::new(Value::Null),
+            }),
+            Arc::new(Semaphore::new(4)),
+            shutdown,
+            sampler,
+        ));
+        assert!(http(address, "/readyz").await.starts_with("HTTP/1.1 200"));
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        timeout_at(deadline(), async {
+            while alive.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let rebound = TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dropping_unpolled_management_cancels_sampler_and_releases_listener() {
+        let fixture = fixture().await;
+        let service = fixture.running.get(&1).unwrap().service.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_stop, shutdown) = watch::channel(false);
+        let (sampler, alive) = pending_sampler(shutdown.clone());
+        let pending = run(
+            listener,
+            service,
+            Arc::new(Health {
+                ready: AtomicBool::new(true),
+                snapshot: RwLock::new(Value::Null),
+            }),
+            Arc::new(Semaphore::new(4)),
+            shutdown,
+            sampler,
+        );
+        drop(pending);
+        timeout_at(deadline(), async {
+            while alive.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(TcpListener::bind(address).await.unwrap());
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn caller_deadline_bounds_sampler_drain_without_another_time_budget() {
+        let fixture = fixture().await;
+        let service = fixture.running.get(&1).unwrap().service.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stop, shutdown) = watch::channel(false);
+        let (sampler, alive) = pending_sampler(shutdown.clone());
+        let worker = super::super::node::spawn_required(
+            shutdown.clone(),
+            None,
+            run(
+                listener,
+                service.clone(),
+                Arc::new(Health {
+                    ready: AtomicBool::new(true),
+                    snapshot: RwLock::new(Value::Null),
+                }),
+                Arc::new(Semaphore::new(4)),
+                shutdown,
+                sampler,
+            ),
+        );
+        let observed = super::super::node::observe_required("management_probe", worker, service);
+        assert!(http(address, "/readyz").await.starts_with("HTTP/1.1 200"));
+        stop.send(true).unwrap();
+        let until = Instant::now() + Duration::from_millis(100);
+        assert!(timeout_at(until, observed).await.is_err());
+        timeout_at(deadline(), async {
+            while alive.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(TcpListener::bind(address).await.unwrap());
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn combined_stays_recovering_until_its_data_initialization_is_applied() {
+        let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+        let config = fixture.configs.get(&1).unwrap().clone();
+        let directory = config.data_dir.join("group-2");
+        let hook = crate::execution::LocalExecutionHook::new(&directory, "before_durable", false);
+        let node = crate::runtime::RunningNode::start(config).await.unwrap();
+        let service = node.service.clone();
+        fixture.running.insert(1, node);
+        hook.entered().await;
+        timeout_at(deadline(), async {
+            while !service.auth_ready(deadline()).await {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let previous = service.runtime_metrics.0.lock().unwrap().sampled_at_ms;
+        timeout_at(deadline(), async {
+            loop {
+                let observed = service.runtime_metrics.0.lock().unwrap().sampled_at_ms;
+                if observed.is_some() && observed != previous {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let node = fixture.running.get(&1).unwrap();
+        assert_eq!(
+            service.process.phase(),
+            super::super::process::Phase::Recovering
+        );
+        assert!(
+            http(node.management_address, "/readyz")
+                .await
+                .starts_with("HTTP/1.1 503")
+        );
+        assert!(
+            service
+                .data
+                .get(&2)
+                .unwrap()
+                .state
+                .try_with_application(|state| state.config().is_none())
+                .await
+                .unwrap()
+        );
+        hook.release();
+        fixture.wait_ready().await;
+        assert_eq!(service.process.phase(), super::super::process::Phase::Ready);
+        fixture.close().await;
+    }
+
     #[test]
     fn ownership_path_errors_retain_the_invalid_component() {
         let topic = "f098986a-ecf4-4b23-b9ca-1475d2c51d75";

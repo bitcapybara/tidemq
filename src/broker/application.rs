@@ -21,7 +21,7 @@ mod authority_data;
 mod group_watch;
 #[path = "groups.rs"]
 mod groups;
-pub(crate) use group_watch::{WatchHub, WatchIncarnation, WatchKey, WatchSample, WatchSignal};
+pub(crate) use group_watch::{WatchHub, WatchIncarnation, WatchKey, WatchSample, apply_committed};
 #[path = "load.rs"]
 mod load;
 pub use load::{ShardLoad, ShardLoadReport};
