@@ -157,13 +157,15 @@ impl Service {
         let leader = self.leader(group, deadline).await?;
         if leader == self.config.node_id {
             use tracing::Instrument;
-            return self
-                .execute_retention_control(self.config.node_id, request, deadline)
-                .instrument(
-                    tracing::info_span!(target: "tidemq_trace", "retention_control_typed",
+            return wire::within(
+                deadline,
+                self.execute_retention_control(self.config.node_id, request, deadline)
+                    .instrument(
+                        tracing::info_span!(target: "tidemq_trace", "retention_control_typed",
                     node_id = self.config.node_id, group_id = group),
-                )
-                .await;
+                    ),
+            )
+            .await?;
         }
         let bytes = self
             .rpc

@@ -347,13 +347,15 @@ impl Service {
             let operation = Id::new_v7().map_err(|source| {
                 Error::operation("allocate local consumer control identity", source)
             })?;
-            return self
-                .execute_group_control(group, control, deadline)
-                .instrument(
-                    tracing::info_span!(target: "tidemq_trace", "consumer_control_local",
+            return wire::within(
+                deadline,
+                self.execute_group_control(group, control, deadline)
+                    .instrument(
+                        tracing::info_span!(target: "tidemq_trace", "consumer_control_local",
                     node_id = self.config.node_id, group_id = group, operation_id = %operation),
-                )
-                .await;
+                    ),
+            )
+            .await?;
         }
         let bytes = self
             .rpc

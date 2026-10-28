@@ -59,12 +59,14 @@ impl Service {
         let node = self.leader(group, deadline).await?;
         let reply = if self.rpc.is_local() {
             use tracing::Instrument;
-            self.read_shard_loads(group, request, deadline)
-                .instrument(
+            wire::within(
+                deadline,
+                self.read_shard_loads(group, request, deadline).instrument(
                     tracing::info_span!(target: "tidemq_trace", "shard_load_local",
                     node_id = self.config.node_id, group_id = group),
-                )
-                .await?
+                ),
+            )
+            .await??
         } else {
             let bytes = self
                 .rpc

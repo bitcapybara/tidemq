@@ -393,12 +393,14 @@ impl Service {
             .await?;
         let reply = if self.rpc.is_local() {
             use tracing::Instrument;
-            self.execute_auth_query(query.clone(), deadline)
-                .instrument(
+            wire::within(
+                deadline,
+                self.execute_auth_query(query.clone(), deadline).instrument(
                     tracing::info_span!(target: "tidemq_trace", "auth_query_local",
                     node_id = self.config.node_id, group_id = self.config.runtime.metadata_group),
-                )
-                .await?
+                ),
+            )
+            .await??
         } else {
             let bytes = self
                 .rpc
