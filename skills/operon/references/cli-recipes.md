@@ -80,6 +80,8 @@ operon plan apply '<same-planRef>' --confirm '<confirmationToken-if-required>' -
 
 无需确认的计划省略 `--confirm`。预览中实测有效期为 5 分钟，以当前计划的 `expiresAt` 为准。若 create 结果不确定，按主 skill 的同计划恢复流程处理，不重建整批数据。
 
+CLI 1.2.0 的 `plan apply` 不接受 `--profile`；在任务预览命令中选择 profile，然后原样使用返回的 `planRef`。不要给所有子命令统一追加相同选项。本次把 `--profile` 传给 `plan apply` 时，CLI 在本地返回 `invalid-request / unknown-flag`；修正选项后沿用同一个计划应用，并用原 profile 的 live 查询核验。
+
 ## 更新已有 File Task 的最新进展
 
 `target` 中的 locator 来自实际读回，不自行拼写。把下列内容保存为 `update.json`：
