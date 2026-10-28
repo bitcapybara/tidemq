@@ -393,12 +393,13 @@ impl Service {
             .await?;
         let reply = if self.rpc.is_local() {
             use tracing::Instrument;
+            // Keep the timed handler out of the enclosing business future's stack layout.
             wire::within(
                 deadline,
-                self.execute_auth_query(query.clone(), deadline).instrument(
+                Box::pin(self.execute_auth_query(query.clone(), deadline).instrument(
                     tracing::info_span!(target: "tidemq_trace", "auth_query_local",
                     node_id = self.config.node_id, group_id = self.config.runtime.metadata_group),
-                ),
+                )),
             )
             .await??
         } else {

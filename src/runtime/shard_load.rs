@@ -61,10 +61,10 @@ impl Service {
             use tracing::Instrument;
             wire::within(
                 deadline,
-                self.read_shard_loads(group, request, deadline).instrument(
+                Box::pin(self.read_shard_loads(group, request, deadline).instrument(
                     tracing::info_span!(target: "tidemq_trace", "shard_load_local",
                     node_id = self.config.node_id, group_id = group),
-                ),
+                )),
             )
             .await??
         } else {
