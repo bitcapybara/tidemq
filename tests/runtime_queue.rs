@@ -227,7 +227,8 @@ async fn logical_consume(
         .await;
         assert!(
             Instant::now() < until,
-            "The original consumer did not recover every identity: {result:?}"
+            "The original consumer did not recover every identity: {result:?}; expected={expected:?}; confirmed={confirmed:?}; diagnostics={:?}",
+            consumer.diagnostics()
         );
         let message = match result {
             Ok(message) => message,
