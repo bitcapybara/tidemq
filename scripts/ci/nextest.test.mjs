@@ -7,6 +7,32 @@ import test from 'node:test';
 
 const script = new URL('./nextest.sh', import.meta.url).pathname;
 
+test('runner options and positional or emulated filters keep their original semantics', t => {
+  const f = fixture(t);
+  const args = ['--lib', '--profile', 'ci', '-E', 'test(a b)', '--run-ignored', 'only',
+    '--test-threads', '2', '--retries', '0', '--no-fail-fast', 'substring', '--', '--skip', 'skip-me'];
+  const discovery = ['--lib', '--profile', 'ci', '-E', 'test(a b)', '--run-ignored', 'only', 'substring', '--', '--skip', 'skip-me'];
+  const execution = ['--profile', 'ci', '-E', 'test(a b)', '--run-ignored', 'only',
+    '--test-threads', '2', '--retries', '0', '--no-fail-fast', 'substring', '--', '--skip', 'skip-me'];
+  const result = spawnSync('bash', [script, ...args], {cwd: f.root,
+    env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)}, encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls(), create = calls.find(a => a.includes('create'));
+  assert.deepEqual(calls.find(a => a.includes('--no-run')), ['cargo', 'nextest', 'run', '--no-run', ...args]);
+  assert.deepEqual(calls.find(a => a[0] === 'cargo' && a.includes('list')), ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', ...discovery]);
+  assert.deepEqual(create.slice(-execution.length), execution);
+});
+
+test('unsupported or incomplete isolated arguments fail before build and Docker', t => {
+  for (const args of [['--unsupported'], ['--target', 'other'], ['--features'], ['--filterset'], ['--test-threads']]) {
+    const f = fixture(t), result = spawnSync('bash', [script, ...args], {cwd: f.root,
+      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)}, encoding: 'utf8'});
+    assert.equal(result.status, 2, result.stderr);
+    assert.deepEqual(f.calls(), []);
+  }
+});
+
+
 test('symlink mount roots are rejected before any Docker command', t => {
   const f = fixture(t), redirect = path.join(f.root, 'redirect');
   fs.symlinkSync(f.env.TMPDIR, redirect);
@@ -26,16 +52,22 @@ test('all five lane selections preserve build and execution arguments', t => {
     ['-p', 'tidemq', '--lib', '--test', 'runtime_queue', '--test', 'runtime_consumer_reads', '--test', 'runtime_consumer_close', '--test', 'runtime_reclamation', '--test', 'runtime_group_watch', '--test', 'sdk_consumer_long_poll', '--locked', '--features', 'tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen,test-hooks', '--profile', 'ci'],
     ['-p', 'tidemq', '--all-targets', '--locked', '--features', 'tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen,test-hooks', '--profile', 'ci', '--run-ignored', 'only', '-E', 'kind(test)'],
   ];
-  for (const args of selections) {
+  const executions = [
+    ['--profile', 'ci'],
+    ['--profile', 'ci'],
+    ['--profile', 'ci', '-E', 'kind(test)'],
+    ['--profile', 'ci'],
+    ['--profile', 'ci', '--run-ignored', 'only', '-E', 'kind(test)'],
+  ];
+  for (const [index, args] of selections.entries()) {
     const f = fixture(t), env = {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)};
     const result = spawnSync('bash', [script, ...args], {cwd: f.root, env, encoding: 'utf8'});
     assert.equal(result.status, 0, result.stderr);
     const calls = f.calls(), create = calls.find(a => a.includes('create'));
     assert.deepEqual(calls.find(a => a.includes('--no-run')), ['cargo', 'nextest', 'run', '--no-run', ...args]);
     assert.deepEqual(calls.find(a => a[0] === 'cargo' && a.includes('list')), ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', ...args]);
-    assert.deepEqual(create.slice(-args.length), args);
     const run = create.slice(create.indexOf('/srv/tidemq/tools/cargo-nextest'));
-    assert.deepEqual(run, ['/srv/tidemq/tools/cargo-nextest', 'nextest', 'run', '--binaries-metadata', run[4], '--cargo-metadata', run[6], ...args]);
+    assert.deepEqual(run, ['/srv/tidemq/tools/cargo-nextest', 'nextest', 'run', '--binaries-metadata', run[4], '--cargo-metadata', run[6], ...executions[index]]);
     assert(calls.slice(calls.indexOf(create) + 1).every(a => a[0] !== 'cargo'), 'The execution phase cannot invoke Cargo');
     for (const directory of [f.root, env.CARGO_TARGET_DIR, env.TMPDIR]) assert(create.includes('type=bind,src=' + directory + ',dst=' + directory));
   }
@@ -87,6 +119,7 @@ function fixture(t) {
     '#!/usr/bin/env node',
     'const fs=require("node:fs"),a=process.argv.slice(2),file=process.env.SIGNAL_FILE;',
     'fs.appendFileSync(process.env.TRACE,JSON.stringify(["docker",...a])+"\\n");',
+    'if(a.includes("start")){const c=fs.readFileSync(process.env.TRACE,"utf8").trim().split("\\n").map(JSON.parse).find(v=>v.includes("create"));const r=c.slice(c.indexOf("/srv/tidemq/tools/cargo-nextest")+3);const build=new Set(["--workspace","--lib","--bins","--examples","--all-targets","--locked","--features","-F","--package","-p","--test"]);if(r.includes("--binaries-metadata")&&r.some(v=>build.has(v.split("=")[0])))process.exit(2);}',
     'if(a.includes("info"))console.log("systemd 2");',
     'else if(a.includes("image"))console.log(process.env.TIDEMQ_NEXTEST_IMAGE);',
     'else if(a.includes("create"))console.log("a".repeat(64));',
@@ -121,7 +154,7 @@ test('configured execution builds first and reuses metadata in a fresh bounded c
   assert.deepEqual(calls[build], ['cargo', 'nextest', 'run', '--no-run', ...args]);
   const command = calls[create];
   for (const value of ['6442450944', '4', '1001:1001', '--read-only', 'system.slice', '--binaries-metadata', '--cargo-metadata', 'LLVM_PROFILE_FILE']) assert(command.includes(value), value);
-  assert.deepEqual(command.slice(-args.length), args);
+  assert.deepEqual(command.slice(-4), ['--profile', 'ci', '-E', 'kind(test)']);
   assert(command.includes(image));
   assert(!command.some(a => /must-not-leak|GITHUB_TOKEN|\/state|docker\.sock.*dst|\.credentials/.test(a)));
   assert(!result.stdout.includes('must-not-leak') && !result.stderr.includes('must-not-leak'));
