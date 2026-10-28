@@ -13,6 +13,9 @@ mod tests;
 #[cfg(test)]
 mod tracing_tests;
 
+#[cfg(test)]
+pub(crate) use tests::HookGuard as LocalExecutionHook;
+
 pub use error::{Error, Result};
 pub use group::{GroupHandle, GroupState};
 pub use local::{LocalGroup, LocalHealth, LocalStatistics};

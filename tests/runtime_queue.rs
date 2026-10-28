@@ -622,12 +622,14 @@ async fn stable_udp_endpoint_recovers_original_sdk_after_gateway_crash_with_netw
     static BODY: [u8; 32 * 1024] = [b'p'; 32 * 1024];
     let mut fixture = Fixture::new(
         &[
-            (1, Role::Combined),
+            (1, Role::Metadata),
+            (21, Role::Storage),
+            (31, Role::Broker),
             (41, Role::Gateway),
             (42, Role::Gateway),
         ],
         &[1],
-        &[1],
+        &[21],
     )
     .await;
     fixture
@@ -885,7 +887,7 @@ async fn run_runtime_s3(nodes: &[(u64, Role)], metadata: &[u64], storage: &[u64]
         for config in fixture.configs.values_mut() {
             config.runtime.groups.push(GroupConfig {
                 group_id: 3,
-                voters: storage.to_vec(),
+                voters: Vec::new(),
                 standby: Vec::new(),
             });
         }

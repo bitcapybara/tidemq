@@ -66,7 +66,9 @@ fn server_configuration_reports_identity_memory_and_logging_fields() {
         ("management_listen", |c| {
             c.management_listen = "0.0.0.0:9419".parse().unwrap()
         }),
-        ("listen", |c| c.listen = c.management_listen),
+        ("console.listen", |c| {
+            c.console.as_mut().unwrap().listen = c.management_listen
+        }),
         ("control_reserved_bytes", |c| {
             c.memory.control_reserved_bytes = 1
         }),

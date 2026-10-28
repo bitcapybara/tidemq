@@ -258,6 +258,7 @@ impl Dispatcher {
 #[derive(Clone)]
 pub(crate) struct InProcess {
     dispatcher: Arc<Dispatcher>,
+    readonly: mpsc::Sender<ReadOnlyJob>,
     stop: watch::Sender<Option<Instant>>,
     finished: watch::Receiver<bool>,
 }
@@ -266,6 +267,7 @@ pub(crate) struct LocalRequests {
     core: mpsc::Receiver<Job>,
     ack: mpsc::Receiver<Job>,
     data: mpsc::Receiver<Job>,
+    readonly: mpsc::Receiver<ReadOnlyJob>,
     stop: watch::Receiver<Option<Instant>>,
     finished: watch::Sender<bool>,
     dispatcher: Arc<Dispatcher>,
@@ -273,6 +275,19 @@ pub(crate) struct LocalRequests {
 
 pub(crate) struct LocalResponse {
     response: mpsc::Receiver<Reply>,
+    deadline: Instant,
+}
+
+struct ReadOnlyJob(Pin<Box<dyn Future<Output = ()> + Send>>);
+
+struct ReadOnlyReply<T> {
+    value: T,
+    _memory: MemoryPermit,
+    _slot: OwnedSemaphorePermit,
+}
+
+pub(crate) struct LocalReadOnlyResponse<T> {
+    response: mpsc::Receiver<ReadOnlyReply<T>>,
     deadline: Instant,
 }
 
@@ -286,6 +301,7 @@ impl InProcess {
         let (core, core_rx) = ClassQueue::new(config.core_handlers);
         let (ack, ack_rx) = ClassQueue::new(config.ack_handlers);
         let (data, data_rx) = ClassQueue::new(config.data_handlers);
+        let (readonly, readonly_rx) = mpsc::channel(config.data_handlers);
         let maximum_frame = [
             TrafficClass::Control,
             TrafficClass::Produce,
@@ -312,6 +328,7 @@ impl InProcess {
         Ok((
             Self {
                 dispatcher: dispatcher.clone(),
+                readonly,
                 stop,
                 finished: completion,
             },
@@ -319,11 +336,72 @@ impl InProcess {
                 core: core_rx,
                 ack: ack_rx,
                 data: data_rx,
+                readonly: readonly_rx,
                 stop: stopped,
                 finished,
                 dispatcher,
             },
         ))
+    }
+
+    /// Read-only semantic work shares ordinary slots and memory without a wire envelope.
+    pub(crate) async fn submit_readonly<T: Send + 'static>(
+        &self,
+        bytes: u32,
+        deadline: Instant,
+        work: impl Future<Output = T> + Send + 'static,
+    ) -> crate::Result<LocalReadOnlyResponse<T>> {
+        if self.stop.borrow().is_some()
+            || Instant::now() >= deadline
+            || !(1..=65_536).contains(&bytes)
+        {
+            return Err(crate::Error::Configuration {
+                reason: "local read-only work is stopped, expired or exceeds its byte bound",
+            });
+        }
+        let slot = self
+            .dispatcher
+            .data
+            .slots
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| crate::Error::Configuration {
+                reason: "local read-only handler slots are exhausted",
+            })?;
+        let memory = self
+            .dispatcher
+            .budget
+            .try_reserve(TrafficClass::Control, bytes)
+            .map_err(|source| crate::Error::LocalMemory { source })?;
+        let (reply, response) = mpsc::channel(1);
+        let health = self.dispatcher.health.clone();
+        let job = ReadOnlyJob(Box::pin(async move {
+            if reply.is_closed() || Instant::now() >= deadline {
+                return;
+            }
+            health.active_handlers.inc();
+            let _active = HandlerGauge(health.active_handlers.clone());
+            // No mutation is handed off by this entry; cancellation can release the read.
+            let result = tokio::select! {
+                biased;
+                _ = reply.closed() => return,
+                result = timeout_at(deadline, work) => result,
+            };
+            if let Ok(value) = result {
+                let _ = reply.try_send(ReadOnlyReply {
+                    value,
+                    _memory: memory,
+                    _slot: slot,
+                });
+            }
+        }));
+        self.readonly
+            .try_send(job)
+            .map_err(|_| crate::Error::Configuration {
+                reason: "local read-only queue is unavailable",
+            })?;
+        self.dispatcher.health.admitted.inc();
+        Ok(LocalReadOnlyResponse { response, deadline })
     }
 
     pub async fn submit<S: WireService>(
@@ -428,6 +506,20 @@ impl LocalResponse {
     }
 }
 
+impl<T> LocalReadOnlyResponse<T> {
+    pub(crate) async fn receive(mut self) -> crate::Result<T> {
+        timeout_at(self.deadline, self.response.recv())
+            .await
+            .map_err(|_| crate::Error::Configuration {
+                reason: "local read-only response deadline elapsed",
+            })?
+            .map(|reply| reply.value)
+            .ok_or(crate::Error::Configuration {
+                reason: "local read-only work ended without a response",
+            })
+    }
+}
+
 impl LocalRequests {
     pub async fn run<S: WireService>(mut self, service: Arc<S>) -> crate::Result<()> {
         let mut handlers = JoinSet::new();
@@ -443,6 +535,7 @@ impl LocalRequests {
                 Some(job) = self.core.recv() => { handlers.spawn(execute(service.clone(), job, self.dispatcher.config.protocol.clone(), self.dispatcher.health.clone())); },
                 Some(job) = self.ack.recv() => { handlers.spawn(execute(service.clone(), job, self.dispatcher.config.protocol.clone(), self.dispatcher.health.clone())); },
                 Some(job) = self.data.recv() => { handlers.spawn(execute(service.clone(), job, self.dispatcher.config.protocol.clone(), self.dispatcher.health.clone())); },
+                Some(job) = self.readonly.recv() => { handlers.spawn(job.0); },
             }
         }
         let deadline = self.stop.borrow().unwrap_or_else(Instant::now);
@@ -452,6 +545,8 @@ impl LocalRequests {
                 reject_local_queued(job, &self.dispatcher.config.protocol);
             }
         }
+        self.readonly.close();
+        while self.readonly.try_recv().is_ok() {}
         while !handlers.is_empty() {
             timeout_at(deadline, handlers.join_next())
                 .await
@@ -1152,6 +1247,136 @@ mod tests {
         );
         assert!(dispatch.dispatcher.raft.is_none());
         drop(requests);
+        assert_eq!(budget.available_bytes(), before);
+    }
+
+    #[tokio::test]
+    async fn typed_readonly_replies_retain_shared_slots_and_memory_without_blocking_core_or_ack() {
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (entered, completed) = tokio::sync::oneshot::channel();
+        let pending = dispatch
+            .submit_readonly(65_536, deadline, async move {
+                let _ = entered.send(());
+                42_u64
+            })
+            .await
+            .unwrap();
+        let runner = tokio::spawn(requests.run(service.clone()));
+        completed.await.unwrap();
+        assert_eq!(budget.available_bytes() + 65_536, before);
+        assert!(
+            dispatch
+                .submit_readonly(1, deadline, async { 7_u64 })
+                .await
+                .is_err()
+        );
+        assert!(
+            dispatch
+                .submit(
+                    &service,
+                    Authorization::Server,
+                    local_request(Id::new_v7().unwrap()),
+                    StreamPurpose::Request,
+                    deadline,
+                )
+                .await
+                .is_err()
+        );
+        for purpose in [StreamPurpose::Core, StreamPurpose::Ack] {
+            let response = dispatch
+                .submit(
+                    &service,
+                    Authorization::Server,
+                    local_request(Id::new_v7().unwrap()),
+                    purpose,
+                    deadline,
+                )
+                .await
+                .unwrap();
+            drop(response.receive().await.unwrap());
+        }
+        assert_eq!(pending.receive().await.unwrap(), 42);
+        dispatch.close(deadline).await.unwrap();
+        runner.await.unwrap().unwrap();
+        assert_eq!(budget.available_bytes(), before);
+    }
+
+    #[tokio::test]
+    async fn typed_readonly_queued_cancellation_skips_execution_and_releases_admission() {
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let pending = dispatch
+            .submit_readonly(65_536, deadline, async move {
+                observed.fetch_add(1, Ordering::Relaxed);
+            })
+            .await
+            .unwrap();
+        drop(pending);
+        let runner = tokio::spawn(requests.run(service));
+        timeout_at(deadline, async {
+            while dispatch.dispatcher.data.slots.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        dispatch.close(deadline).await.unwrap();
+        runner.await.unwrap().unwrap();
+        assert_eq!(budget.available_bytes(), before);
+    }
+
+    #[tokio::test]
+    async fn typed_readonly_active_cancellation_and_drain_release_all_owned_work() {
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (entered, running) = tokio::sync::oneshot::channel();
+        let pending = dispatch
+            .submit_readonly(65_536, deadline, async move {
+                let _ = entered.send(());
+                std::future::pending::<()>().await;
+            })
+            .await
+            .unwrap();
+        let runner = tokio::spawn(requests.run(service));
+        running.await.unwrap();
+        drop(pending);
+        timeout_at(deadline, async {
+            while budget.available_bytes() != before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        dispatch.close(deadline).await.unwrap();
+        runner.await.unwrap().unwrap();
+        assert!(
+            dispatch
+                .submit_readonly(1, deadline, async {})
+                .await
+                .is_err()
+        );
+
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let pending = dispatch
+            .submit_readonly(65_536, deadline, async move {
+                observed.fetch_add(1, Ordering::Relaxed);
+            })
+            .await
+            .unwrap();
+        dispatch.begin_drain(deadline);
+        requests.run(service).await.unwrap();
+        assert!(pending.receive().await.is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
         assert_eq!(budget.available_bytes(), before);
     }
 

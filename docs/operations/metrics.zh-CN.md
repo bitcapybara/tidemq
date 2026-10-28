@@ -20,6 +20,7 @@ Combined使用本地执行、Group提交/维护和HTTPS生命周期的真实观�
 | `tidemq_s3_*` | 实际 AWS SDK attempt/retry/HTTP error、准入、headers/body/operation、decode queue/decode、cache hit/miss；不以 HTTP 成功代替 manifest 发布 |
 | `tidemq_lifecycle_*` | register/upload/publish/cancel/delete、reclaimed bytes、retry/failure、活跃工作；Uploaded、Published 与 Reclaimed 分别观测 |
 | `tidemq_ownership_*` / `tidemq_control_validity_remaining_seconds` | Grant/Fence/Recover/Activate 阶段结果与有效期；诊断仍需核对真实数据组 fence 和当前元数据路由 |
+| `tidemq_ownership_metadata_cas_retries_total{stage}` | 固定四阶段标签：ownership 阶段因明确拒绝的 revision 冲突，在原截止内重新取得新鲜证据并沿原 operation ID 提交的额外尝试。Unknown 和永久拒绝不重试；结合 `ownership_metadata_revision_retry` debug 事件与阶段最终结果排查并发 quota/resource-lease 写入 |
 | `tidemq_scaling_*` | 原计划 learner/catch-up/joint/stable 等阶段时长与 Unknown；实际新鲜容量、成员和拒绝原因见有限诊断 |
 
 公共阶段 bucket 为 50μs、100μs、500μs、1ms、5ms、10ms、50ms、100ms、500ms、1s、5s、30s 和 +Inf。先合并相同口径的 bucket，再算分位；不要平均 P99、相加阶段 P99，或把服务端批次耗时当作 SDK 单消息持久时延。计数器重启会归零，不作为精确审计。

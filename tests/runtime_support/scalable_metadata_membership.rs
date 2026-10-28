@@ -7,7 +7,8 @@ async fn cancelled_metadata_waiter_and_controller_restart_resume_one_original_me
         &[
             (1, Role::Metadata),
             (2, Role::Metadata),
-            (3, Role::Combined),
+            (3, Role::Gateway),
+            (5, Role::Broker),
             (4, Role::Storage),
         ],
         &[1],
@@ -71,7 +72,8 @@ async fn rf3_metadata_replacement_keeps_three_voters_and_checkpoints_every_targe
             (2, Role::Metadata),
             (3, Role::Metadata),
             (4, Role::Metadata),
-            (5, Role::Combined),
+            (5, Role::Gateway),
+            (9, Role::Broker),
             (6, Role::Storage),
             (7, Role::Storage),
             (8, Role::Storage),
@@ -132,7 +134,7 @@ async fn rf3_metadata_replacement_keeps_three_voters_and_checkpoints_every_targe
             let value: serde_json::Value =
                 serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
             complete &= value
-                .pointer("/metadata_storage/snapshot_log/index")
+                .pointer("/metadata_storage/storage/snapshot_log/index")
                 .and_then(serde_json::Value::as_u64)
                 .is_some_and(|index| index >= result.membership_index);
             complete &=
@@ -210,7 +212,8 @@ async fn metadata_replacement_checkpoints_the_new_voter_and_old_seed_restart_kee
         &[
             (1, Role::Metadata),
             (2, Role::Metadata),
-            (3, Role::Combined),
+            (3, Role::Gateway),
+            (5, Role::Broker),
             (4, Role::Storage),
         ],
         &[1],

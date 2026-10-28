@@ -196,7 +196,10 @@ impl LocalContext {
                         .validate_authorization_scope(scope, false)
                         .map_err(super::metadata::metadata_rejection)?;
                 }
-                page.cluster_id = Bytes::copy_from_slice(self.backend.service.cluster.as_bytes());
+                page.cluster_id = state
+                    .cluster_id()
+                    .map(|id| Bytes::copy_from_slice(id.as_bytes()))
+                    .unwrap_or_default();
                 Ok(page)
             })
             .instrument(self.span("identity", None, None))
@@ -210,6 +213,7 @@ impl LocalContext {
         let mut metrics = LocalMetrics::new(&self.backend.service, MetricOperation::Read);
         let scope = query_scope(&query);
         let span = self.span("read", None, scope);
+        self.inspect_message(&query, None);
         let result = async {
             self.project(|_, _, _| Ok(())).await?;
             if matches!(query, Query::Cluster { .. }) {
@@ -222,9 +226,35 @@ impl LocalContext {
         }
         .instrument(span)
         .await;
+        self.inspect_message(&query, Some(&result));
         metrics.finish(&result);
         self.observe("read", None, &result, metrics.outcome);
         result
+    }
+
+    fn inspect_message(&self, query: &Query, result: Option<&Result<Reply>>) {
+        let Query::Messages { topic, shard, .. } = query else {
+            return;
+        };
+        let credential = self.credential;
+        match result {
+            None => {
+                tracing::info!(event_code = "console_message_inspection", %credential, %topic, %shard,
+                request_id = %self.request, operation_id = %self.operation, result = "started", "Console message inspection began")
+            }
+            Some(Ok(Reply::Messages(page))) => {
+                tracing::info!(event_code = "console_message_inspection", %credential, %topic, %shard,
+                request_id = %self.request, operation_id = %self.operation, scanned_start = page.scanned_start.0,
+                scanned_end = page.scanned_end.0, hits = page.items.len(), stop_reason = %page.stop_reason,
+                result = "succeeded", "Console message inspection completed")
+            }
+            Some(Err(error)) => {
+                tracing::info!(event_code = "console_message_inspection", %credential, %topic, %shard,
+                request_id = %self.request, operation_id = %self.operation, error_code = error.failure().code,
+                result = "rejected", "Console message inspection was rejected")
+            }
+            _ => {}
+        }
     }
 
     pub(crate) async fn write(&self, request: &WriteRequest) -> Result<Operation> {
