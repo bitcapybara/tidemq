@@ -7,7 +7,7 @@ use crate::metadata::PartitionKey;
 
 use super::{FenceRecord, Grant, RecoveredOwnership, RecoveryCheckpoint};
 
-/// A private-constructed Raft command, not a deserializable network endpoint.
+/// A privately constructed group command, not a deserializable network endpoint.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FenceCommand {
     pub(crate) grant: Grant,

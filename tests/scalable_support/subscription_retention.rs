@@ -186,7 +186,7 @@ fn new_subscriptions_and_layout_protection_cannot_pass_each_other() {
                 Id::new_v7().unwrap(),
                 state.revision(),
                 3,
-                [1].into()
+                crate::metadata::GroupPlacement::Raft { voters: [1].into() }
             ))
             .is_applied()
     );
@@ -201,7 +201,7 @@ fn new_subscriptions_and_layout_protection_cannot_pass_each_other() {
                 Id::new_v7().unwrap(),
                 state.revision(),
                 3,
-                [1].into()
+                crate::metadata::GroupPlacement::Raft { voters: [1].into() }
             ))
             .is_applied()
     );

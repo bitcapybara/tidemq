@@ -40,15 +40,27 @@ impl NodeIdentity {
         })
     }
 
-    pub(crate) fn validate(&self, spec: &NodeSpec) -> Result<(), Rejection> {
-        spec.validate()?;
+    pub(crate) fn validate(
+        &self,
+        spec: &NodeSpec,
+        mode: super::DeploymentMode,
+    ) -> Result<(), Rejection> {
+        spec.validate(mode)?;
+        let local_combined = mode == super::DeploymentMode::Local && self.role == "combined";
+        let name = self
+            .certificate_name
+            .strip_prefix('[')
+            .and_then(|name| name.strip_suffix(']'))
+            .unwrap_or(&self.certificate_name);
+        let valid_name = self
+            .certificate_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            || local_combined && name.parse::<std::net::Ipv6Addr>().is_ok();
         if self.roles()? != spec.roles
             || self.certificate_name.is_empty()
             || self.certificate_name.len() > 253
-            || !self
-                .certificate_name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            || !valid_name
             || self.certificate_pin == [0; 32]
             || (self.retired || self.drain_operation.is_some()) && spec.schedulable
             || self
@@ -57,7 +69,7 @@ impl NodeIdentity {
             || self.external_endpoint.is_some_and(|address| {
                 !spec.roles.contains(&NodeRole::Gateway)
                     || address.port() == 0
-                    || address.ip().is_unspecified()
+                    || address.ip().is_unspecified() && !local_combined
             })
         {
             return Err(Rejection::InvalidNode);
@@ -148,7 +160,7 @@ impl MetadataState {
                     && !self
                         .membership_change(group.group_id)
                         .is_some_and(|change| !change.is_complete())
-                    && group.voters.iter().all(|node| {
+                    && group.placement.hosts().iter().all(|node| {
                         self.nodes.get(node).is_some_and(|node| {
                             node.spec.schedulable && node.spec.roles.contains(&NodeRole::Storage)
                         })
@@ -240,6 +252,19 @@ impl MetadataState {
         {
             return Err(Rejection::Authorization(AuthRejection::Forbidden));
         }
+        if self.mode == Some(super::DeploymentMode::Local)
+            && matches!(
+                command.action,
+                ClusterAction::TransferShard { .. }
+                    | ClusterAction::ReplaceMetadata(_)
+                    | ClusterAction::ReplaceData(_)
+                    | ClusterAction::BeginDrain { .. }
+                    | ClusterAction::CreateGroup { .. }
+                    | ClusterAction::RetireNode { .. }
+            )
+        {
+            return Err(Rejection::Unsupported);
+        }
         let outcome = match &command.action {
             ClusterAction::TransferShard {
                 operation,
@@ -326,7 +351,13 @@ impl MetadataState {
                 }) {
                     return Err(Rejection::InvalidNode);
                 }
-                let Outcome::GroupCreated(group) = self.create_group(*group, voters)? else {
+                let Outcome::GroupCreated(group) = self.create_group(
+                    *group,
+                    &super::GroupPlacement::Raft {
+                        voters: voters.clone(),
+                    },
+                )?
+                else {
                     return Err(Rejection::InvalidGroup);
                 };
                 ClusterOutcome::Group(group)
@@ -358,7 +389,7 @@ impl MetadataState {
         spec: &NodeSpec,
         identity: &NodeIdentity,
     ) -> Result<ClusterOutcome, Rejection> {
-        identity.validate(spec)?;
+        identity.validate(spec, self.mode.ok_or(Rejection::Uninitialized)?)?;
         if identity.retired || identity.drain_operation.is_some() {
             return Err(Rejection::IdentityRetired);
         }
@@ -429,7 +460,7 @@ impl MetadataState {
             || self
                 .groups
                 .values()
-                .any(|group| group.voters.contains(&node))
+                .any(|group| group.placement.hosts().contains(&node))
             || self.partitions.values().any(|partition| {
                 partition
                     .grant
@@ -464,13 +495,13 @@ impl MetadataState {
         let mut pins = BTreeMap::new();
         for (node, identity) in &self.node_identities {
             let record = self.nodes.get(node).ok_or(Rejection::InvalidNode)?;
-            identity.validate(&record.spec)?;
+            identity.validate(&record.spec, self.mode.ok_or(Rejection::Uninitialized)?)?;
             if pins.insert(identity.certificate_pin, *node).is_some()
                 || identity.retired
                     && self
                         .groups
                         .values()
-                        .any(|group| group.voters.contains(node))
+                        .any(|group| group.placement.hosts().contains(node))
             {
                 return Err(Rejection::InvalidNode);
             }

@@ -60,6 +60,9 @@ impl DrainProgress {
 pub struct DrainPlan;
 impl DrainPlan {
     pub fn inspect(state: &MetadataState, node_id: u64) -> Result<DrainProgress> {
+        if state.mode == Some(crate::metadata::DeploymentMode::Local) {
+            return Err(Error::Unsupported);
+        }
         let node = state.node(node_id).ok_or(Error::Configuration)?;
         if node.spec.schedulable {
             return Err(Error::Placement);
@@ -74,7 +77,7 @@ impl DrainPlan {
             storage_groups: state
                 .groups
                 .values()
-                .filter(|g| g.voters.contains(&node_id))
+                .filter(|g| g.placement.hosts().contains(&node_id))
                 .count(),
             pending_membership_changes: state
                 .migrations

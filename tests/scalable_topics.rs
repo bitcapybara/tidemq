@@ -21,7 +21,7 @@ fn metadata() -> MetadataState {
                 id(),
                 id(),
                 1,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .is_applied()
@@ -45,7 +45,9 @@ fn metadata() -> MetadataState {
                     id(),
                     state.revision(),
                     group,
-                    BTreeSet::from([1])
+                    tidemq::metadata::GroupPlacement::Raft {
+                        voters: BTreeSet::from([1])
+                    }
                 ))
                 .is_applied()
         );

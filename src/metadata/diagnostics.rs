@@ -109,11 +109,11 @@ impl MetadataState {
             fence_commit_index: record
                 .fence
                 .as_ref()
-                .map(|evidence| evidence.committed.index),
+                .map(|evidence| evidence.committed.sequence()),
             recovery_commit_index: record
                 .recovery
                 .as_ref()
-                .map(|evidence| evidence.committed.index),
+                .map(|evidence| evidence.committed.sequence()),
         })
     }
 

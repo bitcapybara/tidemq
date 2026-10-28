@@ -127,7 +127,7 @@ impl Metadata {
                 Id::new_v7().unwrap(),
                 meta.cluster_id,
                 group_id,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .await
@@ -158,7 +158,9 @@ impl Metadata {
                 Id::new_v7().unwrap(),
                 meta.revision().await,
                 cluster.config.group_id,
-                BTreeSet::from([1])
+                crate::metadata::GroupPlacement::Raft {
+                    voters: BTreeSet::from([1])
+                }
             ))
             .await
             .is_applied()
@@ -200,8 +202,11 @@ impl Metadata {
 
     fn authority(&self) -> MetadataAuthority {
         MetadataAuthority::new(
-            self.raft.clone(),
-            self.state.clone(),
+            crate::execution::GroupHandle::from_raft(
+                self.raft.clone(),
+                self.state.clone(),
+                self.log.clone(),
+            ),
             self.cluster_id,
             self.group_id,
             policy(),
@@ -225,11 +230,16 @@ fn policy() -> ControlPolicy {
 async fn activate(metadata: &Metadata, cluster: &Cluster, grant: &Grant) -> ControlLease {
     let authority = metadata.authority();
     let data = DataAuthority::new(
-        cluster.node(1).raft.clone(),
-        cluster.node(1).state.clone(),
+        crate::execution::GroupHandle::from_raft(
+            cluster.node(1).raft.clone(),
+            cluster.node(1).state.clone(),
+            cluster.node(1).log.clone(),
+        ),
         cluster.config.cluster_id,
         cluster.config.group_id,
-        BTreeSet::from([1]),
+        crate::metadata::GroupPlacement::Raft {
+            voters: BTreeSet::from([1]),
+        },
         policy(),
     )
     .unwrap();
@@ -394,4 +404,60 @@ async fn real_metadata_authority_activates_actual_producer_and_ack_state_through
     drop(broker);
     metadata.close().await;
     cluster.shutdown().await;
+}
+
+#[test]
+fn new_consumer_work_cannot_consume_the_ack_completion_reserve() {
+    use crate::subscription::{GroupAck, GroupCommand, GroupRead};
+    let id = Id::new_v7().unwrap();
+    let wrap = |command| DataCommand::ConsumerGroup {
+        partition: PartitionKey {
+            topic_id: id,
+            partition: 0,
+        },
+        writer: crate::broker::WriterFence {
+            node_id: 1,
+            owner_epoch: 1,
+        },
+        command,
+    };
+    assert!(
+        !wrap(GroupCommand::Read {
+            subscription: id,
+            request: GroupRead {
+                member: id,
+                epoch: 1,
+                sequence: 1,
+                now_ms: 0,
+                max_messages: 1,
+                max_bytes: 1,
+            },
+            cold: Vec::new()
+        })
+        .is_completion()
+    );
+    assert!(
+        !wrap(GroupCommand::InstallMembers {
+            subscription: id,
+            version: 1,
+            grants: Vec::new(),
+            now_ms: 0
+        })
+        .is_completion()
+    );
+    assert!(
+        wrap(GroupCommand::Acknowledge {
+            subscription: id,
+            request: GroupAck {
+                member: id,
+                epoch: 1,
+                sequence: 1,
+                now_ms: 0,
+                model: tidemq_protocol::topic::SubscriptionKind::Queue,
+                proofs: Vec::new(),
+                nack_delay_ms: None,
+            }
+        })
+        .is_completion()
+    );
 }

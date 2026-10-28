@@ -41,7 +41,7 @@ impl Fixture {
                     id(),
                     id(),
                     1,
-                    DeploymentMode::LocalRf1,
+                    DeploymentMode::SeparateRf1,
                     MetadataLimits::default()
                 ))
                 .is_applied()
@@ -64,7 +64,12 @@ impl Fixture {
         );
         assert!(
             state
-                .apply(Command::create_group(id(), state.revision(), 2, [1].into()))
+                .apply(Command::create_group(
+                    id(),
+                    state.revision(),
+                    2,
+                    tidemq::metadata::GroupPlacement::Raft { voters: [1].into() }
+                ))
                 .is_applied()
         );
         let root = id();

@@ -4,7 +4,7 @@ use super::{Command, MetadataState, Response};
 
 impl Application for MetadataState {
     const NAME: &'static str = "tidemq.metadata";
-    const VERSION: u32 = 28;
+    const VERSION: u32 = 29;
     type Command = Command;
     type Response = Response;
 

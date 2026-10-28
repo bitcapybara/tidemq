@@ -1,11 +1,11 @@
 //! Native HTTPS Console with process-owned connections and required asset supervision.
 
 pub(crate) mod api;
+mod backend;
 mod api_identity;
 mod api_query;
 mod api_write;
 mod assets;
-mod backend;
 mod config;
 mod files;
 mod http;

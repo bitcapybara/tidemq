@@ -52,7 +52,7 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
                 id(),
                 id(),
                 1,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .is_applied()
@@ -75,7 +75,12 @@ fn topics_persist_real_parent_ids_and_share_one_tenant_limit_across_namespaces()
     );
     assert!(
         state
-            .apply(Command::create_group(id(), state.revision(), 2, [1].into()))
+            .apply(Command::create_group(
+                id(),
+                state.revision(),
+                2,
+                tidemq::metadata::GroupPlacement::Raft { voters: [1].into() }
+            ))
             .is_applied()
     );
     let root = id();
@@ -549,7 +554,7 @@ fn durable_credentials_enforce_tenant_namespace_and_live_revocation() {
                 id(),
                 id(),
                 1,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .is_applied()
@@ -780,7 +785,7 @@ fn tenant_administrator_cannot_create_platform_privileges_or_credentials_for_str
                 id(),
                 id(),
                 1,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .is_applied()
@@ -875,7 +880,7 @@ fn recreated_parent_names_never_authorize_a_new_principal_for_old_topic_identiti
                 id(),
                 id(),
                 1,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .is_applied()
@@ -1048,7 +1053,7 @@ fn original_management_refusals_remain_bound_to_their_own_request_after_restart(
                 id(),
                 id(),
                 1,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .is_applied()

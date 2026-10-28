@@ -20,6 +20,9 @@ impl MetadataChange {
     }
 
     fn validate(&self, state: &MetadataState) -> Result<(), Rejection> {
+        if state.mode == Some(super::DeploymentMode::Local) {
+            return Err(Rejection::Unsupported);
+        }
         let replicas = state
             .mode
             .ok_or(Rejection::Uninitialized)?
@@ -113,6 +116,9 @@ impl MetadataState {
         id: Id,
         membership_index: u64,
     ) -> Result<MetadataChange, Rejection> {
+        if self.mode == Some(super::DeploymentMode::Local) {
+            return Err(Rejection::Unsupported);
+        }
         let change = self
             .metadata_changes
             .get_mut(&id)

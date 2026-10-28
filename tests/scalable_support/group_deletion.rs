@@ -76,7 +76,7 @@ fn deleted_subscription_tombstones_follow_the_shard_into_a_different_raft_author
         )),
         DataResponse::AuthorityTransfer(TransferOutcome::Frozen { .. })
     ));
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: 1,
         leader_node: 1,
         index: 100,

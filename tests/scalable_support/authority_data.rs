@@ -285,7 +285,7 @@ fn target_reservations_expand_without_double_counting_or_changing_original_reser
         postcard::from_bytes(&postcard::to_stdvec(&target).unwrap()).unwrap();
     target.validate().unwrap();
     assert_eq!(target.apply(expand.clone()), reserved);
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: 1,
         leader_node: 1,
         index: 100,
@@ -402,7 +402,7 @@ fn retiring_another_target_scope_makes_capacity_available_to_the_original_waitin
         )),
         DataResponse::AuthorityTransfer(TransferOutcome::Frozen { .. })
     ));
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: 1,
         leader_node: 1,
         index: 100,
@@ -463,7 +463,7 @@ fn checkpointed_report(
     plan.advance(TransferStep::Frozen(cut)).unwrap();
     plan.advance(TransferStep::Exported(manifest.clone()))
         .unwrap();
-    let committed = CommitPosition {
+    let committed = CommitPosition::Raft {
         term: 1,
         leader_node: 2,
         index: 1,
@@ -471,6 +471,9 @@ fn checkpointed_report(
     plan.advance(TransferStep::Imported(ImportEvidence {
         manifest: manifest.clone(),
         recovery: RecoveryEvidence {
+            placement: crate::metadata::GroupPlacement::Raft {
+                voters: plan.target_voters.clone(),
+            },
             recovered: RecoveredOwnership {
                 fence: FenceRecord {
                     grant: plan.target.clone(),
@@ -491,10 +494,7 @@ fn checkpointed_report(
     plan.advance(TransferStep::Published).unwrap();
     plan.advance(TransferStep::Checkpointed(vec![TransferCheckpoint {
         voter: 2,
-        position: CommitPosition {
-            index: 2,
-            ..committed
-        },
+        position: raft_position_at(committed, 2),
         manifest_digest: manifest.digest,
     }]))
     .unwrap();
@@ -511,7 +511,7 @@ fn source_reclamation_keeps_a_permanent_fence_after_its_payload_is_removed() {
         capacity: capacity(),
     });
     let frozen = source.apply(freeze.clone());
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: 1,
         leader_node: 1,
         index: 100,
@@ -572,7 +572,7 @@ fn source_reclamation_keeps_a_permanent_fence_after_its_payload_is_removed() {
     assert_eq!((source.hot_bytes(), source.hot_messages()), (0, 0));
     source = postcard::from_bytes(&postcard::to_stdvec(&source).unwrap()).unwrap();
     source.validate().unwrap();
-    let retired = CommitPosition { index: 101, ..cut };
+    let retired = raft_position_at(cut, 101);
     assert_eq!(
         source.apply(DataCommand::AuthorityTransfer(
             AuthorityDataCommand::RecordRetiredCut {
@@ -675,7 +675,7 @@ fn a_retired_source_accepts_a_later_import_without_replaying_old_retirement() {
             )),
             DataResponse::AuthorityTransfer(TransferOutcome::Frozen { .. })
         ));
-        let cut = CommitPosition {
+        let cut = CommitPosition::Raft {
             term: 1,
             leader_node: *plan.source_voters.iter().next().unwrap(),
             index: if round == 0 { 100 } else { 500 },
@@ -739,7 +739,7 @@ fn a_retired_source_accepts_a_later_import_without_replaying_old_retirement() {
             groups[from].apply(DataCommand::AuthorityTransfer(
                 AuthorityDataCommand::RecordRetiredCut {
                     plan: plan.id,
-                    cut: CommitPosition { index: 101, ..cut },
+                    cut: raft_position_at(cut, 101),
                 },
             ));
             original_reclaim = Some(command);
@@ -827,7 +827,7 @@ fn a_frozen_shard_keeps_a_stable_export_while_other_shards_continue_writing() {
         publish(&mut source, plan.partition, plan.shard, 2),
         DataResponse::Rejected(DataRejection::Transfer(TransferDataRejection::Frozen))
     );
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: 1,
         leader_node: 1,
         index: 1000,
@@ -843,7 +843,7 @@ fn a_frozen_shard_keeps_a_stable_export_while_other_shards_continue_writing() {
         source.apply(DataCommand::AuthorityTransfer(
             AuthorityDataCommand::RecordCut {
                 plan: plan.id,
-                cut: CommitPosition { index: 1001, ..cut },
+                cut: raft_position_at(cut, 1001),
             }
         )),
         DataResponse::AuthorityTransfer(TransferOutcome::Cut(cut))
@@ -1003,7 +1003,7 @@ async fn a_three_replica_restart_preserves_the_frozen_source_and_original_cut() 
         "Source freeze was rejected: {:?}",
         response.data
     );
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: response.log_id.leader_id.term,
         leader_node: response.log_id.leader_id.node_id,
         index: response.log_id.index,
@@ -1061,7 +1061,7 @@ fn target_import_replays_the_original_publication_after_paged_recovery() {
             capacity,
         },
     ));
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: 1,
         leader_node: 1,
         index: 100,
@@ -1363,7 +1363,7 @@ async fn two_three_replica_groups_preserve_original_reads_and_nack_results_after
         "Source freeze failed: {:?}",
         frozen.data
     );
-    let cut = CommitPosition {
+    let cut = CommitPosition::Raft {
         term: frozen.log_id.leader_id.term,
         leader_node: frozen.log_id.leader_id.node_id,
         index: frozen.log_id.index,
@@ -1527,4 +1527,18 @@ async fn two_three_replica_groups_preserve_original_reads_and_nack_results_after
         .unwrap();
     target.shutdown().await;
     source.shutdown().await;
+}
+
+fn raft_position_at(position: CommitPosition, index: u64) -> CommitPosition {
+    let CommitPosition::Raft {
+        term, leader_node, ..
+    } = position
+    else {
+        panic!("The cluster transfer fixture requires a Raft position");
+    };
+    CommitPosition::Raft {
+        term,
+        leader_node,
+        index,
+    }
 }

@@ -16,6 +16,9 @@ impl MetadataState {
         command: &TransferCommand,
         revision: u64,
     ) -> Result<AuthorityTransfer, Rejection> {
+        if self.mode == Some(super::DeploymentMode::Local) {
+            return Err(Rejection::Unsupported);
+        }
         match command {
             TransferCommand::Prepare { .. } => self.prepare_transfer(operation, command, revision),
             TransferCommand::Advance { plan, step } => {
@@ -32,7 +35,9 @@ impl MetadataState {
                     next.checkpoint_voters = self
                         .group(original.target.group_id)
                         .ok_or(Rejection::NotFound)?
-                        .voters
+                        .placement
+                        .raft_voters()
+                        .ok_or(Rejection::Unsupported)?
                         .clone();
                 }
                 next.advance(step.as_ref().clone())?;
@@ -103,12 +108,16 @@ impl MetadataState {
         let source_voters = self
             .group(source.group_id)
             .ok_or(Rejection::NotFound)?
-            .voters
+            .placement
+            .raft_voters()
+            .ok_or(Rejection::Unsupported)?
             .clone();
         let target_voters = self
             .group(target_group)
             .ok_or(Rejection::NotFound)?
-            .voters
+            .placement
+            .raft_voters()
+            .ok_or(Rejection::Unsupported)?
             .clone();
         let plan = AuthorityTransfer {
             id,
@@ -127,7 +136,9 @@ impl MetadataState {
             checkpoint_voters: self
                 .group(target_group)
                 .ok_or(Rejection::NotFound)?
-                .voters
+                .placement
+                .raft_voters()
+                .ok_or(Rejection::Unsupported)?
                 .clone(),
             stage: TransferStage::Prepare,
             frozen_cut: None,
@@ -202,7 +213,12 @@ impl MetadataState {
         self.node(owner)
             .filter(|node| node.spec.schedulable && node.spec.roles.contains(&NodeRole::Broker))
             .ok_or(Rejection::NotSchedulable)?;
-        let voters = &self.group(group).ok_or(Rejection::NotFound)?.voters;
+        let voters = self
+            .group(group)
+            .ok_or(Rejection::NotFound)?
+            .placement
+            .raft_voters()
+            .ok_or(Rejection::Unsupported)?;
         if voters.iter().any(|node| {
             self.node(*node).is_none_or(|node| {
                 !node.spec.schedulable || !node.spec.roles.contains(&NodeRole::Storage)
@@ -239,15 +255,15 @@ impl MetadataState {
     fn check_transfer_membership(&self, plan: &AuthorityTransfer) -> Result<(), Rejection> {
         if self
             .group(plan.source.group_id)
-            .is_none_or(|group| group.voters != plan.source_voters)
+            .is_none_or(|group| group.placement.raft_voters() != Some(&plan.source_voters))
             || plan.stage < TransferStage::Published
                 && self
                     .group(plan.target.group_id)
-                    .is_none_or(|group| group.voters != plan.target_voters)
+                    .is_none_or(|group| group.placement.raft_voters() != Some(&plan.target_voters))
             || plan.stage == TransferStage::Published
-                && self
-                    .group(plan.target.group_id)
-                    .is_none_or(|group| group.voters != plan.checkpoint_voters)
+                && self.group(plan.target.group_id).is_none_or(|group| {
+                    group.placement.raft_voters() != Some(&plan.checkpoint_voters)
+                })
             || [plan.source.group_id, plan.target.group_id]
                 .iter()
                 .any(|group| {
@@ -342,6 +358,7 @@ fn transfer_partition_record(
         ownership_operation: plan.target.operation_id,
     };
     let fence = FenceEvidence {
+        placement: imported.recovery.placement.clone(),
         fence: imported.recovery.recovered.fence.clone(),
         committed: imported.recovery.committed,
     };

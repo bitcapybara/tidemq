@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
-use openraft::storage::RaftSnapshotBuilder;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tidemq_protocol::{Id, common::TrafficClass};
 use tokio::time::Instant;
@@ -125,11 +124,16 @@ impl Service {
         id: Id,
         deadline: Instant,
     ) -> Result<Option<AuthorityTransfer>> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
+        wire::within(deadline, replica.group.ensure_read(deadline))
             .await?
-            .map_err(|_| Error::unavailable())?;
+            .map_err(wire::execution_error)?;
         replica
             .state
             .try_with_application(|state| state.topology().transfer(id).cloned())
@@ -144,6 +148,11 @@ impl Service {
         request: TransferRequest,
         deadline: Instant,
     ) -> Result<TransferReply> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         let class = request.class();
         let operation = request.plan();
         let request = Request {
@@ -181,9 +190,9 @@ impl Service {
     async fn transfer_view_command(&self, id: Id, deadline: Instant) -> Result<TransferReply> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
+        wire::within(deadline, replica.group.ensure_read(deadline))
             .await?
-            .map_err(|_| Error::unavailable())?;
+            .map_err(wire::execution_error)?;
         let view = replica
             .state
             .try_with_application(|state| {
@@ -200,8 +209,10 @@ impl Service {
                     voters: state
                         .group(plan.target.group_id)
                         .ok_or_else(Error::unavailable)?
-                        .voters
-                        .clone(),
+                        .placement
+                        .raft_voters()
+                        .cloned()
+                        .ok_or_else(Error::unavailable)?,
                     plan,
                 })
             })
@@ -219,6 +230,11 @@ impl Service {
         bytes: &[u8],
         deadline: Instant,
     ) -> Result<Bytes> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         let request: TransferRequest = decode(bytes)?;
         if operation != request.plan()
             || class != i32::from(request.class())
@@ -262,7 +278,7 @@ impl Service {
         } else {
             &view.voters
         };
-        if crate::lifecycle::stable_voters(&replica.raft)
+        if crate::lifecycle::stable_voters(&replica.group)
             .map_err(|source| Error::operation("verify transfer group voters", source))?
             != *voters
         {
@@ -282,6 +298,11 @@ impl Service {
         view: TransferView,
         deadline: Instant,
     ) -> Result<TransferReply> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         let plan = view.plan;
         match request {
             TransferRequest::Reserve(_) => self.reserve_transfer(group, plan, deadline).await,
@@ -359,6 +380,11 @@ impl Service {
         plan: AuthorityTransfer,
         deadline: Instant,
     ) -> Result<TransferReply> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         let id = plan.id;
         let (existing, capacity) = replica
@@ -412,12 +438,12 @@ impl Service {
 
     async fn transfer_position(&self, group: u64, deadline: Instant) -> Result<CommitPosition> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
+        wire::within(deadline, replica.group.ensure_read(deadline))
             .await?
-            .map_err(|_| Error::unavailable())?;
+            .map_err(wire::execution_error)?;
         replica
             .state
-            .try_with_applied(|_, position| position.map(commit_position))
+            .try_with_applied(|_, position| position.map(CommitPosition::from))
             .await
             .map_err(|source| Error::operation("read committed transfer position", source))?
             .ok_or_else(Error::unavailable)
@@ -431,6 +457,11 @@ impl Service {
         pending: bool,
         deadline: Instant,
     ) -> Result<TransferReply> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         if let Some(cut) = plan.frozen_cut {
             return Ok(TransferReply::Frozen(cut));
         }
@@ -477,6 +508,11 @@ impl Service {
         plan: &AuthorityTransfer,
         deadline: Instant,
     ) -> Result<TransferReply> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         let recovered = match self
             .transfer_write(
                 group,
@@ -489,6 +525,9 @@ impl Service {
             _ => return Err(Error::invalid("Target did not finish importing the shard")),
         };
         Ok(TransferReply::Imported(RecoveryEvidence {
+            placement: crate::metadata::GroupPlacement::Raft {
+                voters: plan.target_voters.clone(),
+            },
             recovered,
             committed: self.transfer_position(group, deadline).await?,
         }))
@@ -501,6 +540,11 @@ impl Service {
         pins: bool,
         deadline: Instant,
     ) -> Result<TransferReply> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         if let Some(cut) = plan.retired_cut {
             return Ok(TransferReply::Retired(cut));
         }
@@ -538,6 +582,11 @@ impl Service {
         voters: &BTreeSet<u64>,
         deadline: Instant,
     ) -> Result<TransferReply> {
+        if self.config.role == crate::config::Role::Combined {
+            return Err(super::metadata::metadata_rejection(
+                crate::metadata::Rejection::Unsupported,
+            ));
+        }
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         let imported = plan
             .imported
@@ -567,18 +616,18 @@ impl Service {
             )
             .await?;
         }
-        let mut state = replica.state.clone();
-        let snapshot = wire::within(deadline, state.build_snapshot())
-            .await?
-            .map_err(|source| Error::operation("persist target authority snapshot", source))?;
-        let position = snapshot
-            .meta
-            .last_log_id
-            .map(commit_position)
-            .filter(|cut| cut.index >= imported.recovery.committed.index)
+        let snapshot = replica
+            .group
+            .snapshot(deadline)
+            .await
+            .map_err(wire::execution_error)?
             .ok_or_else(Error::unavailable)?;
+        let position = CommitPosition::from(snapshot.position);
+        if !position.at_least(imported.recovery.committed) {
+            return Err(Error::unavailable());
+        }
         if !voters.contains(&self.config.node_id)
-            || crate::lifecycle::stable_voters(&replica.raft)
+            || crate::lifecycle::stable_voters(&replica.group)
                 .map_err(|source| Error::operation("verify target snapshot voters", source))?
                 != *voters
         {
@@ -589,14 +638,6 @@ impl Service {
             position,
             manifest_digest: imported.manifest.digest,
         }))
-    }
-}
-
-fn commit_position(log: openraft::LogId<u64>) -> CommitPosition {
-    CommitPosition {
-        term: log.leader_id.term,
-        leader_node: log.leader_id.node_id,
-        index: log.index,
     }
 }
 

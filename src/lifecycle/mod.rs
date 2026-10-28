@@ -42,6 +42,8 @@ pub enum Error {
     Identity { source: tidemq_protocol::Error },
     #[snafu(display("Object lifecycle configuration is invalid"))]
     Configuration,
+    #[snafu(display("Object lifecycle group execution failed"))]
+    Execution { source: crate::execution::Error },
     #[snafu(display("Object lifecycle operation exceeded its deadline"))]
     Deadline,
     #[snafu(display(

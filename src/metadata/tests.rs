@@ -31,6 +31,10 @@ fn id(value: u64) -> Id {
 }
 
 fn fixture() -> (MetadataState, PartitionKey) {
+    fixture_with_mode(DeploymentMode::SeparateRf1)
+}
+
+fn fixture_with_mode(mode: DeploymentMode) -> (MetadataState, PartitionKey) {
     let mut state = MetadataState::default();
     assert!(
         state
@@ -38,7 +42,7 @@ fn fixture() -> (MetadataState, PartitionKey) {
                 id(1),
                 id(2),
                 1,
-                DeploymentMode::LocalRf1,
+                mode,
                 MetadataLimits::default()
             ))
             .is_applied()
@@ -61,7 +65,11 @@ fn fixture() -> (MetadataState, PartitionKey) {
                 id(4),
                 state.revision(),
                 2,
-                BTreeSet::from([1])
+                if mode == DeploymentMode::Local {
+                    super::GroupPlacement::Local { node_id: 1 }
+                } else {
+                    super::GroupPlacement::Raft { voters: [1].into() }
+                }
             ))
             .is_applied()
     );
@@ -93,10 +101,16 @@ fn evidence(state: &MetadataState, partition: PartitionKey) -> (FenceEvidence, R
         grant: state.grant(partition).unwrap().clone(),
         fence_generation: 1,
     };
-    let position = CommitPosition {
-        term: 1,
-        leader_node: 1,
-        index: 10 * fence.grant.epoch,
+    let position = if state.mode == Some(DeploymentMode::Local) {
+        CommitPosition::Local {
+            sequence: 10 * fence.grant.epoch,
+        }
+    } else {
+        CommitPosition::Raft {
+            term: 1,
+            leader_node: 1,
+            index: 10 * fence.grant.epoch,
+        }
     };
     let checkpoint = RecoveryCheckpoint {
         fence_generation: 1,
@@ -107,10 +121,12 @@ fn evidence(state: &MetadataState, partition: PartitionKey) -> (FenceEvidence, R
     };
     (
         FenceEvidence {
+            placement: state.group(fence.grant.group_id).unwrap().placement.clone(),
             fence: fence.clone(),
             committed: position,
         },
         RecoveryEvidence {
+            placement: state.group(fence.grant.group_id).unwrap().placement.clone(),
             recovered: RecoveredOwnership { fence, checkpoint },
             committed: position,
         },
@@ -177,7 +193,11 @@ fn activation_requires_matching_fence_and_rebuilt_state_before_route_publication
         Rejection::RecoveryRequired,
     );
     let mut forged = fence.clone();
-    forged.committed.leader_node = 999;
+    forged.committed = CommitPosition::Raft {
+        term: 1,
+        leader_node: 999,
+        index: 10,
+    };
     rejected(
         apply(&mut state, 22, Action::ObserveFence(forged)),
         Rejection::InvalidEvidence,
@@ -254,28 +274,43 @@ fn higher_read_barrier_does_not_change_a_frozen_logical_stage_result() {
     let (fence, recovery) = evidence(&state, partition);
     let original = apply(&mut state, 20, Action::ObserveFence(fence.clone()));
     let mut advanced = fence;
-    advanced.committed.index += 50;
-    advanced.committed.term += 1;
+    advanced.committed = CommitPosition::Raft {
+        term: 2,
+        leader_node: 1,
+        index: 60,
+    };
     let before = state.revision();
     assert_eq!(
         apply(&mut state, 21, Action::ObserveFence(advanced.clone())),
         original
     );
     assert_eq!(state.revision(), before);
-    advanced.committed.index = 1;
+    advanced.committed = CommitPosition::Raft {
+        term: 2,
+        leader_node: 1,
+        index: 1,
+    };
     rejected(
         apply(&mut state, 22, Action::ObserveFence(advanced)),
         Rejection::InvalidEvidence,
     );
     let original = apply(&mut state, 23, Action::ObserveRecovery(recovery.clone()));
     let mut advanced = recovery;
-    advanced.committed.index += 90;
+    advanced.committed = CommitPosition::Raft {
+        term: 1,
+        leader_node: 1,
+        index: 100,
+    };
     assert_eq!(
         apply(&mut state, 24, Action::ObserveRecovery(advanced.clone())),
         original
     );
     let original = apply(&mut state, 25, Action::ActivateRoute(advanced.clone()));
-    advanced.committed.index += 10;
+    advanced.committed = CommitPosition::Raft {
+        term: 1,
+        leader_node: 1,
+        index: 110,
+    };
     assert_eq!(
         apply(&mut state, 26, Action::ActivateRoute(advanced)),
         original
@@ -343,4 +378,215 @@ fn full_crud_ledger_reserves_per_partition_capacity_for_repeated_takeover() {
     let restored: MetadataState = serde_json::from_slice(&bytes).unwrap();
     restored.validate_snapshot().unwrap();
     assert_eq!(restored, state);
+}
+
+#[test]
+fn local_ownership_proofs_keep_fencing_recovery_and_retry_positions() {
+    let (mut state, partition) = fixture_with_mode(DeploymentMode::Local);
+    let (mut fence, mut recovery) = evidence(&state, partition);
+    let mut raft_fence = fence.clone();
+    raft_fence.placement = super::GroupPlacement::Raft { voters: [1].into() };
+    raft_fence.committed = CommitPosition::Raft {
+        term: 1,
+        leader_node: 1,
+        index: 10,
+    };
+    rejected(
+        apply(&mut state, 401, Action::ObserveFence(raft_fence)),
+        Rejection::InvalidEvidence,
+    );
+    fence.placement = super::GroupPlacement::Local { node_id: 1 };
+    fence.committed = CommitPosition::Local { sequence: 10 };
+    recovery.placement = super::GroupPlacement::Local { node_id: 1 };
+    recovery.committed = CommitPosition::Local { sequence: 11 };
+    let original = apply(&mut state, 402, Action::ObserveFence(fence.clone()));
+    assert!(original.is_applied());
+    fence.committed = CommitPosition::Local { sequence: 20 };
+    assert_eq!(
+        apply(&mut state, 403, Action::ObserveFence(fence.clone())),
+        original
+    );
+    fence.committed = CommitPosition::Local { sequence: 9 };
+    rejected(
+        apply(&mut state, 404, Action::ObserveFence(fence)),
+        Rejection::InvalidEvidence,
+    );
+    let mut stale = recovery.clone();
+    stale.committed = CommitPosition::Local { sequence: 9 };
+    rejected(
+        apply(&mut state, 405, Action::ObserveRecovery(stale)),
+        Rejection::InvalidEvidence,
+    );
+    assert!(apply(&mut state, 406, Action::ObserveRecovery(recovery.clone())).is_applied());
+    assert!(apply(&mut state, 407, Action::ActivateRoute(recovery)).is_applied());
+    state.validate_snapshot().unwrap();
+    let bytes = serde_json::to_vec(&state).unwrap();
+    let restored: MetadataState = serde_json::from_slice(&bytes).unwrap();
+    restored.validate_snapshot().unwrap();
+    assert_eq!(restored.route(partition).unwrap().epoch, 1);
+}
+
+#[test]
+fn proof_mode_identity_and_zero_sequence_cannot_be_repaired_by_retries() {
+    let (mut state, partition) = fixture();
+    let (mut fence, _) = evidence(&state, partition);
+    fence.placement = super::GroupPlacement::Local { node_id: 1 };
+    fence.committed = CommitPosition::Local { sequence: 10 };
+    rejected(
+        apply(&mut state, 410, Action::ObserveFence(fence.clone())),
+        Rejection::InvalidEvidence,
+    );
+    let (mut state, partition) = fixture_with_mode(DeploymentMode::Local);
+    let (mut fence, _) = evidence(&state, partition);
+    fence.committed = CommitPosition::Local { sequence: 0 };
+    rejected(
+        apply(&mut state, 411, Action::ObserveFence(fence.clone())),
+        Rejection::InvalidEvidence,
+    );
+    fence.committed = CommitPosition::Local { sequence: 10 };
+    fence.placement = super::GroupPlacement::Local { node_id: 99 };
+    rejected(
+        apply(&mut state, 412, Action::ObserveFence(fence.clone())),
+        Rejection::InvalidEvidence,
+    );
+    fence.placement = super::GroupPlacement::Local { node_id: 1 };
+    assert!(apply(&mut state, 412, Action::ObserveFence(fence.clone())).is_applied());
+    let mut foreign = fence.clone();
+    foreign.fence.grant.group_id = 99;
+    rejected(
+        apply(&mut state, 413, Action::ObserveFence(foreign)),
+        Rejection::OperationConflict,
+    );
+    fence.committed = CommitPosition::Raft {
+        term: 1,
+        leader_node: 1,
+        index: 1000,
+    };
+    rejected(
+        apply(&mut state, 414, Action::ObserveFence(fence)),
+        Rejection::InvalidEvidence,
+    );
+    state.mode = Some(DeploymentMode::SeparateRf1);
+    assert!(state.validate_snapshot().is_err());
+}
+
+#[test]
+fn deployment_modes_have_distinct_current_serializations() {
+    for (mode, name, factor) in [
+        (DeploymentMode::Local, "local", 1),
+        (DeploymentMode::SeparateRf1, "separate_rf1", 1),
+        (DeploymentMode::SeparateRf3, "separate_rf3", 3),
+    ] {
+        assert_eq!(serde_json::to_value(mode).unwrap(), name);
+        assert_eq!(mode.replication_factor(), factor);
+    }
+    for obsolete in ["local_rf1", "three_replica"] {
+        assert!(serde_json::from_value::<DeploymentMode>(serde_json::json!(obsolete)).is_err());
+    }
+}
+
+#[test]
+fn local_groups_keep_logical_topics_but_reject_quorum_placement_and_replacement() {
+    let (mut state, partition) = fixture_with_mode(DeploymentMode::Local);
+    let group = state.group(2).unwrap();
+    assert_eq!(group.placement, super::GroupPlacement::Local { node_id: 1 });
+    assert!(group.placement.raft_voters().is_none());
+    assert!(state.topic(partition.topic_id).is_some());
+    assert_eq!(
+        crate::scaling::MembershipPlan::new(id(2), group, [2].into()),
+        Err(Rejection::Unsupported)
+    );
+    let command = Command::create_group(
+        id(501),
+        state.revision(),
+        3,
+        super::GroupPlacement::Raft { voters: [1].into() },
+    );
+    rejected(state.apply(command), Rejection::PlacementViolation);
+    state.validate_snapshot().unwrap();
+}
+
+#[test]
+fn local_combined_identity_accepts_real_wildcard_listeners_and_ipv6_origins_only_in_local_mode() {
+    let (mut state, _) = fixture_with_mode(DeploymentMode::Local);
+    let roles = [
+        NodeRole::Gateway,
+        NodeRole::Broker,
+        NodeRole::Storage,
+        NodeRole::Metadata,
+    ]
+    .into();
+    let mut spec = NodeSpec {
+        node_id: 1,
+        zone: "local".into(),
+        endpoint: "0.0.0.0:7443".parse().unwrap(),
+        roles,
+        schedulable: true,
+    };
+    let mut identity = super::NodeIdentity {
+        certificate_name: "[::1]".into(),
+        certificate_pin: [7; 32],
+        role: "combined".into(),
+        external_endpoint: None,
+        retired: false,
+        drain_operation: None,
+    };
+    for endpoint in ["0.0.0.0:7443", "[::]:7443"] {
+        spec.endpoint = endpoint.parse().unwrap();
+        assert!(spec.validate(DeploymentMode::Local).is_ok());
+        assert!(identity.validate(&spec, DeploymentMode::Local).is_ok());
+        assert!(
+            identity
+                .validate(&spec, DeploymentMode::SeparateRf1)
+                .is_err()
+        );
+    }
+    assert!(
+        state
+            .apply(Command::put_node(
+                id(601),
+                state.revision(),
+                spec.clone(),
+                1
+            ))
+            .is_applied()
+    );
+    state.validate_snapshot().unwrap();
+    spec.endpoint = "[::1]:7443".parse().unwrap();
+    assert!(
+        identity
+            .validate(&spec, DeploymentMode::SeparateRf1)
+            .is_err()
+    );
+    identity.certificate_name = "::1".into();
+    assert!(identity.validate(&spec, DeploymentMode::Local).is_ok());
+    identity.certificate_name = "[invalid::ip]".into();
+    assert!(identity.validate(&spec, DeploymentMode::Local).is_err());
+    identity.certificate_name = "localhost".into();
+    identity.certificate_pin = [0; 32];
+    assert!(identity.validate(&spec, DeploymentMode::Local).is_err());
+    spec.endpoint.set_port(0);
+    assert!(spec.validate(DeploymentMode::Local).is_err());
+}
+
+#[test]
+fn local_metadata_membership_cannot_create_raft_history_or_mutate_before_rejection() {
+    let (mut state, _) = fixture_with_mode(DeploymentMode::Local);
+    let change = super::MetadataChange {
+        id: Id::new_v7().unwrap(),
+        previous: [1].into(),
+        target: [2].into(),
+        expected_membership_index: 1,
+        completed_membership_index: None,
+    };
+    assert_eq!(
+        state.prepare_metadata_change(change.clone()),
+        Err(Rejection::Unsupported)
+    );
+    assert_eq!(
+        state.complete_metadata_change(change.id, 2),
+        Err(Rejection::Unsupported)
+    );
+    assert!(state.metadata_changes.is_empty());
+    state.validate_snapshot().unwrap();
 }

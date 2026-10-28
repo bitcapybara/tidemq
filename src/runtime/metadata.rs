@@ -15,7 +15,7 @@ use crate::metadata::{
     self, Command, DeploymentMode, MetadataLimits, PartitionKey, RecordStatus, Response,
 };
 use crate::ownership::remote::DataProof;
-use crate::ownership::{ControlPolicy, DataAuthority, Grant};
+use crate::ownership::{ControlPolicy, DataAuthority, Grant, VerifiedGrant};
 
 use super::node::{data_config, random_id};
 use super::service::{Service, forbidden};
@@ -133,7 +133,12 @@ impl Service {
                 );
             }
         }
-        if let Err(error) = self.reconcile_owners(failover, deadline).await {
+        if self
+            .metadata
+            .as_ref()
+            .is_none_or(|replica| !replica.group.is_local())
+            && let Err(error) = self.reconcile_owners(failover, deadline).await
+        {
             tracing::debug!(
                 event_code = "runtime_owner_failover_wait",
                 error_code = error.failure().code,
@@ -155,7 +160,9 @@ impl Service {
                 if !initialized {
                     let _ = wire::within(
                         deadline,
-                        replica.raft.client_write(DataCommand::Initialize(config)),
+                        replica
+                            .group
+                            .commit(DataCommand::Initialize(config), deadline),
                     )
                     .await;
                 }
@@ -166,9 +173,9 @@ impl Service {
 
     async fn reconcile_metadata(&self, deadline: Instant) -> Result<()> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
+        wire::within(deadline, replica.group.ensure_read(deadline))
             .await?
-            .map_err(|_| Error::unavailable())?;
+            .map_err(wire::execution_error)?;
         let initialized = replica
             .state
             .try_with_application(|state| state.cluster_id().is_some())
@@ -180,10 +187,12 @@ impl Service {
                     random_id()?,
                     self.cluster,
                     self.config.runtime.metadata_group,
-                    if self.config.replication_factor == 1 {
-                        DeploymentMode::LocalRf1
+                    if replica.group.is_local() {
+                        DeploymentMode::Local
+                    } else if self.config.replication_factor == 1 {
+                        DeploymentMode::SeparateRf1
                     } else {
-                        DeploymentMode::ThreeReplica
+                        DeploymentMode::SeparateRf3
                     },
                     MetadataLimits::default(),
                 ),
@@ -236,7 +245,15 @@ impl Service {
                         random_id()?,
                         self.meta_revision().await?,
                         group.group_id,
-                        group.voters.iter().copied().collect(),
+                        if replica.group.is_local() {
+                            metadata::GroupPlacement::Local {
+                                node_id: self.config.node_id,
+                            }
+                        } else {
+                            metadata::GroupPlacement::Raft {
+                                voters: group.voters.iter().copied().collect(),
+                            }
+                        },
                     ),
                     deadline,
                 )
@@ -290,10 +307,12 @@ impl Service {
         let operation = command.operation_id;
         #[cfg(test)]
         super::console_operation::tests::before_metadata_write(&command).await;
-        let response = wire::within(deadline, replica.raft.client_write(command))
-            .await?
-            .map_err(|source| Error::operation("commit metadata command", source))?
-            .data;
+        let response = replica
+            .group
+            .commit(command, deadline)
+            .await
+            .map_err(wire::execution_error)?
+            .response;
         match response {
             Response::Applied { outcome, .. } => Ok(outcome),
             Response::Rejected { reason, .. } => {
@@ -325,9 +344,9 @@ impl Service {
     ) -> Result<Frame> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
+        wire::within(deadline, replica.group.ensure_read(deadline))
             .await?
-            .map_err(|_| Error::unavailable())?;
+            .map_err(wire::execution_error)?;
         if super::service::frame_kind(frame)? == FrameKind::ConsoleWrite {
             return self.console_write_public(&access, frame, deadline).await;
         }
@@ -427,7 +446,11 @@ impl Service {
                 .ok_or_else(Error::unavailable);
         }
         let grant = if diagnostic.phase == crate::ownership::OwnershipPhase::Unassigned {
-            let owner = self.select_initial_broker(deadline).await?;
+            let owner = if replica.group.is_local() {
+                self.config.node_id
+            } else {
+                self.select_initial_broker(deadline).await?
+            };
             let command = Command::grant_ownership(
                 self.meta_revision().await?,
                 self.cluster,
@@ -468,11 +491,21 @@ impl Service {
         phase: crate::ownership::OwnershipPhase,
         deadline: Instant,
     ) -> Result<metadata::Route> {
+        if self
+            .metadata
+            .as_ref()
+            .is_some_and(|replica| replica.group.is_local())
+        {
+            return self.complete_local_route(grant, phase, deadline).await;
+        }
         let partition = grant.partition;
         let voters = self
             .authoritative_group(grant.group_id, deadline)
             .await?
-            .voters;
+            .placement
+            .raft_voters()
+            .cloned()
+            .ok_or_else(Error::unavailable)?;
         let target = self.leader(grant.group_id, deadline).await?;
         if phase < crate::ownership::OwnershipPhase::Fenced {
             let started = MonoInstant::now();
@@ -574,9 +607,9 @@ impl Service {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
+        wire::within(deadline, replica.group.ensure_read(deadline))
             .await?
-            .map_err(|_| Error::unavailable())?;
+            .map_err(wire::execution_error)?;
         let diagnostic = replica
             .state
             .try_with_application(|state| state.diagnose_ownership(partition))
@@ -684,6 +717,37 @@ impl Service {
             .authority
             .verify_grant(&request.grant, deadline)
             .await?;
+        self.apply_ownership_stage(group, &request, verified, deadline)
+            .await?;
+        self.routes.write().await.remove(&request.grant.partition);
+        let placement = self.authoritative_group(group, deadline).await?.placement;
+        let voters = placement
+            .raft_voters()
+            .cloned()
+            .ok_or_else(Error::unavailable)?;
+        let authority = DataAuthority::new(
+            replica.group.clone(),
+            self.cluster,
+            group,
+            placement,
+            ControlPolicy::default(),
+        )
+        .map_err(|source| Error::operation("create data authority", source))?;
+        let proof = authority
+            .remote_proof(&request.grant, request.recover, voters)
+            .await
+            .map_err(|source| Error::operation("read data quorum proof", source))?;
+        wire::json(&proof)
+    }
+
+    async fn apply_ownership_stage(
+        &self,
+        group: u64,
+        request: &OwnershipRequest,
+        verified: VerifiedGrant,
+        deadline: Instant,
+    ) -> Result<()> {
+        let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         if request.recover {
             let fence = replica
                 .state
@@ -719,22 +783,96 @@ impl Service {
             self.data_write(group, DataCommand::InstallFence(command), deadline)
                 .await?;
         }
-        self.routes.write().await.remove(&request.grant.partition);
-        let voters = self.authoritative_group(group, deadline).await?.voters;
-        let authority = DataAuthority::new(
-            replica.raft.clone(),
-            replica.state.clone(),
+        Ok(())
+    }
+
+    async fn complete_local_route(
+        &self,
+        grant: Grant,
+        phase: crate::ownership::OwnershipPhase,
+        deadline: Instant,
+    ) -> Result<metadata::Route> {
+        let replica = self
+            .data
+            .get(&grant.group_id)
+            .ok_or_else(Error::unavailable)?;
+        let placement = self
+            .authoritative_group(grant.group_id, deadline)
+            .await?
+            .placement;
+        let data = DataAuthority::new(
+            replica.group.clone(),
             self.cluster,
-            group,
-            voters.clone(),
+            grant.group_id,
+            placement,
             ControlPolicy::default(),
         )
-        .map_err(|source| Error::operation("create data authority", source))?;
-        let proof = authority
-            .remote_proof(&request.grant, request.recover, voters)
+        .map_err(|source| Error::operation("create local data authority", source))?;
+        for (recover, stage, required) in [
+            (
+                false,
+                crate::ownership::Transition::Fence,
+                crate::ownership::OwnershipPhase::Fenced,
+            ),
+            (
+                true,
+                crate::ownership::Transition::Recover,
+                crate::ownership::OwnershipPhase::Recovered,
+            ),
+        ] {
+            if phase >= required {
+                continue;
+            }
+            let verified = self.authority.verify_grant(&grant, deadline).await?;
+            let request = OwnershipRequest {
+                grant: grant.clone(),
+                recover,
+            };
+            let mut timer = super::telemetry::OwnershipTimer::new(
+                &self.ownership_metrics,
+                stage,
+                grant.operation_id,
+                grant.epoch,
+            );
+            let result = self
+                .apply_ownership_stage(grant.group_id, &request, verified, deadline)
+                .await;
+            timer.finish(&result);
+            result?;
+            let revision = self.meta_revision().await?;
+            let observed = if recover {
+                data.verify_recovery(&grant)
+                    .await
+                    .and_then(|proof| proof.into_observe_command(revision))
+            } else {
+                data.verify_fence(&grant)
+                    .await
+                    .and_then(|proof| proof.into_observe_command(revision))
+            }
+            .map_err(|source| Error::operation("verify local ownership evidence", source))?;
+            self.meta_write(observed, deadline).await?;
+        }
+        let revision = self.meta_revision().await?;
+        let activated = data
+            .verify_recovery(&grant)
             .await
-            .map_err(|source| Error::operation("read data quorum proof", source))?;
-        wire::json(&proof)
+            .and_then(|proof| proof.into_activate_command(revision))
+            .map_err(|source| Error::operation("verify local route recovery", source))?;
+        let metadata::Outcome::RouteActivated(route) = self
+            .ownership_meta_write(
+                crate::ownership::Transition::Activate,
+                grant.epoch,
+                activated,
+                deadline,
+            )
+            .await?
+        else {
+            return Err(Error::invalid(
+                "Metadata returned the wrong local activation outcome",
+            ));
+        };
+        self.routes.write().await.remove(&grant.partition);
+        Ok(route)
     }
 
     async fn ownership_meta_write(
@@ -763,11 +901,12 @@ impl Service {
     ) -> Result<DataResponse> {
         let replica = self.data.get(&group).ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        match wire::within(deadline, replica.raft.client_write(command))
-            .await?
-            .map_err(|source| Error::operation("commit data-group command", source))?
-            .data
-        {
+        let committed = if command.is_completion() {
+            replica.group.commit_completion(command, deadline).await
+        } else {
+            replica.group.commit(command, deadline).await
+        };
+        match committed.map_err(wire::execution_error)?.response {
             DataResponse::Rejected(reason) => Err(super::data::data_rejection(reason)),
             response => Ok(response),
         }
@@ -788,6 +927,7 @@ pub(super) fn metadata_rejection(reason: metadata::Rejection) -> Error {
         R::Authorization(metadata::AuthRejection::NotFound) => (ErrorCode::NotFound, false),
         R::Authorization(metadata::AuthRejection::Conflict) => (ErrorCode::ContentConflict, false),
         R::Authorization(metadata::AuthRejection::Invalid) => (ErrorCode::InvalidRequest, false),
+        R::Unsupported => (ErrorCode::InvalidRequest, false),
         R::SubscriptionInUse => (ErrorCode::AssignmentBusy, false),
         R::Capacity => (ErrorCode::QuotaExceeded, true),
         R::RevisionConflict | R::GenerationConflict | R::RecoveryRequired | R::Uninitialized => {

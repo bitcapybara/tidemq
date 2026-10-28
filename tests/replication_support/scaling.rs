@@ -17,7 +17,7 @@ pub async fn metadata(cluster: Id) -> Cluster<MetadataState> {
         Id::new_v7().unwrap(),
         cluster,
         77,
-        DeploymentMode::ThreeReplica,
+        DeploymentMode::SeparateRf3,
         MetadataLimits::default(),
     ))
     .await;
@@ -47,7 +47,9 @@ pub async fn metadata(cluster: Id) -> Cluster<MetadataState> {
         Id::new_v7().unwrap(),
         revision,
         GROUP,
-        BTreeSet::from([1, 2, 3]),
+        tidemq::metadata::GroupPlacement::Raft {
+            voters: BTreeSet::from([1, 2, 3]),
+        },
     ))
     .await;
     meta

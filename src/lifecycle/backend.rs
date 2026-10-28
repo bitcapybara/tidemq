@@ -4,22 +4,23 @@ use std::{
     time::Instant,
 };
 
-use openraft::LogId;
 use serde::{Deserialize, Serialize};
 use tidemq_protocol::Id;
 
 use crate::{
+    execution::{GroupHandle, GroupState},
     metadata::{
-        Action, Command, DataGroup, DeploymentMode, MetadataState, NodeRecord, NodeRole, Outcome,
-        PartitionKey, Response,
+        Action, Command, DataGroup, DeploymentMode, GroupPlacement, MetadataState, NodeRecord,
+        NodeRole, Outcome, PartitionKey, Response,
     },
-    ownership::{ControlLease, ControlPolicy, FenceRecord, Grant, MetadataAuthority},
-    replication::{DiskStateMachine, Raft},
+    ownership::{
+        CommitPosition, ControlLease, ControlPolicy, FenceRecord, Grant, MetadataAuthority,
+    },
 };
 
 use super::{
     Error, ObjectRecord, RangeRequest, Rejection, Result,
-    coordinator::stable_voters,
+    coordinator::group_placement,
     types::{CatalogCommand, CatalogOutcome, MetadataOperation, PinRecord},
 };
 
@@ -57,7 +58,7 @@ pub(crate) enum Query {
     Capacity,
     Objects { after: Option<Id>, limit: usize },
     Pins { after: Option<Id>, limit: usize },
-    DataVoters,
+    DataPlacement,
     Object(Id),
     Diagnose(Id),
     Prepare(Vec<RangeRequest>),
@@ -73,7 +74,7 @@ pub(crate) enum View {
     Capacity(super::CapacityUsage),
     Objects(super::ObjectPage),
     Pins(super::PinPage),
-    DataVoters(DataGroup),
+    DataPlacement(DataGroup),
     Object(Box<ObjectRecord>),
     Diagnostic(super::Diagnostic),
     Prepared {
@@ -92,15 +93,15 @@ pub(crate) enum View {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct QuorumView {
+pub(crate) struct AuthorityView {
     pub cluster_id: Id,
     pub group_id: u64,
     pub node_id: u64,
     pub revision: u64,
     pub mode: DeploymentMode,
-    pub voters: Vec<u64>,
+    pub placement: GroupPlacement,
     pub nodes: Vec<NodeRecord>,
-    pub position: LogId<u64>,
+    pub position: CommitPosition,
     pub view: View,
 }
 
@@ -115,7 +116,7 @@ impl MetadataBackend {
         data_group: u64,
         query: Query,
         deadline: Instant,
-    ) -> Result<QuorumView> {
+    ) -> Result<AuthorityView> {
         match self {
             Self::Local(backend) => backend.read(data_group, query, deadline).await,
             Self::Remote(backend) => backend.query(data_group, query, deadline).await,
@@ -153,17 +154,18 @@ pub struct MetadataReplica {
 }
 
 pub(crate) struct LocalMetadata {
-    pub(crate) raft: Raft<MetadataState>,
-    pub(crate) state: DiskStateMachine<MetadataState>,
+    pub(crate) group: GroupHandle<MetadataState>,
+    pub(crate) state: GroupState<MetadataState>,
 }
 
 impl MetadataReplica {
     /// The data-group selector is fixed when the coordinator is constructed.
-    pub fn local(raft: Raft<MetadataState>, state: DiskStateMachine<MetadataState>) -> Self {
-        let cluster_id = state.0.identity.group.cluster_id;
-        let group_id = state.0.identity.group.group_id;
+    pub fn local(group: GroupHandle<MetadataState>) -> Self {
+        let cluster_id = group.identity().group.cluster_id;
+        let group_id = group.identity().group.group_id;
+        let state = group.state();
         Self {
-            backend: Arc::new(MetadataBackend::Local(LocalMetadata { raft, state })),
+            backend: Arc::new(MetadataBackend::Local(LocalMetadata { group, state })),
             cluster_id,
             group_id,
         }
@@ -176,20 +178,24 @@ impl LocalMetadata {
         data_group: u64,
         query: Query,
         deadline: Instant,
-    ) -> Result<QuorumView> {
+    ) -> Result<AuthorityView> {
         let until = deadline.min(Instant::now() + ControlPolicy::default().ttl);
         tokio::time::timeout_at(until.into(), async {
-            self.raft.ensure_linearizable().await.map_err(consensus)?;
-            let voters = stable_voters(&self.raft)?;
+            self.group
+                .ensure_read(until.into())
+                .await
+                .map_err(execution)?;
+            let placement = group_placement(&self.group)?;
             self.state
                 .try_with_applied(|state, position| {
-                    let cluster_id = self.state.0.identity.group.cluster_id;
-                    let group_id = self.state.0.identity.group.group_id;
+                    let cluster_id = self.state.storage_identity().group.cluster_id;
+                    let group_id = self.state.storage_identity().group.group_id;
                     if state.cluster_id() != Some(cluster_id)
                         || state.metadata_group_id() != Some(group_id)
-                        || state
-                            .mode
-                            .is_none_or(|mode| mode.replication_factor() != voters.len())
+                        || state.mode.is_none_or(|mode| {
+                            placement.mode() != Ok(mode)
+                                || (mode == DeploymentMode::Local) != self.group.is_local()
+                        })
                     {
                         return Err(Error::Rejected {
                             reason: Rejection::Membership,
@@ -197,7 +203,7 @@ impl LocalMetadata {
                     }
                     let mut nodes = Vec::new();
                     let mut zones = BTreeSet::new();
-                    for voter in &voters {
+                    for voter in &placement.hosts() {
                         let node = state
                             .node(*voter)
                             .filter(|node| node.spec.roles.contains(&NodeRole::Metadata))
@@ -207,25 +213,27 @@ impl LocalMetadata {
                         zones.insert(&node.spec.zone);
                         nodes.push(node.clone());
                     }
-                    if voters.len() == 3 && zones.len() != 3 {
+                    if placement.mode() == Ok(DeploymentMode::SeparateRf3) && zones.len() != 3 {
                         return Err(Error::Rejected {
                             reason: Rejection::Membership,
                         });
                     }
-                    Ok(QuorumView {
+                    Ok(AuthorityView {
                         cluster_id,
                         group_id,
-                        node_id: self.state.0.identity.node_id,
+                        node_id: self.state.storage_identity().node_id,
                         revision: state.revision(),
                         mode: state.mode.ok_or(Error::Configuration)?,
-                        voters: voters.into_iter().collect(),
+                        placement,
                         nodes,
-                        position: position.ok_or(Error::Configuration)?,
+                        position: position
+                            .map(CommitPosition::from)
+                            .ok_or(Error::Configuration)?,
                         view: project(state, data_group, query)?,
                     })
                 })
                 .await
-                .map_err(|source| Error::Storage { source })?
+                .map_err(execution)?
         })
         .await
         .map_err(|_| Error::Deadline)?
@@ -253,7 +261,7 @@ impl LocalMetadata {
                     .validate_context(state)
                 })
                 .await
-                .map_err(|source| Error::Storage { source })?
+                .map_err(execution)?
                 .map_err(|reason| Error::Rejected { reason })?;
             let request = Command::new(
                 operation_id,
@@ -262,14 +270,17 @@ impl LocalMetadata {
                     command: command.clone(),
                 }),
             );
-            let response = tokio::time::timeout_at(
-                deadline.min(started + ControlPolicy::default().ttl).into(),
-                self.raft.client_write(request),
-            )
-            .await
-            .map_err(|_| Error::Unknown)?
-            .map_err(consensus)?;
-            match response.data {
+            let until = deadline.min(started + ControlPolicy::default().ttl);
+            let response = if matches!(
+                &command,
+                CatalogCommand::Register(_) | CatalogCommand::Pin(_)
+            ) {
+                self.group.commit(request, until.into()).await
+            } else {
+                self.group.commit_completion(request, until.into()).await
+            }
+            .map_err(execution)?;
+            match response.response {
                 Response::Applied {
                     outcome: Outcome::Lifecycle(result),
                     ..
@@ -296,10 +307,9 @@ impl LocalMetadata {
     }
     async fn lease(&self, fence: FenceRecord, deadline: Instant) -> Result<ControlLease> {
         let authority = MetadataAuthority::new(
-            self.raft.clone(),
-            self.state.clone(),
-            self.state.0.identity.group.cluster_id,
-            self.state.0.identity.group.group_id,
+            self.group.clone(),
+            self.state.storage_identity().group.cluster_id,
+            self.state.storage_identity().group.group_id,
             ControlPolicy::default(),
         )
         .map_err(|source| Error::Authority { source })?;
@@ -327,10 +337,10 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
             })
             .map(View::Pins)
             .map_err(|reason| Error::Rejected { reason }),
-        Query::DataVoters => state
+        Query::DataPlacement => state
             .group(data_group)
             .cloned()
-            .map(View::DataVoters)
+            .map(View::DataPlacement)
             .ok_or(Error::Rejected {
                 reason: Rejection::Membership,
             }),
@@ -487,8 +497,9 @@ pub(crate) fn project(state: &MetadataState, data_group: u64, query: Query) -> R
     }
 }
 
-fn consensus(error: impl std::fmt::Display) -> Error {
-    Error::Consensus {
-        reason: error.to_string(),
+pub(super) fn execution(source: crate::execution::Error) -> Error {
+    match source {
+        crate::execution::Error::Unknown { .. } => Error::Unknown,
+        source => Error::Execution { source },
     }
 }

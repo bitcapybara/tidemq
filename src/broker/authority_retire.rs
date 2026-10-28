@@ -129,9 +129,11 @@ impl DataApplication {
                     || config.group_id != source.plan.source.group_id
             })
             || source.cut.is_some_and(|cut| {
-                cut.term == 0
-                    || cut.index == 0
-                    || !source.plan.source_voters.contains(&cut.leader_node)
+                !cut.validate()
+                    || cut.sequence() == 0
+                    || !cut
+                        .raft_leader()
+                        .is_some_and(|leader| source.plan.source_voters.contains(&leader))
             })
         {
             return Err(invalid());
@@ -167,6 +169,8 @@ impl DataApplication {
 fn valid_retired_cut(source: &FrozenSource, cut: CommitPosition) -> bool {
     source
         .cut
-        .is_some_and(|frozen| cut.index > frozen.index && cut.term >= frozen.term)
-        && source.plan.source_voters.contains(&cut.leader_node)
+        .is_some_and(|frozen| cut.at_least(frozen) && cut.sequence() > frozen.sequence())
+        && cut
+            .raft_leader()
+            .is_some_and(|leader| source.plan.source_voters.contains(&leader))
 }

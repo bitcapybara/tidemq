@@ -1,6 +1,6 @@
 //! Ownership grants, durable fences, and process-local control validity.
 
-mod authority;
+pub(crate) mod authority;
 mod fence;
 mod lease;
 pub(crate) mod remote;
