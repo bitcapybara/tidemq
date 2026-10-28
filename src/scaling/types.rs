@@ -27,7 +27,11 @@ impl MembershipPlan {
             cluster_id,
             group_id: group.group_id,
             generation: group.generation,
-            previous: group.voters.clone(),
+            previous: group
+                .placement
+                .raft_voters()
+                .ok_or(Rejection::Unsupported)?
+                .clone(),
             target,
             operation_id: cluster_id,
         };

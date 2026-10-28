@@ -299,7 +299,7 @@ fn fixture() -> (MetadataState, Id) {
                 Id::random().unwrap(),
                 Id::random().unwrap(),
                 1,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .is_applied()

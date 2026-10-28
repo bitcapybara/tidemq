@@ -8,20 +8,19 @@ use std::{
 };
 
 use bytes::Bytes;
-use openraft::{LogId, storage::RaftSnapshotBuilder};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tidemq_protocol::{Id, common::TrafficClass};
 
 use crate::{
-    metadata::{DeploymentMode, MetadataState, NodeRole},
-    ownership::{ControlLease, FenceRecord},
-    replication::{DiskStateMachine, Raft},
+    execution::GroupHandle,
+    metadata::{DeploymentMode, GroupPlacement, MetadataState, NodeRole},
+    ownership::{CommitPosition, ControlLease, FenceRecord},
     transport::{Authorization, NodeGrant},
 };
 
 use super::{
     DataReplica, Error, Rejection, Result,
-    backend::{LocalMetadata, MetadataBackend, MetadataReplica, Query, QuorumView, View},
+    backend::{AuthorityView, LocalMetadata, MetadataBackend, MetadataReplica, Query, View},
     types::{CatalogCommand, CatalogOutcome},
 };
 
@@ -63,7 +62,7 @@ struct SnapshotRequest {
     generation: u64,
     partitions: Vec<crate::metadata::PartitionKey>,
     floor: Option<FloorTarget>,
-    voters: BTreeSet<u64>,
+    placement: GroupPlacement,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,10 +73,10 @@ pub(crate) struct SnapshotEvidence {
     pub(crate) generation: u64,
     partitions: Vec<crate::metadata::PartitionKey>,
     floor: Option<FloorTarget>,
-    pub(crate) voters: BTreeSet<u64>,
+    pub(crate) placement: GroupPlacement,
     pub(crate) node_id: u64,
     pub(crate) snapshot_id: String,
-    pub(crate) position: LogId<u64>,
+    pub(crate) position: CommitPosition,
 }
 
 #[derive(Clone)]
@@ -98,8 +97,8 @@ impl ReplicaCheckpoint {
     pub fn local(replica: DataReplica) -> Self {
         Self {
             node_id: replica.node_id(),
-            cluster_id: replica.state.0.identity.group.cluster_id,
-            group_id: replica.state.0.identity.group.group_id,
+            cluster_id: replica.state.storage_identity().group.cluster_id,
+            group_id: replica.state.storage_identity().group.group_id,
             backend: CheckpointBackend::Local(replica),
         }
     }
@@ -126,8 +125,8 @@ impl ReplicaCheckpoint {
         &self,
         object_id: Id,
         generation: u64,
-        position: LogId<u64>,
-        voters: &BTreeSet<u64>,
+        position: CommitPosition,
+        placement: &GroupPlacement,
         partitions: &[crate::metadata::PartitionKey],
         deadline: Instant,
     ) -> Result<SnapshotEvidence> {
@@ -138,7 +137,7 @@ impl ReplicaCheckpoint {
             generation,
             partitions: partitions.to_vec(),
             floor: None,
-            voters: voters.clone(),
+            placement: placement.clone(),
         };
         self.build_request(request, position, deadline).await
     }
@@ -159,7 +158,7 @@ impl ReplicaCheckpoint {
                 before: proof.before,
                 manifest_generation: proof.manifest_generation,
             }),
-            voters: proof.voters.clone(),
+            placement: proof.placement.clone(),
         };
         self.build_request(request, proof.position, deadline).await
     }
@@ -167,7 +166,7 @@ impl ReplicaCheckpoint {
     async fn build_request(
         &self,
         request: SnapshotRequest,
-        position: LogId<u64>,
+        position: CommitPosition,
         deadline: Instant,
     ) -> Result<SnapshotEvidence> {
         let proof = match &self.backend {
@@ -175,6 +174,9 @@ impl ReplicaCheckpoint {
                 build_snapshot(replica, &request, deadline).await?
             }
             CheckpointBackend::Remote(rpc) => {
+                if matches!(request.placement, GroupPlacement::Local { .. }) {
+                    return Err(Error::Authorization);
+                }
                 let body = rpc
                     .request(
                         self.node_id,
@@ -194,9 +196,9 @@ impl ReplicaCheckpoint {
             || proof.generation != request.generation
             || proof.partitions != request.partitions
             || proof.floor != request.floor
-            || proof.voters != request.voters
+            || proof.placement != request.placement
             || proof.node_id != self.node_id
-            || proof.position < position
+            || !proof.position.at_least(position)
             || proof.snapshot_id.is_empty()
             || proof.snapshot_id.len() > 128
         {
@@ -224,7 +226,8 @@ impl SnapshotHandler {
             return Err(Error::Authorization);
         };
         let request: SnapshotRequest = decode(body)?;
-        if class != TrafficClass::Bulk
+        if self.replica.group.is_local()
+            || class != TrafficClass::Bulk
             || peer.cluster_id != request.cluster_id
             || !peer.allowed_groups.contains(&request.group_id)
             || !matches!(peer.role.as_str(), "storage" | "metadata" | "combined")
@@ -241,10 +244,10 @@ async fn build_snapshot(
     request: &SnapshotRequest,
     deadline: Instant,
 ) -> Result<SnapshotEvidence> {
-    if replica.state.0.identity.group.cluster_id != request.cluster_id
-        || replica.state.0.identity.group.group_id != request.group_id
-        || !request.voters.contains(&replica.node_id())
-        || !matches!(request.voters.len(), 1 | 3)
+    if replica.state.storage_identity().group.cluster_id != request.cluster_id
+        || replica.state.storage_identity().group.group_id != request.group_id
+        || !request.placement.hosts().contains(&replica.node_id())
+        || request.placement.mode().is_err()
         || request.partitions.len() > 64
         || request.object_id.is_some() == request.floor.is_some()
         || request
@@ -263,40 +266,42 @@ async fn build_snapshot(
         if Instant::now() >= deadline {
             return Err(Error::Deadline);
         }
-        if super::coordinator::stable_voters(&replica.raft)? != request.voters {
+        if super::coordinator::group_placement(&replica.group)? != request.placement {
             return Err(Error::Rejected {
                 reason: Rejection::Membership,
             });
         }
         let position = replica
             .state
-            .try_with_applied(
-                |state, applied| {
-                    if request.ready(state) { applied } else { None }
-                },
-            )
+            .try_with_applied(|state, applied| {
+                if request.ready(state) {
+                    applied.map(CommitPosition::from)
+                } else {
+                    None
+                }
+            })
             .await
-            .map_err(|source| Error::Storage { source })?;
+            .map_err(super::backend::execution)?;
         if let Some(position) = position {
             break position;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     };
-    let mut state = replica.state.clone();
-    let snapshot = tokio::time::timeout_at(deadline.into(), state.build_snapshot())
+    let snapshot = replica
+        .group
+        .snapshot(deadline.into())
         .await
-        .map_err(|_| Error::Deadline)?
-        .map_err(|source| Error::Consensus {
-            reason: source.to_string(),
-        })?;
-    let position = snapshot
-        .meta
-        .last_log_id
-        .filter(|position| *position >= applied)
+        .map_err(super::backend::execution)?
         .ok_or(Error::Rejected {
             reason: Rejection::CheckpointRequired,
         })?;
-    if super::coordinator::stable_voters(&replica.raft)? != request.voters {
+    let position = CommitPosition::from(snapshot.position);
+    if !position.at_least(applied) {
+        return Err(Error::Rejected {
+            reason: Rejection::CheckpointRequired,
+        });
+    }
+    if super::coordinator::group_placement(&replica.group)? != request.placement {
         return Err(Error::Rejected {
             reason: Rejection::Membership,
         });
@@ -308,9 +313,9 @@ async fn build_snapshot(
         generation: request.generation,
         partitions: request.partitions.clone(),
         floor: request.floor,
-        voters: request.voters.clone(),
+        placement: request.placement.clone(),
         node_id: replica.node_id(),
-        snapshot_id: snapshot.meta.snapshot_id,
+        snapshot_id: snapshot.snapshot_id,
         position,
     })
 }
@@ -370,9 +375,9 @@ enum Mutation {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum Reply {
-    Query(Box<QuorumView>),
+    Query(Box<AuthorityView>),
     Mutation {
-        proof: Box<QuorumView>,
+        proof: Box<AuthorityView>,
         outcome: Mutation,
     },
     Rejected(Rejection),
@@ -397,7 +402,8 @@ impl MetadataReplica {
         mode: DeploymentMode,
     ) -> Result<Self> {
         let unique: BTreeSet<_> = nodes.iter().copied().collect();
-        if group_id == 0
+        if mode == DeploymentMode::Local
+            || group_id == 0
             || nodes.len() > 16
             || unique.contains(&0)
             || unique.len() != nodes.len()
@@ -499,17 +505,24 @@ impl RemoteMetadata {
         }
     }
 
-    fn verify(&self, target: u64, proof: &QuorumView) -> Result<()> {
-        let voters: BTreeSet<_> = proof.voters.iter().copied().collect();
+    fn verify(&self, target: u64, proof: &AuthorityView) -> Result<()> {
+        let GroupPlacement::Raft { voters } = &proof.placement else {
+            return Err(Error::Authorization);
+        };
         let nodes = self.nodes.read().map_err(|_| Error::Configuration)?;
         if proof.cluster_id != self.cluster_id
             || proof.group_id != self.group_id
             || proof.node_id != target
             || proof.mode != self.mode
             || proof.revision == 0
-            || proof.position.index == 0
+            || proof.position.sequence() == 0
+            || !proof.position.matches_mode(self.mode)
+            || self.mode == DeploymentMode::Local
+            || !proof
+                .position
+                .raft_leader()
+                .is_some_and(|leader| voters.contains(&leader))
             || voters.len() != self.mode.replication_factor()
-            || voters.len() != proof.voters.len()
             || !voters.contains(&target)
             || voters.iter().any(|node| !nodes.contains(node))
             || proof.nodes.len() != voters.len()
@@ -529,7 +542,7 @@ impl RemoteMetadata {
             }
             zones.insert(&node.spec.zone);
         }
-        if self.mode == DeploymentMode::ThreeReplica && zones.len() != 3 {
+        if self.mode == DeploymentMode::SeparateRf3 && zones.len() != 3 {
             return Err(Error::Authorization);
         }
         Ok(())
@@ -542,13 +555,17 @@ impl RemoteMetadata {
         data_group: u64,
         query: Query,
         deadline: Instant,
-    ) -> Result<QuorumView> {
+    ) -> Result<AuthorityView> {
         let (target, reply) = self
             .call(LIFECYCLE_QUERY, data_group, query.clone(), deadline)
             .await?;
         match reply {
             Reply::Query(proof) => {
                 self.verify(target, &proof)?;
+                if matches!(&proof.view, View::DataPlacement(group) if group.placement.mode() != Ok(self.mode))
+                {
+                    return Err(Error::Authorization);
+                }
                 validate_view(&query, &proof.view, self.cluster_id, data_group)?;
                 Ok(*proof)
             }
@@ -603,9 +620,10 @@ pub(crate) struct MetadataHandler {
     local: LocalMetadata,
 }
 impl MetadataHandler {
-    pub(crate) fn new(raft: Raft<MetadataState>, state: DiskStateMachine<MetadataState>) -> Self {
+    pub(crate) fn new(group: GroupHandle<MetadataState>) -> Self {
+        let state = group.state();
         Self {
-            local: LocalMetadata { raft, state },
+            local: LocalMetadata { group, state },
         }
     }
 
@@ -651,9 +669,12 @@ impl MetadataHandler {
         let reply = match result {
             Ok(reply) => reply,
             Err(Error::Rejected { reason }) => Reply::Rejected(reason),
-            Err(Error::Consensus { .. }) => {
-                Reply::Redirect(self.local.raft.metrics().borrow().current_leader)
-            }
+            Err(Error::Consensus { .. }) => Reply::Redirect(
+                self.local
+                    .group
+                    .raft()
+                    .and_then(|raft| raft.metrics().borrow().current_leader),
+            ),
             Err(_) => Reply::Unavailable,
         };
         encode(&reply)
@@ -681,10 +702,11 @@ impl MetadataHandler {
         let Authorization::Internal(peer) = authorization else {
             return Err(Error::Authorization);
         };
-        if peer.cluster_id != self.local.state.0.identity.group.cluster_id
+        if self.local.group.is_local()
+            || peer.cluster_id != self.local.state.storage_identity().group.cluster_id
             || !peer
                 .allowed_groups
-                .contains(&self.local.state.0.identity.group.group_id)
+                .contains(&self.local.state.storage_identity().group.group_id)
             || !matches!(peer.role.as_str(), "storage" | "metadata" | "combined")
         {
             return Err(Error::Authorization);
@@ -715,7 +737,7 @@ impl MetadataHandler {
                             .unwrap_or_default()
                     })
                     .await
-                    .map_err(|source| Error::Storage { source })?;
+                    .map_err(super::backend::execution)?;
                 (objects, vec![])
             }
             _ => (vec![], vec![]),
@@ -828,12 +850,12 @@ impl MetadataHandler {
                 Ok(())
             })
             .await
-            .map_err(|source| Error::Storage { source })?
+            .map_err(super::backend::execution)?
     }
 
     fn check_identity<T>(&self, envelope: &Envelope<T>) -> Result<()> {
-        if envelope.cluster_id != self.local.state.0.identity.group.cluster_id
-            || envelope.group_id != self.local.state.0.identity.group.group_id
+        if envelope.cluster_id != self.local.state.storage_identity().group.cluster_id
+            || envelope.group_id != self.local.state.storage_identity().group.group_id
         {
             return Err(Error::Authorization);
         }
@@ -953,8 +975,12 @@ fn validate_view(query: &Query, view: &View, cluster: Id, data_group: u64) -> Re
                     .len()
                     == diagnostic.authority_scopes.len()
         }
-        (Query::DataVoters, View::DataVoters(group)) => {
-            group.group_id == data_group && matches!(group.voters.len(), 1 | 3)
+        (Query::DataPlacement, View::DataPlacement(group)) => {
+            group.group_id == data_group
+                && group
+                    .placement
+                    .mode()
+                    .is_ok_and(|mode| mode != DeploymentMode::Local)
         }
         (Query::Object(id), View::Object(object)) => {
             object.object_id() == *id && object.descriptor().identity.cluster_id == cluster
@@ -1060,14 +1086,16 @@ mod tests {
         }
     }
 
-    fn proof(cluster_id: Id) -> QuorumView {
-        QuorumView {
+    fn proof(cluster_id: Id) -> AuthorityView {
+        AuthorityView {
             cluster_id,
             group_id: 77,
             node_id: 2,
             revision: 5,
-            mode: DeploymentMode::LocalRf1,
-            voters: vec![2],
+            mode: DeploymentMode::SeparateRf1,
+            placement: GroupPlacement::Raft {
+                voters: BTreeSet::from([2]),
+            },
             nodes: vec![NodeRecord {
                 spec: NodeSpec {
                     node_id: 2,
@@ -1078,7 +1106,11 @@ mod tests {
                 },
                 generation: 1,
             }],
-            position: LogId::new(openraft::CommittedLeaderId::new(1, 2), 8),
+            position: CommitPosition::Raft {
+                term: 1,
+                leader_node: 2,
+                index: 8,
+            },
             view: View::Health,
         }
     }
@@ -1092,7 +1124,7 @@ mod tests {
             cluster_id: cluster,
             group_id: 77,
             nodes: vec![2].into(),
-            mode: DeploymentMode::LocalRf1,
+            mode: DeploymentMode::SeparateRf1,
         };
         remote.verify(2, &proof).unwrap();
         assert!(remote.verify(1, &proof).is_err());
@@ -1104,7 +1136,7 @@ mod tests {
             cluster_id: cluster,
             group_id: 77,
             nodes: vec![1, 2, 3].into(),
-            mode: DeploymentMode::ThreeReplica,
+            mode: DeploymentMode::SeparateRf3,
         };
         assert!(production.verify(2, &proof).is_err());
     }

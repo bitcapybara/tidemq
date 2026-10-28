@@ -86,11 +86,15 @@ impl Placement {
         observations: &[Capacity],
         now: Instant,
     ) -> Result<MembershipPlan> {
+        if group.placement.raft_voters().is_none() {
+            return Err(Error::Unsupported);
+        }
         if state.group(group.group_id) != Some(group) || observations.len() > 256 {
             return Err(Error::Placement);
         }
         let nodes = group
-            .voters
+            .placement
+            .hosts()
             .iter()
             .copied()
             .chain(observations.iter().map(|sample| sample.node_id))
@@ -124,7 +128,7 @@ impl Placement {
             .checked_add(self.policy.reserve_bytes)
             .ok_or(Error::Placement)?;
         if observations.len() > 256
-            || !group.voters.contains(&removed)
+            || !group.placement.hosts().contains(&removed)
             || !repair && self.cooling(group.group_id, now)
         {
             return Err(Error::Placement);
@@ -133,7 +137,8 @@ impl Placement {
         let mut selected: Option<(u64, u64)> = None;
         let mut blocked = BlockReason::Topology;
         let occupied: BTreeSet<_> = group
-            .voters
+            .placement
+            .hosts()
             .iter()
             .filter(|id| **id != removed)
             .filter_map(|id| nodes.get(id).map(|node| node.zone.as_str()))
@@ -145,7 +150,7 @@ impl Placement {
             let Some(node) = nodes.get(&report.node_id) else {
                 continue;
             };
-            if group.voters.contains(&report.node_id)
+            if group.placement.hosts().contains(&report.node_id)
                 || !node.schedulable
                 || !node.roles.contains(&NodeRole::Storage)
                 || occupied.contains(node.zone.as_str())
@@ -163,7 +168,7 @@ impl Placement {
             }
         }
         let (_, node) = selected.ok_or(Error::Capacity { reason: blocked })?;
-        let mut target = group.voters.clone();
+        let mut target = group.placement.hosts().clone();
         target.remove(&removed);
         target.insert(node);
         MembershipPlan::new(cluster, group, target).map_err(|reason| Error::Rejected { reason })
@@ -326,7 +331,9 @@ mod tests {
         let group = DataGroup {
             group_id: 2,
             generation: 1,
-            voters: [1, 2, 3].into(),
+            placement: crate::metadata::GroupPlacement::Raft {
+                voters: [1, 2, 3].into(),
+            },
         };
         let nodes = (1..=4)
             .map(|id| {

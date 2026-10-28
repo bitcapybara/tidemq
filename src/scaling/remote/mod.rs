@@ -21,8 +21,9 @@ use super::{
     RepairLease, Result, ScalingMetrics, StableMembership,
 };
 use crate::{
+    execution::GroupHandle,
     metadata::{DataGroup, DeploymentMode, MetadataState},
-    replication::{DiskLog, DiskStateMachine, Raft},
+    replication::{DiskLog, DiskStateMachine},
     transport::NodeGrant,
 };
 
@@ -63,21 +64,32 @@ pub struct ServiceConfig {
 }
 
 pub struct LocalReplicas<A: MembershipApplication = crate::broker::DataApplication> {
-    metadata: Option<(Raft<MetadataState>, DiskStateMachine<MetadataState>)>,
+    metadata: Option<GroupHandle<MetadataState>>,
     data: BTreeMap<u64, DataNode<A>>,
 }
 impl<A: MembershipApplication> LocalReplicas<A> {
     pub fn new(
-        metadata: Option<(Raft<MetadataState>, DiskStateMachine<MetadataState>)>,
-        data: Vec<(Raft<A>, DiskLog<A>, DiskStateMachine<A>)>,
+        metadata: Option<GroupHandle<MetadataState>>,
+        data: Vec<GroupHandle<A>>,
     ) -> Result<Self> {
         if data.len() > 256 {
             return Err(Error::Overloaded);
         }
+        if metadata.as_ref().is_some_and(GroupHandle::is_local) {
+            return Err(Error::Unsupported);
+        }
         let mut nodes = BTreeMap::new();
-        for (raft, log, state) in data {
-            let group = state.storage_identity().group.group_id;
-            if nodes.insert(group, DataNode { raft, log, state }).is_some() {
+        for handle in data {
+            let GroupHandle::Raft { log, state, .. } = &handle else {
+                return Err(Error::Unsupported);
+            };
+            let group = handle.identity().group.group_id;
+            let node = DataNode {
+                log: log.clone(),
+                state: state.clone(),
+                group: handle,
+            };
+            if nodes.insert(group, node).is_some() {
                 return Err(Error::Configuration);
             }
         }
@@ -90,7 +102,7 @@ impl<A: MembershipApplication> LocalReplicas<A> {
 
 #[derive(Clone)]
 struct DataNode<A: MembershipApplication> {
-    raft: Raft<A>,
+    group: GroupHandle<A>,
     log: DiskLog<A>,
     state: DiskStateMachine<A>,
 }
@@ -127,6 +139,9 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         budget: RepairBudget,
         metrics: Arc<ScalingMetrics>,
     ) -> Result<Self> {
+        if config.mode == DeploymentMode::Local {
+            return Err(Error::Unsupported);
+        }
         if config.node_id == 0
             || config.metadata_group == 0
             || config.metadata_voters.len() != config.mode.replication_factor()
@@ -134,8 +149,8 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         {
             return Err(Error::Configuration);
         }
-        if let Some((_, state)) = &replicas.metadata {
-            let id = state.storage_identity();
+        if let Some(group) = &replicas.metadata {
+            let id = group.identity();
             if id.group.cluster_id != config.cluster_id
                 || id.group.group_id != config.metadata_group
                 || id.node_id != config.node_id
@@ -275,7 +290,15 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             Err(_) => return Ok(Reply::CapacityUnavailable),
             Ok(false) => {}
         }
-        if replica.raft.metrics().borrow().running_state.is_err() {
+        if replica
+            .group
+            .raft()
+            .ok_or(Error::Unsupported)?
+            .metrics()
+            .borrow()
+            .running_state
+            .is_err()
+        {
             return Ok(Reply::ReplicaFailed {
                 group,
                 node,
@@ -352,7 +375,7 @@ impl<R: Rpc> Coordinator<R> {
                             .generation
                             .checked_add(1)
                             .ok_or(Error::Configuration)?
-                        && current.voters == record.plan.target)
+                        && current.placement.hosts() == record.plan.target)
             {
                 return Ok(record.plan);
             }
@@ -360,7 +383,7 @@ impl<R: Rpc> Coordinator<R> {
                 return Err(Error::Authority);
             }
         }
-        let mut target = current.voters.clone();
+        let mut target = current.placement.hosts().clone();
         if !target.remove(&removed) || !target.insert(added) {
             return Err(Error::Configuration);
         }
@@ -486,7 +509,7 @@ fn completed_record(
         && record.is_complete()
     {
         if group.generation != plan.generation.checked_add(1).ok_or(Error::Configuration)?
-            || group.voters != plan.target
+            || group.placement.hosts() != plan.target
         {
             return Err(Error::Authority);
         }
@@ -498,7 +521,7 @@ fn completed_record(
         });
     }
     if group.generation != plan.generation
-        || group.voters != plan.previous
+        || group.placement.hosts() != plan.previous
         || record.is_some_and(|record| !record.is_complete() && record.plan != *plan)
     {
         return Err(Error::Authority);

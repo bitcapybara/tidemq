@@ -58,7 +58,7 @@ impl Fixture {
             operation,
             self.state.revision(),
             group_id,
-            voters,
+            tidemq::metadata::GroupPlacement::Raft { voters },
         ))
     }
 
@@ -74,7 +74,7 @@ impl Fixture {
     }
 
     fn local() -> Self {
-        let mut fixture = Self::new(DeploymentMode::LocalRf1, MetadataLimits::default());
+        let mut fixture = Self::new(DeploymentMode::SeparateRf1, MetadataLimits::default());
         fixture.node(
             1,
             "local",
@@ -246,7 +246,7 @@ fn retiring_and_recreating_a_name_never_reuses_topic_or_subscription_identity() 
 
 #[test]
 fn rf3_requires_three_storage_nodes_in_distinct_zones_and_never_falls_back() {
-    let mut fixture = Fixture::new(DeploymentMode::ThreeReplica, MetadataLimits::default());
+    let mut fixture = Fixture::new(DeploymentMode::SeparateRf3, MetadataLimits::default());
     fixture.node(1, "zone-a", BTreeSet::from([NodeRole::Storage]));
     fixture.node(2, "zone-a", BTreeSet::from([NodeRole::Storage]));
     fixture.node(3, "zone-b", BTreeSet::from([NodeRole::Storage]));
@@ -306,7 +306,7 @@ fn state_budgets_keep_tombstones_and_diagnostics_are_bounded_and_read_only() {
         operations: 16,
         ..MetadataLimits::default()
     };
-    let mut fixture = Fixture::new(DeploymentMode::LocalRf1, limits);
+    let mut fixture = Fixture::new(DeploymentMode::SeparateRf1, limits);
     fixture.node(
         1,
         "local",

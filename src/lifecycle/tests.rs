@@ -204,6 +204,17 @@ fn pin_discovery_is_group_scoped_bounded_and_survives_snapshot_roundtrip() {
 
 #[test]
 fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
+    for placement in [
+        crate::metadata::GroupPlacement::Local { node_id: 1 },
+        crate::metadata::GroupPlacement::Raft { voters: [1].into() },
+    ] {
+        check_compaction_preserves_old_reads_and_recovery_until_both_barriers_release(placement);
+    }
+}
+
+fn check_compaction_preserves_old_reads_and_recovery_until_both_barriers_release(
+    placement: crate::metadata::GroupPlacement,
+) {
     let original = plan(Id::new_v7().unwrap(), vec![], 0);
     let old_id = original.descriptor.identity.object_id;
     let partition = *original.expected_generations.keys().next().unwrap();
@@ -274,7 +285,7 @@ fn compaction_preserves_old_reads_and_recovery_until_both_barriers_release() {
                 binding_generation: 1,
             }],
             generation: 1,
-            voters: vec![1],
+            placement: placement.clone(),
             snapshots: vec![(1, "actual-snapshot-fixture".into(), 9)],
         })
         .unwrap();
@@ -356,6 +367,19 @@ fn local_reclaim_preserves_logical_floor_original_results_and_append_admission_a
 
 #[test]
 fn retained_floor_retires_refs_without_skipping_the_next_data_publication_sequence() {
+    for placement in [
+        crate::metadata::GroupPlacement::Local { node_id: 1 },
+        crate::metadata::GroupPlacement::Raft { voters: [1].into() },
+    ] {
+        check_retained_floor_retires_refs_without_skipping_the_next_data_publication_sequence(
+            placement,
+        );
+    }
+}
+
+fn check_retained_floor_retires_refs_without_skipping_the_next_data_publication_sequence(
+    placement: crate::metadata::GroupPlacement,
+) {
     let first = plan(Id::new_v7().unwrap(), vec![], 0);
     let id = first.descriptor.identity.object_id;
     let partition = *first.expected_generations.keys().next().unwrap();
@@ -383,8 +407,16 @@ fn retained_floor_retires_refs_without_skipping_the_next_data_publication_sequen
         before: 1,
         manifest_generation: 1,
         published_end: 1,
-        position: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 9),
-        voters: std::collections::BTreeSet::from([1]),
+        position: if matches!(placement, crate::metadata::GroupPlacement::Local { .. }) {
+            crate::ownership::CommitPosition::Local { sequence: 9 }
+        } else {
+            crate::ownership::CommitPosition::Raft {
+                term: 1,
+                leader_node: 1,
+                index: 9,
+            }
+        },
+        placement: placement.clone(),
     };
     catalog
         .apply(CatalogCommand::RetireBefore(proof.clone()))
@@ -604,8 +636,12 @@ fn shared_compaction_requires_all_live_ranges_and_keeps_registered_sources_durab
         before: 1,
         manifest_generation: 1,
         published_end: 3,
-        position: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 9),
-        voters: std::collections::BTreeSet::from([1]),
+        position: crate::ownership::CommitPosition::Raft {
+            term: 1,
+            leader_node: 1,
+            index: 9,
+        },
+        placement: crate::metadata::GroupPlacement::Raft { voters: [1].into() },
     };
     catalog
         .apply(CatalogCommand::RetireBefore(proof.clone()))

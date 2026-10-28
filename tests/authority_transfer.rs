@@ -12,7 +12,7 @@ fn id() -> Id {
     Id::new_v7().unwrap()
 }
 fn position(index: u64, leader_node: u64) -> CommitPosition {
-    CommitPosition {
+    CommitPosition::Raft {
         term: 1,
         leader_node,
         index,
@@ -72,6 +72,9 @@ fn imported(plan: &AuthorityTransfer, manifest: TransferManifest) -> ImportEvide
     ImportEvidence {
         manifest,
         recovery: RecoveryEvidence {
+            placement: tidemq::metadata::GroupPlacement::Raft {
+                voters: plan.target_voters.clone(),
+            },
             recovered: RecoveredOwnership {
                 fence: FenceRecord {
                     grant: plan.target.clone(),
@@ -193,15 +196,10 @@ fn checkpoints_can_cover_a_replacement_voter_without_rewriting_the_original_impo
         manifest_digest: manifest.digest,
     }]))
     .unwrap();
-    assert_eq!(
-        plan.imported
-            .as_ref()
-            .unwrap()
-            .recovery
-            .committed
-            .leader_node,
-        2
-    );
+    assert!(matches!(
+        plan.imported.as_ref().unwrap().recovery.committed,
+        CommitPosition::Raft { leader_node: 2, .. }
+    ));
     plan.validate().unwrap();
 }
 

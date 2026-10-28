@@ -57,15 +57,16 @@ impl MetadataLimits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentMode {
-    LocalRf1,
-    ThreeReplica,
+    Local,
+    SeparateRf1,
+    SeparateRf3,
 }
 
 impl DeploymentMode {
     pub fn replication_factor(self) -> usize {
         match self {
-            Self::LocalRf1 => 1,
-            Self::ThreeReplica => 3,
+            Self::Local | Self::SeparateRf1 => 1,
+            Self::SeparateRf3 => 3,
         }
     }
 }
@@ -89,11 +90,19 @@ pub struct NodeSpec {
 }
 
 impl NodeSpec {
-    pub(crate) fn validate(&self) -> Result<(), Rejection> {
+    pub(crate) fn validate(&self, mode: DeploymentMode) -> Result<(), Rejection> {
+        let local_combined = mode == DeploymentMode::Local
+            && self.roles
+                == BTreeSet::from([
+                    NodeRole::Gateway,
+                    NodeRole::Broker,
+                    NodeRole::Storage,
+                    NodeRole::Metadata,
+                ]);
         if self.node_id == 0
             || !valid_name(&self.zone, 64)
             || self.endpoint.port() == 0
-            || self.endpoint.ip().is_unspecified()
+            || self.endpoint.ip().is_unspecified() && !local_combined
             || self.roles.is_empty()
             || self.roles.len() > 4
         {
@@ -113,7 +122,58 @@ pub struct NodeRecord {
 pub struct DataGroup {
     pub group_id: u64,
     pub generation: u64,
-    pub voters: BTreeSet<u64>,
+    pub placement: GroupPlacement,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupPlacement {
+    Local { node_id: u64 },
+    Raft { voters: BTreeSet<u64> },
+}
+
+impl GroupPlacement {
+    pub fn hosts(&self) -> BTreeSet<u64> {
+        match self {
+            Self::Local { node_id } => BTreeSet::from([*node_id]),
+            Self::Raft { voters } => voters.clone(),
+        }
+    }
+
+    pub fn raft_voters(&self) -> Option<&BTreeSet<u64>> {
+        match self {
+            Self::Local { .. } => None,
+            Self::Raft { voters } => Some(voters),
+        }
+    }
+
+    pub fn mode(&self) -> Result<DeploymentMode, Rejection> {
+        match self {
+            Self::Local { node_id } if *node_id > 0 => Ok(DeploymentMode::Local),
+            Self::Raft { voters } if !voters.contains(&0) => match voters.len() {
+                1 => Ok(DeploymentMode::SeparateRf1),
+                3 => Ok(DeploymentMode::SeparateRf3),
+                _ => Err(Rejection::InvalidGroup),
+            },
+            _ => Err(Rejection::InvalidGroup),
+        }
+    }
+
+    pub(crate) fn validates(
+        &self,
+        mode: DeploymentMode,
+        position: crate::ownership::CommitPosition,
+    ) -> bool {
+        if self.mode() != Ok(mode) || !position.matches_mode(mode) {
+            return false;
+        }
+        match self {
+            Self::Local { .. } => true,
+            Self::Raft { voters } => position
+                .raft_leader()
+                .is_some_and(|leader| voters.contains(&leader)),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

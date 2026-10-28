@@ -85,7 +85,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         }
         let candidates: BTreeSet<_> = topology
             .standby
-            .difference(&topology.group.voters)
+            .difference(&topology.group.placement.hosts())
             .copied()
             .collect();
         if candidates.is_empty() {
@@ -198,15 +198,15 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         placement: &Placement,
         deadline: Instant,
     ) -> Result<Topology> {
-        let (raft, state) = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
+        let group = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
+        let state = group.raft_state().ok_or(Error::Unsupported)?;
         tokio::time::timeout_at(
             deadline.min(Instant::now() + Duration::from_secs(3)),
             async {
-                raft.ensure_linearizable()
+                group
+                    .ensure_read(deadline)
                     .await
-                    .map_err(|source| Error::Quorum {
-                        source: Box::new(source),
-                    })?;
+                    .map_err(super::super::membership::execution)?;
                 state
                     .try_with_membership(|state, applied, membership| {
                         if applied.is_none()
@@ -234,7 +234,7 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                                     || state
                                         .pending_data_replacements()
                                         .any(|plan| plan.group_id() == group);
-                                let repair = data.voters.iter().any(|node| {
+                                let repair = data.placement.hosts().iter().any(|node| {
                                     state.node(*node).is_some_and(|node| !node.spec.schedulable)
                                         || placement.failed(*node, std::time::Instant::now())
                                 });
@@ -254,11 +254,11 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                         let (_, _, selected) = selected.ok_or(Error::Authority)?;
                         let group = state.group(selected).cloned().ok_or(Error::Authority)?;
                         let standby = groups.get(&selected).cloned().ok_or(Error::Configuration)?;
-                        if standby.union(&group.voters).count() > 32 {
+                        if standby.union(&group.placement.hosts()).count() > 32 {
                             return Err(Error::Overloaded);
                         }
                         let mut nodes = BTreeMap::new();
-                        for id in standby.union(&group.voters) {
+                        for id in standby.union(&group.placement.hosts()) {
                             nodes
                                 .insert(*id, state.node(*id).ok_or(Error::Authority)?.spec.clone());
                         }
@@ -306,7 +306,7 @@ fn select_removed(
     let mut repair = None;
     let mut missing = false;
     let mut worst = None;
-    for node in &topology.group.voters {
+    for node in &topology.group.placement.hosts() {
         let reachable = samples.get(node);
         let failed =
             placement.unreachable(*node, matches!(reachable, Some(Sample::Unreachable)), now);
@@ -339,7 +339,7 @@ fn select_removed(
     if missing
         || topology
             .standby
-            .difference(&topology.group.voters)
+            .difference(&topology.group.placement.hosts())
             .any(|node| !matches!(samples.get(node), Some(Sample::Measured(_))))
     {
         return Err(BlockReason::MissingObservation);

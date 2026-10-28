@@ -346,7 +346,7 @@ impl DataApplication {
             &view(
                 &source,
                 state,
-                CommitPosition {
+                CommitPosition::Raft {
                     term: 1,
                     leader_node: 1,
                     index: 1,
@@ -452,7 +452,11 @@ impl DataApplication {
         if let Some(original) = source.cut {
             return Ok(TransferOutcome::Cut(original));
         }
-        if cut.index == 0 || cut.term == 0 || !source.plan.source_voters.contains(&cut.leader_node)
+        if cut.sequence() == 0
+            || !cut.validate()
+            || !cut
+                .raft_leader()
+                .is_some_and(|leader| source.plan.source_voters.contains(&leader))
         {
             return Err(TransferDataRejection::InvalidPlan);
         }
@@ -588,9 +592,11 @@ impl DataApplication {
             || state.producer.committed_end() != source.committed_end
             || lifecycle.partition != partition
             || source.cut.is_some_and(|cut| {
-                cut.index == 0
-                    || cut.term == 0
-                    || !source.plan.source_voters.contains(&cut.leader_node)
+                cut.sequence() == 0
+                    || !cut.validate()
+                    || !cut
+                        .raft_leader()
+                        .is_some_and(|leader| source.plan.source_voters.contains(&leader))
             })
         {
             return Err(DataRejection::Transfer(TransferDataRejection::InvalidPlan));
@@ -605,7 +611,7 @@ impl DataApplication {
             &view(
                 source,
                 state,
-                source.cut.unwrap_or(CommitPosition {
+                source.cut.unwrap_or(CommitPosition::Raft {
                     term: 1,
                     leader_node: 1,
                     index: 1,

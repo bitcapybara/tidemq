@@ -421,10 +421,10 @@ impl Catalog {
                 group_id,
                 scopes,
                 generation,
-                voters,
+                placement,
                 snapshots,
             } => self.checkpoint(
-                object_id, group_id, &scopes, generation, &voters, &snapshots,
+                object_id, group_id, &scopes, generation, &placement, &snapshots,
             ),
             CatalogCommand::BeginDelete { object_id } => self.begin_delete(object_id),
             CatalogCommand::Deleted { object_id } => self.deleted(object_id),
@@ -759,18 +759,17 @@ impl Catalog {
         group_id: u64,
         scopes: &[CheckpointScope],
         generation: u64,
-        voters: &[u64],
+        placement: &crate::metadata::GroupPlacement,
         snapshots: &[(u64, String, u64)],
     ) -> Result<CatalogOutcome, Rejection> {
-        if !matches!(voters.len(), 1 | 3) || snapshots.len() != voters.len() {
+        if placement.mode().is_err() || snapshots.len() != placement.hosts().len() {
             return Err(Rejection::Membership);
         }
-        let expected: BTreeSet<_> = voters.iter().copied().collect();
+        let expected = placement.hosts();
         let actual: BTreeSet<_> = snapshots.iter().map(|(node, _, _)| *node).collect();
         if !matches!(expected.len(), 1 | 3)
             || expected.contains(&0)
             || actual != expected
-            || expected.len() != voters.len()
             || generation == 0
             || snapshots.iter().any(|(_, snapshot, index)| {
                 snapshot.is_empty() || snapshot.len() > 128 || *index == 0
@@ -932,10 +931,10 @@ impl Catalog {
             .iter()
             .map(|(node, _, _)| *node)
             .collect::<BTreeSet<_>>();
-        if nodes != proof.voters
-            || snapshots.len() != proof.voters.len()
+        if nodes != proof.placement.hosts()
+            || snapshots.len() != proof.placement.hosts().len()
             || snapshots.iter().any(|(_, id, index)| {
-                id.is_empty() || id.len() > 128 || *index < proof.position.index
+                id.is_empty() || id.len() > 128 || *index < proof.position.sequence()
             })
         {
             return Err(Rejection::CheckpointRequired);

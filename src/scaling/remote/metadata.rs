@@ -15,14 +15,14 @@ use tokio::time::Instant;
 
 impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
     pub(super) async fn group(&self, group: u64, deadline: Instant) -> Result<Reply> {
-        let (raft, state) = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
+        let handle = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
+        let state = handle.raft_state().ok_or(Error::Unsupported)?;
         let expires = (Instant::now() + Duration::from_secs(3)).min(deadline);
         tokio::time::timeout_at(expires, async {
-            raft.ensure_linearizable()
+            handle
+                .ensure_read(expires)
                 .await
-                .map_err(|source| Error::Quorum {
-                    source: Box::new(source),
-                })?;
+                .map_err(super::super::membership::execution)?;
             state
                 .try_with_membership(|state, _, membership| {
                     if state.cluster_id() != Some(self.config.cluster_id)
@@ -51,14 +51,14 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         plan: &MembershipPlan,
         deadline: Instant,
     ) -> Result<wire::View> {
-        let (raft, state) = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
+        let handle = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
+        let state = handle.raft_state().ok_or(Error::Unsupported)?;
         let expires = (Instant::now() + Duration::from_secs(3)).min(deadline);
         tokio::time::timeout_at(expires, async {
-            raft.ensure_linearizable()
+            handle
+                .ensure_read(expires)
                 .await
-                .map_err(|source| Error::Quorum {
-                    source: Box::new(source),
-                })?;
+                .map_err(super::super::membership::execution)?;
             state
                 .try_with_membership(|state, applied, membership| {
                     if state.cluster_id() != Some(self.config.cluster_id)
@@ -280,19 +280,21 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         let mut zones = BTreeSet::new();
         for id in &view.metadata_voters {
             let node = view.metadata_nodes.get(id).ok_or(Error::Authority)?;
-            node.validate().map_err(|_| Error::Authority)?;
+            node.validate(self.config.mode)
+                .map_err(|_| Error::Authority)?;
             if node.node_id != *id || !node.roles.contains(&NodeRole::Metadata) {
                 return Err(Error::Authority);
             }
             zones.insert(&node.zone);
         }
-        if view.mode == DeploymentMode::ThreeReplica && zones.len() != 3 {
+        if view.mode == DeploymentMode::SeparateRf3 && zones.len() != 3 {
             return Err(Error::Authority);
         }
         let mut target_zones = BTreeSet::new();
         for id in plan.previous.union(&plan.target) {
             let node = view.nodes.get(id).ok_or(Error::Authority)?;
-            node.validate().map_err(|_| Error::Authority)?;
+            node.validate(self.config.mode)
+                .map_err(|_| Error::Authority)?;
             if node.node_id != *id || !node.roles.contains(&NodeRole::Storage) {
                 return Err(Error::Authority);
             }
@@ -300,12 +302,13 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                 target_zones.insert(&node.zone);
             }
         }
-        if view.mode == DeploymentMode::ThreeReplica && target_zones.len() != 3 {
+        if view.mode == DeploymentMode::SeparateRf3 && target_zones.len() != 3 {
             return Err(Error::Authority);
         }
-        let old = view.group.generation == plan.generation && view.group.voters == plan.previous;
+        let old = view.group.generation == plan.generation
+            && view.group.placement.hosts() == plan.previous;
         let complete = view.group.generation == plan.generation.saturating_add(1)
-            && view.group.voters == plan.target;
+            && view.group.placement.hosts() == plan.target;
         if !old && !complete {
             return Err(Error::Rejected {
                 reason: metadata::Rejection::Superseded,
@@ -321,16 +324,14 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
     }
 
     async fn meta_write(&self, command: metadata::Command, deadline: Instant) -> Result<()> {
-        let (raft, _) = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
+        let handle = self.replicas.metadata.as_ref().ok_or(Error::Authority)?;
         let started = Instant::now();
-        let response = tokio::time::timeout_at(deadline, raft.client_write(command))
+        let response = tokio::time::timeout_at(deadline, handle.commit(command, deadline))
             .await
             .map_err(|_| Error::Unknown)?
-            .map_err(|source| Error::Consensus {
-                source: Box::new(source),
-            })?;
+            .map_err(super::super::membership::execution)?;
         self.metrics.observe(Stage::Metadata, started.elapsed());
-        match response.data {
+        match response.response {
             Response::Applied {
                 outcome: Outcome::MembershipPrepared(_) | Outcome::MembershipCompleted(_),
                 ..

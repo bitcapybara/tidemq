@@ -181,6 +181,46 @@ pub enum DataCommand {
     },
 }
 
+impl DataCommand {
+    /// Only completion and reclamation work may consume the capacity reserved from new work.
+    pub(crate) fn is_completion(&self) -> bool {
+        use crate::lifecycle::DataCommand as LifecycleCommand;
+        use subscription::{Command, GroupCommand};
+        match self {
+            Self::RetirePublishes { .. }
+            | Self::CleanupPublisher { .. }
+            | Self::Retention { .. }
+            | Self::InstallQuota { .. }
+            | Self::InstallFence(_)
+            | Self::Recover { .. }
+            | Self::SealShard { .. } => true,
+            Self::Producer { command, .. } => matches!(
+                command,
+                ProducerCommand::Retire { .. } | ProducerCommand::AdvanceTime
+            ),
+            Self::ConsumerGroup { command, .. } => matches!(
+                command,
+                GroupCommand::Acknowledge { .. }
+                    | GroupCommand::RetireRead { .. }
+                    | GroupCommand::RetireAck { .. }
+                    | GroupCommand::Reap { .. }
+                    | GroupCommand::Delete { .. }
+                    | GroupCommand::OpenGate { .. }
+            ),
+            Self::Subscription { command, .. } | Self::ColdSubscription { command, .. } => {
+                matches!(
+                    command,
+                    Command::Ack { .. } | Command::ReceiveBarrier { .. } | Command::Delete { .. }
+                )
+            }
+            Self::Lifecycle(operation) => {
+                !matches!(operation.command, LifecycleCommand::Authorize(_))
+            }
+            Self::AuthorityTransfer(_) | Self::Publish { .. } | Self::Initialize(_) => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum DataRejection {
     Quota(QuotaRejection),
@@ -1076,7 +1116,7 @@ impl DataApplication {
 
 impl Application for DataApplication {
     const NAME: &'static str = "tidemq-data";
-    const VERSION: u32 = 19;
+    const VERSION: u32 = 20;
     type Command = DataCommand;
     type Response = DataResponse;
 

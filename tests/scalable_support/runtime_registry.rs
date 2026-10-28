@@ -41,7 +41,7 @@ fn placement_windows_visit_all_registered_groups_and_candidates_with_fixed_bound
                     DataGroup {
                         group_id,
                         generation: 1,
-                        voters: [1].into(),
+                        placement: crate::metadata::GroupPlacement::Raft { voters: [1].into() },
                     },
                 )
             })

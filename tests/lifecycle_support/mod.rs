@@ -187,7 +187,7 @@ impl Fixture {
                 Id::new_v7().unwrap(),
                 self.cluster,
                 77,
-                DeploymentMode::LocalRf1,
+                DeploymentMode::SeparateRf1,
                 MetadataLimits::default()
             ))
             .await
@@ -218,7 +218,9 @@ impl Fixture {
                 Id::new_v7().unwrap(),
                 self.revision().await,
                 9,
-                BTreeSet::from([1])
+                tidemq::metadata::GroupPlacement::Raft {
+                    voters: BTreeSet::from([1])
+                }
             ))
             .await
             .is_applied()
@@ -276,19 +278,27 @@ impl Fixture {
             value => panic!("Unexpected grant response: {value:?}"),
         };
         let meta = MetadataAuthority::new(
-            self.metadata.raft.clone(),
-            self.metadata.state.clone(),
+            tidemq::execution::GroupHandle::from_raft(
+                self.metadata.raft.clone(),
+                self.metadata.state.clone(),
+                self.metadata.log.clone(),
+            ),
             self.cluster,
             77,
             ControlPolicy::default(),
         )
         .unwrap();
         let authority = DataAuthority::new(
-            self.data.raft.clone(),
-            self.data.state.clone(),
+            tidemq::execution::GroupHandle::from_raft(
+                self.data.raft.clone(),
+                self.data.state.clone(),
+                self.data.log.clone(),
+            ),
             self.cluster,
             9,
-            BTreeSet::from([1]),
+            tidemq::metadata::GroupPlacement::Raft {
+                voters: BTreeSet::from([1]),
+            },
             ControlPolicy::default(),
         )
         .unwrap();
@@ -367,9 +377,17 @@ impl Fixture {
         store: S3Store,
         budget: tidemq::budget::MemoryBudget,
     ) -> Coordinator {
-        let data = DataReplica::local(self.data.raft.clone(), self.data.state.clone());
+        let data = DataReplica::local(tidemq::execution::GroupHandle::from_raft(
+            self.data.raft.clone(),
+            self.data.state.clone(),
+            self.data.log.clone(),
+        ));
         Coordinator::new(
-            MetadataReplica::local(self.metadata.raft.clone(), self.metadata.state.clone()),
+            MetadataReplica::local(tidemq::execution::GroupHandle::from_raft(
+                self.metadata.raft.clone(),
+                self.metadata.state.clone(),
+                self.metadata.log.clone(),
+            )),
             data.clone(),
             vec![data.clone()],
             store,

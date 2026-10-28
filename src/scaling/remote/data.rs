@@ -25,12 +25,10 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         tokio::spawn(async move {
             let _permit = permit;
             let result = async {
-                node.raft
-                    .ensure_linearizable()
+                node.group
+                    .ensure_read(deadline)
                     .await
-                    .map_err(|source| Error::Quorum {
-                        source: Box::new(source),
-                    })?;
+                    .map_err(super::super::membership::execution)?;
                 node.state
                     .try_with_membership(|application, position, membership| {
                         let voters: BTreeSet<_> = membership.membership().voter_ids().collect();
@@ -121,12 +119,10 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
                 started: Instant::now(),
             });
         }
-        tokio::time::timeout_at(deadline, node.raft.ensure_linearizable())
+        tokio::time::timeout_at(deadline, node.group.ensure_read(deadline))
             .await
             .map_err(|_| Error::Unknown)?
-            .map_err(|source| Error::Quorum {
-                source: Box::new(source),
-            })?;
+            .map_err(super::super::membership::execution)?;
         let actual = node
             .state
             .try_with_membership(|application, _, membership| {
@@ -160,12 +156,18 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             let started = Instant::now();
             for id in plan.target.difference(&plan.previous) {
                 let target = targets.get(id).cloned().ok_or(Error::Authority)?;
-                tokio::time::timeout_at(deadline, node.raft.add_learner(*id, target, true))
-                    .await
-                    .map_err(|_| Error::Unknown)?
-                    .map_err(|source| Error::Consensus {
-                        source: Box::new(source),
-                    })?;
+                tokio::time::timeout_at(
+                    deadline,
+                    node.group
+                        .raft()
+                        .ok_or(Error::Unsupported)?
+                        .add_learner(*id, target, true),
+                )
+                .await
+                .map_err(|_| Error::Unknown)?
+                .map_err(|source| Error::Consensus {
+                    source: Box::new(source),
+                })?;
             }
             self.metrics.observe(Stage::Learner, started.elapsed());
         }
@@ -179,7 +181,10 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
         let started = Instant::now();
         tokio::time::timeout_at(
             deadline,
-            node.raft.change_membership(plan.target.clone(), false),
+            node.group
+                .raft()
+                .ok_or(Error::Unsupported)?
+                .change_membership(plan.target.clone(), false),
         )
         .await
         .map_err(|_| Error::Unknown)?
@@ -202,12 +207,10 @@ impl<R: Rpc, C: CapacitySource, A: MembershipApplication> Service<R, C, A> {
             .ok_or(Error::Authority)?;
         let expires = (Instant::now() + Duration::from_secs(3)).min(deadline);
         tokio::time::timeout_at(expires, async {
-            node.raft
-                .ensure_linearizable()
+            node.group
+                .ensure_read(expires)
                 .await
-                .map_err(|source| Error::Quorum {
-                    source: Box::new(source),
-                })?;
+                .map_err(super::super::membership::execution)?;
             node.state
                 .try_with_membership(|application, position, membership| {
                     let voters: BTreeSet<_> = membership.membership().voter_ids().take(4).collect();

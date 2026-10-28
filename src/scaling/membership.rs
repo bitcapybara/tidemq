@@ -6,8 +6,8 @@ use openraft::{BasicNode, StoredMembership};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use crate::execution::{Application, GroupHandle, GroupState};
 use crate::metadata::{self, DeploymentMode, MetadataState, NodeRole, Outcome, Response};
-use crate::replication::{Application, DiskStateMachine, Raft};
 
 use super::{
     Capacity, Error, MembershipEvidence, MembershipPlan, RepairBudget, RepairLease, Result,
@@ -77,10 +77,10 @@ struct InFlight {
 /// The runtime forwards to the actual metadata/data leaders; neither leader is hard-coded.
 /// A timed-out attempt retains its repair lease and resumes the same durable plan.
 pub struct MembershipCoordinator<A: MembershipApplication> {
-    metadata: Raft<MetadataState>,
-    meta_state: DiskStateMachine<MetadataState>,
-    data: Raft<A>,
-    data_state: DiskStateMachine<A>,
+    metadata: GroupHandle<MetadataState>,
+    meta_state: GroupState<MetadataState>,
+    data: GroupHandle<A>,
+    data_state: GroupState<A>,
     budget: RepairBudget,
     metrics: Arc<ScalingMetrics>,
     in_flight: Mutex<Option<InFlight>>,
@@ -88,13 +88,13 @@ pub struct MembershipCoordinator<A: MembershipApplication> {
 
 impl<A: MembershipApplication> MembershipCoordinator<A> {
     pub fn new(
-        metadata: Raft<MetadataState>,
-        meta_state: DiskStateMachine<MetadataState>,
-        data: Raft<A>,
-        data_state: DiskStateMachine<A>,
+        metadata: GroupHandle<MetadataState>,
+        data: GroupHandle<A>,
         budget: RepairBudget,
         metrics: Arc<ScalingMetrics>,
     ) -> Self {
+        let meta_state = metadata.state();
+        let data_state = data.state();
         Self {
             metadata,
             meta_state,
@@ -113,6 +113,9 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
         capacity: &[Capacity],
         deadline: Instant,
     ) -> Result<()> {
+        if self.metadata.is_local() || self.data.is_local() {
+            return Err(Error::Unsupported);
+        }
         let queue = Instant::now();
         let mut flight = tokio::time::timeout_at(deadline, self.in_flight.lock())
             .await
@@ -216,12 +219,18 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
             let started = Instant::now();
             for added in plan.target.difference(&plan.previous) {
                 let node = nodes.get(added).cloned().ok_or(Error::Authority)?;
-                tokio::time::timeout_at(deadline, self.data.add_learner(*added, node, true))
-                    .await
-                    .map_err(|_| Error::Unknown)?
-                    .map_err(|source| Error::Consensus {
-                        source: Box::new(source),
-                    })?;
+                tokio::time::timeout_at(
+                    deadline,
+                    self.data
+                        .raft()
+                        .ok_or(Error::Unsupported)?
+                        .add_learner(*added, node, true),
+                )
+                .await
+                .map_err(|_| Error::Unknown)?
+                .map_err(|source| Error::Consensus {
+                    source: Box::new(source),
+                })?;
             }
             self.metrics.observe(Stage::Learner, started.elapsed());
         }
@@ -232,7 +241,10 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
         let started = Instant::now();
         tokio::time::timeout_at(
             deadline,
-            self.data.change_membership(plan.target.clone(), false),
+            self.data
+                .raft()
+                .ok_or(Error::Unsupported)?
+                .change_membership(plan.target.clone(), false),
         )
         .await
         .map_err(|_| Error::Unknown)?
@@ -259,13 +271,10 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
             .ok_or(Error::Configuration)?
             .min(deadline);
         tokio::time::timeout_at(expires, async {
+            self.data.ensure_read(expires).await.map_err(execution)?;
             self.data
-                .ensure_linearizable()
-                .await
-                .map_err(|source| Error::Quorum {
-                    source: Box::new(source),
-                })?;
-            self.data_state
+                .raft_state()
+                .ok_or(Error::Unsupported)?
                 .try_with_membership(|application, applied, membership| {
                     if application.membership_identity() != Some((plan.cluster_id, plan.group_id))
                         || membership.membership().get_joint_config().len() != 1
@@ -299,13 +308,10 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
         deadline: Instant,
     ) -> Result<StoredMembership<u64, BasicNode>> {
         tokio::time::timeout_at(deadline, async {
+            self.data.ensure_read(deadline).await.map_err(execution)?;
             self.data
-                .ensure_linearizable()
-                .await
-                .map_err(|source| Error::Quorum {
-                    source: Box::new(source),
-                })?;
-            self.data_state
+                .raft_state()
+                .ok_or(Error::Unsupported)?
                 .try_with_membership(|_, _, membership| membership.clone())
                 .await
                 .map_err(|source| Error::Storage { source })
@@ -327,12 +333,12 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
             .min(deadline);
         tokio::time::timeout_at(expires, async {
             self.metadata
-                .ensure_linearizable()
+                .ensure_read(expires)
                 .await
-                .map_err(|source| Error::Quorum {
-                    source: Box::new(source),
-                })?;
-            self.meta_state
+                .map_err(execution)?;
+            self.metadata
+                .raft_state()
+                .ok_or(Error::Unsupported)?
                 .try_with_membership(|state, _, membership| {
                     let identity = self.meta_state.storage_identity();
                     if identity.group.cluster_id != plan.cluster_id
@@ -343,9 +349,10 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
                     validate_metadata(state, membership, plan)?;
                     let group = state.group(plan.group_id).ok_or(Error::Authority)?;
                     let complete = group.generation == plan.generation.saturating_add(1)
-                        && group.voters == plan.target;
+                        && group.placement.hosts() == plan.target;
                     if !complete
-                        && (group.generation != plan.generation || group.voters != plan.previous)
+                        && (group.generation != plan.generation
+                            || group.placement.hosts() != plan.previous)
                     {
                         return Err(Error::Authority);
                     }
@@ -382,14 +389,12 @@ impl<A: MembershipApplication> MembershipCoordinator<A> {
 
     async fn meta_write(&self, command: metadata::Command, deadline: Instant) -> Result<()> {
         let started = Instant::now();
-        let response = tokio::time::timeout_at(deadline, self.metadata.client_write(command))
+        let response = tokio::time::timeout_at(deadline, self.metadata.commit(command, deadline))
             .await
             .map_err(|_| Error::Unknown)?
-            .map_err(|source| Error::Consensus {
-                source: Box::new(source),
-            })?;
+            .map_err(execution)?;
         self.metrics.observe(Stage::Metadata, started.elapsed());
-        match response.data {
+        match response.response {
             Response::Applied {
                 outcome: Outcome::MembershipPrepared(_) | Outcome::MembershipCompleted(_),
                 ..
@@ -405,6 +410,9 @@ fn validate_metadata(
     membership: &StoredMembership<u64, BasicNode>,
     plan: &MembershipPlan,
 ) -> Result<()> {
+    if state.mode == Some(DeploymentMode::Local) {
+        return Err(Error::Unsupported);
+    }
     if state.cluster_id() != Some(plan.cluster_id)
         || state.metadata_group_id().is_none()
         || membership.membership().get_joint_config().len() != 1
@@ -428,7 +436,7 @@ fn validate_metadata(
         .collect();
     if voters.len() != factor
         || plan.target.len() != factor
-        || state.mode == Some(DeploymentMode::ThreeReplica)
+        || state.mode == Some(DeploymentMode::SeparateRf3)
             && (zones.len() != 3 || target_zones.len() != 3)
     {
         return Err(Error::Authority);
@@ -460,4 +468,11 @@ fn validate_capacity(
         return Err(Error::Placement);
     }
     Ok(())
+}
+
+pub(super) fn execution(source: crate::execution::Error) -> Error {
+    match source {
+        crate::execution::Error::Unknown { .. } => Error::Unknown,
+        source => Error::Execution { source },
+    }
 }
