@@ -42,6 +42,7 @@ pub struct OwnershipMetrics {
     counters: BTreeMap<(Transition, TransitionOutcome), Counter>,
     durations: BTreeMap<Transition, Histogram>,
     validity_seconds: Gauge<f64, std::sync::atomic::AtomicU64>,
+    cas_retries: Family<StageLabel, Counter>,
 }
 
 impl OwnershipMetrics {
@@ -51,6 +52,7 @@ impl OwnershipMetrics {
             Histogram::new([0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 3.0, 5.0, 10.0])
         });
         let validity_seconds = Gauge::default();
+        let cas_retries = Family::<StageLabel, Counter>::default();
         let mut counters = BTreeMap::new();
         let mut histograms = BTreeMap::new();
         for stage in [
@@ -59,6 +61,7 @@ impl OwnershipMetrics {
             Transition::Recover,
             Transition::Activate,
         ] {
+            drop(cas_retries.get_or_create(&StageLabel { stage }));
             histograms.insert(
                 stage,
                 durations.get_or_create(&StageLabel { stage }).clone(),
@@ -86,10 +89,12 @@ impl OwnershipMetrics {
             durations,
         );
         registry.register("tidemq_control_validity_remaining_seconds", "Minimum remaining validity among locally monitored active grants; zero means unverified or expired.", validity_seconds.clone());
+        registry.register("tidemq_ownership_metadata_cas_retries", "Ownership metadata revision conflicts retried with fresh evidence and the original operation identity.", cas_retries.clone());
         Self {
             counters,
             durations: histograms,
             validity_seconds,
+            cas_retries,
         }
     }
 
@@ -100,6 +105,10 @@ impl OwnershipMetrics {
         if let Some(histogram) = self.durations.get(&stage) {
             histogram.observe(elapsed.as_secs_f64());
         }
+    }
+
+    pub(crate) fn cas_retry(&self, stage: Transition) {
+        self.cas_retries.get_or_create(&StageLabel { stage }).inc();
     }
 
     /// The runtime supplies the minimum across its bounded active grant set.
@@ -132,6 +141,7 @@ mod tests {
             Duration::from_millis(2),
         );
         metrics.validity_remaining(Duration::from_secs(1));
+        metrics.cas_retry(Transition::Fence);
         let mut text = String::new();
         prometheus_client::encoding::text::encode(&mut text, &registry).unwrap();
         assert!(text.contains(
@@ -139,6 +149,7 @@ mod tests {
         ));
         assert!(!text.contains("operation_id"));
         assert!(!text.contains("group_id"));
+        assert!(text.contains("tidemq_ownership_metadata_cas_retries_total{stage=\"Fence\"} 1"));
         assert!(text.lines().count() < 150);
     }
 }
