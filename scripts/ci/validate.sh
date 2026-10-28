@@ -19,12 +19,12 @@ cargo clippy --workspace --lib --bins --no-deps --locked --features "$features" 
   -D clippy::todo -D clippy::unreachable -D clippy::indexing_slicing
 # Unit targets cannot depend on an installed service, credentials, or a running cluster.
 env -u TIDEMQ_TEST_RUSTFS_BIN -u TIDEMQ_OTELCOL_BIN \
-  cargo nextest run --workspace --lib --bins --examples --locked --features "$features" --profile ci
+  bash scripts/ci/nextest.sh --workspace --lib --bins --examples --locked --features "$features" --profile ci
 # Nextest stores reports under the workspace even when Cargo artifacts live elsewhere.
 cp target/nextest/ci/junit.xml target/ci/unit-junit.xml
 cargo test --workspace --doc --locked --features "$features"
 cargo clippy -p tidemq-sdk --all-targets --no-deps --locked -- -D warnings
-cargo nextest run -p tidemq-sdk --lib --locked --profile ci
+bash scripts/ci/nextest.sh -p tidemq-sdk --lib --locked --profile ci
 cp target/nextest/ci/junit.xml target/ci/sdk-default-unit-junit.xml
 cargo build -p tidemq-protocol --features codegen --locked
 cargo fmt --all -- --check

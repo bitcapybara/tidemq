@@ -66,7 +66,13 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 Linux 保留两个独立 job：Validate 运行原 `native.sh` 的全部静态检查、单元、默认 SDK 和普通集成；Faults 运行原故障钩子、真实外部服务和 K8s 黑盒/VM 故障。两者与 Coverage 由同一个原生 executor 顺序调度，不改变测试列表、features、nextest 并发或重试、业务期限及缓存锁。两个 job 均使用 cargo-llvm-cov 0.9.1 的 `show-env --sh`，复用原生 runner 现有 target，各自在开始时清理一次历史 profile，并用 native/lab 前缀分别打包；前一个 job 的二进制、profile 和 JUnit 已上传后，executor 才会接下一个 job。Cargo registry/git 下载缓存锁保持共享持有，维护清理仍须取得独占锁。K8s 阶段把插桩生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
 
-这个调度选择避免把进程故障功能测试放进长期容器 runner 与其 file/shmem 占用共享的 cgroup。CI 40702359055 的 transfer 预填充失败在保留的 Linux 二进制上重现为真实容器内存准入阻塞；同 image、同 8GiB 限制的干净独立 cgroup 能通过原完整用例。原生 runner 的实际 systemd 边界为 `MemoryMax=6G`、`CPUQuota=400%`，同样受cgroup上限约束；其运行结果不能替代真实容器 quota 验证。生产的 90%/80% 迟滞、SDK 原 Pending 身份、30s 请求期限及现有容器限额/OOM负向用例保持不变。原CI失败当时缺少quota快照；独立对照只支持此资源调度修复，完整候选仍须由后续终态CI验收。
+仅把 job 路由到原生 runner 仍会让编译、Runner 和测试共用其 6GiB cgroup。[CI 40741140950](https://github.com/bitcapybara/tidemq/actions/runs/40741140950) 的五个进程用例在 create_topic 阶段失败，已有日志明确记录 caller_container_blocked=true 和约 90.2%～96.1% 的实际用量。较早同 image、8GiB 干净 cgroup 的 transfer 对照通过，不能代替当前同额度隔离验收，也不能把编译期高水位直接归为运行期拒绝。
+
+Linux 两个测试 job 通过 `TIDEMQ_NEXTEST_IMAGE` 固定已部署的 `sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b`（runner 2.338.1 / Rust 1.99.1）镜像。[nextest.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/ci/nextest.sh) 接管 unit、默认 SDK、normal、faults 和 ignored 全部五处调用：先在原生账户按原参数执行 `--no-run`，生成 binaries/cargo metadata；再通过 [nextest 官方 build reuse](https://nexte.st/docs/ci-features/archiving/) 复用 host 选定的二进制；容器仅传原有 profile、过滤和 runner 参数，构建选项不与 metadata 混传，执行账户不再编译。容器固定 UID/GID 1001、6,442,450,944 bytes、4 CPU、无额外 swap，位于独立的 systemd cgroup；编译仍受原生 6GiB/4 CPU 边界约束。macOS 和未配置此变量的本地入口继续原样执行。
+
+容器保留 source、Cargo target、TMPDIR 绝对路径及 LLVM_PROFILE_FILE，继承执行/插桩和测试依赖的指定环境变量，仅按变量名传递，不输出值；工具安装文件只读挂载，不挂载 runner 注册状态、凭据、真实 HOME、实验室密钥或 Docker socket。metadata 和启动时的 cgroup/memory/cpu 分项保存在 `target/ci/nextest.*/`；原有 JUnit、profile、二进制和覆盖率来源路径不变。测试退出码原样失败，不增加重试、过滤或业务期限，生产 90%/80% 迟滞和原 Pending 身份断言继续保留。
+
+正常退出和 TERM 的 trap 只删除刚创建的容器 ID。caller 被 SIGKILL 后，现有 before/after/idle 维护流程在同一 lock/lease/role 检查下，根据严格的 `tidemq-nextest-数字-数字-六位标识` 名称、三项自有 label 和 actions UID 回收遗留，再清理其挂载目录；未知活动容器仍拒绝 Docker 清理。新维护 bundle 必须在 lab 空闲且独立 review 后安装，见[维护说明](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/runner-maintenance.zh-CN.md)。本地命令边界测试、同额度原用例功能对照和新 SHA 完整终态 CI 分别留证，任何一个都不能代替另一个。
 
 两条流程分别上传已有 ELF 二进制、profile、JUnit 和清单，短期制品为 `coverage-inputs-native` / `coverage-inputs-lab`。[bundle.mjs](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage/bundle.mjs) 校验相同源码提交、CI run、工作区绝对路径、工具版本及每个文件的大小/SHA256；拒绝路径穿越、符号链接、缺失流程和篡改输入。相同文件去重，不同 feature 的二进制均保留。coverage job 下载两份输入并调用 [coverage-run.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage-run.sh)，统一导出 LLVM JSON、LCOV、HTML、原始 `profiles.tar.gz` 和 `inputs.json`，随后比较基线，全程不重编译或重跑 Rust 测试。measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量、五阶段 JUnit 哈希，以及 [API 采集清单](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage/api.mjs)。清单记录两种部署二进制的 SHA256、镜像、10 个 Pod 的 UID/角色/worker/imageID、各个 profile 的大小/哈希、9 个远程用例的报告哈希及行为断言。缺少任一角色、客户端、行为结果或跨提交/跨运行混用均失败。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
 
@@ -77,6 +83,8 @@ VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目�
 服务端 `LLVM_PROFILE_FILE=/coverage/node-ID-%h-%p-%m.profraw` 写入该 run 独享的 worker 目录；loadgen 的 CLI/SDK 使用独享 `profiles/client-%h-%p-%m.profraw`。收集业务结果和日志后，将该 CI namespace 的 10 个 StatefulSet 受控缩容为 0，等待进程正常处理 SIGTERM 并退出，然后逐实例通过 SSH 回收非空 profile，校验并复制到原生覆盖率构建目录。最后才删除 namespace、PV、worker profile、RustFS fixture 和私有构建；取消留下的资源由 runner 维护机制重试。最终覆盖率导出及制品上传完成后，才运行任务完成清理钩子。
 
 LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://doc.rust-lang.org/rustc/instrument-coverage.html)，外部程序与已有测试合并的方式见 [cargo-llvm-cov 官方说明](https://github.com/taiki-e/cargo-llvm-cov#usage)。VM 断电或 SIGKILL 前来不及写出的计数可能丢失，不能把最终报告当作每次崩溃前执行路径的完整记录；恢复后的全部 10 个实例必须正常退出并产生有效 profile。故障用例是否满足行为契约仍独立断言，不能用覆盖率数字代替。
+
+普通/故障流程失败时，证据采集仍限制为总计2MiB、最多40个文件；新增诊断 JSON 仅允许 `consumer-recovery-after-quorum.json`、`consumer-recovery-timeout.json` 两个精确文件名，不扩大其他 JSON 规则，继续拒绝凭据和符号链接。manifest 保留 `files`，另以 `entries` 记录 `path/sourceBytes/copiedBytes/tailOffset/truncated`；短读只复制实际读到的字节，不补零伪装完整，截尾日志可据此识别。
 
 ## 远程 API 黑盒断言
 

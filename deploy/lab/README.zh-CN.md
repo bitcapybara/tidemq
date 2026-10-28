@@ -159,7 +159,9 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
-当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）、Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和Coverage顺序使用现有原生 `tidemq-dev` executor，避免长期容器runner的共享cgroup占用干扰功能测试。容器部署和真实容器限额负测保留，长期runner配置未改。两个测试job从开始即使用LLVM插桩，分别打包二进制/profile并上传，再接续下一job。coverage job校验同一源码/CI run/工具/工作区路径及每个输入的SHA256，再合并五阶段JUnit、两个job的原生profile和全部远程实例profile，导出LLVM JSON、LCOV、HTML、原始profile归档并比较基线，不重新编译或重跑Rust测试。K8s的10个角色实例和loadgen客户端均使用插桩二进制；measurement绑定源码、镜像、二进制哈希、角色/Pod/worker/imageID和行为断言；缺少任一实例则失败。公共常驻服务与手动普通验收仍使用release构建。资源边界、独立8GiB对照及最终CI验收限制见[测试指南](../../docs/testing.zh-CN.md)。
+当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）、Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和 Coverage 顺序使用现有原生 `tidemq-dev` executor。全部 nextest 调用在 host 按原参数预编译，再以已部署 immutable CI 镜像在 fresh 6GiB/4 CPU 容器复用构建执行；测试与编译/Runner 分开计账，保留相同绝对 source/target/TMPDIR、插桩环境和原有测试选择。正常/TERM 删除自己的容器 ID，异常遗留由现有维护锁/租约下的严格 label/name/UID 检查回收。长期 runner 配置、生产 quota 和真实容器限额负测保留。
+
+两个测试 job 从开始即使用 LLVM 插桩，分别打包二进制/profile 并上传，再接续下一 job。coverage job 校验同一源码/CI run/工具/工作区路径及每个输入的 SHA256，再合并五阶段 JUnit、两个 job 的原生 profile 和全部远程实例 profile，导出 LLVM JSON、LCOV、HTML、原始 profile 归档并比较基线，不重新编译或重跑 Rust 测试。K8s 的10个角色实例和 loadgen 客户端均使用插桩二进制；measurement 绑定源码、镜像、二进制哈希、角色/Pod/worker/imageID和行为断言；缺少任一实例则失败。公共常驻服务与手动普通验收仍使用 release 构建。资源边界、同额度隔离对照及最终 CI 验收限制见[测试指南](../../docs/testing.zh-CN.md)。
 
 单元测试运行 `--lib --bins --examples`，主动移除外部服务环境变量。外部进程 / 网络依赖测试放在 `tests/`，由独立 integration 阶段运行；内建本地 mock 不要求预装外部服务。ignored 的真实 RustFS / Collector 测试在 Linux 上显式执行，缺少固定二进制会失败。
 
