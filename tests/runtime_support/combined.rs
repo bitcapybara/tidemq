@@ -775,7 +775,21 @@ async fn combined_required_asset_loss_fails_readiness_and_cannot_reopen_after_re
         "A late asset restore reopened failed admission"
     );
     let _ = producer.close().await;
-    client.close().await.unwrap();
+    // A deliberately unknown send remains reported even after all local SDK resources close.
+    let close = client.close().await.unwrap_or_else(|error| {
+        assert!(refused.outcome_unknown());
+        assert_eq!(error.report().unresolved_sends(), 1);
+        error.report().clone()
+    });
+    assert!(close.local_cleanup_complete());
+    assert_eq!(close.members_left(), 0);
+    assert_eq!(close.unresolved_joins(), 0);
+    assert_eq!(close.unresolved_acks(), 0);
+    assert_eq!(close.unresolved_reads(), 0);
+    assert_eq!(close.unresolved_watches(), 0);
+    assert_eq!(close.unresolved_deletions(), 0);
+    assert_eq!(close.unresolved_administrations(), 0);
+    assert_eq!(close.unclaimed_results(), 0);
     assert!(
         tokio::time::timeout(Duration::from_secs(6), node.shutdown())
             .await
@@ -815,6 +829,8 @@ async fn combined_required_asset_loss_fails_readiness_and_cannot_reopen_after_re
         fixture.directory.join("combined-asset-failure.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "failed_send_outcome_unknown": refused.outcome_unknown(),
+            "sdk_close_unresolved_sends": close.unresolved_sends(),
+            "sdk_local_cleanup_complete": close.local_cleanup_complete(),
             "recovery_marker": marker.to_string(),
             "failed_publish_absent_after_recovery": true,
             "readiness_failed_after_restore": true

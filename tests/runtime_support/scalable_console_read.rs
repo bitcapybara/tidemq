@@ -417,9 +417,9 @@ async fn console_reads_scope_hot_messages_members_and_ack_holes_without_consumin
         .iter()
         .find(|group| group.role == "metadata")
         .unwrap();
-    assert_eq!(metadata.leader, Some(Decimal(1)));
-    assert_eq!(metadata.voters, vec![Decimal(1)]);
-    assert_eq!(metadata.quorum_confirmed, Some(true));
+    assert_eq!(metadata.leader, None);
+    assert!(metadata.voters.is_empty());
+    assert_eq!(metadata.quorum_confirmed, None);
     reader.close().await.unwrap();
     root.close().await.unwrap();
     fixture.close().await;
@@ -508,7 +508,17 @@ async fn console_shard_pages_retain_sealed_history_after_layout_changes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn console_metadata_stays_visible_with_unknown_shard_progress_when_storage_is_unavailable() {
-    let mut fixture = Fixture::new(&[(1, Role::Combined), (2, Role::Storage)], &[1], &[2]).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Storage),
+            (11, Role::Metadata),
+            (31, Role::Broker),
+        ],
+        &[11],
+        &[2],
+    )
+    .await;
     fixture.start_all().await;
     let client = fixture.client(1).await;
     let admin = client.admin();

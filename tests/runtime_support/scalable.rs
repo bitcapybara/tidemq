@@ -48,10 +48,16 @@ async fn dynamic_fixture() -> Fixture {
 }
 
 async fn configure_dynamic_fixture(fixture: &mut Fixture) {
+    assert_eq!(
+        fixture.configs.len(),
+        1,
+        "Dynamic Local fixtures require one node"
+    );
     let config = fixture.configs.get_mut(&1).unwrap();
+    assert_eq!(config.role, Role::Combined);
     config.runtime.groups.push(GroupConfig {
         group_id: 3,
-        voters: vec![1],
+        voters: Vec::new(),
         standby: Vec::new(),
     });
 }
@@ -720,7 +726,8 @@ async fn an_expired_queue_member_rejoins_after_restart_and_fences_its_old_ack() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_expired_queue_member_rejoins_after_restart_without_permission_denial() {
     let nodes = [
-        (1, Role::Combined),
+        (1, Role::Metadata),
+        (8, Role::Broker),
         (2, Role::Metadata),
         (3, Role::Metadata),
         (4, Role::Storage),

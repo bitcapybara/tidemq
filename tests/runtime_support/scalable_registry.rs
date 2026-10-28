@@ -81,7 +81,7 @@ async fn lost_split_reply_resumes_its_original_targets_after_new_capacity_become
         .groups
         .push(GroupConfig {
             group_id: 4,
-            voters: vec![1],
+            voters: Vec::new(),
             standby: Vec::new(),
         });
     fixture.start_all().await;
@@ -173,24 +173,32 @@ pub(super) async fn registration(fixture: &Fixture, node: u64) -> tidemq_sdk::No
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn registered_nodes_and_an_independent_group_join_without_restarting_existing_services() {
     let mut fixture = Fixture::new(
-        &[(1, Role::Combined), (2, Role::Storage), (3, Role::Gateway)],
+        &[
+            (1, Role::Metadata),
+            (2, Role::Storage),
+            (3, Role::Gateway),
+            (21, Role::Storage),
+            (31, Role::Broker),
+            (41, Role::Gateway),
+        ],
         &[1],
-        &[1],
+        &[21],
     )
     .await;
-    fixture
-        .configs
-        .get_mut(&1)
-        .unwrap()
-        .runtime
-        .peers
-        .retain(|peer| peer.node_id == 1);
-    let local = fixture.configs.get_mut(&1).unwrap();
-    local
-        .runtime
+    for node in [1, 21, 31, 41] {
+        fixture
+            .configs
+            .get_mut(&node)
+            .unwrap()
+            .runtime
+            .peers
+            .retain(|peer| [1, 21, 31, 41].contains(&peer.node_id));
+    }
+    let seed = fixture.configs.get_mut(&1).unwrap();
+    seed.runtime
         .internal_listen
         .set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
-    let mut invalid = local.clone();
+    let mut invalid = seed.clone();
     invalid.runtime.peers[0]
         .internal_address
         .set_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
@@ -206,15 +214,17 @@ async fn registered_nodes_and_an_independent_group_join_without_restarting_exist
             voters: vec![2],
             standby: Vec::new(),
         });
-    fixture.running.insert(
-        1,
-        RunningNode::start(fixture.configs.get(&1).unwrap().clone())
-            .await
-            .unwrap(),
-    );
+    for node in [1, 21, 31, 41] {
+        fixture.running.insert(
+            node,
+            RunningNode::start(fixture.configs.get(&node).unwrap().clone())
+                .await
+                .unwrap(),
+        );
+    }
     fixture.wait_ready().await;
-    let client = fixture.client(1).await;
-    assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 1);
+    let client = fixture.client(41).await;
+    assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 4);
     let tenant = client.admin().create_tenant("acme").await.unwrap();
     client
         .admin()
@@ -313,10 +323,10 @@ async fn registered_nodes_and_an_independent_group_join_without_restarting_exist
         .unwrap()
         .unwrap();
     second.ack(&message).await.unwrap();
-    assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 3);
+    assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 6);
     fixture.stop(1).await;
     fixture.restart(1).await;
-    assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 3);
+    assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 6);
     assert_eq!(client.admin().data_groups().await.unwrap().len(), 2);
     let continued = producer
         .send("after-seed-restart")

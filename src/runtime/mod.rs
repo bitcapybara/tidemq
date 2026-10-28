@@ -73,6 +73,9 @@ pub use node::RunningNode;
 pub use shard_load::ShardLoadPage;
 pub use topic_scaling::{TopicScalingPolicy, WorkCapacity};
 
+#[cfg(test)]
+pub(crate) use data::consumer_tests::fixture::tcp_address as test_tcp_address;
+
 pub(crate) async fn read_bounded(path: &Path, max: u64) -> Result<Bytes> {
     let file = tokio::fs::File::open(path)
         .await

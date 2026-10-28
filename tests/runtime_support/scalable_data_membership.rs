@@ -65,7 +65,9 @@ async fn verify_original_handles(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rf3_operator_replaces_a_storage_voter_and_retires_the_source_with_original_sdk_handles() {
     let nodes = [
-        (1, Role::Combined),
+        (1, Role::Metadata),
+        (9, Role::Broker),
+        (10, Role::Gateway),
         (2, Role::Storage),
         (3, Role::Storage),
         (4, Role::Storage),
@@ -89,7 +91,7 @@ async fn rf3_operator_replaces_a_storage_voter_and_retires_the_source_with_origi
         }
     }
     fixture.wait_ready().await;
-    let client = fixture.client(1).await;
+    let client = fixture.client(10).await;
     let (producer, consumer, held) = resources(&client).await;
     let status = http(
         fixture.running.get(&2).unwrap().management_address,
@@ -169,7 +171,9 @@ async fn accepted_data_replacement_survives_controller_restart_before_native_pre
  {
     let mut fixture = Fixture::new(
         &[
-            (1, Role::Combined),
+            (1, Role::Metadata),
+            (9, Role::Broker),
+            (10, Role::Gateway),
             (2, Role::Storage),
             (3, Role::Storage),
             (4, Role::Storage),
@@ -182,7 +186,7 @@ async fn accepted_data_replacement_survives_controller_restart_before_native_pre
         config.runtime.groups.first_mut().unwrap().standby = vec![3, 4];
     }
     fixture.start_all().await;
-    let client = fixture.client(1).await;
+    let client = fixture.client(10).await;
     let (producer, consumer, held) = resources(&client).await;
     let cluster = fixture.configs.get(&1).unwrap().cluster_id.parse().unwrap();
     let hook = tidemq::runtime::test_hooks::InstalledPause::data_membership(cluster, 2).unwrap();

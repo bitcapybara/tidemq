@@ -2,6 +2,7 @@
 use super::*;
 use prost::Message;
 use std::sync::atomic::AtomicBool;
+mod acknowledgements;
 mod hints;
 use tidemq_protocol::{
     common::Frame,
@@ -21,6 +22,7 @@ struct Oracle {
     watch_unknown: AtomicBool,
     watch_drop: AtomicBool,
     watch_error: Mutex<Option<tidemq_protocol::common::ErrorCode>>,
+    ack_error: Mutex<Option<tidemq_protocol::common::ErrorReply>>,
     watch_dropped: AtomicU64,
     watch_refused: AtomicU64,
     layout_disconnect: AtomicBool,
@@ -225,14 +227,20 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
                 }
                 reply(&frame, FrameKind::GroupRetired, &public::GroupRetired {})
             }
-            FrameKind::GroupAck => reply(
-                &frame,
-                FrameKind::GroupAckResult,
-                &public::GroupAckResult {
-                    redelivery_scheduled: false,
-                    due_ms: 0,
-                },
-            ),
+            FrameKind::GroupAck => {
+                let refusal = oracle.ack_error.lock().unwrap().clone();
+                match refusal {
+                    Some(refusal) => reply(&frame, FrameKind::Error, &refusal),
+                    None => reply(
+                        &frame,
+                        FrameKind::GroupAckResult,
+                        &public::GroupAckResult {
+                            redelivery_scheduled: false,
+                            due_ms: 0,
+                        },
+                    ),
+                }
+            }
             FrameKind::GroupRetireAck => {
                 reply(&frame, FrameKind::GroupRetired, &public::GroupRetired {})
             }
