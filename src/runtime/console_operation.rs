@@ -285,7 +285,7 @@ impl Service {
         operation_response(self, frame, result)
     }
 
-    async fn console_begin(
+    pub(super) async fn console_begin(
         &self,
         credential: Id,
         request: &WriteRequest,
@@ -320,7 +320,7 @@ impl Service {
         Ok(record)
     }
 
-    async fn complete_console_record(
+    pub(super) async fn complete_console_record(
         &self,
         record: &ConsoleRecord,
         operation: &mut Operation,
@@ -395,7 +395,7 @@ impl Service {
         operation_response(self, frame, result)
     }
 
-    async fn console_authorized_record(
+    pub(super) async fn console_authorized_record(
         &self,
         credential: Id,
         id: Id,
@@ -521,7 +521,7 @@ impl Service {
         Err(Error::unavailable())
     }
 
-    async fn execute_console_record(
+    pub(super) async fn execute_console_record(
         &self,
         record: &ConsoleRecord,
         command: &WriteCommand,
@@ -733,7 +733,7 @@ impl Service {
         Ok(frame)
     }
 
-    async fn recover_console_record(
+    pub(super) async fn recover_console_record(
         &self,
         record: &ConsoleRecord,
         now: u64,
@@ -932,7 +932,7 @@ fn recovered_resource(outcome: &metadata::Outcome) -> Option<(Id, String)> {
         _ => None,
     }
 }
-fn observation(now: u64) -> Observation {
+pub(super) fn observation(now: u64) -> Observation {
     Observation {
         observed_at_ms: Decimal(now),
         source: "tidemq_core_receipt".into(),
@@ -940,7 +940,7 @@ fn observation(now: u64) -> Observation {
         partial: false,
     }
 }
-fn pending(record: &ConsoleRecord, now: u64) -> Operation {
+pub(super) fn pending(record: &ConsoleRecord, now: u64) -> Operation {
     Operation {
         id: record.id,
         actor: record.actor.to_string(),
@@ -955,7 +955,7 @@ fn pending(record: &ConsoleRecord, now: u64) -> Operation {
         observation: observation(now),
     }
 }
-fn expired(record: &ConsoleRecord, now: u64) -> Operation {
+pub(super) fn expired(record: &ConsoleRecord, now: u64) -> Operation {
     let mut result = pending(record, now);
     result.status = Status::Expired;
     result.reason = Some("result_window_expired".into());

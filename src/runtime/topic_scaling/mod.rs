@@ -143,9 +143,11 @@ impl Service {
     ) -> Result<Diagnostic> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.raft.ensure_linearizable())
-            .await?
-            .map_err(|_| Error::unavailable())?;
+        replica
+            .group
+            .ensure_read(deadline)
+            .await
+            .map_err(wire::execution_error)?;
         let Some(mut scan) = replica
             .state
             .try_with_application(scan)

@@ -245,7 +245,7 @@ async fn serve_console(
             Err(source) => { let error = anyhow::Error::new(source); tracing::warn!(event_code = "console_heap_sample_failed", error = %format_args!("{error:#}"), "Bounded Console heap sample failed"); }
         }
     }));
-    tracing::info!(event_code = "service_started", role = "console", address = %server.address, management_address = %server.management_address, "Stateless TideMQ Console is accepting HTTP requests");
+    tracing::info!(event_code = "service_started", role = "console", address = %server.address, management_address = ?server.management_address, "Stateless TideMQ Console is accepting HTTPS requests");
     let stopped = tokio::select! {
         result = shutdown_signal() => result,
         result = server.wait_for_exit() => result,

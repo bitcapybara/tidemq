@@ -152,9 +152,7 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         }
         for replica in service.data.values() {
             if ready && service.require_leader(replica).is_ok() {
-                ready = tokio::time::timeout_at(deadline, replica.raft.ensure_linearizable())
-                    .await
-                    .is_ok_and(|result| result.is_ok());
+                ready = replica.group.ensure_read(deadline).await.is_ok();
             }
         }
         let schedulable = service.registry.schedulable(service.config.node_id);
@@ -214,19 +212,10 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         };
         let mut groups = Vec::new();
         for (group, replica) in &service.data {
-            let mut native = {
-                let metrics = replica.raft.metrics();
-                let metrics = metrics.borrow();
-                serde_json::json!({"group_id":group,"leader":metrics.current_leader,"term":metrics.current_term,"last_applied":metrics.last_applied,"voters":metrics.membership_config.membership().voter_ids().take(4).collect::<Vec<_>>(),"joint_configs":metrics.membership_config.membership().get_joint_config(),"bootstrap_voters":replica.voters})
-            };
-            let storage = timeout_at(deadline, replica.log.diagnostics()).await.ok();
-            if let Some(fields) = native.as_object_mut() {
-                fields.insert("storage".into(), serde_json::json!(storage));
-            }
-            groups.push(native);
+            groups.push(group_diagnostics(*group, replica, deadline).await);
         }
         let metadata_storage = if let Some(replica) = &service.metadata {
-            timeout_at(deadline, replica.log.diagnostics()).await.ok()
+            Some(group_diagnostics(service.config.runtime.metadata_group, replica, deadline).await)
         } else {
             None
         };
@@ -261,6 +250,43 @@ async fn sample(service: Arc<Service>, health: Arc<Health>, mut shutdown: watch:
         let retention =
             serde_json::json!({"deferrals":service.retention_deferrals.load(Ordering::Relaxed)});
         *health.snapshot.write().await = serde_json::json!({"version":env!("CARGO_PKG_VERSION"),"scope":"current_process_local_applied","node_id":service.config.node_id,"cluster_id":service.cluster,"role":service.config.role,"ready":ready,"draining":draining,"schedulable":schedulable,"allocator":allocator,"process":sampled,"metadata":metadata,"metadata_storage":metadata_storage,"data_groups":groups,"cached_routes":service.routes.read().await.len(),"capacity":capacity,"quota":quota,"memory_budget":memory_budget,"transport":transport,"placement_capacity_available":placement_available,"placement":placement_diagnostic,"topic_scaling":topic_scaling,"registry":service.registry.diagnostic().ok(),"retention":retention});
+    }
+}
+
+async fn group_diagnostics<A: crate::execution::Application>(
+    group_id: u64,
+    replica: &super::node::Replica<A>,
+    deadline: Instant,
+) -> Value {
+    match &replica.group {
+        crate::execution::GroupHandle::Local(group) => {
+            let state = match &*group.health().borrow() {
+                crate::execution::LocalHealth::Ready => "ready",
+                crate::execution::LocalHealth::Draining => "draining",
+                crate::execution::LocalHealth::Failed { .. } => "failed",
+                crate::execution::LocalHealth::Stopped => "stopped",
+            };
+            serde_json::json!({"execution":"local", "group_id":group_id,
+                "node_id":group.identity().node_id,"state":state,"position":group.applied(),
+                "storage":group.statistics(),"file_limit_bytes":group.file_limit_bytes().ok()})
+        }
+        crate::execution::GroupHandle::Raft { raft, log, .. } => {
+            let mut status = {
+                let metrics = raft.metrics();
+                let metrics = metrics.borrow();
+                serde_json::json!({"execution":"raft", "group_id":group_id,"leader":metrics.current_leader,
+                    "term":metrics.current_term,"last_applied":metrics.last_applied,
+                    "voters":metrics.membership_config.membership().voter_ids().take(4).collect::<Vec<_>>(),
+                    "joint_configs":metrics.membership_config.membership().get_joint_config(),"bootstrap_voters":replica.voters})
+            };
+            if let Some(fields) = status.as_object_mut() {
+                fields.insert(
+                    "storage".into(),
+                    serde_json::json!(timeout_at(deadline, log.diagnostics()).await.ok()),
+                );
+            }
+            status
+        }
     }
 }
 
@@ -309,9 +335,9 @@ async fn sample_capacity(
         ack_state_logical_bytes = ack_state_logical_bytes
             .checked_add(data.ack_state_logical_bytes)
             .ok_or_else(Error::unavailable)?;
-        let diagnostics = replica.log.diagnostics().await;
-        reserved_storage_bytes = reserve_growth(reserved_storage_bytes, &diagnostics)?;
-        groups.push((*group, diagnostics.snapshot_log.is_some()));
+        let (limit, snapshot) = replica.storage_bound().await?;
+        reserved_storage_bytes = reserve_growth(reserved_storage_bytes, limit)?;
+        groups.push((*group, snapshot));
         if let Some(coordinator) = service.objects.get(group) {
             let objects = coordinator
                 .capacity_usage(deadline.into_std())
@@ -330,12 +356,9 @@ async fn sample_capacity(
         }
     }
     if let Some(metadata) = &service.metadata {
-        let diagnostics = metadata.log.diagnostics().await;
-        reserved_storage_bytes = reserve_growth(reserved_storage_bytes, &diagnostics)?;
-        groups.push((
-            service.config.runtime.metadata_group,
-            diagnostics.snapshot_log.is_some(),
-        ));
+        let (limit, snapshot) = metadata.storage_bound().await?;
+        reserved_storage_bytes = reserve_growth(reserved_storage_bytes, limit)?;
+        groups.push((service.config.runtime.metadata_group, snapshot));
     }
     let (local_bytes, disk) = tokio::join!(physical.sample(groups, deadline), async {
         disk.ok_or_else(Error::unavailable)?
@@ -369,13 +392,10 @@ async fn sample_capacity(
     })
 }
 
-fn reserve_growth(
-    previous: u64,
-    diagnostics: &crate::replication::StorageDiagnostics,
-) -> Result<u64> {
+fn reserve_growth(previous: u64, file_limit_bytes: u64) -> Result<u64> {
     // Includes WAL checkpoints/staging and bounded named, pinned, and incoming snapshots.
     previous
-        .checked_add(diagnostics.replica_file_limit_bytes)
+        .checked_add(file_limit_bytes)
         .ok_or_else(Error::unavailable)
 }
 

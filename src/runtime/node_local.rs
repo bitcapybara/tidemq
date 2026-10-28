@@ -364,11 +364,11 @@ impl LocalStartup {
         if let Some(service) = &self.service {
             service.rpc.begin_drain(deadline);
         }
-        if let Some(mut task) = self.local_rpc.take() {
-            if tokio::time::timeout_at(deadline, &mut task).await.is_err() {
-                task.abort();
-                let _ = task.await;
-            }
+        if let Some(mut task) = self.local_rpc.take()
+            && tokio::time::timeout_at(deadline, &mut task).await.is_err()
+        {
+            task.abort();
+            let _ = task.await;
         }
         for group in &self.data {
             let _ = group.close(deadline).await;

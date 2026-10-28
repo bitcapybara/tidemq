@@ -293,6 +293,17 @@ impl Registry {
 
     pub fn diagnostic(&self) -> Result<serde_json::Value> {
         let directory = self.directory.lock().map_err(|_| Error::unavailable())?;
+        if directory.groups.values().all(|group| {
+            matches!(
+                group.placement,
+                crate::metadata::GroupPlacement::Local { .. }
+            )
+        }) {
+            return Ok(
+                serde_json::json!({"execution":"local", "registered_nodes":directory.nodes.len(),
+                "data_groups":directory.groups.len(),"scope":"fixed_process_directory"}),
+            );
+        }
         Ok(
             serde_json::json!({"revision": directory.revision, "membership_index": directory.membership_index,
             "registered_nodes": directory.nodes.len(), "data_groups": directory.groups.len(),
@@ -719,13 +730,19 @@ impl Directory {
         config: &Config,
         cluster: tidemq_protocol::Id,
     ) -> Result<(Vec<PeerTarget>, Vec<NodeGrant>)> {
+        if config.role == crate::config::Role::Combined {
+            return Err(Error::invalid(
+                "Local execution has no internal peer targets",
+            ));
+        }
+        let mode = config.deployment_mode().map_err(Error::foundation)?;
         let mut grants = Vec::new();
         let mut peers = Vec::new();
         let mut groups = vec![config.runtime.metadata_group];
         groups.extend(self.groups.keys().copied());
         for (id, row) in &self.nodes {
             row.identity
-                .validate(&row.record.spec)
+                .validate(&row.record.spec, mode)
                 .map_err(super::metadata::metadata_rejection)?;
             if *id != row.record.spec.node_id {
                 return Err(Error::invalid("Node directory key is inconsistent"));

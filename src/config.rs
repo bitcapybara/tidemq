@@ -68,6 +68,20 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn deployment_mode(&self) -> Result<crate::metadata::DeploymentMode> {
+        match (self.role, self.replication_factor) {
+            (Role::Combined, 1) => Ok(crate::metadata::DeploymentMode::Local),
+            (Role::Combined, _) => Err(Error::Configuration {
+                reason: "combined does not use replicated execution",
+            }),
+            (_, 1) => Ok(crate::metadata::DeploymentMode::SeparateRf1),
+            (_, 3) => Ok(crate::metadata::DeploymentMode::SeparateRf3),
+            _ => Err(Error::Configuration {
+                reason: "separate execution requires RF1 or RF3",
+            }),
+        }
+    }
+
     pub async fn load(path: &Path) -> Result<Self> {
         let text = read_configuration(path).await?;
         let config: Self = toml::from_str(&text).context(ParseConfigurationSnafu { path })?;
@@ -423,6 +437,17 @@ mod tests {
                 role,
                 ..Config::default()
             };
+            if role != Role::Combined {
+                original.console = None;
+                original.tls.trust_roots = "certs/ca.pem".into();
+                original.runtime.internal_listen = SocketAddr::from(([127, 0, 0, 1], 7444));
+                original.runtime.metadata_voters = vec![1];
+                original
+                    .runtime
+                    .groups
+                    .iter_mut()
+                    .for_each(|group| group.voters = vec![1]);
+            }
             original.runtime.bootstrap_admin_token_file = Some("private/bootstrap.token".into());
             original.runtime.archive_interval_ms = 2_000;
             if role.stores_data() {
@@ -510,10 +535,20 @@ max_time_boundaries = 512
     fn inactive_gateway_listener_does_not_reserve_an_address() {
         let mut config = Config {
             role: Role::Storage,
+            console: None,
+            tls: TlsConfig {
+                trust_roots: "certs/ca.pem".into(),
+                ..TlsConfig::default()
+            },
             ..Config::default()
         };
         config.runtime.internal_listen = config.listen;
         config.runtime.metadata_voters = vec![2];
+        config
+            .runtime
+            .groups
+            .iter_mut()
+            .for_each(|group| group.voters = vec![1]);
         config.runtime.peers = [(1, Role::Storage), (2, Role::Metadata), (3, Role::Broker)]
             .into_iter()
             .map(|(node, role)| crate::runtime::PeerConfig {
@@ -533,6 +568,25 @@ max_time_boundaries = 512
         config.management_listen = config.listen;
         config.validate().unwrap();
         config.role = Role::Gateway;
-        assert!(config.validate().is_err());
+        config.node_id = 4;
+        config.runtime.peers.push(crate::runtime::PeerConfig {
+            node_id: 4,
+            role: Role::Gateway,
+            zone: "local".into(),
+            internal_address: config.runtime.internal_listen,
+            server_name: "node-4.local".into(),
+            certificate_der: "certs/node-4.der".into(),
+        });
+        config.validate().unwrap();
+        assert!(config.runtime.validate(&config).is_err());
+        config.runtime.internal_listen = SocketAddr::from(([127, 0, 0, 1], 7544));
+        config
+            .runtime
+            .peers
+            .iter_mut()
+            .find(|peer| peer.node_id == 4)
+            .unwrap()
+            .internal_address = config.runtime.internal_listen;
+        config.runtime.validate(&config).unwrap();
     }
 }

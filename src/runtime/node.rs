@@ -9,20 +9,20 @@ use tidemq_protocol::common::TrafficClass;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::broker::{DataApplication, DataGroupConfig, ProducerMetrics};
+use crate::broker::{DataApplication, DataGroupConfig};
 use crate::budget::MemoryBudget;
 use crate::config::Config;
 use crate::execution::{
     Application, GroupHandle, GroupState, LocalGroup, LocalOptions, StorageIdentity,
 };
 use crate::metadata::{MetadataState, NodeRole};
-use crate::observability::metrics::{Metrics, Operation};
+use crate::observability::metrics::Operation;
 use crate::ownership::ControlPolicy;
 use crate::ownership::remote::Authority;
 use crate::producer::ProducerLimits;
 use crate::replication::rpc::{NetworkConfig, PeerPool, QuicNetworkFactory};
 use crate::replication::{DiskStore, Raft, StorageOptions};
-use crate::server::{DispatchConfig, DispatchMetrics};
+use crate::server::DispatchConfig;
 use crate::transport::{
     Client, ClientCredentials, ClientTls, NodeGrant, Server, ServerAuthorization, ServerTls,
     TlsIdentity, TransportConfig,
@@ -61,8 +61,8 @@ impl<A: Application> Replica<A> {
             GroupHandle::Local(group) => Ok(crate::metadata::GroupPlacement::Local {
                 node_id: group.identity().node_id,
             }),
-            GroupHandle::Raft { raft, .. } => Ok(crate::metadata::GroupPlacement::Raft {
-                voters: crate::ownership::remote::current_voters(raft)?,
+            GroupHandle::Raft { .. } => Ok(crate::metadata::GroupPlacement::Raft {
+                voters: crate::ownership::remote::current_voters(&self.group)?,
             }),
         }
     }

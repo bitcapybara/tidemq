@@ -1190,7 +1190,7 @@ async fn real_metadata_and_data_groups_automatically_cross_three_wal_capacities(
         tidemq_protocol::Id::new_v7().unwrap(),
         cluster,
         7,
-        DeploymentMode::LocalRf1,
+        DeploymentMode::Local,
         MetadataLimits::default(),
     );
     assert!(
