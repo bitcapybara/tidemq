@@ -252,7 +252,26 @@ async fn committed_console_operation(client: &Client, operation: Id) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn console_http_lost_send_response_recovers_after_restart_without_republishing() {
-    let mut fixture = dynamic_fixture().await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (11, Role::Metadata),
+            (21, Role::Storage),
+            (22, Role::Storage),
+            (31, Role::Broker),
+        ],
+        &[11],
+        &[21],
+    )
+    .await;
+    for config in fixture.configs.values_mut() {
+        config.runtime.groups.push(GroupConfig {
+            group_id: 3,
+            voters: vec![22],
+            standby: Vec::new(),
+        });
+    }
+    fixture.start_all().await;
     let root = fixture.client(1).await;
     let tenant = root.admin().create_tenant("acme").await.unwrap();
     let namespace = root.admin().create_namespace(tenant, "app").await.unwrap();
@@ -292,8 +311,18 @@ async fn console_http_lost_send_response_recovers_after_restart_without_republis
     let original_message = first.message_id();
     stream.ack_cumulative(&first).await.unwrap();
     direct.close().await.unwrap();
-    fixture.stop(1).await;
-    fixture.restart(1).await;
+    for node in [11, 21, 22] {
+        fixture.stop(node).await;
+    }
+    for node in [11, 21, 22] {
+        fixture.running.insert(
+            node,
+            RunningNode::start(fixture.configs.get(&node).unwrap().clone())
+                .await
+                .unwrap(),
+        );
+    }
+    fixture.wait_ready().await;
     assert_original_console_receipt(&consoles, &session, &expected).await;
     let replay = write(&consoles, 1, &session, Method::POST, &path, &original).await;
     succeeded(&replay);
