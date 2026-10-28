@@ -17,7 +17,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use writer::Writer;
 
 pub use format::{
@@ -39,6 +39,13 @@ pub struct SegmentedInspection {
 pub struct RecoveredRecord {
     pub id: Option<RecordId>,
     pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum JournalHealth {
+    Ready,
+    Failed { reason: String },
+    Stopped,
 }
 
 pub struct SegmentedDurability(oneshot::Receiver<std::result::Result<(), String>>);
@@ -86,6 +93,9 @@ struct Shared {
     next_record_id: AtomicU64,
     retained_count: Arc<AtomicUsize>,
     recovery_gate: Arc<Semaphore>,
+    health: watch::Sender<JournalHealth>,
+    #[cfg(test)]
+    writer_abort: Mutex<Option<tokio::task::AbortHandle>>,
 }
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match mutex.lock() {
@@ -237,6 +247,9 @@ impl SegmentedJournal {
             next_record_id: AtomicU64::new(loaded.next_record_id),
             retained_count: Arc::new(AtomicUsize::new(loaded.index.len())),
             recovery_gate,
+            health: watch::channel(JournalHealth::Ready).0,
+            #[cfg(test)]
+            writer_abort: Mutex::new(None),
         });
         let bytes = Arc::new(Semaphore::new(options.max_pending_bytes as usize));
         let requests = Arc::new(Semaphore::new(options.max_pending_records));
@@ -261,12 +274,30 @@ impl SegmentedJournal {
             loaded.retired,
             loaded.manifest_bytes,
             loaded.active_hash,
-            shared,
+            shared.clone(),
             metrics,
             owner,
         )
         .await?;
-        tokio::spawn(writer.run(receiver));
+        let task = tokio::spawn(writer.run(receiver));
+        #[cfg(test)]
+        {
+            *lock(&shared.writer_abort) = Some(task.abort_handle());
+        }
+        tokio::spawn(async move {
+            match task.await {
+                Ok(()) => {
+                    if *shared.health.borrow() == JournalHealth::Ready {
+                        shared.health.send_replace(JournalHealth::Stopped);
+                    }
+                }
+                Err(error) => {
+                    shared.health.send_replace(JournalHealth::Failed {
+                        reason: format!("Segmented writer task ended unexpectedly: {error}"),
+                    });
+                }
+            }
+        });
         Ok((journal, loaded.inspection, loaded.recovery))
     }
     pub async fn append(&self, data: Vec<u8>) -> Result<SegmentedDurability> {
@@ -467,6 +498,15 @@ impl SegmentedJournal {
         result.available_pending_bytes = self.bytes.available_permits();
         result.available_pending_records = self.requests.available_permits();
         result
+    }
+    pub fn health(&self) -> watch::Receiver<JournalHealth> {
+        self.shared.health.subscribe()
+    }
+    #[cfg(test)]
+    pub(crate) fn abort_writer(&self) {
+        if let Some(abort) = lock(&self.shared.writer_abort).as_ref() {
+            abort.abort();
+        }
     }
 }
 /// Read-only validation; only open repairs a torn final active frame.

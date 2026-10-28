@@ -2,71 +2,9 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::marker::PhantomData;
 
-use openraft::{BasicNode, RaftTypeConfig};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use tidemq_protocol::Id;
-
 use super::SnapshotFile;
-
-/// An application's complete authoritative state, not a list of previously executed commands.
-///
-/// Commands must be deterministic: no clocks, entropy, network, or IO in `apply`. Include those
-/// inputs in the replicated command instead. Business rejection belongs in `Response`. The
-/// application must enforce finite state budgets, including deduplication and retirement fences,
-/// and `validate` must reject invalid decoded snapshots without changing external state.
-/// State and commands must support postcard's non-self-describing serde model; dynamic values,
-/// untagged enums, and internally tagged enums are not supported by this storage format.
-pub trait Application:
-    Clone + fmt::Debug + Default + Serialize + DeserializeOwned + Send + Sync + 'static
-{
-    const NAME: &'static str;
-    const VERSION: u32;
-    type Command: Clone + fmt::Debug + Serialize + DeserializeOwned + Send + Sync + 'static;
-    type Response: Clone
-        + fmt::Debug
-        + Default
-        + Serialize
-        + DeserializeOwned
-        + Send
-        + Sync
-        + 'static;
-
-    fn apply(&mut self, command: Self::Command) -> Self::Response;
-    /// Local failures must stop this replica instead of producing a divergent business result.
-    fn try_apply(&mut self, command: Self::Command) -> std::io::Result<Self::Response> {
-        Ok(self.apply(command))
-    }
-    fn validate(&self) -> std::io::Result<()>;
-}
-
-/// A snapshot is portable between replicas in the same group, never between groups.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GroupIdentity {
-    pub cluster_id: Id,
-    pub group_id: u64,
-    pub application: String,
-    pub application_version: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct StorageIdentity {
-    pub group: GroupIdentity,
-    pub node_id: u64,
-}
-
-impl StorageIdentity {
-    pub fn new<A: Application>(cluster_id: Id, group_id: u64, node_id: u64) -> Self {
-        Self {
-            group: GroupIdentity {
-                cluster_id,
-                group_id,
-                application: A::NAME.to_owned(),
-                application_version: A::VERSION,
-            },
-            node_id,
-        }
-    }
-}
+pub use crate::execution::{Application, GroupIdentity, StorageIdentity};
+use openraft::{BasicNode, RaftTypeConfig};
 
 /// Generic type configuration without imposing ordering or `Copy` on application state.
 pub struct TypeConfig<A: Application>(PhantomData<fn() -> A>);
