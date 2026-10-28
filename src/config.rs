@@ -123,11 +123,7 @@ impl Config {
                     reason: "combined uses local execution and no internal TLS trust roots",
                 });
             }
-            if console.listen.port() != 0
-                && console.listen.port() == self.management_listen.port()
-                && (console.listen.ip() == self.management_listen.ip()
-                    || console.listen.ip().is_unspecified())
-            {
+            if listeners_conflict(console.listen, self.management_listen) {
                 return Err(Error::Configuration {
                     reason: "console.listen and management_listen TCP listeners conflict",
                 });
@@ -154,6 +150,18 @@ impl Config {
         self.tracing.validate()?;
         Ok(())
     }
+}
+
+pub(crate) fn listeners_conflict(left: SocketAddr, right: SocketAddr) -> bool {
+    if left.port() == 0 || left.port() != right.port() {
+        return false;
+    }
+    let left = left.ip();
+    let right = right.ip();
+    // An IPv6 wildcard can bind both families; IPv4 wildcards only cover IPv4.
+    left == right
+        || (left.is_unspecified() && (left.is_ipv6() || right.is_ipv4()))
+        || (right.is_unspecified() && (right.is_ipv6() || left.is_ipv4()))
 }
 
 async fn read_configuration(path: &Path) -> Result<String> {
@@ -310,6 +318,80 @@ fn empty_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listener_overlap_respects_address_families_and_ephemeral_ports() {
+        for (left, right, conflict) in [
+            ("127.0.0.1:7443", "127.0.0.1:7443", true),
+            ("0.0.0.0:7443", "127.0.0.1:7443", true),
+            ("[::]:7443", "[::1]:7443", true),
+            ("[::]:7443", "127.0.0.1:7443", true),
+            ("0.0.0.0:7443", "[::1]:7443", false),
+            ("127.0.0.1:7443", "127.0.0.2:7443", false),
+            ("127.0.0.1:7443", "127.0.0.1:7444", false),
+            ("0.0.0.0:0", "127.0.0.1:0", false),
+        ] {
+            let left = left.parse().unwrap();
+            let right = right.parse().unwrap();
+            assert_eq!(listeners_conflict(left, right), conflict);
+            assert_eq!(listeners_conflict(right, left), conflict);
+        }
+    }
+
+    #[test]
+    fn separated_topologies_reject_combined_peer_roles() {
+        let original: Config = toml::from_str(include_str!("../config/gateway.toml")).unwrap();
+        original.runtime.validate(&original).unwrap();
+        for peer in &original.runtime.peers {
+            let mut config = original.clone();
+            config
+                .runtime
+                .peers
+                .iter_mut()
+                .find(|row| row.node_id == peer.node_id)
+                .unwrap()
+                .role = Role::Combined;
+            assert!(
+                config.runtime.validate(&config).is_err(),
+                "Combined peer {} was accepted",
+                peer.node_id
+            );
+        }
+    }
+
+    #[test]
+    fn separate_quic_rejects_overlapping_explicit_and_wildcard_udp_listeners() {
+        let mut config: Config = toml::from_str(include_str!("../config/gateway.toml")).unwrap();
+        config.runtime.validate(&config).unwrap();
+        config.runtime.internal_listen =
+            SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), config.listen.port());
+        config
+            .runtime
+            .peers
+            .iter_mut()
+            .find(|peer| peer.node_id == config.node_id)
+            .unwrap()
+            .internal_address = config.listen;
+        assert!(config.runtime.validate(&config).is_err());
+    }
+
+    #[test]
+    fn separated_internal_udp_and_management_tcp_can_share_an_address() {
+        let mut config: Config = toml::from_str(include_str!("../config/storage.toml")).unwrap();
+        config.management_listen = config.runtime.internal_listen;
+        config.validate().unwrap();
+        config.runtime.validate(&config).unwrap();
+    }
+
+    #[test]
+    fn standalone_console_rejects_overlapping_explicit_and_wildcard_tcp_listeners() {
+        let mut config: crate::console::ConsoleConfig =
+            toml::from_str(include_str!("../config/console.toml")).unwrap();
+        config.validate().unwrap();
+        config.management_listen = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9420);
+        config.listen = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 9420);
+        assert!(config.validate().is_err());
+    }
 
     #[test]
     fn local_configuration_round_trip_has_no_network_or_raft_fields() {
