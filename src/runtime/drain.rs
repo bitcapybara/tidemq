@@ -128,12 +128,20 @@ impl Service {
         deadline: Instant,
     ) -> super::failover::Probe {
         use super::failover::Probe as Observation;
-        let rpc = match self
-            .rpc
-            .pool
-            .connection(node, TrafficClass::Control, deadline)
-            .await
-        {
+        if self.rpc.is_local() {
+            return if node == self.config.node_id
+                && !self.draining.load(std::sync::atomic::Ordering::Acquire)
+                && self.scaling.capacity.snapshot().is_some()
+            {
+                Observation::Eligible
+            } else {
+                Observation::Responsive
+            };
+        }
+        let Ok(pool) = self.rpc.pool() else {
+            return Observation::Responsive;
+        };
+        let rpc = match pool.connection(node, TrafficClass::Control, deadline).await {
             Ok(rpc) => rpc,
             Err(error) => {
                 return if connection_unreachable(&error) {
@@ -467,8 +475,11 @@ impl Service {
                     TrafficClass::Delivery,
                     TrafficClass::Bulk,
                 ] {
+                    if self.rpc.is_local() {
+                        break;
+                    }
                     self.rpc
-                        .pool
+                        .pool()?
                         .connection(leader, class, deadline)
                         .await
                         .map_err(|source| {

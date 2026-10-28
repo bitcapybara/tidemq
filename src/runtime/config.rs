@@ -28,12 +28,12 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            internal_listen: SocketAddr::from(([127, 0, 0, 1], 7444)),
+            internal_listen: SocketAddr::from(([127, 0, 0, 1], 0)),
             metadata_group: 1,
-            metadata_voters: vec![1],
+            metadata_voters: Vec::new(),
             groups: vec![GroupConfig {
                 group_id: 2,
-                voters: vec![1],
+                voters: Vec::new(),
                 standby: Vec::new(),
             }],
             peers: Vec::new(),
@@ -144,19 +144,7 @@ impl RuntimeConfig {
         }
         self.validate_objects(config)?;
         if config.role == Role::Combined {
-            if !self.peers.is_empty()
-                || self.bootstrap
-                || !self.metadata_voters.is_empty()
-                || !config.tls.trust_roots.as_os_str().is_empty()
-            {
-                return Err(Error::invalid(
-                    "Local execution requires derived ownership without peer, bootstrap or trust root settings",
-                ));
-            }
-            return self.validate_local_groups();
-        }
-        if config.tls.trust_roots.as_os_str().is_empty() {
-            return Err(Error::invalid("Separated roles require tls.trust_roots"));
+            return self.validate_local();
         }
         self.validate_peers(config)?;
         self.validate_voters(&self.metadata_voters, config.replication_factor, true)?;
@@ -169,21 +157,30 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    fn validate_local_groups(&self) -> Result<()> {
-        if self.metadata_group == 0 || !(1..=16).contains(&self.groups.len()) {
+    fn validate_local(&self) -> Result<()> {
+        if self.internal_listen.port() != 0
+            || !self.metadata_voters.is_empty()
+            || !self.peers.is_empty()
+            || self.bootstrap
+        {
             return Err(Error::invalid(
-                "Local execution requires a nonzero metadata_group and 1 to 16 data groups",
+                "Combined local execution has no internal listener, peers, voters or Raft bootstrap",
             ));
         }
-        let mut identifiers = BTreeSet::from([self.metadata_group]);
+        if self.metadata_group == 0 || !(1..=16).contains(&self.groups.len()) {
+            return Err(Error::invalid(
+                "Combined requires one metadata group and between 1 and 16 data groups",
+            ));
+        }
+        let mut ids = BTreeSet::from([self.metadata_group]);
         for group in &self.groups {
             if group.group_id == 0
-                || !identifiers.insert(group.group_id)
+                || !ids.insert(group.group_id)
                 || !group.voters.is_empty()
                 || !group.standby.is_empty()
             {
                 return Err(Error::invalid(
-                    "Local data groups require distinct nonzero IDs without Raft membership",
+                    "Local group IDs must be distinct and cannot carry Raft membership",
                 ));
             }
         }
@@ -261,11 +258,6 @@ impl RuntimeConfig {
         }
         let mut ids = BTreeSet::new();
         for peer in &self.peers {
-            if peer.role == Role::Combined {
-                return Err(Error::invalid(
-                    "Separated peers cannot use the combined role",
-                ));
-            }
             for (valid, reason) in [
                 (peer.node_id != 0, "node_id must be nonzero"),
                 (ids.insert(peer.node_id), "node_id is duplicated"),

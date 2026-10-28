@@ -212,6 +212,7 @@ fn observe_console_failure(record: &ConsoleRecord, stage: &'static str, error: &
         Error::Admitted { .. } => "admitted",
         Error::Invalid { .. } => "invalid",
         Error::Operation { .. } => "operation",
+        Error::LocalNotSubmitted { .. } => "local_not_submitted",
         Error::CommittedConsumerWriter { .. } => "committed_writer",
         Error::Rejected { .. } | Error::TenantGrantExhausted { .. } => "rejected",
     };

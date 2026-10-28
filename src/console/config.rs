@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{LoggingConfig, TlsConfig};
+use crate::config::LoggingConfig;
 use crate::observability::tracing::TracingConfig;
 use crate::{Error, Result};
 
@@ -20,23 +20,15 @@ pub struct ConsoleConfig {
     pub listen: SocketAddr,
     pub management_listen: SocketAddr,
     pub static_dir: PathBuf,
-    pub tls: TlsConfig,
     pub cluster: ClusterConfig,
     pub session: SessionConfig,
+    pub tls: crate::config::TlsConfig,
     #[serde(default)]
     pub observability: ObservabilityConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
     pub tracing: TracingConfig,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClusterConfig {
-    pub address: String,
-    pub server_name: String,
-    pub trust_roots: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -52,12 +44,12 @@ pub struct EmbeddedConsoleConfig {
 impl Default for EmbeddedConsoleConfig {
     fn default() -> Self {
         Self {
-            listen: SocketAddr::from(([127, 0, 0, 1], 8443)),
+            listen: SocketAddr::from(([127, 0, 0, 1], 7445)),
             static_dir: "console/web/dist".into(),
             session: SessionConfig {
                 key_file: "secrets/console-session.key".into(),
                 previous_key_files: Vec::new(),
-                public_origin: "https://localhost:8443".into(),
+                public_origin: "https://localhost:7445".into(),
                 max_age_seconds: default_max_age(),
             },
             observability: ObservabilityConfig::default(),
@@ -67,29 +59,22 @@ impl Default for EmbeddedConsoleConfig {
 
 impl EmbeddedConsoleConfig {
     pub fn validate(&self) -> Result<()> {
-        validate_public_listener(self.listen, &self.static_dir)?;
+        if self.static_dir.as_os_str().is_empty() {
+            return Err(Error::Configuration {
+                reason: "console static_dir must not be empty",
+            });
+        }
         self.session.validate()?;
         self.observability.validate()
     }
-
-    pub fn server_name(&self) -> Result<String> {
-        self.session.validate()?;
-        reqwest::Url::parse(&self.session.public_origin)
-            .ok()
-            .and_then(|url| url.host_str().map(str::to_owned))
-            .ok_or(Error::Configuration {
-                reason: "console session.public_origin requires a host",
-            })
-    }
 }
 
-fn validate_public_listener(listen: SocketAddr, static_dir: &std::path::Path) -> Result<()> {
-    if listen.port() == 0 || static_dir.as_os_str().is_empty() {
-        return Err(Error::Configuration {
-            reason: "console requires a nonzero listen port and a nonempty static_dir",
-        });
-    }
-    Ok(())
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterConfig {
+    pub address: String,
+    pub server_name: String,
+    pub trust_roots: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -127,7 +112,6 @@ fn default_max_age() -> u16 {
 
 impl ConsoleConfig {
     pub fn validate(&self) -> Result<()> {
-        validate_public_listener(self.listen, &self.static_dir)?;
         for (valid, reason) in [
             (
                 self.management_listen.ip().is_loopback(),
@@ -153,17 +137,19 @@ impl ConsoleConfig {
                 !self.cluster.trust_roots.as_os_str().is_empty(),
                 "console cluster.trust_roots must not be empty",
             ),
-            (
-                !self.tls.certificate.as_os_str().is_empty()
-                    && !self.tls.private_key.as_os_str().is_empty(),
-                "console tls certificate and private_key paths must not be empty",
-            ),
         ] {
             if !valid {
                 return Err(Error::Configuration { reason });
             }
         }
         self.session.validate()?;
+        if self.tls.certificate.as_os_str().is_empty()
+            || self.tls.private_key.as_os_str().is_empty()
+        {
+            return Err(Error::Configuration {
+                reason: "console HTTPS requires a certificate and private key",
+            });
+        }
         self.observability.validate()?;
         self.logging.validate()?;
         self.tracing.validate()
@@ -299,7 +285,6 @@ fn validate_origin(origin: &str) -> Result<()> {
         reason: "console session.public_origin must be an absolute HTTPS origin",
     })?;
     if origin.len() > 512
-        || origin.chars().any(char::is_control)
         || url.scheme() != "https"
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -307,7 +292,6 @@ fn validate_origin(origin: &str) -> Result<()> {
         || url.path() != "/"
         || url.query().is_some()
         || url.fragment().is_some()
-        || url.port() == Some(0)
     {
         return Err(Error::Configuration {
             reason: "console session.public_origin must contain only an HTTPS scheme, host, and optional port",
