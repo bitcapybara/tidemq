@@ -84,6 +84,9 @@ base64 = "=0.23.1"
 bytes.workspace = true
 clap = { version = "=4.6.7", features = ["derive"] }
 getrandom.workspace = true
+http-body = "=1.1.0"
+hyper = { version = "=1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "=0.1.21", features = ["tokio", "service"] }
 libc = "=0.2.191"
 mimalloc = { version = "=0.1.52", features = ["extended"], optional = true }
 prometheus-client.workspace = true
@@ -107,6 +110,8 @@ tidemq-transport.workspace = true
 tikv-jemallocator = { version = "=0.7.0", features = ["stats"], optional = true }
 tikv-jemalloc-ctl = { version = "=0.7.0", features = ["stats", "use_std"], optional = true }
 tokio.workspace = true
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs"] }
+tokio-util.workspace = true
 tower = { version = "=0.5.3", features = ["util"] }
 tower-http = { version = "=0.6.11", features = ["fs"] }
 toml = "=1.1.8"
@@ -119,7 +124,6 @@ zeroize = { version = "=1.9.1", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["process"] }
-tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs"] }
 tidemq-sdk = { path = "sdk/rust", features = ["opentelemetry"] }
 rcgen = { version = "=0.14.10", default-features = false, features = ["pem", "aws_lc_rs"] }
 opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic-messages", "trace"] }

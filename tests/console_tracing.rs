@@ -37,7 +37,7 @@ mod s3;
 use fixture::*;
 
 const TOKEN: &str = "console-trace-private-bootstrap-token-with-at-least-32-characters";
-const ORIGIN: &str = "https://console.example.test";
+const ORIGIN: &str = "https://localhost:8443";
 const PARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 
 async fn start_console(fixture: &Fixture) -> RunningConsole {
@@ -65,7 +65,7 @@ async fn start_console(fixture: &Fixture) -> RunningConsole {
     let text = format!(
         r#"
 role = "console"
-listen = "0.0.0.0:0"
+listen = "127.0.0.1:8443"
 management_listen = "127.0.0.1:0"
 static_dir = {}
 [cluster]
@@ -81,7 +81,15 @@ public_origin = "{ORIGIN}"
         serde_json::to_string(&node.tls.trust_roots).unwrap(),
         serde_json::to_string(&key).unwrap(),
     );
-    let config: ConsoleConfig = toml::from_str(&text).unwrap();
+    let text = format!(
+        "{text}\n[tls]\ncertificate = {}\nprivate_key = {}\n",
+        serde_json::to_string(&node.tls.certificate).unwrap(),
+        serde_json::to_string(&node.tls.private_key).unwrap()
+    );
+    let mut config: ConsoleConfig = toml::from_str(&text).unwrap();
+    let reservation = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    config.listen = reservation.local_addr().unwrap();
+    drop(reservation);
     RunningConsole::start(config).await.unwrap()
 }
 
@@ -149,12 +157,26 @@ async fn console_http_correlation_and_sdk_core_trace_preserve_parents_without_ex
     // This integration target owns its process, matching the executable's subscriber lifetime.
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(pipeline.layer()))
         .unwrap();
-    let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+    let mut fixture = Fixture::new(
+        &[
+            (1, Role::Gateway),
+            (2, Role::Metadata),
+            (3, Role::Broker),
+            (4, Role::Storage),
+        ],
+        &[2],
+        &[4],
+    )
+    .await;
     fixture.start_all().await;
     let console = start_console(&fixture).await;
-    let base = format!("http://127.0.0.1:{}", console.address.port());
+    let base = format!("https://127.0.0.1:{}", console.address.port());
+    let roots = tokio::fs::read(&fixture.configs.get(&1).unwrap().tls.trust_roots)
+        .await
+        .unwrap();
     let client = reqwest::Client::builder()
         .no_proxy()
+        .tls_certs_only(reqwest::Certificate::from_pem_bundle(&roots).unwrap())
         .timeout(Duration::from_secs(15))
         .build()
         .unwrap();
