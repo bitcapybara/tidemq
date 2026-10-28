@@ -349,11 +349,13 @@ impl Service {
             })?;
             return wire::within(
                 deadline,
-                self.execute_group_control(group, control, deadline)
-                    .instrument(
-                        tracing::info_span!(target: "tidemq_trace", "consumer_control_local",
+                Box::pin(
+                    self.execute_group_control(group, control, deadline)
+                        .instrument(
+                            tracing::info_span!(target: "tidemq_trace", "consumer_control_local",
                     node_id = self.config.node_id, group_id = group, operation_id = %operation),
-                    ),
+                        ),
+                ),
             )
             .await?;
         }

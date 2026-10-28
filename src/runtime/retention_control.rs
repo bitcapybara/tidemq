@@ -159,11 +159,13 @@ impl Service {
             use tracing::Instrument;
             return wire::within(
                 deadline,
-                self.execute_retention_control(self.config.node_id, request, deadline)
-                    .instrument(
-                        tracing::info_span!(target: "tidemq_trace", "retention_control_typed",
+                Box::pin(
+                    self.execute_retention_control(self.config.node_id, request, deadline)
+                        .instrument(
+                            tracing::info_span!(target: "tidemq_trace", "retention_control_typed",
                     node_id = self.config.node_id, group_id = group),
-                    ),
+                        ),
+                ),
             )
             .await?;
         }

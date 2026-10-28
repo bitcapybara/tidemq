@@ -415,10 +415,10 @@ impl Service {
             use tracing::Instrument;
             wire::within(
                 deadline,
-                self.execute_seal(group, request, deadline).instrument(
+                Box::pin(self.execute_seal(group, request, deadline).instrument(
                     tracing::info_span!(target: "tidemq_trace", "seal_shard_local",
                     node_id = self.config.node_id, group_id = group, operation_id = %plan),
-                ),
+                )),
             )
             .await??
         } else {
