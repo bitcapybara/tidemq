@@ -1,9 +1,10 @@
 //! Stateless HTTP process; all MQ authority remains behind authenticated public APIs.
 
-mod api;
+pub(crate) mod api;
 mod api_identity;
 mod api_query;
 mod api_write;
+mod backend;
 mod config;
 mod files;
 mod http;
