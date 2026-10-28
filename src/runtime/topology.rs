@@ -22,6 +22,10 @@ use super::{
 
 pub(super) const SEAL_SHARD: u32 = 1_001;
 
+#[cfg(test)]
+#[path = "../../tests/runtime_support/topology_semantic_local.rs"]
+mod local_tests;
+
 #[derive(Serialize, Deserialize)]
 struct SealRequest {
     plan: Id,
@@ -406,16 +410,27 @@ impl Service {
         deadline: Instant,
     ) -> Result<u64> {
         let target = self.leader(group, deadline).await?;
-        let response = self
-            .rpc
-            .call(
-                target,
-                group,
-                Request::control(SEAL_SHARD, &SealRequest { plan, partition })?,
-                deadline,
-            )
-            .await?;
-        let reply: SealReply = wire::decode_json(&response)?;
+        let request = SealRequest { plan, partition };
+        let reply = if self.rpc.is_local() {
+            use tracing::Instrument;
+            self.execute_seal(group, request, deadline)
+                .instrument(
+                    tracing::info_span!(target: "tidemq_trace", "seal_shard_local",
+                    node_id = self.config.node_id, group_id = group, operation_id = %plan),
+                )
+                .await?
+        } else {
+            let response = self
+                .rpc
+                .call(
+                    target,
+                    group,
+                    Request::control(SEAL_SHARD, &request)?,
+                    deadline,
+                )
+                .await?;
+            wire::decode_json(&response)?
+        };
         if reply.plan != plan || reply.partition != partition {
             return Err(Error::invalid(
                 "Data seal reply does not match the original plan and domain",
@@ -431,6 +446,23 @@ impl Service {
         deadline: Instant,
     ) -> Result<Bytes> {
         let request: SealRequest = wire::decode_json(bytes)?;
+        let reply = self.execute_seal(group, request, deadline).await?;
+        wire::json(&reply)
+    }
+
+    async fn execute_seal(
+        &self,
+        group: u64,
+        request: SealRequest,
+        deadline: Instant,
+    ) -> Result<SealReply> {
+        let _admission = self.rpc.admit_local(
+            group,
+            crate::transport::StreamPurpose::Request,
+            32 * 1024,
+            deadline,
+        )?;
+        wire::remaining(deadline)?;
         let lease = self.data_lease(group, request.partition, deadline).await?;
         let grant = lease.grant();
         let result = self
@@ -456,7 +488,7 @@ impl Service {
                 "Source data group did not return a durable seal",
             ));
         };
-        wire::json(&SealReply {
+        Ok(SealReply {
             plan,
             partition: request.partition,
             end: committed_end,

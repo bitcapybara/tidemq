@@ -12,6 +12,10 @@ use crate::metadata::{self, PartitionKey, RetentionControl, RetentionPlan};
 
 pub(super) const CONTROL: u32 = 1_012;
 
+#[cfg(test)]
+#[path = "../../tests/runtime_support/retention_semantic_local.rs"]
+mod local_tests;
+
 #[derive(Serialize, Deserialize)]
 pub(super) enum Control {
     Inspect(PartitionKey),
@@ -151,14 +155,20 @@ impl Service {
     ) -> Result<Option<RetentionPlan>> {
         let group = self.config.runtime.metadata_group;
         let leader = self.leader(group, deadline).await?;
-        let bytes = if leader == self.config.node_id {
-            self.retention_control_command(self.config.node_id, &wire::binary(&request)?, deadline)
-                .await?
-        } else {
-            self.rpc
-                .call(leader, group, Request::typed(CONTROL, &request)?, deadline)
-                .await?
-        };
+        if leader == self.config.node_id {
+            use tracing::Instrument;
+            return self
+                .execute_retention_control(self.config.node_id, request, deadline)
+                .instrument(
+                    tracing::info_span!(target: "tidemq_trace", "retention_control_typed",
+                    node_id = self.config.node_id, group_id = group),
+                )
+                .await;
+        }
+        let bytes = self
+            .rpc
+            .call(leader, group, Request::typed(CONTROL, &request)?, deadline)
+            .await?;
         wire::decode_binary(&bytes)
     }
 
@@ -169,6 +179,25 @@ impl Service {
         deadline: Instant,
     ) -> Result<Bytes> {
         let request: Control = wire::decode_binary(bytes)?;
+        let reply = self
+            .execute_retention_control(sender, request, deadline)
+            .await?;
+        wire::binary(&reply)
+    }
+
+    async fn execute_retention_control(
+        &self,
+        sender: u64,
+        request: Control,
+        deadline: Instant,
+    ) -> Result<Option<RetentionPlan>> {
+        let _admission = self.rpc.admit_local(
+            self.config.runtime.metadata_group,
+            crate::transport::StreamPurpose::Core,
+            32 * 1024,
+            deadline,
+        )?;
+        wire::remaining(deadline)?;
         let partition = request.partition();
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
@@ -199,7 +228,7 @@ impl Service {
                 .map_err(|source| Error::operation("read retention reservation", source))?,
             Control::Apply(command) => self.write_retention_control(command, deadline).await?,
         };
-        wire::binary(&plan)
+        Ok(plan)
     }
 
     async fn write_retention_control(
