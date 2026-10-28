@@ -159,7 +159,7 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
-Linux 的单元、默认 SDK 和普通集成在容器执行；故障钩子、真实外部服务及 K8s 黑盒/VM 故障在原生 runner 执行，两条 job 并行。两边从开始即使用 LLVM 插桩，各自保留二进制/profile，上传后才清理。coverage job 校验同一源码/CI run/工具/工作区路径及每个输入的 SHA256，再合并五阶段 JUnit、两边原生 profile 和全部远程实例 profile，导出 LLVM JSON、LCOV、HTML、原始 profile 归档并比较基线，不重新编译或重跑 Rust 测试。K8s 的 10 个角色实例和 loadgen 客户端均使用插桩二进制；measurement 绑定源码、镜像、二进制哈希、角色/Pod/worker 和行为断言；缺少任一实例则失败。公共常驻服务与手动普通验收仍使用 release 构建。详细流程及崩溃前未写出计数的限制见[测试指南](../../docs/testing.zh-CN.md)。
+当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）、Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和Coverage顺序使用现有原生 `tidemq-dev` executor，避免长期容器runner的共享cgroup占用干扰功能测试。容器部署和真实容器限额负测保留，长期runner配置未改。两个测试job从开始即使用LLVM插桩，分别打包二进制/profile并上传，再接续下一job。coverage job校验同一源码/CI run/工具/工作区路径及每个输入的SHA256，再合并五阶段JUnit、两个job的原生profile和全部远程实例profile，导出LLVM JSON、LCOV、HTML、原始profile归档并比较基线，不重新编译或重跑Rust测试。K8s的10个角色实例和loadgen客户端均使用插桩二进制；measurement绑定源码、镜像、二进制哈希、角色/Pod/worker/imageID和行为断言；缺少任一实例则失败。公共常驻服务与手动普通验收仍使用release构建。资源边界、独立8GiB对照及最终CI验收限制见[测试指南](../../docs/testing.zh-CN.md)。
 
 单元测试运行 `--lib --bins --examples`，主动移除外部服务环境变量。外部进程 / 网络依赖测试放在 `tests/`，由独立 integration 阶段运行；内建本地 mock 不要求预装外部服务。ignored 的真实 RustFS / Collector 测试在 Linux 上显式执行，缺少固定二进制会失败。
 
@@ -167,7 +167,7 @@ RF3 集群测试由 loadgen VM 运行真实 SDK，runner 仅控制和收集证�
 
 按用户要求，性能 workflow、负载工具、比较器、配置、基线和专项报告已删除。GitHub 上默认分支残留的 Performance 工作流已设为 disabled_manually，防止旧入口误触发。本次只以有限 SDK 流量验收部署与持久正确性，不执行性能测试。
 
-Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。故障/部署流程取得宿主 flock 租约；容器普通测试与只读报告合并不占用故障租约。所有手动 Cargo 命令须经 `scripts/ci/with-cargo-cache.sh` 持有共享缓存锁；涉及共享实验室服务的手动测试和部署还必须经 `scripts/lab/with-lease.sh`。root 运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`。故障指令白名单只允许 cp、worker、fixtures、loadgen，禁止操作 storage、observe、runner；持续时间 5–300 秒，宿主先注册 systemd 恢复计时器再执行故障。
+Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。故障/部署流程取得宿主 flock 租约；Validate普通测试与只读报告合并不占用故障租约。所有手动Cargo命令须经 `scripts/ci/with-cargo-cache.sh` 持有共享缓存锁；涉及共享实验室服务的手动测试和部署还必须经 `scripts/lab/with-lease.sh`。root运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`。故障指令白名单只允许cp、worker、fixtures、loadgen，禁止操作storage、observe、runner；持续时间5–300秒，宿主先注册systemd恢复计时器再执行故障。
 
 此仓库为公共仓库：fork PR 的单元测试走 GitHub-hosted runner；self-hosted jobs 不接受 fork 代码。GitHub outside contributor 审批策略设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
 

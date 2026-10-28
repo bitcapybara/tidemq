@@ -58,19 +58,21 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 ## CI 与覆盖率
 
-[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 使用 ssh dev 的 runner VM 及其中新增的一个容器 runner，macOS 使用 GitHub-hosted runner。workflow 负责调度与制品，执行步骤位于 [scripts/ci](https://github.com/bitcapybara/tidemq/tree/main/scripts/ci)。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
+[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux Validate、Faults 和 Coverage 使用现有 `tidemq-dev` 原生 runner 顺序执行，macOS 使用 GitHub-hosted runner。容器 runner 的部署保留，当前 Linux Validate 不使用其长期存活的执行上下文。workflow 负责调度与制品，执行步骤位于 [scripts/ci](https://github.com/bitcapybara/tidemq/tree/main/scripts/ci)。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
 
 先运行 fmt、workspace 全目标 Clippy、生产 panic / 索引审计、脚本自检、协议生成检查，再运行单元与集成。单元阶段只运行 lib / bin / example，移除外部服务环境变量；需要 RustFS、Collector 或网络服务的场景位于 tests/，Linux 显式运行真实依赖测试，缺少固定工具则失败。SDK 默认与 instrumentation 两条路径均覆盖。
 
 固定 nextest 0.9.148，ci profile 逐测试隔离、并发为 1、不重试失败项，保留 JUnit；业务测试内部并发不变。doctest 单独由 cargo test 执行。Linux 的固定 RustFS / Collector 版本与哈希由 inventory 和制品记录，不使用用户既有数据。
 
-Linux 分为两条并行流程：容器执行静态检查、单元、默认 SDK 和普通集成；原生 runner 执行故障钩子、真实外部服务和 K8s 黑盒/VM 故障。两边均使用 cargo-llvm-cov 0.9.1 的 `show-env --sh`，各自开始时清理一次历史 profile，使用独立 target 和带流程前缀的 profile 文件名。Cargo registry/git 下载缓存共用，任务持有共享缓存锁，清理必须取得独占锁；编译和覆盖率目录不共用。K8s 阶段把插桩生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
+Linux 保留两个独立 job：Validate 运行原 `native.sh` 的全部静态检查、单元、默认 SDK 和普通集成；Faults 运行原故障钩子、真实外部服务和 K8s 黑盒/VM 故障。两者与 Coverage 由同一个原生 executor 顺序调度，不改变测试列表、features、nextest 并发或重试、业务期限及缓存锁。两个 job 均使用 cargo-llvm-cov 0.9.1 的 `show-env --sh`，复用原生 runner 现有 target，各自在开始时清理一次历史 profile，并用 native/lab 前缀分别打包；前一个 job 的二进制、profile 和 JUnit 已上传后，executor 才会接下一个 job。Cargo registry/git 下载缓存锁保持共享持有，维护清理仍须取得独占锁。K8s 阶段把插桩生成的 `tidemq` debug 二进制部署为 Metadata / Storage / Broker / Gateway 共 10 个独立实例，在 loadgen VM 通过真实 QUIC SDK 和 CLI 调用服务。客户端自身的覆盖率不能代替服务端覆盖率。
+
+这个调度选择避免把进程故障功能测试放进长期容器 runner 与其 file/shmem 占用共享的 cgroup。CI 40702359055 的 transfer 预填充失败在保留的 Linux 二进制上重现为真实容器内存准入阻塞；同 image、同 8GiB 限制的干净独立 cgroup 能通过原完整用例。原生 runner 的实际 systemd 边界为 `MemoryMax=6G`、`CPUQuota=400%`，同样受cgroup上限约束；其运行结果不能替代真实容器 quota 验证。生产的 90%/80% 迟滞、SDK 原 Pending 身份、30s 请求期限及现有容器限额/OOM负向用例保持不变。原CI失败当时缺少quota快照；独立对照只支持此资源调度修复，完整候选仍须由后续终态CI验收。
 
 两条流程分别上传已有 ELF 二进制、profile、JUnit 和清单，短期制品为 `coverage-inputs-native` / `coverage-inputs-lab`。[bundle.mjs](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage/bundle.mjs) 校验相同源码提交、CI run、工作区绝对路径、工具版本及每个文件的大小/SHA256；拒绝路径穿越、符号链接、缺失流程和篡改输入。相同文件去重，不同 feature 的二进制均保留。coverage job 下载两份输入并调用 [coverage-run.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage-run.sh)，统一导出 LLVM JSON、LCOV、HTML、原始 `profiles.tar.gz` 和 `inputs.json`，随后比较基线，全程不重编译或重跑 Rust 测试。measurement 绑定原始 LLVM 哈希、源码提交、工具版本、CI run、profile 数量、五阶段 JUnit 哈希，以及 [API 采集清单](https://github.com/bitcapybara/tidemq/blob/main/scripts/coverage/api.mjs)。清单记录两种部署二进制的 SHA256、镜像、10 个 Pod 的 UID/角色/worker/imageID、各个 profile 的大小/哈希、9 个远程用例的报告哈希及行为断言。缺少任一角色、客户端、行为结果或跨提交/跨运行混用均失败。macOS 独立执行普通兼容测试；稳定版 doctest 不作为覆盖率证明。
 
 [policy.json](https://github.com/bitcapybara/tidemq/blob/main/coverage/policy.json) 固定源码范围；[baseline.json](https://github.com/bitcapybara/tidemq/blob/main/coverage/baseline.json) 保留已有覆盖率基线。比较器用 BigInt 对 lines / functions / regions 原始整数比例逐项比较，任何下降失败，不设浮点容差，不额外排除源码来抬高数字。PR 使用 base 的可信工具和策略，不能替换自己的基线。当前 CI 只比较覆盖率，不自动写入或推送基线。
 
-VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。只有故障/部署流程与手动运维共享宿主 flock；容器普通测试无需该租约。两边的 profile 和二进制上传后才执行完成清理；coverage job 从制品重建报告目录，不占用故障租约。常驻公共 workload 和手动普通验收仍使用 release 构建。
+VM 阶段新建每次 CI 独立的 namespace、证书、RustFS a/b、数据目录和角色实例，通过 loadgen 的真实 SDK 验证持久消息、原 Pending / Consumer 恢复及三类观测入库。只有故障/部署流程与手动运维共享宿主 flock；Validate 普通测试无需该租约。两个 job 的 profile 和二进制上传后才执行完成清理；coverage job 从制品重建报告目录，不占用故障租约。常驻公共 workload 和手动普通验收仍使用 release 构建。
 
 服务端 `LLVM_PROFILE_FILE=/coverage/node-ID-%h-%p-%m.profraw` 写入该 run 独享的 worker 目录；loadgen 的 CLI/SDK 使用独享 `profiles/client-%h-%p-%m.profraw`。收集业务结果和日志后，将该 CI namespace 的 10 个 StatefulSet 受控缩容为 0，等待进程正常处理 SIGTERM 并退出，然后逐实例通过 SSH 回收非空 profile，校验并复制到原生覆盖率构建目录。最后才删除 namespace、PV、worker profile、RustFS fixture 和私有构建；取消留下的资源由 runner 维护机制重试。最终覆盖率导出及制品上传完成后，才运行任务完成清理钩子。
 

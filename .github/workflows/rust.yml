@@ -107,7 +107,7 @@ jobs:
       matrix:
         include:
           - os: Linux
-            runner: [self-hosted, Linux, X64, tidemq-ci-container]
+            runner: [self-hosted, Linux, X64, tidemq-dev]
           - os: macOS
             runner: macos-latest
     runs-on: ${{ matrix.runner }}
