@@ -20,8 +20,8 @@ tokio::task_local! {
 
 pub(super) const AUTHORIZE: u32 = 1_014;
 
-#[derive(Serialize, Deserialize)]
-struct Membership {
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct Membership {
     topic: Id,
     subscription: Id,
     member: Id,
@@ -32,6 +32,21 @@ struct Membership {
     #[serde(deserialize_with = "bounded_targets")]
     targets: Vec<(Id, u32)>,
 }
+
+impl Membership {
+    pub(super) fn validate(&self) -> Result<()> {
+        if !(1..=32).contains(&self.targets.len()) {
+            return Err(Error::invalid(
+                "Watch authorization target count is invalid",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/runtime_support/watch_authority_local.rs"]
+mod local_tests;
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct Permit {
@@ -163,16 +178,16 @@ impl Service {
         let leader = self
             .leader(self.config.runtime.metadata_group, deadline)
             .await?;
-        let bytes = self
+        let permit = self
             .rpc
-            .call(
+            .authorize_watch(
                 leader,
                 self.config.runtime.metadata_group,
-                Request::typed(AUTHORIZE, &request)?,
+                super::node::random_id()?,
+                &request,
                 deadline,
             )
             .await?;
-        let permit: Permit = wire::decode_binary(&bytes)?;
         if permit.remaining_ms == 0
             || permit.remaining_ms > 1_000
             || permit.targets.len() != request.targets.len()
@@ -205,17 +220,52 @@ impl Service {
         deadline: Instant,
     ) -> Result<Bytes> {
         let request: Membership = wire::decode_binary(bytes)?;
-        if !(1..=32).contains(&request.targets.len()) {
-            return Err(Error::invalid(
-                "Watch authorization target count is invalid",
-            ));
-        }
         if !DEFERRED_AUTHORITY
             .try_with(|deferred| *deferred)
             .unwrap_or(false)
         {
             return Err(self.watch_overloaded());
         }
+        let permit = self.watch_authority(&request, deadline).await?;
+        wire::binary(&permit)
+    }
+
+    pub(super) async fn local_watch_authority(
+        self: std::sync::Arc<Self>,
+        request: Membership,
+        request_id: Id,
+        operation: Id,
+        deadline: Instant,
+        traceparent: String,
+    ) -> Result<Permit> {
+        use tracing::Instrument;
+        let _slot = self
+            .watch_budget
+            .reserve_authority(None, request.member, true)
+            .ok_or_else(|| self.watch_overloaded())?;
+        let _charge = self
+            .watch_budget
+            .reserve(None, request.member, 0, 16_384, false)
+            .ok_or_else(|| self.watch_overloaded())?;
+        let span = tracing::info_span!(target: "tidemq_trace", "watch_authority_local",
+            %request_id, operation_id = %operation, actor = %request.client,
+            credential = %request.credential, member = %request.member,
+            node_id = self.config.node_id, group_id = self.config.runtime.metadata_group);
+        crate::observability::tracing::set_parent(&span, &traceparent, false);
+        let result = self
+            .watch_authority(&request, deadline)
+            .instrument(span)
+            .await;
+        tracing::info!(event_code = "watch_authority_local_completed", %request_id,
+            operation_id = %operation, actor = %request.client, credential = %request.credential,
+            error_code = result.as_ref().err().map(|error| error.failure().code),
+            "Local read-only watch authorization completed");
+        result
+    }
+
+    async fn watch_authority(&self, request: &Membership, deadline: Instant) -> Result<Permit> {
+        request.validate()?;
+        wire::remaining(deadline)?;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
         #[cfg(feature = "test-hooks")]
@@ -318,6 +368,6 @@ impl Service {
             })
             .await
             .map_err(|source| Error::operation("authorize read-only watch member", source))??;
-        wire::binary(&permit)
+        Ok(permit)
     }
 }
