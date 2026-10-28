@@ -58,9 +58,7 @@ impl ProcessConfig {
 
     pub fn validate_for_diagnosis(&self) -> Result<()> {
         self.validate()?;
-        if let Self::Node(config) = self
-            && !config.runtime.peers.is_empty()
-        {
+        if let Self::Node(config) = self {
             validate_node_runtime(config)?;
         }
         Ok(())

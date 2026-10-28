@@ -1,5 +1,7 @@
 # 运行时排障与验证
 
+Combined按真实Local Group/host/提交位置排查，不显示或伪造Raft leader、term、voters、membership和复制延迟。它只有一个loopback管理口；MQ、存储和内置HTTPS Console共同就绪，必需资源持续失效后整体停止新准入并统一收尾。以下peer、选举、quorum和副本替换步骤适用于分离RF1/RF3。
+
 先检查管理面的 `/healthz` 与 `/readyz`，再对照 `/diagnostics` 的控制、数据 quorum、quota sample age 与实际进程内存。健康表示管理线程可响应；就绪不代表每个主题都有剩余配额，也不替代一次具体操作的 lease/fence 检查。诊断数据注明本进程、本地已应用范围，不将 follower 状态当成线性读。
 
 ## 有界观测
@@ -35,7 +37,7 @@ cargo test -p tidemq --test runtime_queue -- --test-threads=1
 TIDEMQ_TEST_RUSTFS_BIN=/absolute/path/to/verified/rustfs cargo test -p tidemq --test runtime_queue actual_runtime_sdk -- --ignored --nocapture
 ```
 
-运行时回归使用真实 UDP/TLS、真实 Raft 和磁盘 WAL；对象回放测试使用真实 RustFS 和 AWS SDK。`cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer` 用独立 CLI 子进程崩溃和原 Producer/Consumer 对象验证恢复。需从测试实际通过结果判断当前版本是否满足恢复要求，不以测试文件存在作为通过证据。
+分离角色运行时回归使用真实UDP/TLS、真实Raft与磁盘WAL；Combined另验证本地提交/恢复、原生HTTPS及无内部peer监听。对象回放测试使用真实 RustFS 和 AWS SDK。`cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer` 用独立 CLI 子进程崩溃和原 Producer/Consumer 对象验证恢复。需从测试实际通过结果判断当前版本是否满足恢复要求，不以测试文件存在作为通过证据。
 
 
 ## 阶段定位与自动放置

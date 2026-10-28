@@ -390,6 +390,13 @@ main() {
   config=$(dc --profile tools config --format json)
   jq -e --arg image "$TIDEMQ_IMAGE" '.services.validator | .image == $image and .pull_policy == "never" and .network_mode == "service:network"' <<< "$config" > /dev/null
   snapshot before
+  if [[ $mode == rf1 ]]; then
+    wait_ready 1
+    id=$(container_id node-1)
+    dk exec "$id" curl -q --fail --silent --show-error --noproxy '*' --connect-timeout 1 --max-time 2 \
+      --proto '=https' --cacert /run/tidemq/ca.pem https://localhost:8443/ \
+      | head -c 262144 > "$evidence/combined-https-index.html"
+  fi
   phase=warmup
   message_bytes=1024; settle_ms=0; staged=false; require_unavailable=false; expected=64
   local args=(--messages 64)

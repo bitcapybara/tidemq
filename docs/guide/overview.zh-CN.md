@@ -11,7 +11,7 @@ TideMQ 是 Rust 实现的持久消息队列，面向事件接入、流式消费�
 | 多成员分摊任务 | Queue 订阅、单条 ACK / NACK | 副作用幂等；失败时决定重投，不以 NACK 表示成功 |
 | 多个业务独立读取 | 同一 Topic 的多个具名持久订阅 | 先建订阅再生产需要保护的数据；每个订阅各有进度 |
 | 历史消息与热数据回收 | 为 Storage / Combined 配置 S3 兼容对象存储 | 维护桶、权限、容量和网络；不能绕过 manifest 直接删对象 |
-| 日常浏览与管理 | 独立 Console，经 HTTPS 登录个人 token | 使用授权范围；高级集群写操作仍用 SDK / CLI |
+| 日常浏览与管理 | Combined 内置或分离 Console，经原生 HTTPS 登录个人 token | 使用授权范围；高级集群写操作仍用 SDK / CLI |
 
 ## 当前边界
 

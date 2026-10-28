@@ -1,11 +1,14 @@
 # TideMQ broker: separated RF1 (metadata 11, storage 21, broker 31, gateway 41).
 # From the repository root: tidemq validate-config --config config/broker.toml
 # After provisioning: tidemq serve --config config/broker.toml
+# File configuration requires explicit replication_factor and tls.trust_roots.
+# Separated roles retain real Raft replication and internal QUIC, including RF1.
+# Combined nodes cannot join this peer inventory.
 # Relative paths resolve from the process working directory, not this file.
 # Lines prefixed "#? " are disabled optional examples. Enable a complete block
 # only after supplying its required operational values.
 # RF1 is a local demonstration, not high availability. For three-zone RF3 use
-# deploy/local/generate.sh rf3 (separated) or rf3-combined.
+# deploy/local/generate.sh rf3 (separated roles).
 #
 # Required operational identity/topology: choose a unique nonzero node_id and
 # a stable cluster UUID shared by all peers. The UUID below is a placeholder.

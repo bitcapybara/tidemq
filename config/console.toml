@@ -5,12 +5,16 @@
 # Required fields below are operational examples, not implicit defaults.
 # Lines prefixed "#? " are disabled optional examples; remove the prefix to enable.
 role = "console"
-# HTTP behind a TLS reverse proxy; the browser's public HTTPS origin is in session.
-listen = "127.0.0.1:8080"
+# Native HTTPS; the certificate SAN must cover session.public_origin.
+listen = "127.0.0.1:8443"
 # Management must stay on loopback and differ from listen.
 management_listen = "127.0.0.1:9420"
 # Build/provision the Console web assets and Vite manifest separately.
 static_dir = "console/web/dist"
+
+[tls]
+certificate = "certs/server.pem"
+private_key = "certs/server-key.pem"
 
 # Required fixed gateway endpoint and TLS name; use one cluster for all replicas.
 [cluster]
@@ -27,7 +31,7 @@ key_file = "private/console-session.key"
 # staged rotation across stateless replicas; never reuse the current path.
 previous_key_files = []
 # Required HTTPS origin only (no path/query); replace this deployment placeholder.
-public_origin = "https://console.example.test"
+public_origin = "https://console.example.test:8443"
 # Code default in seconds; accepted range: 60..3600.
 max_age_seconds = 1800
 

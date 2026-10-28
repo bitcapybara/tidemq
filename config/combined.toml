@@ -1,15 +1,15 @@
-# TideMQ combined: single-node combined RF1.
+# TideMQ Combined: one process with local durable execution and native Console HTTPS.
 # From the repository root: tidemq validate-config --config config/combined.toml
 # After provisioning: tidemq serve --config config/combined.toml
 # Relative paths resolve from the process working directory, not this file.
 # Lines prefixed "#? " are disabled optional examples. Enable a complete block
 # only after supplying its required operational values.
-# RF1 is a local demonstration, not high availability. For three-zone RF3 use
-# deploy/local/generate.sh rf3 (separated) or rf3-combined.
+# Single-host deployment has no node-level high availability.
+# Use deploy/local/generate.sh rf3 for separated three-zone Raft replication.
 #
 # Required operational identity/topology: choose a unique nonzero node_id and
 # a stable cluster UUID shared by all peers. The UUID below is a placeholder.
-# Code defaults: node_id=1, cluster_id as below, data_dir="data/node-1", RF=1.
+# Code defaults: node_id=1, cluster_id as below, data_dir="data/node-1".
 # Role is required in a file; the in-memory default is combined.
 node_id = 1
 cluster_id = "00000000-0000-4000-8000-000000000001"
@@ -18,7 +18,6 @@ role = "combined"
 management_listen = "127.0.0.1:9419"
 # Provision a writable private directory per node; never share it with peers.
 data_dir = "data/node-1"
-replication_factor = 1
 
 # Code defaults shared by all MQ roles; capacity admission preserves control work.
 [memory]
@@ -54,14 +53,12 @@ batch_spans = 32
 export_interval_ms = 500
 export_timeout_ms = 500
 
-# All MQ roles require provisioned PEM certificate/key/CA files for internal mTLS.
-# Provision the recorded peer certificate in DER form too. These are paths only.
-# Private keys require owner-only access; no real secrets are shipped.
-# Code defaults: certs/server.pem, certs/server-key.pem, certs/ca.pem.
+# Combined reuses this server identity for public QUIC and Console HTTPS.
+# The certificate SAN must cover the host in console.session.public_origin.
+# No internal mTLS trust root or peer certificate inventory is used.
 [tls]
 certificate = "certs/server.pem"
 private_key = "certs/server-key.pem"
-trust_roots = "certs/ca.pem"
 
 # Shared section required on every MQ role. The token file defaults to None.
 # Only combined/metadata consumes it when authentication is uninitialized.
@@ -100,34 +97,13 @@ max_time_boundaries = 8192
 #? credentials_file = "secrets/objects.toml"
 #? allow_http_loopback = false
 
-# All MQ roles need the same peer inventory and voter topology.
-# Internal listener code default: 127.0.0.1:7444.
-# This example runs one combined node on one host. For remote hosts, replace
-# loopback addresses, identities, certificate paths, and zones consistently.
+# Combined accepts logical group IDs only; ownership is derived from node_id.
+# Replication, peers, voters, standby, internal_listen and bootstrap are rejected.
 [runtime]
-internal_listen = "127.0.0.1:7444"
 metadata_group = 1
-metadata_voters = [1]
-# Operational choice for a NEW cluster; the code default is false.
-# Only the lowest voter initializes each pristine hosted Raft group.
-# Use false to prevent initialization when joining an existing cluster.
-bootstrap = true
 
-# Required on every role. Code default: group 2, voters [1], no standby.
 [[runtime.groups]]
 group_id = 2
-voters = [1]
-standby = []
-
-# Peers have no entry defaults (default inventory is empty and cannot start).
-# Include this node. All six fields are required for each peer.
-[[runtime.peers]]
-node_id = 1
-role = "combined"
-zone = "local"
-internal_address = "127.0.0.1:7444"
-server_name = "node-1.local"
-certificate_der = "certs/node-1.der"
 
 # Shared code defaults: byte watermarks with low < high and a fresh sample.
 [runtime.capacity]
@@ -172,3 +148,22 @@ high = 268435456
 #? ack_bytes_per_second = 0
 #? acknowledgements_per_second = 0
 #? ack_requests_per_second = 0
+
+# Required built-in HTTPS Console. It shares the process management listener.
+[console]
+listen = "127.0.0.1:8443"
+static_dir = "console/web/dist"
+
+[console.session]
+# Provision exactly 32 random raw bytes with owner-only file access.
+key_file = "secrets/console-session.key"
+previous_key_files = []
+public_origin = "https://localhost:8443"
+max_age_seconds = 1800
+
+[console.observability]
+components = [
+    #? { id = "prometheus-1", name = "Prometheus", probe_url = "http://127.0.0.1:9090/-/ready", detail_url = "https://metrics.example.test" },
+]
+#? alerts_url = "http://127.0.0.1:9090/api/v1/alerts"
+#? alerts_detail_url = "https://metrics.example.test/alerts"
