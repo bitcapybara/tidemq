@@ -65,6 +65,25 @@ pub use ack::{AckProgress, AckReceipt, PendingAck};
 #[derive(Clone, Copy, Debug)]
 pub struct ConsumerDiagnostics {
     pub mode: ConsumerMode,
+    pub member_epoch: u64,
+    pub assignment_version: u64,
+    pub lease_live: bool,
+    pub queued_deliveries: usize,
+    pub delivered_unacked: usize,
+    pub busy_targets: usize,
+    pub complete_targets: usize,
+    pub unassigned_targets: usize,
+    /// One retained Read sampled in shard order; no payloads or credentials are exposed.
+    pub sample_read_shard: Option<Id>,
+    pub sample_read_operation: Option<Id>,
+    pub sample_read_epoch: Option<u64>,
+    pub sample_read_sequence: Option<u64>,
+    pub sample_read_applied: bool,
+    pub sample_read_retiring: bool,
+    pub sample_read_failures: u64,
+    pub sample_read_last_error: Option<crate::ErrorKind>,
+    pub sample_read_error_source: Option<&'static str>,
+    pub sample_read_remote_code: Option<i32>,
     pub ordinary_reads: usize,
     pub protected_reads: usize,
     pub ordinary_unknown: usize,
@@ -85,6 +104,10 @@ pub struct ConsumerDiagnostics {
     pub ordinary_bytes_free: usize,
     pub protected_slots_free: usize,
     pub protected_bytes_free: usize,
+    pub client_bytes_free: usize,
+    pub client_requests_free: usize,
+    pub execution_slots_free: usize,
+    pub frame_bytes_free: usize,
 }
 
 struct Builder {

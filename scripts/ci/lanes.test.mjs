@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 
-test('parallel integration lanes select every suite once and keep reports separate', t => {
+test('integration lanes select every suite once and keep reports separate', t => {
   for (const [mode, expected] of [['normal', ['integration']], ['faults', ['runtime-faults']], ['all', ['integration', 'runtime-faults']]]) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemq-ci-lanes-'));
     t.after(() => fs.rmSync(root, {recursive: true, force: true}));

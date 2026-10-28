@@ -31,3 +31,18 @@ test('forks require unit, coverage and browser gates without accessing shared se
     assert.notEqual(evaluate(true, { ...skipped, [job]: 'failure' }), 0, job);
   }
 });
+
+test('trusted Linux validation shares the existing native executor with fault and coverage jobs', () => {
+  const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
+  const validate = job('validate');
+  const linuxRunner = validate.match(/- os: Linux\n\s+runner: (\[[^\n]+\])/u)?.[1];
+  assert(linuxRunner, 'Linux validation must retain its runner matrix entry');
+  for (const name of ['faults', 'coverage']) {
+    const runner = job(name).match(/runs-on: (\[[^\n]+\])/u)?.[1];
+    assert.equal(linuxRunner, runner, `${name} must share the native executor with validation`);
+  }
+  assert.match(validate, /bash scripts\/ci\/with-cargo-cache\.sh bash scripts\/ci\/native\.sh/u);
+  const native = fs.readFileSync(new URL('./native.sh', import.meta.url), 'utf8');
+  assert.match(native, /bash scripts\/ci\/validate\.sh\nbash scripts\/ci\/integration\.sh normal/u);
+  assert.match(native, /bundle\.mjs pack native target\/ci\/coverage-inputs/u);
+});

@@ -4,6 +4,7 @@ use prost::Message;
 use std::sync::atomic::AtomicBool;
 mod acknowledgements;
 mod hints;
+mod recovery;
 use tidemq_protocol::{
     common::Frame,
     framing::{decode_payload, new_frame},
@@ -18,6 +19,9 @@ const TOKEN: &str = "sdk-watch-test-token-with-at-least-32-characters";
 #[derive(Default)]
 struct Oracle {
     read_unknown: AtomicBool,
+    empty_first_read: AtomicBool,
+    late_read_replies: AtomicU64,
+    read_error: Mutex<Option<tidemq_protocol::common::ErrorReply>>,
     retire_unknown: AtomicBool,
     watch_unknown: AtomicBool,
     watch_drop: AtomicBool,
@@ -160,6 +164,7 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
             frames.push(frame.clone());
         }
         let kind = FrameKind::try_from(frame.kind).unwrap();
+        let mut delayed_read = false;
         let response = match kind {
             FrameKind::GetTopic => {
                 if oracle.layout_disconnect.load(Ordering::Acquire) {
@@ -185,6 +190,17 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
                 )
             }
             FrameKind::GroupRead => {
+                let refusal = oracle.read_error.lock().unwrap().clone();
+                if let Some(refusal) = refusal {
+                    sender
+                        .send(
+                            &reply(&frame, FrameKind::Error, &refusal),
+                            Instant::now() + Duration::from_secs(5),
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 let read: public::GroupRead = decode_payload(
                     frame.payload.clone(),
                     &tidemq_protocol::ProtocolLimits::default(),
@@ -199,6 +215,7 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
                     continue;
                 }
                 if oracle.read_unknown.swap(false, Ordering::AcqRel) {
+                    delayed_read = true;
                     oracle.late.notified().await;
                 }
                 reply(
@@ -208,16 +225,22 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
                         sequence: read.sequence,
                         assignment_version: 2,
                         sealed_complete: false,
-                        deliveries: vec![public::GroupDelivery {
-                            proof: Some(public::GroupProof {
-                                offset: read.sequence.saturating_sub(1),
-                                attempt: 1,
-                                mac: Bytes::from(vec![1; 32]),
-                            }),
-                            body: Bytes::from_static(b"data"),
-                            current_attempt: true,
-                            ..Default::default()
-                        }],
+                        deliveries: if read.sequence == 1
+                            && oracle.empty_first_read.load(Ordering::Acquire)
+                        {
+                            Vec::new()
+                        } else {
+                            vec![public::GroupDelivery {
+                                proof: Some(public::GroupProof {
+                                    offset: read.sequence.saturating_sub(1),
+                                    attempt: 1,
+                                    mac: Bytes::from(vec![1; 32]),
+                                }),
+                                body: Bytes::from_static(b"data"),
+                                current_attempt: true,
+                                ..Default::default()
+                            }]
+                        },
                     },
                 )
             }
@@ -342,6 +365,9 @@ async fn serve_stream(stream: tidemq_transport::FramedStream, oracle: Arc<Oracle
             FrameKind::Cancel => continue,
             other => panic!("Unexpected SDK frame: {other:?}"),
         };
+        if delayed_read {
+            oracle.late_read_replies.fetch_add(1, Ordering::Release);
+        }
         if sender
             .send(&response, Instant::now() + Duration::from_secs(5))
             .await
