@@ -55,6 +55,10 @@ impl Fixture {
         self.backend.service.process.clone()
     }
 
+    pub(crate) fn service(&self) -> Arc<Service> {
+        self.backend.service.clone()
+    }
+
     pub(crate) fn console_config(&self) -> crate::console::EmbeddedConsoleConfig {
         self.backend
             .service

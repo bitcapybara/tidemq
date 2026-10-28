@@ -1,44 +1,138 @@
 use super::*;
 use crate::runtime::wire::semantic_local_tests::Fixture;
+use std::sync::Arc;
 
-#[tokio::test]
-async fn local_consumer_control_wait_obeys_the_original_deadline_behind_a_cache_writer() {
-    use std::time::Duration;
-    let fixture = Fixture::new().await;
-    let consumer = fixture
-        .client
-        .new_queue_consumer("typed/app/events", "bounded")
-        .build()
-        .await
-        .unwrap();
-    consumer.close().await.unwrap();
-    let service = fixture.service.clone();
-    let subscription = service
-        .metadata
-        .as_ref()
-        .unwrap()
-        .state
-        .try_with_application(|state| {
-            state
-                .consumer_subscriptions()
-                .find(|row| row.topic == fixture.partition.topic_id)
-                .unwrap()
-                .id
+async fn local_queue_cursor() -> (
+    crate::runtime::console_local::tests::Fixture,
+    PartitionKey,
+    Id,
+) {
+    use tidemq_protocol::{
+        common::TrafficClass,
+        console_operation::{Status, WriteCommand, WriteRequest},
+        framing::new_frame,
+    };
+
+    let fixture = crate::runtime::LocalConsole::fixture().await;
+    let (tenant, namespace) = fixture.tenant("typed").await;
+    let root = fixture.root().await;
+    let topic = root
+        .write(&WriteRequest {
+            operation_id: Id::new_v7().unwrap(),
+            command: WriteCommand::CreateTopic {
+                tenant,
+                namespace,
+                name: "events".into(),
+            },
         })
         .await
         .unwrap();
+    assert_eq!(topic.status, Status::Succeeded);
+    let topic = topic.resource_id.unwrap();
+    let identity = root
+        .identities(&public::ListIdentities {
+            kind: public::IdentityKind::CurrentPrincipalIdentity.into(),
+            limit: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let operation = Id::new_v7().unwrap();
+    let access = Access {
+        principal: Arc::from(format!(
+            "credential:{}",
+            Id::from_slice(&identity.current_credential_id).unwrap()
+        )),
+        scope: Arc::from("*"),
+        session: Some(operation),
+        tenant: None,
+    };
+    let service = fixture.service();
+    let request = new_frame(
+        FrameKind::ConsumerControl,
+        TrafficClass::Control,
+        operation,
+        operation,
+        &public::ConsumerControl {
+            topic_id: Bytes::copy_from_slice(topic.as_bytes()),
+            name: "bounded".into(),
+            model: public::ConsumerModel::QueueConsumer.into(),
+            action: public::ConsumerAction::EnsureConsumerSubscription.into(),
+            ..Default::default()
+        },
+        3_000,
+        &service.config.protocol,
+    )
+    .unwrap();
+    let reply = service
+        .consumer_control_public(
+            &access,
+            &request,
+            Instant::now() + std::time::Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+    let reply: public::ConsumerControlResult =
+        decode_payload(reply.payload, &service.config.protocol).unwrap();
+    (
+        fixture,
+        PartitionKey {
+            topic_id: topic,
+            partition: 0,
+        },
+        Id::from_slice(&reply.subscription_id).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn local_consumer_control_wait_obeys_the_original_deadline_behind_a_cache_writer() {
+    use std::future::{Future, poll_fn};
+    use std::time::Duration;
+    // The native SDK lifecycle has separate integration coverage; this setup uses real local auth.
+    let (fixture, partition, subscription) =
+        wire::without_remote_encoding(local_queue_cursor()).await;
+    let service = fixture.service();
+    assert!(
+        service
+            .transport_metrics
+            .iter()
+            .all(|metrics| metrics.snapshot().connections_total == 0),
+        "Local cache contention setup must not depend on an SDK connection"
+    );
     let guard = service.groups.write().await;
     let until = Instant::now() + Duration::from_millis(250);
-    let mut pending = Box::pin(service.consumer_control(
+    let mut pending = Box::pin(wire::without_remote_encoding(service.consumer_control(
         2,
         Control::Inspect {
-            partition: fixture.partition,
+            partition,
             subscription,
         },
         until,
-    ));
-    let observation =
-        tokio::time::timeout_at(until + Duration::from_millis(200), pending.as_mut()).await;
+    )));
+    let mut first_poll = true;
+    let mut released_bytes = None;
+    let observation = tokio::time::timeout_at(
+        until + Duration::from_millis(200),
+        poll_fn(|context| {
+            // Compare within each poll, so unrelated background work cannot change this ledger.
+            let before = service.budget.available_bytes();
+            let result = pending.as_mut().poll(context);
+            let after = service.budget.available_bytes();
+            if first_poll {
+                assert!(
+                    result.is_pending(),
+                    "The cache writer must block the control"
+                );
+                assert_eq!(before.checked_sub(after), Some(65_536));
+                first_poll = false;
+            }
+            if result.is_ready() {
+                released_bytes = after.checked_sub(before);
+            }
+            result
+        }),
+    )
+    .await;
     let respected_deadline = observation.is_ok();
     drop(guard);
     let late_success = match observation {
@@ -53,13 +147,13 @@ async fn local_consumer_control_wait_obeys_the_original_deadline_behind_a_cache_
         Err(_) => pending.await.is_ok(),
     };
     eprintln!(
-        "Typed consumer deadline ledger: respected_deadline={respected_deadline} late_success={late_success}"
+        "Typed consumer deadline ledger: respected_deadline={respected_deadline} late_success={late_success} released_bytes={released_bytes:?}"
     );
     service
         .consumer_control(
             2,
             Control::Inspect {
-                partition: fixture.partition,
+                partition,
                 subscription,
             },
             Instant::now() + Duration::from_secs(3),
@@ -71,6 +165,7 @@ async fn local_consumer_control_wait_obeys_the_original_deadline_behind_a_cache_
         respected_deadline,
         "A local consumer control wait outlived its original deadline"
     );
+    assert_eq!(released_bytes, Some(65_536));
 }
 
 #[tokio::test]
