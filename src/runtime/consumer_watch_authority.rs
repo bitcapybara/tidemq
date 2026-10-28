@@ -247,19 +247,36 @@ impl Service {
             .watch_budget
             .reserve(None, request.member, 0, 16_384, false)
             .ok_or_else(|| self.watch_overloaded())?;
-        let span = tracing::info_span!(target: "tidemq_trace", "watch_authority_local",
-            %request_id, operation_id = %operation, actor = %request.client,
-            credential = %request.credential, member = %request.member,
-            node_id = self.config.node_id, group_id = self.config.runtime.metadata_group);
+        let subscribed = tracing::dispatcher::get_default(|dispatch| {
+            !dispatch.is::<tracing::subscriber::NoSubscriber>()
+        });
+        // Unscoped work must not cache these callsites as Never for scoped requests.
+        let span = if subscribed {
+            tracing::info_span!(target: "tidemq_trace", "watch_authority_local",
+                %request_id, operation_id = %operation, actor = %request.client,
+                credential = %request.credential, member = %request.member,
+                node_id = self.config.node_id, group_id = self.config.runtime.metadata_group)
+        } else {
+            tracing::Span::none()
+        };
         crate::observability::tracing::set_parent(&span, &traceparent, false);
         let result = self
             .watch_authority(&request, deadline)
-            .instrument(span)
+            .instrument(span.clone())
             .await;
-        tracing::info!(event_code = "watch_authority_local_completed", %request_id,
-            operation_id = %operation, actor = %request.client, credential = %request.credential,
-            error_code = result.as_ref().err().map(|error| error.failure().code),
-            "Local read-only watch authorization completed");
+        let emit = || {
+            tracing::info!(parent: &span, event_code = "watch_authority_local_completed", %request_id,
+                operation_id = %operation, actor = %request.client, credential = %request.credential,
+                error_code = result.as_ref().err().map(|error| error.failure().code),
+                "Local read-only watch authorization completed");
+        };
+        if span
+            .with_subscriber(|(_, dispatch)| tracing::dispatcher::with_default(dispatch, emit))
+            .is_none()
+            && subscribed
+        {
+            emit();
+        }
         result
     }
 

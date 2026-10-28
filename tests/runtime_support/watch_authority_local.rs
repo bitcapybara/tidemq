@@ -64,6 +64,7 @@ async fn local_watch_authority_rejection_is_independent_of_remote_envelope_limit
 async fn native_combined_idle_watch_reauthorizes_and_delivers_with_real_actor_correlation() {
     use serde_json::Value;
     use std::time::Duration;
+    use tracing::instrument::WithSubscriber;
     let buffer = crate::observability::logging::tests::Buffer(std::sync::Arc::default());
     let writer = buffer.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -79,6 +80,50 @@ async fn native_combined_idle_watch_reauthorizes_and_delivers_with_real_actor_co
     )
     .await;
     fixture.start_all().await;
+    let service = fixture.running.get(&1).unwrap().service.clone();
+    let credential = service
+        .metadata
+        .as_ref()
+        .unwrap()
+        .state
+        .try_with_application(|state| {
+            state
+                .auth()
+                .authenticate(
+                    TokenDigest::of("runtime-test-access-token-with-at-least-32-characters")
+                        .unwrap(),
+                    crate::runtime::data::unix_millis().unwrap(),
+                )
+                .unwrap()
+                .id
+        })
+        .await
+        .unwrap();
+    // Another unscoped request may reach these callsites after capture is installed.
+    let unscoped_dispatch = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+    let unscoped = service
+        .local_watch_authority(
+            Membership {
+                topic: Id::new_v7().unwrap(),
+                subscription: Id::new_v7().unwrap(),
+                member: Id::new_v7().unwrap(),
+                epoch: 1,
+                plan: 1,
+                client: Id::new_v7().unwrap(),
+                credential,
+                targets: vec![(Id::new_v7().unwrap(), 0)],
+            },
+            Id::new_v7().unwrap(),
+            Id::new_v7().unwrap(),
+            Instant::now() + Duration::from_secs(2),
+            String::new(),
+        )
+        .with_subscriber(unscoped_dispatch.clone())
+        .await;
+    assert_eq!(
+        unscoped.err().unwrap().failure().code,
+        i32::from(ErrorCode::Forbidden)
+    );
     let client = fixture.client(1).await;
     let tenant = client.admin().create_tenant("watch").await.unwrap();
     client
@@ -144,4 +189,6 @@ async fn native_combined_idle_watch_reauthorizes_and_delivers_with_real_actor_co
         );
     }
     assert!(event["fields"].get("error_code").is_none());
+    assert_eq!(event["span"]["name"], "watch_authority_local");
+    drop(unscoped_dispatch);
 }
