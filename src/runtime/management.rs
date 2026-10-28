@@ -6,7 +6,7 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{RwLock, Semaphore, watch};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout_at};
 
 use crate::ownership::remote::Query;
@@ -32,7 +32,7 @@ struct CapacitySnapshot {
 pub(crate) async fn start(
     service: Arc<Service>,
     shutdown: watch::Receiver<bool>,
-) -> Result<(std::net::SocketAddr, JoinHandle<Result<()>>)> {
+) -> Result<(std::net::SocketAddr, super::node::RequiredWorker)> {
     let listener = TcpListener::bind(service.config.management_listen)
         .await
         .map_err(|source| Error::operation("bind management listener", source))?;
@@ -46,7 +46,11 @@ pub(crate) async fn start(
     let slots = Arc::new(Semaphore::new(4));
     let mut required = JoinSet::new();
     required.spawn(sample(service.clone(), health.clone(), shutdown.clone()));
-    let task = tokio::spawn(run(listener, service, health, slots, shutdown, required));
+    let task = super::node::spawn_required(
+        shutdown.clone(),
+        None,
+        run(listener, service, health, slots, shutdown, required),
+    );
     Ok((address, task))
 }
 
