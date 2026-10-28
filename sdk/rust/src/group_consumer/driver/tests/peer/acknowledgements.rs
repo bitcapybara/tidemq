@@ -117,3 +117,79 @@ async fn known_ack_decisions_and_permission_denials_are_not_reopened_for_recover
         assert_eq!(after, request_count);
     }
 }
+
+#[tokio::test]
+async fn a_stale_retirement_error_keeps_the_known_ack_pending_without_resubmitting_it() {
+    for code in [ErrorCode::StaleDelivery, ErrorCode::StaleGeneration] {
+        let peer = peer().await;
+        let core = core(&peer.client, 1, 256, 8 * 1024 * 1024);
+        native_registered(&core).await;
+        let consumer = QueueConsumer {
+            owner: Arc::new(Owner {
+                core: core.clone(),
+                _client: peer.client.clone(),
+            }),
+        };
+        let message = delivery(&core).await;
+        let identity = message.message_id();
+        *peer.oracle.retire_ack_error.lock().unwrap() = Some(ErrorReply {
+            retryable: false,
+            message: "Retirement was refused after the original ACK succeeded".into(),
+            ..refusal(code, false)
+        });
+        let error = consumer.ack(&message).await.unwrap_err();
+        assert_eq!(error.kind(), crate::ErrorKind::StaleDelivery);
+        assert!(error.outcome_unknown());
+        let old_guard_discards = error.kind() == crate::ErrorKind::StaleDelivery;
+        let corrected_guard_discards = old_guard_discards && !error.outcome_unknown();
+        let pending = consumer.pending_acks().await.unwrap();
+        assert_eq!(pending.len(), 1);
+        let original = pending.first().unwrap();
+        let before = original.progress().unwrap();
+        assert_eq!(
+            (before.acknowledged, before.pending, before.rejected),
+            (1, 0, 0)
+        );
+        assert!(core.state().unwrap().ledger.is_empty());
+        assert!(consumer.try_receive().unwrap().is_none());
+        let requests_before = acknowledgement_frames(&peer);
+        assert_eq!(requests_before.len(), 1);
+        let recovered = original.retry().await.unwrap();
+        let replayed = original.retry().await.unwrap();
+        let after = original.progress().unwrap();
+        assert!(consumer.pending_acks().await.unwrap().is_empty());
+        let requests_after = acknowledgement_frames(&peer);
+        let retirements: Vec<_> = peer
+            .oracle
+            .frames
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|frame| frame.kind == i32::from(FrameKind::GroupRetireAck))
+            .cloned()
+            .collect();
+        drop(message);
+        close(&peer, &core).await;
+        assert!(old_guard_discards && !corrected_guard_discards);
+        assert_eq!(recovered, ack::AckReceipt::Acknowledged);
+        assert_eq!(replayed, ack::AckReceipt::Acknowledged);
+        assert_eq!(
+            (after.acknowledged, after.pending, after.rejected),
+            (1, 0, 0)
+        );
+        assert_eq!(
+            requests_after.len(),
+            1,
+            "Retirement recovery resubmitted a known ACK"
+        );
+        assert_eq!(retirements.len(), 2);
+        let first = retirements.first().unwrap();
+        let second = retirements.last().unwrap();
+        assert_eq!(first.operation_id, second.operation_id);
+        assert_eq!(first.payload, second.payload);
+        assert_ne!(first.request_id, second.request_id);
+        eprintln!(
+            "ACK retirement classification ledger: code={code:?} identity={identity:?} kind=StaleDelivery unknown=true acknowledged=1 pending=0 old_guard_discards={old_guard_discards} corrected_guard_discards={corrected_guard_discards} retry=known group_ack=1 retire_ack=2"
+        );
+    }
+}
