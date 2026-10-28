@@ -309,14 +309,11 @@ impl AuthorityTransfer {
             return Err(Rejection::InvalidEvidence);
         }
         let voters: BTreeSet<_> = checkpoints.iter().map(|row| row.voter).collect();
+        // Current snapshot hosts prove placement; covered log entries may have an older leader.
         if voters != self.checkpoint_voters
             || checkpoints.len() != voters.len()
             || checkpoints.iter().any(|row| {
                 row.manifest_digest != imported.manifest.digest
-                    || !row
-                        .position
-                        .raft_leader()
-                        .is_some_and(|leader| self.target_voters.contains(&leader))
                     || !row.position.at_least(imported.recovery.committed)
             })
         {
