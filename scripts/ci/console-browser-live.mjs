@@ -321,19 +321,21 @@ export async function cleanup(state) {
     catch { children.push({ name: managed.name, graceful: false, error: 'Fixture process cleanup failed' }); }
   }
   let credentialLogsClean = true;
-  try { for (const name of await fs.readdir(state.artifacts)) {
-    if (!name.endsWith('.log')) continue;
-    const file = path.join(state.artifacts, name);
-    const original = await fs.readFile(file, 'utf8');
-    let sanitized = original;
-    for (const secret of state.secrets ?? [state.token]) {
-      if (secret) sanitized = sanitized.replaceAll(secret, '[REDACTED]');
+  try {
+    for (const name of await fs.readdir(state.artifacts)) {
+      if (!name.endsWith('.log')) continue;
+      const file = path.join(state.artifacts, name);
+      const original = await fs.readFile(file, 'utf8');
+      let sanitized = original;
+      for (const secret of state.secrets ?? [state.token]) {
+        if (secret) sanitized = sanitized.replaceAll(secret, '[REDACTED]');
+      }
+      if (sanitized !== original) {
+        credentialLogsClean = false;
+        await fs.writeFile(file, sanitized, {mode: 0o600});
+      }
     }
-    if (sanitized !== original) {
-      credentialLogsClean = false;
-      await fs.writeFile(file, sanitized, {mode: 0o600});
-    }
-  } } catch { credentialLogsClean = false; }
+  } catch { credentialLogsClean = false; }
   if (!credentialLogsClean) failures.push('Credential redaction failed');
   let privateMaterialRemoved = false;
   try {
@@ -368,7 +370,9 @@ export async function run(args = process.argv.slice(2)) {
   try {
     await fs.writeFile(path.join(artifacts, 'identity.json'), JSON.stringify({
       binary_sha256: await hashFile(binary), topology: 'native-' + topology,
-      replication_factor: 1, mocked_requests: false, browser_arguments: args,
+      execution: topology === 'combined' ? 'local' : 'raft',
+      replication_factor: topology === 'combined' ? null : 1,
+      mocked_requests: false, browser_arguments: args,
     }, null, 2));
     const core = await startCore(state, binary, web, topology, cancellation.signal);
     const baseURL = topology === 'combined' ? core.baseURL : await startConsole(state, binary, web, core, cancellation.signal);

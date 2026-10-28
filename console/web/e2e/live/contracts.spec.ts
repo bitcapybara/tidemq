@@ -61,8 +61,9 @@ test("real Rust backend: missing or forged CSRF and a foreign Origin cause no mu
   expect(before.value.nextCursor).toBeNull();
   const ids = before.value.items.map(item => item.id).sort();
   for (const headers of [{ csrf: null }, { csrf: "forged-csrf" }, { origin: "https://foreign.invalid" }]) {
+    const operationId = newOperationId();
     const refused = await request(page, "POST", "/api/v1/topics", {
-      operationId: newOperationId(), tenantId: seed.tenantId, namespaceId: seed.namespaceId,
+      operationId, tenantId: seed.tenantId, namespaceId: seed.namespaceId,
       name: `csrf-${browserName}-${randomUUID()}`,
     }, headers);
     expect(refused.status).toBe(403);
@@ -71,6 +72,12 @@ test("real Rust backend: missing or forged CSRF and a foreign Origin cause no mu
     expect(after.status).toBe(200);
     expect(after.value.nextCursor).toBeNull();
     expect(after.value.items.map(item => item.id).sort()).toEqual(ids);
+    const absent = await request<Operation>(page, "GET", `/api/v1/operations/${operationId}`);
+    expect(absent.status).toBe(200);
+    expect(absent.value).toMatchObject({
+      id: operationId, status: "unknown", reason: "no_authoritative_receipt",
+      actor: "", target: "", scope: "", receipt: null, resourceId: null,
+    });
   }
 });
 
@@ -152,6 +159,14 @@ test("real Rust backend: execution facts and cluster capabilities match the actu
     expect(session.value.capabilities.raftDiagnostics).toBe(true);
     await expect(page.getByRole("heading", { name: "Cluster", exact: true })).toBeVisible();
     await expect(page.getByRole("table", { name: "Local process state" })).toHaveCount(0);
-    await expect(page.getByRole("table", { name: "Registered nodes" })).toContainText("41");
+    const nodes = page.getByRole("table", { name: "Registered MQ nodes", exact: true });
+    for (const id of ["11", "21", "31", "41"])
+      await expect(nodes.getByRole("button", { name: id, exact: true })).toBeVisible();
+    for (const role of ["metadata", "storage", "broker", "gateway"])
+      await expect(nodes).toContainText(role);
+    await nodes.getByRole("button", { name: "21", exact: true }).click();
+    await expect(page.getByRole("table", { name: "Sampled data groups", exact: true })).toContainText("storage");
+    await expect(page.getByRole("columnheader", { name: "Leader node", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Voter nodes", exact: true })).toBeVisible();
   }
 });
