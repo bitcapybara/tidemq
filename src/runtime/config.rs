@@ -146,14 +146,14 @@ impl RuntimeConfig {
         if config.role == Role::Combined {
             if !self.peers.is_empty()
                 || self.bootstrap
-                || self.metadata_voters != [config.node_id]
+                || !self.metadata_voters.is_empty()
                 || !config.tls.trust_roots.as_os_str().is_empty()
             {
                 return Err(Error::invalid(
                     "Local execution requires derived ownership without peer, bootstrap or trust root settings",
                 ));
             }
-            return self.validate_local_groups(config.node_id);
+            return self.validate_local_groups();
         }
         if config.tls.trust_roots.as_os_str().is_empty() {
             return Err(Error::invalid("Separated roles require tls.trust_roots"));
@@ -169,7 +169,7 @@ impl RuntimeConfig {
         Ok(())
     }
 
-    fn validate_local_groups(&self, node: u64) -> Result<()> {
+    fn validate_local_groups(&self) -> Result<()> {
         if self.metadata_group == 0 || !(1..=16).contains(&self.groups.len()) {
             return Err(Error::invalid(
                 "Local execution requires a nonzero metadata_group and 1 to 16 data groups",
@@ -179,11 +179,11 @@ impl RuntimeConfig {
         for group in &self.groups {
             if group.group_id == 0
                 || !identifiers.insert(group.group_id)
-                || group.voters != [node]
+                || !group.voters.is_empty()
                 || !group.standby.is_empty()
             {
                 return Err(Error::invalid(
-                    "Local data groups require distinct nonzero IDs and derived ownership by this node",
+                    "Local data groups require distinct nonzero IDs without Raft membership",
                 ));
             }
         }

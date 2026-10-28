@@ -42,12 +42,17 @@ pub struct Config {
     pub logging: LoggingConfig,
     pub tracing: crate::observability::tracing::TracingConfig,
     pub tls: TlsConfig,
-    pub console: crate::console::EmbeddedConsoleConfig,
+    pub console: Option<crate::console::EmbeddedConsoleConfig>,
     pub runtime: crate::runtime::RuntimeConfig,
 }
 
 impl Default for Config {
     fn default() -> Self {
+        let mut runtime = crate::runtime::RuntimeConfig::default();
+        runtime.metadata_voters.clear();
+        for group in &mut runtime.groups {
+            group.voters.clear();
+        }
         Self {
             node_id: 1,
             cluster_id: "00000000-0000-4000-8000-000000000001".into(),
@@ -64,8 +69,8 @@ impl Default for Config {
                 trust_roots: PathBuf::new(),
                 ..TlsConfig::default()
             },
-            console: crate::console::EmbeddedConsoleConfig::default(),
-            runtime: crate::runtime::RuntimeConfig::default(),
+            console: Some(crate::console::EmbeddedConsoleConfig::default()),
+            runtime,
         }
     }
 }
@@ -103,12 +108,19 @@ impl Config {
                     reason: "combined uses local execution and cannot configure replicas",
                 });
             }
-            self.console.validate()?;
-            if self.console.listen == self.management_listen {
+            let console = self.console.as_ref().ok_or(Error::Configuration {
+                reason: "combined requires console configuration",
+            })?;
+            console.validate()?;
+            if console.listen == self.management_listen {
                 return Err(Error::Configuration {
                     reason: "console.listen must differ from management_listen",
                 });
             }
+        } else if self.console.is_some() {
+            return Err(Error::Configuration {
+                reason: "separated MQ roles cannot configure an embedded console",
+            });
         }
         if self.tls.certificate.as_os_str().is_empty()
             || self.tls.private_key.as_os_str().is_empty()
@@ -433,6 +445,8 @@ max_time_boundaries = 512
             ..Config::default()
         };
         config.tls.trust_roots = "certs/ca.pem".into();
+        config.console = None;
+        config.runtime.groups = crate::runtime::RuntimeConfig::default().groups;
         config.runtime.internal_listen = config.listen;
         config.runtime.metadata_voters = vec![2];
         config.runtime.peers = [(1, Role::Storage), (2, Role::Metadata), (3, Role::Broker)]
@@ -461,6 +475,18 @@ max_time_boundaries = 512
 #[cfg(test)]
 mod local_configuration_tests {
     use super::*;
+
+    #[test]
+    fn local_defaults_have_no_raft_membership() {
+        let original = Config::default();
+        original.runtime.validate(&original).unwrap();
+        let mut config = original.clone();
+        config.runtime.metadata_voters = vec![config.node_id];
+        assert!(config.runtime.validate(&config).is_err());
+        let mut config = original;
+        config.runtime.groups.first_mut().unwrap().voters = vec![config.node_id];
+        assert!(config.runtime.validate(&config).is_err());
+    }
 
     #[test]
     fn combined_rejects_replication_and_remote_fields_even_when_empty() {
@@ -523,12 +549,15 @@ mod local_configuration_tests {
         let config: Config = toml::from_str(&text).unwrap();
         config.runtime.validate(&config).unwrap();
         assert_eq!(config.runtime.metadata_group, 1);
-        assert_eq!(config.runtime.metadata_voters, [77]);
-        assert_eq!(config.runtime.groups.first().unwrap().voters, [77]);
+        assert!(config.runtime.metadata_voters.is_empty());
+        assert!(config.runtime.groups.first().unwrap().voters.is_empty());
         assert!(config.runtime.peers.is_empty());
         assert!(!config.runtime.bootstrap);
         assert!(config.tls.trust_roots.as_os_str().is_empty());
-        assert_eq!(config.console.server_name().unwrap(), "localhost");
+        assert_eq!(
+            config.console.as_ref().unwrap().server_name().unwrap(),
+            "localhost"
+        );
         let serialized = toml::to_string(&config).unwrap();
         for field in [
             "replication_factor",
