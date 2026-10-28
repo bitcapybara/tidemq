@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-if (!process.env.TIDEMQ_LIVE_BASE_URL || !process.env.TIDEMQ_LIVE_TOKEN_FILE)
-  throw new Error("Live backend smoke requires TIDEMQ_LIVE_BASE_URL and TIDEMQ_LIVE_TOKEN_FILE from the Rust fixture");
+if (!process.env.TIDEMQ_LIVE_BASE_URL || !process.env.TIDEMQ_LIVE_TOKEN_FILE || !process.env.TIDEMQ_LIVE_CONTEXT_FILE)
+  throw new Error("Live HTTPS tests require base URL, token file and private seed context from the native fixture");
 
 export default defineConfig({
   testDir: "./e2e/live",
