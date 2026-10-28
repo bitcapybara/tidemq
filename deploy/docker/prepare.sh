@@ -38,9 +38,15 @@ for source in "$output"/init/node-*.toml; do
   case "$role" in
     combined|metadata) cp "$output/init/bootstrap.token" "$run/" ;;
   esac
-  cp "$output"/init/node-*.der "$run/"
+  if [[ $role == combined ]]; then
+    cp "$output/init/console-session.key" "$run/"
+  else
+    cp "$output"/init/node-*.der "$run/"
+  fi
   awk -v root="$output/init/" '
     /^data_dir = / { print "data_dir = '\''/var/lib/tidemq'\''"; next }
+    /^static_dir = / { print "static_dir = '\''/opt/tidemq/console'\''"; next }
+    /^listen = .*:8443/ { print "listen = '\''0.0.0.0:8443'\''"; next }
     {
       line = $0
       while ((position = index(line, root)) > 0) {

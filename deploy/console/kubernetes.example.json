@@ -8,6 +8,9 @@
   "privateSecret": "tidemq-console-private",
   "previousSessionKeyNames": [],
   "tlsSecret": "tidemq-console-tls",
-  "ingressClass": "nginx",
-  "observability": {"components": []}
+  "observability": {
+    "components": []
+  },
+  "certificateFile": "/absolute/private/console.pem",
+  "privateKeyFile": "/absolute/private/console.key"
 }

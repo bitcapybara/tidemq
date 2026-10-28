@@ -1,6 +1,6 @@
 # 快速开始
 
-本页在全新的本地 RF1 上完成启动、创建资源、发送、接收和持久 ACK。需要仓库固定的 Rust 1.99.1、Bash 与 OpenSSL；RF1 没有节点级高可用。
+本页在全新的本地 Combined 上完成启动、创建资源、发送、接收和持久 ACK。需要仓库固定的 Rust 1.99.1、Bash、OpenSSL 和构建 Console 所需的 Node.js（22 系列至少 22.22，或 24、26+）；单机没有节点级高可用。
 
 ## 1. 启动单节点
 
@@ -13,9 +13,9 @@ target/debug/tidemq validate-config --config /tmp/tidemq-demo/node-1.toml
 bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 ```
 
-运行脚本保留在前台，各节点输出写入生成目录的 `node-ID.log`。Ctrl-C 会向本次启动的进程发送 SIGTERM 并等待退出。重新启动使用同一配置和数据目录，不再运行生成器。
+运行脚本首次构建生成目录下的 Console 静态资源，然后保留在前台，各节点输出写入生成目录的 `node-ID.log`。Ctrl-C 会向本次启动的进程发送 SIGTERM 并等待退出。重新启动使用同一配置和数据目录，不再运行生成器。
 
-生成器创建私有开发 CA、节点证书和 bootstrap 管理员 token；证书有效七天。不要输出或提交 `access.token`、`bootstrap.token`、CA/节点私钥。它们只适用于隔离开发环境，生产身份管理见[安全指南](../operations/security.zh-CN.md)。
+生成器创建私有开发 CA、节点证书、32 字节会话密钥和 bootstrap 管理员 token；证书有效七天。不要输出或提交 `access.token`、`bootstrap.token`、CA/节点私钥。它们只适用于隔离开发环境，生产身份管理见[安全指南](../operations/security.zh-CN.md)。
 
 ## 2. 确认服务就绪
 
@@ -28,6 +28,8 @@ curl --fail http://127.0.0.1:8410/diagnostics
 ```
 
 `healthz` 表示本进程能响应；`readyz` 还检查控制可用性、数据初始化和新鲜容量，启动初期可能暂未 ready。失败时先看本次目录的节点日志，不删除 WAL。
+
+浏览器信任 `/tmp/tidemq-demo/ca.pem` 后打开 `https://localhost:8443`，以自己的 token 登录。节点证书 SAN 同时覆盖该 HTTPS Origin。内置 Console 与 MQ 共用一个 PID、预算和管理入口；单机不运行 Raft 或内部 peer 监听。
 
 ## 3. 创建一个使用 SDK 的应用
 

@@ -8,7 +8,7 @@
 2. 检查 close 报告。关闭不会替业务 ACK，也不删除持久订阅。
 3. 向服务发送 SIGTERM / Ctrl-C，等待有界 drain 结束并保留退出日志。
 4. 用原配置、节点身份、证书和完整数据目录重启；不要重新运行仅支持新目录的身份生成器。
-5. 分别检查 health、readiness、Metadata / 数据 quorum，再验证原 Producer / 订阅的生产、接收和持久 ACK。
+5. 分别检查health/readiness，以及Combined本地组健康或分离Metadata/数据quorum，再验证原 Producer / 订阅的生产、接收和持久 ACK。
 
 进程关闭使用共享的五秒总期限，超时或失败返回错误。端口仍占用时核实旧进程，不使用重复实例或端口复用掩盖问题。
 
@@ -32,7 +32,7 @@
 
 仓库没有旧实验格式的一键迁移或任意混合版本滚动升级承诺。旧 `raft.wal` / `snapshot.bin` 布局会被拒绝并保留。升级应先在隔离的恢复副本上验证目标二进制与格式，设计停机与回退步骤；不手工修改序列化数据、不删 manifest 引用文件、不用新空目录冒充旧节点。
 
-对象不能按年龄或“已上传”直接删除。保留、manifest 引用、未决发布、pin 和恢复依赖均解除后才由生命周期流程删除；本地回收还依赖全 voter 检查点。详见[存储恢复契约](../design/storage-recovery.zh-CN.md)与[对象生命周期](object-lifecycle.zh-CN.md)。
+对象不能按年龄或“已上传”直接删除。保留、manifest 引用、未决发布、pin 和恢复依赖均解除后才由生命周期流程删除；分离角色本地回收还依赖全voter检查点；Combined依赖实际本地持久检查点和恢复保护。详见[存储恢复契约](../design/storage-recovery.zh-CN.md)与[对象生命周期](object-lifecycle.zh-CN.md)。
 
 ## 计划替换与退出
 

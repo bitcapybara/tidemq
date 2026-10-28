@@ -2,6 +2,8 @@
 
 从[产品能力与限制](guide/overview.zh-CN.md)了解适用场景，再按下面的路径运行、接入和维护。指南描述当前源码中的接口；带日期的测试记录仅证明对应版本及环境。
 
+[English deployment and configuration manual](guide/deployment.md)涵盖单进程、分离 RF1/RF3、HTTPS、配置和部署边界。
+
 ## 开始使用
 
 | 目标 | 文档 |

@@ -102,7 +102,7 @@ LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://d
 
 其中 62 个故障注入用例与普通集成测试同名；成员迁移和 Shard 转移等同名用例具有条件编译的额外故障断言，不能直接按重名删除。目前 `ci` profile 的 `test-threads = 1` 保持不变；拆分的是两条独立 job，同时保留原断言、五份 JUnit、插桩二进制和 profile。VM/网络故障仍持有实验室独占租约。测试层次的缺口不因增加 runner 自动消失。
 
-功能测试不要求固定 CPU 吞吐。自动 split/merge 的消息 drain 使用 20 秒无进展期限和 2 分钟总上限，继续逐条验证完整消息集合、正文、持久 ACK 和最终 merge；整批运行时间不再共用一个 20 秒期限。曾有失败在整批约 27 秒时发生，但距离上次 ACK 不足 1 毫秒，诊断表明是整批预算耗尽。Combined RF3 的只读 `topic_info` 查询只对明确的 `QuotaExceeded + Rejected + retryable` 在原 40 秒 phase 内遵守背压；其他错误直接失败，四个 Topic 各 64 次成功查询、发送和 ACK 的断言不变。生产代码、默认 admission 容量和 nextest 的零重试设置均未因此修改。
+功能测试不要求固定 CPU 吞吐。自动 split/merge 的消息 drain 使用 20 秒无进展期限和 2 分钟总上限，继续逐条验证完整消息集合、正文、持久 ACK 和最终 merge；整批运行时间不再共用一个 20 秒期限。曾有失败在整批约 27 秒时发生，但距离上次 ACK 不足 1 毫秒，诊断表明是整批预算耗尽。历史Combined RF3测试中的只读 `topic_info` 查询只对明确的 `QuotaExceeded + Rejected + retryable` 在原 40 秒 phase 内遵守背压；其他错误直接失败，四个 Topic 各 64 次成功查询、发送和 ACK 的断言不变。生产代码、默认 admission 容量和 nextest 的零重试设置均未因此修改。
 
 ## 可复现验证
 

@@ -42,11 +42,20 @@ for mode in rf1 rf3; do
     node=${run##*/node-}
     expected_services+=("node-$node")
     found=$((found + 1))
-    [[ $(count_files "$run" '*.key') == 1 ]] || fail 'Unexpected node private key'
+    keys=1; peers=$expected
+    if [[ $mode == rf1 ]]; then keys=2; peers=0; fi
+    [[ $(count_files "$run" '*.key') == "$keys" ]] || fail 'Unexpected node private key'
     [[ $(count_files "$run" '*.pem') == 2 ]] || fail 'Unexpected node certificate'
-    [[ $(count_files "$run" '*.der') == "$expected" ]] || fail 'Peer certificate set is incomplete'
+    [[ $(count_files "$run" '*.der') == "$peers" ]] || fail 'Peer certificate set differs'
     cmp "$state/init/node-$node.key" "$run/node-$node.key"
-    for peer in "$state"/init/node-*.der; do cmp "$peer" "$run/$(basename "$peer")"; done
+    if [[ $mode != rf1 ]]; then
+      for peer in "$state"/init/node-*.der; do cmp "$peer" "$run/$(basename "$peer")"; done
+    else
+      cmp "$state/init/console-session.key" "$run/console-session.key"
+      grep -Fxq '[console]' "$config" || fail 'Built-in Console is missing'
+      grep -Fq "static_dir = '/opt/tidemq/console'" "$config" || fail 'Console assets path differs'
+      if grep -Eq '^replication_factor|^trust_roots|^internal_listen|^voters|^metadata_voters|^bootstrap =' "$config"; then fail 'Combined contains replication settings'; fi
+    fi
     [[ ! -e $run/ca.key && ! -e $run/access.token ]] || fail 'Initialization or SDK secret entered a node directory'
     if grep -Fq "$state/init/" "$config"; then fail 'Host initialization path entered runtime configuration'; fi
     grep -Fq "data_dir = '/var/lib/tidemq'" "$config" || fail 'Runtime data path differs'
@@ -126,8 +135,15 @@ for mode in rf1 rf3; do
   [[ $(grep -c 'max-size: 10m' "$rendered") == "$service_count" ]] || fail 'Log byte budget differs'
   [[ $(grep -c 'max-file: "3"' "$rendered") == "$service_count" ]] || fail 'Log retention differs'
   [[ $(grep -c 'mem_limit: "402653184"' "$rendered") == "$expected" ]] || fail 'Per-node memory budget differs'
-  if grep -Eq '^[[:space:]]+(ports|privileged|pid|ipc|devices|extra_hosts):|network_mode: host|docker.sock' "$rendered"; then
+  if grep -Eq '^[[:space:]]+(privileged|pid|ipc|devices|extra_hosts):|network_mode: host|docker.sock' "$rendered"; then
     fail 'Unexpected host exposure or namespace sharing'
+  fi
+  if [[ $mode == rf1 ]]; then
+    [[ $(grep -c '^    ports:' "$rendered") == 1 ]] || fail 'Combined requires exactly one HTTPS host binding'
+    grep -Fq 'host_ip: 127.0.0.1' "$rendered" || fail 'Combined HTTPS must bind host loopback'
+    grep -Eq 'published: "?8443"?$' "$rendered" || fail 'Combined HTTPS port differs'
+  elif grep -Eq '^[[:space:]]+ports:' "$rendered"; then
+    fail 'Separated RF3 unexpectedly exposes host ports'
   fi
   memory=$(awk '$1 == "mem_limit:" {gsub(/"/, "", $2); total += $2} END {printf "%.0f", total}' "$rendered")
   swap=$(awk '$1 == "memswap_limit:" {gsub(/"/, "", $2); total += $2} END {printf "%.0f", total}' "$rendered")

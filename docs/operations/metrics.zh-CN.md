@@ -1,5 +1,7 @@
 # 指标与采集
 
+Combined使用本地执行、Group提交/维护和HTTPS生命周期的真实观测；Raft leader/term/voters和复制延迟只适用于分离角色。不能用常量、空缺值或历史Raft指标推断Local quorum。Combined管理与观测共用同一个loopback入口。
+
 运行中节点通过 loopback 管理端口的 `/metrics` 返回统一 OpenMetrics text，一次编码只有一个 EOF。命令 `tidemq metrics` 创建新的短生命周期进程，不能用它查询已经运行的服务。SDK 的 collector 由宿主显式注册；库不自行监听端口或安装全局观测设施。
 
 | 指标族 | 口径与用途 |

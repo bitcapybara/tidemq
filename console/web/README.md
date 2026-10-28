@@ -1,6 +1,6 @@
 # TideMQ Console Web
 
-Browser UI for the stateless TideMQ Console role. The Rust process serves the built assets and the same-origin API; Node.js is used only during development and builds.
+Browser UI shared by the built-in Combined Console and the independent stateless Console role. The Rust process serves the built assets and the same-origin API; Node.js is used only during development and builds.
 
 ## Development
 
@@ -47,7 +47,7 @@ Covered interactions include login rejection/logout/session expiry, navigation a
 
 ## Live Rust backend browser smoke
 
-`npm run test:e2e:live -- --project=chromium` invokes `../../scripts/ci/console-browser-live.mjs` after the Rust binary and web assets have been built. The runner owns isolated combined and Console processes, generates disposable RF1 configuration and private TLS material, forwards HTTPS through a loopback proxy without rewriting Secure cookies or weakening production checks, and cleans up its processes and private files. Set `TIDEMQ_BINARY` to an absolute TideMQ executable and optionally `TIDEMQ_WEB_DIR` to another built web worktree.
+`npm run test:e2e:live -- --project=chromium` invokes `../../scripts/ci/console-browser-live.mjs` after the Rust binary and web assets have been built. The runner owns either one Combined process with its built-in HTTPS Console or separated RF1 processes with an independent HTTPS Console. Select `TIDEMQ_LIVE_TOPOLOGY=combined` (default) or `separated-rf1`; CI covers both. It generates disposable configuration and private TLS material, verifies the native HTTPS endpoint against the generated CA, and cleans up every owned process and private file. Set `TIDEMQ_BINARY` to an absolute TideMQ executable and optionally `TIDEMQ_WEB_DIR` to another built web worktree.
 
 The runner supplies `TIDEMQ_LIVE_BASE_URL` and `TIDEMQ_LIVE_TOKEN_FILE` to `playwright.live.config.ts`. `e2e/live/` uses no request routes, API mocks or service worker. It checks real login, Secure/HttpOnly cookies, authorized directory navigation, reload, logout and a credential write followed by queries of the original result. The fixture identity must be able to issue a credential for its current principal. The one-minute test credential belongs only to the disposable cluster.
 
