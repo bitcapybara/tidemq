@@ -405,6 +405,10 @@ fn start_read(
         deadline: Instant::now() + Duration::from_secs(600),
         token: domain.token.clone(),
         progress: None,
+        failures: 0,
+        last_error: None,
+        error_source: None,
+        remote_code: None,
     })));
     domain.dirty = false;
     domain.next_fallback = Instant::now() + fallback_delay(domain.shard);
