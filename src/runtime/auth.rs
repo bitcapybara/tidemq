@@ -391,8 +391,9 @@ impl Service {
         let leader = self
             .leader(self.config.runtime.metadata_group, deadline)
             .await?;
-        let reply = if self.rpc.is_local() {
+        let reply = if self.rpc.is_local() || leader == self.config.node_id {
             use tracing::Instrument;
+            // A metadata handler must not reenter the Core queue it already occupies.
             // Keep the timed handler out of the enclosing business future's stack layout.
             wire::within(
                 deadline,

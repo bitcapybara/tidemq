@@ -1,6 +1,52 @@
 use super::*;
 use crate::runtime::wire::semantic_local_tests::{Fixture, TOKEN};
 
+#[cfg(feature = "test-hooks")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
+    use crate::config::Role;
+    use crate::runtime::data::consumer_tests::fixture::Fixture as RuntimeFixture;
+    use crate::runtime::watch_test_hooks::CoreHandlerLimit;
+
+    let mut runtime = RuntimeFixture::new(
+        &[
+            (1, Role::Metadata),
+            (2, Role::Storage),
+            (3, Role::Broker),
+            (4, Role::Gateway),
+        ],
+        &[1],
+        &[2],
+    )
+    .await;
+    let cluster: Id = runtime.configs.get(&1).unwrap().cluster_id.parse().unwrap();
+    let limit = CoreHandlerLimit::install(cluster, 1, 1).unwrap();
+    runtime.start_all().await;
+    assert!(limit.applied());
+    let client = runtime.client(4).await;
+    let tenant = client.admin().create_tenant("auth").await.unwrap();
+    client
+        .admin()
+        .create_namespace(tenant, "app")
+        .await
+        .unwrap();
+    let topic = client
+        .admin()
+        .create_topic("auth/app/events")
+        .await
+        .unwrap();
+    let service = runtime.running.get(&1).unwrap().service.clone();
+    service.auth_cache.0.lock().unwrap().clear();
+    let result = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(2))
+        .unwrap()
+        .scope(client.admin().topic_info("auth/app/events"))
+        .await;
+    client.close().await.unwrap();
+    runtime.close().await;
+    drop(limit);
+    assert_eq!(result.unwrap().id(), topic.id());
+}
+
 #[tokio::test]
 async fn local_authentication_and_scope_authorization_do_not_require_remote_encoding() {
     let fixture = Fixture::new().await;
