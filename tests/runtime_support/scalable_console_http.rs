@@ -149,6 +149,7 @@ impl Consoles {
         tokio::fs::write(&key, [37_u8; 32]).await.unwrap();
         private_file(key.clone()).await;
         let node = fixture.configs.get(&1).unwrap();
+        let trust_roots = fixture.directory.join("ca.pem");
         let text = format!(
             r#"
 role = "console"
@@ -166,7 +167,7 @@ max_age_seconds = 1800
 "#,
             serde_json::to_string(&directory.join("dist")).unwrap(),
             upstream,
-            serde_json::to_string(&node.tls.trust_roots).unwrap(),
+            serde_json::to_string(&trust_roots).unwrap(),
             serde_json::to_string(&key).unwrap(),
         );
         let text = format!(
@@ -190,7 +191,7 @@ max_age_seconds = 1800
             .no_proxy()
             .tls_certs_only(
                 reqwest::Certificate::from_pem_bundle(
-                    &tokio::fs::read(&node.tls.trust_roots).await.unwrap(),
+                    &tokio::fs::read(&trust_roots).await.unwrap(),
                 )
                 .unwrap(),
             )
