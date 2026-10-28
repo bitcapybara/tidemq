@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use prost::Message;
 use tidemq_protocol::common::{ErrorCode, ErrorReply, Frame, FrameKind, Outcome, TrafficClass};
 use tidemq_protocol::framing::{decode_payload, frame_limit, new_frame};
 use tidemq_protocol::{Id, ProtocolLimits};
@@ -112,7 +113,7 @@ struct Reply {
 }
 struct Job {
     peer: Authorization,
-    frame: ReceivedFrame,
+    frame: AdmittedFrame,
     reply: mpsc::Sender<Reply>,
     _slot: OwnedSemaphorePermit,
     memory: MemoryPermit,
@@ -124,7 +125,7 @@ struct ClassQueue {
     sender: mpsc::Sender<Job>,
 }
 struct Dispatcher {
-    raft: ClassQueue,
+    raft: Option<ClassQueue>,
     core: ClassQueue,
     ack: ClassQueue,
     data: ClassQueue,
@@ -132,6 +133,34 @@ struct Dispatcher {
     config: DispatchConfig,
     health: Arc<DispatchMetrics>,
     tenants: Arc<TenantAdmission>,
+}
+
+enum AdmittedFrame {
+    Remote(ReceivedFrame),
+    Local { frame: Frame, deadline: Instant },
+}
+
+impl AdmittedFrame {
+    fn frame(&self) -> &Frame {
+        match self {
+            Self::Remote(frame) => frame.frame(),
+            Self::Local { frame, .. } => frame,
+        }
+    }
+
+    fn deadline(&self) -> Instant {
+        match self {
+            Self::Remote(frame) => frame.deadline(),
+            Self::Local { deadline, .. } => *deadline,
+        }
+    }
+
+    fn received(self) -> Option<ReceivedFrame> {
+        match self {
+            Self::Remote(frame) => Some(frame),
+            Self::Local { .. } => None,
+        }
+    }
 }
 
 impl ClassQueue {
@@ -152,11 +181,11 @@ impl Dispatcher {
         &self,
         peer: Authorization,
         purpose: StreamPurpose,
-        frame: ReceivedFrame,
+        frame: AdmittedFrame,
         reply: mpsc::Sender<Reply>,
         order: Option<SubmissionOrder>,
         tenant: Option<[u8; 16]>,
-    ) -> std::result::Result<(), Box<ReceivedFrame>> {
+    ) -> std::result::Result<(), Box<AdmittedFrame>> {
         let raft_control = purpose == StreamPurpose::Core
             && matches!(&peer, Authorization::Internal(_))
             && matches!(
@@ -164,7 +193,10 @@ impl Dispatcher {
                 Ok(FrameKind::RaftVote | FrameKind::RaftAppend)
             );
         let queue = match purpose {
-            StreamPurpose::Core if raft_control => &self.raft,
+            StreamPurpose::Core if raft_control => match &self.raft {
+                Some(queue) => queue,
+                None => return Err(Box::new(frame)),
+            },
             StreamPurpose::Core => &self.core,
             StreamPurpose::Ack => &self.ack,
             StreamPurpose::Request => &self.data,
@@ -223,6 +255,237 @@ impl Dispatcher {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct InProcess {
+    dispatcher: Arc<Dispatcher>,
+    stop: watch::Sender<Option<Instant>>,
+    finished: watch::Receiver<bool>,
+}
+
+pub(crate) struct LocalRequests {
+    core: mpsc::Receiver<Job>,
+    ack: mpsc::Receiver<Job>,
+    data: mpsc::Receiver<Job>,
+    stop: watch::Receiver<Option<Instant>>,
+    finished: watch::Sender<bool>,
+    dispatcher: Arc<Dispatcher>,
+}
+
+pub(crate) struct LocalResponse {
+    response: mpsc::Receiver<Reply>,
+    deadline: Instant,
+}
+
+impl InProcess {
+    pub fn new(
+        config: DispatchConfig,
+        budget: MemoryBudget,
+        health: Arc<DispatchMetrics>,
+    ) -> crate::Result<(Self, LocalRequests)> {
+        validate(&config)?;
+        let (core, core_rx) = ClassQueue::new(config.core_handlers);
+        let (ack, ack_rx) = ClassQueue::new(config.ack_handlers);
+        let (data, data_rx) = ClassQueue::new(config.data_handlers);
+        let maximum_frame = [
+            TrafficClass::Control,
+            TrafficClass::Produce,
+            TrafficClass::Delivery,
+        ]
+        .into_iter()
+        .map(|class| frame_limit(class, &config.protocol) as usize)
+        .max()
+        .unwrap_or(0)
+        .saturating_mul(2);
+        let tenants = TenantAdmission::new(budget.clone(), config.data_handlers, maximum_frame);
+        let dispatcher = Arc::new(Dispatcher {
+            raft: None,
+            core,
+            ack,
+            data,
+            budget,
+            config,
+            health,
+            tenants,
+        });
+        let (stop, stopped) = watch::channel(None);
+        let (finished, completion) = watch::channel(false);
+        Ok((
+            Self {
+                dispatcher: dispatcher.clone(),
+                stop,
+                finished: completion,
+            },
+            LocalRequests {
+                core: core_rx,
+                ack: ack_rx,
+                data: data_rx,
+                stop: stopped,
+                finished,
+                dispatcher,
+            },
+        ))
+    }
+
+    pub async fn submit<S: WireService>(
+        &self,
+        service: &Arc<S>,
+        peer: Authorization,
+        mut frame: Frame,
+        purpose: StreamPurpose,
+        deadline: Instant,
+    ) -> crate::Result<LocalResponse> {
+        if self.stop.borrow().is_some() || Instant::now() >= deadline {
+            return Err(crate::Error::Configuration {
+                reason: "local dispatch is stopped or its deadline expired",
+            });
+        }
+        let class = TrafficClass::try_from(frame.traffic_class).map_err(|_| {
+            crate::Error::Configuration {
+                reason: "local request traffic class is invalid",
+            }
+        })?;
+        if class == TrafficClass::Replication || frame.kind != i32::from(FrameKind::InternalCommand)
+        {
+            return Err(crate::Error::Configuration {
+                reason: "local dispatch accepts semantic commands only",
+            });
+        }
+        let bytes = u32::try_from(frame.encoded_len())
+            .ok()
+            .filter(|bytes| {
+                *bytes > 0 && *bytes <= frame_limit(class, &self.dispatcher.config.protocol)
+            })
+            .ok_or(crate::Error::Configuration {
+                reason: "local request exceeds its frame limit",
+            })?;
+        let memory = match purpose {
+            StreamPurpose::Core => self.dispatcher.budget.try_reserve_core(bytes),
+            StreamPurpose::Ack => self.dispatcher.budget.try_reserve_ack(bytes),
+            StreamPurpose::Request => self.dispatcher.budget.try_reserve(class, bytes),
+        }
+        .map_err(|source| crate::Error::LocalMemory { source })?;
+        frame.payload = Bytes::from_owner(ReplyMemory {
+            bytes: frame.payload,
+            _permit: memory,
+            _tenant: None,
+        });
+        let execution = service.execution_purpose(&peer, &frame, purpose);
+        let tenant = service.scheduling_key(&peer, &frame);
+        let (reply, response) = mpsc::channel(1);
+        self.dispatcher
+            .submit(
+                peer,
+                execution,
+                AdmittedFrame::Local { frame, deadline },
+                reply,
+                None,
+                tenant,
+            )
+            .await
+            .map_err(|_| crate::Error::Configuration {
+                reason: "local handler slots or memory are exhausted",
+            })?;
+        Ok(LocalResponse { response, deadline })
+    }
+
+    pub fn begin_drain(&self, deadline: Instant) {
+        self.dispatcher.core.slots.close();
+        self.dispatcher.ack.slots.close();
+        self.dispatcher.data.slots.close();
+        self.stop.send_modify(|current| {
+            *current = Some(current.map_or(deadline, |current| current.min(deadline)))
+        });
+    }
+
+    pub async fn close(&self, deadline: Instant) -> crate::Result<()> {
+        self.begin_drain(deadline);
+        let mut finished = self.finished.clone();
+        while !*finished.borrow() {
+            timeout_at(deadline, finished.changed())
+                .await
+                .map_err(|_| crate::Error::Configuration {
+                    reason: "local dispatch drain deadline elapsed",
+                })?
+                .map_err(|_| crate::Error::Configuration {
+                    reason: "local dispatch completion is unavailable",
+                })?;
+        }
+        Ok(())
+    }
+}
+
+impl LocalResponse {
+    pub async fn receive(mut self) -> crate::Result<Frame> {
+        timeout_at(self.deadline, self.response.recv())
+            .await
+            .map_err(|_| crate::Error::Configuration {
+                reason: "local response deadline elapsed",
+            })?
+            .map(|reply| reply.frame)
+            .ok_or(crate::Error::Configuration {
+                reason: "local handler ended without a response",
+            })
+    }
+}
+
+impl LocalRequests {
+    pub async fn run<S: WireService>(mut self, service: Arc<S>) -> crate::Result<()> {
+        let mut handlers = JoinSet::new();
+        loop {
+            if self.stop.borrow().is_some() {
+                break;
+            }
+            tokio::select! {
+                changed = self.stop.changed() => { if changed.is_err() { break; } },
+                result = handlers.join_next(), if !handlers.is_empty() => {
+                    if let Some(result) = result { result.map_err(|source| crate::Error::Task { source })?; }
+                },
+                Some(job) = self.core.recv() => { handlers.spawn(execute(service.clone(), job, self.dispatcher.config.protocol.clone(), self.dispatcher.health.clone())); },
+                Some(job) = self.ack.recv() => { handlers.spawn(execute(service.clone(), job, self.dispatcher.config.protocol.clone(), self.dispatcher.health.clone())); },
+                Some(job) = self.data.recv() => { handlers.spawn(execute(service.clone(), job, self.dispatcher.config.protocol.clone(), self.dispatcher.health.clone())); },
+            }
+        }
+        let deadline = self.stop.borrow().unwrap_or_else(Instant::now);
+        for receiver in [&mut self.core, &mut self.ack, &mut self.data] {
+            receiver.close();
+            while let Ok(job) = receiver.try_recv() {
+                reject_local_queued(job, &self.dispatcher.config.protocol);
+            }
+        }
+        while !handlers.is_empty() {
+            timeout_at(deadline, handlers.join_next())
+                .await
+                .map_err(|_| crate::Error::Configuration {
+                    reason: "local handlers exceeded the process drain deadline",
+                })?
+                .transpose()
+                .map_err(|source| crate::Error::Task { source })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for LocalRequests {
+    fn drop(&mut self) {
+        self.finished.send_replace(true);
+    }
+}
+
+fn reject_local_queued(job: Job, limits: &ProtocolLimits) {
+    if let Some(mut response) = overload(job.frame.frame(), limits, ErrorCode::Unavailable) {
+        response.payload = Bytes::from_owner(ReplyMemory {
+            bytes: response.payload,
+            _permit: job.memory,
+            _tenant: job.tenant,
+        });
+        let _ = job.reply.try_send(Reply {
+            frame: response,
+            deadline: job.frame.deadline(),
+            notification: None,
+        });
+    }
+}
+
 /// Shutdown stops admission first, then drains owned handlers for a finite interval.
 pub async fn run<S: WireService>(
     mut server: Server,
@@ -250,7 +513,7 @@ pub async fn run<S: WireService>(
     .saturating_mul(2);
     let tenants = TenantAdmission::new(budget.clone(), config.data_handlers, maximum_frame);
     let dispatcher = Arc::new(Dispatcher {
-        raft,
+        raft: Some(raft),
         core,
         ack,
         data,
@@ -365,6 +628,9 @@ async fn execute<S: WireService>(
     limits: ProtocolLimits,
     health: Arc<DispatchMetrics>,
 ) {
+    if job.reply.is_closed() {
+        return;
+    }
     health.active_handlers.inc();
     let _active = HandlerGauge(health.active_handlers.clone());
     let Job {
@@ -436,7 +702,8 @@ async fn execute<S: WireService>(
             reply.send(Reply {
                 frame: response,
                 deadline,
-                notification: notification_peer.map(|peer| (peer, frame)),
+                notification: notification_peer
+                    .and_then(|peer| frame.received().map(|frame| (peer, frame))),
             }),
         )
         .await;
@@ -593,7 +860,7 @@ async fn serve_stream<S: WireService>(
             let execution = admission.execution_purpose(&peer, frame.frame(), purpose);
             let tenant = admission.scheduling_key(&peer, frame.frame());
             let submitted = tokio::select! {
-                submitted = dispatcher.submit(peer.clone(), execution, frame, replies.clone(), order, tenant) => submitted,
+                submitted = dispatcher.submit(peer.clone(), execution, AdmittedFrame::Remote(frame), replies.clone(), order, tenant) => submitted,
                 _ = shutdown.changed() => { drop(replies); return true },
             };
             if let Err(frame) = submitted
@@ -692,6 +959,201 @@ fn error_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct LocalService {
+        blocked: Id,
+        entered: tokio::sync::Notify,
+        release: Semaphore,
+        calls: AtomicUsize,
+    }
+
+    impl WireService for LocalService {
+        type Error = std::io::Error;
+
+        async fn handle(
+            &self,
+            _peer: Authorization,
+            frame: &Frame,
+            _deadline: Instant,
+            _order: Option<SubmissionOrder>,
+        ) -> std::io::Result<Option<Frame>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if frame.operation_id.as_ref() == self.blocked.as_bytes() {
+                self.entered.notify_one();
+                let _release = self.release.acquire().await.unwrap();
+            }
+            let mut reply = frame.clone();
+            reply.kind = FrameKind::InternalResult.into();
+            Ok(Some(reply))
+        }
+    }
+
+    fn local_fixture() -> (InProcess, LocalRequests, Arc<LocalService>, MemoryBudget) {
+        let config = DispatchConfig {
+            data_handlers: 1,
+            core_handlers: 1,
+            ack_handlers: 1,
+            ..Default::default()
+        };
+        let budget = MemoryBudget::new(&crate::config::MemoryConfig::default()).unwrap();
+        let (dispatch, requests) =
+            InProcess::new(config, budget.clone(), Arc::new(DispatchMetrics::default())).unwrap();
+        let service = Arc::new(LocalService {
+            blocked: Id::new_v7().unwrap(),
+            entered: tokio::sync::Notify::new(),
+            release: Semaphore::new(0),
+            calls: AtomicUsize::new(0),
+        });
+        (dispatch, requests, service, budget)
+    }
+
+    fn local_request(operation: Id) -> Frame {
+        new_frame(
+            FrameKind::InternalCommand,
+            TrafficClass::Control,
+            Id::new_v7().unwrap(),
+            operation,
+            &tidemq_protocol::internal::InternalCommand::default(),
+            2_000,
+            &ProtocolLimits::default(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn local_normal_pressure_preserves_core_and_completion_capacity() {
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let runner = tokio::spawn(requests.run(service.clone()));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let normal = dispatch
+            .submit(
+                &service,
+                Authorization::Server,
+                local_request(service.blocked),
+                StreamPurpose::Request,
+                deadline,
+            )
+            .await
+            .unwrap();
+        timeout_at(deadline, service.entered.notified())
+            .await
+            .unwrap();
+        assert!(
+            dispatch
+                .submit(
+                    &service,
+                    Authorization::Server,
+                    local_request(Id::new_v7().unwrap()),
+                    StreamPurpose::Request,
+                    deadline
+                )
+                .await
+                .is_err()
+        );
+        for purpose in [StreamPurpose::Core, StreamPurpose::Ack] {
+            let response = dispatch
+                .submit(
+                    &service,
+                    Authorization::Server,
+                    local_request(Id::new_v7().unwrap()),
+                    purpose,
+                    deadline,
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.receive().await.unwrap().kind,
+                i32::from(FrameKind::InternalResult)
+            );
+        }
+        service.release.add_permits(1);
+        drop(normal.receive().await.unwrap());
+        dispatch.close(deadline).await.unwrap();
+        runner.await.unwrap().unwrap();
+        assert_eq!(budget.available_bytes(), before);
+    }
+
+    #[tokio::test]
+    async fn local_queued_cancellation_does_not_execute_and_releases_admission() {
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let pending = dispatch
+            .submit(
+                &service,
+                Authorization::Server,
+                local_request(service.blocked),
+                StreamPurpose::Request,
+                deadline,
+            )
+            .await
+            .unwrap();
+        drop(pending);
+        let runner = tokio::spawn(requests.run(service.clone()));
+        timeout_at(deadline, async {
+            while dispatch.dispatcher.data.slots.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(service.calls.load(Ordering::Relaxed), 0);
+        dispatch.close(deadline).await.unwrap();
+        runner.await.unwrap().unwrap();
+        assert_eq!(budget.available_bytes(), before);
+    }
+
+    #[tokio::test]
+    async fn local_drain_rejects_queued_commands_before_handoff() {
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let pending = dispatch
+            .submit(
+                &service,
+                Authorization::Server,
+                local_request(service.blocked),
+                StreamPurpose::Request,
+                deadline,
+            )
+            .await
+            .unwrap();
+        dispatch.begin_drain(deadline);
+        requests.run(service.clone()).await.unwrap();
+        let response = pending.receive().await.unwrap();
+        let error: ErrorReply =
+            decode_payload(response.payload.clone(), &ProtocolLimits::default()).unwrap();
+        assert_eq!(error.outcome, i32::from(Outcome::Rejected));
+        assert_eq!(service.calls.load(Ordering::Relaxed), 0);
+        drop(response);
+        assert_eq!(budget.available_bytes(), before);
+    }
+
+    #[tokio::test]
+    async fn local_dispatch_rejects_replication_without_allocating_a_raft_queue() {
+        let (dispatch, requests, service, budget) = local_fixture();
+        let before = budget.available_bytes();
+        let mut request = local_request(Id::new_v7().unwrap());
+        request.kind = FrameKind::RaftAppend.into();
+        request.traffic_class = TrafficClass::Replication.into();
+        assert!(
+            dispatch
+                .submit(
+                    &service,
+                    Authorization::Server,
+                    request,
+                    StreamPurpose::Core,
+                    Instant::now() + Duration::from_secs(1)
+                )
+                .await
+                .is_err()
+        );
+        assert!(dispatch.dispatcher.raft.is_none());
+        drop(requests);
+        assert_eq!(budget.available_bytes(), before);
+    }
 
     #[test]
     fn only_valid_unknown_error_replies_are_classified_for_logging() {

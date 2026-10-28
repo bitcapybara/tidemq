@@ -245,7 +245,7 @@ impl Service {
         {
             failure.get_or_insert(error);
         }
-        if let Err(source) = self.rpc.pool.close(deadline).await {
+        if let Err(source) = self.rpc.close(deadline).await {
             failure.get_or_insert_with(|| Error::operation("drain internal QUIC endpoint", source));
         }
         failure.map_or(Ok(()), Err)

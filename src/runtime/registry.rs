@@ -450,7 +450,7 @@ impl Service {
         let (peers, grants) = directory.targets(&self.config, self.cluster)?;
         self.save_registry(&directory).await?;
         self.rpc
-            .pool
+            .pool()?
             .replace_peers(peers, grants.clone(), deadline)
             .await
             .map_err(|source| Error::operation("replace registered internal peers", source))?;
