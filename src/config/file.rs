@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tidemq_protocol::ProtocolLimits;
 
 use super::{Config, LoggingConfig, MemoryConfig, Role, TlsConfig};
+use crate::console::EmbeddedConsoleConfig;
 use crate::runtime::{GroupConfig, ObjectConfig, PeerConfig, RuntimeConfig};
 use crate::{Error, Result};
 
@@ -16,12 +17,13 @@ pub(super) struct ConfigFile {
     role: Option<Role>,
     management_listen: SocketAddr,
     data_dir: PathBuf,
-    replication_factor: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replication_factor: Option<u8>,
     memory: MemoryConfig,
     protocol: ProtocolLimits,
     logging: LoggingConfig,
     tracing: crate::observability::tracing::TracingConfig,
-    tls: TlsConfig,
+    tls: TlsFile,
     runtime: RuntimeFile,
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization: Option<AuthorizationConfig>,
@@ -29,6 +31,8 @@ pub(super) struct ConfigFile {
     gateway: Option<GatewayConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     storage: Option<StorageConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    console: Option<EmbeddedConsoleConfig>,
 }
 
 impl Default for ConfigFile {
@@ -38,6 +42,7 @@ impl Default for ConfigFile {
         file.authorization = None;
         file.gateway = None;
         file.storage = None;
+        file.console = None;
         file
     }
 }
@@ -47,30 +52,57 @@ impl ConfigFile {
         let role = self.role.ok_or(Error::Configuration {
             reason: "role-scoped configuration requires an explicit role",
         })?;
-        if role.serves_gateway() && self.gateway.is_none() {
-            return Err(Error::Configuration {
-                reason: "gateway section is required for gateway and combined roles",
-            });
+        for (valid, reason) in [
+            (
+                role.serves_gateway() == self.gateway.is_some(),
+                "gateway section is required only for gateway and combined roles",
+            ),
+            (
+                role.stores_data() == self.storage.is_some(),
+                "storage section is required only for storage and combined roles",
+            ),
+            (
+                self.authorization.is_some(),
+                "role-scoped configuration requires the shared authorization section",
+            ),
+            (
+                (role == Role::Combined) == self.console.is_some(),
+                "console section is required only for the combined MQ role",
+            ),
+        ] {
+            if !valid {
+                return Err(Error::Configuration { reason });
+            }
         }
-        if !role.serves_gateway() && self.gateway.is_some() {
-            return Err(Error::Configuration {
-                reason: "gateway section is not supported by broker, storage, or metadata roles",
-            });
+        if role == Role::Combined {
+            if self.replication_factor.is_some() || self.tls.trust_roots.is_some() {
+                return Err(Error::Configuration {
+                    reason: "combined does not accept replication_factor or tls.trust_roots",
+                });
+            }
+            self.runtime.validate_local()?;
         }
-        if role.stores_data() && self.storage.is_none() {
-            return Err(Error::Configuration {
-                reason: "storage section is required for storage and combined roles",
-            });
-        }
-        if !role.stores_data() && self.storage.is_some() {
-            return Err(Error::Configuration {
-                reason: "storage section is not supported by gateway, broker, or metadata roles",
-            });
-        }
-        self.authorization.as_ref().ok_or(Error::Configuration {
-            reason: "role-scoped configuration requires the shared authorization section",
-        })?;
         Ok(role)
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+struct TlsFile {
+    certificate: PathBuf,
+    private_key: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trust_roots: Option<PathBuf>,
+}
+
+impl Default for TlsFile {
+    fn default() -> Self {
+        let tls = TlsConfig::default();
+        Self {
+            certificate: tls.certificate,
+            private_key: tls.private_key,
+            trust_roots: None,
+        }
     }
 }
 
@@ -108,14 +140,28 @@ impl Default for StorageConfig {
 }
 
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct GroupFile {
+    group_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voters: Option<Vec<u64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    standby: Option<Vec<u64>>,
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 struct RuntimeFile {
-    internal_listen: SocketAddr,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    internal_listen: Option<SocketAddr>,
     metadata_group: u64,
-    metadata_voters: Vec<u64>,
-    groups: Vec<GroupConfig>,
-    peers: Vec<PeerConfig>,
-    bootstrap: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata_voters: Option<Vec<u64>>,
+    groups: Vec<GroupFile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peers: Option<Vec<PeerConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bootstrap: Option<bool>,
     capacity: crate::quota::Limits,
     #[serde(skip_serializing_if = "Option::is_none")]
     topic_scaling: Option<crate::runtime::TopicScalingPolicy>,
@@ -123,37 +169,78 @@ struct RuntimeFile {
 
 impl Default for RuntimeFile {
     fn default() -> Self {
-        Self::from(RuntimeConfig::default())
-    }
-}
-
-impl From<RuntimeConfig> for RuntimeFile {
-    fn from(runtime: RuntimeConfig) -> Self {
-        Self {
-            internal_listen: runtime.internal_listen,
-            metadata_group: runtime.metadata_group,
-            metadata_voters: runtime.metadata_voters,
-            groups: runtime.groups,
-            peers: runtime.peers,
-            bootstrap: runtime.bootstrap,
-            capacity: runtime.capacity,
-            topic_scaling: runtime.topic_scaling,
-        }
+        Self::from_runtime(RuntimeConfig::default(), true)
     }
 }
 
 impl RuntimeFile {
-    fn into_runtime(self) -> RuntimeConfig {
+    fn from_runtime(runtime: RuntimeConfig, local: bool) -> Self {
+        Self {
+            internal_listen: (!local).then_some(runtime.internal_listen),
+            metadata_group: runtime.metadata_group,
+            metadata_voters: (!local).then_some(runtime.metadata_voters),
+            groups: runtime
+                .groups
+                .into_iter()
+                .map(|group| GroupFile {
+                    group_id: group.group_id,
+                    voters: (!local).then_some(group.voters),
+                    standby: (!local).then_some(group.standby),
+                })
+                .collect(),
+            peers: (!local).then_some(runtime.peers),
+            bootstrap: (!local).then_some(runtime.bootstrap),
+            capacity: runtime.capacity,
+            topic_scaling: runtime.topic_scaling,
+        }
+    }
+
+    fn validate_local(&self) -> Result<()> {
+        if self.internal_listen.is_some()
+            || self.metadata_voters.is_some()
+            || self.peers.is_some()
+            || self.bootstrap.is_some()
+            || self
+                .groups
+                .iter()
+                .any(|group| group.voters.is_some() || group.standby.is_some())
+        {
+            return Err(Error::Configuration {
+                reason: "combined accepts logical group IDs, capacity and topic scaling only; internal listeners, peers, voters, standby and Raft bootstrap are not supported",
+            });
+        }
+        Ok(())
+    }
+
+    fn into_runtime(self, local: bool, node: u64) -> RuntimeConfig {
+        let defaults = RuntimeConfig::default();
         RuntimeConfig {
-            internal_listen: self.internal_listen,
+            internal_listen: self.internal_listen.unwrap_or(defaults.internal_listen),
             metadata_group: self.metadata_group,
-            metadata_voters: self.metadata_voters,
-            groups: self.groups,
-            peers: self.peers,
-            bootstrap: self.bootstrap,
+            // Local ownership is derived; no membership is accepted from the file.
+            metadata_voters: self.metadata_voters.unwrap_or_else(|| {
+                if local {
+                    vec![node]
+                } else {
+                    defaults.metadata_voters
+                }
+            }),
+            groups: self
+                .groups
+                .into_iter()
+                .map(|group| GroupConfig {
+                    group_id: group.group_id,
+                    voters: group
+                        .voters
+                        .unwrap_or_else(|| if local { vec![node] } else { vec![1] }),
+                    standby: group.standby.unwrap_or_default(),
+                })
+                .collect(),
+            peers: self.peers.unwrap_or_default(),
+            bootstrap: self.bootstrap.unwrap_or(false),
             capacity: self.capacity,
             topic_scaling: self.topic_scaling,
-            ..RuntimeConfig::default()
+            ..defaults
         }
     }
 }
@@ -163,7 +250,8 @@ impl TryFrom<ConfigFile> for Config {
 
     fn try_from(file: ConfigFile) -> Result<Self> {
         let role = file.validate_layout()?;
-        let mut runtime = file.runtime.into_runtime();
+        let local = role == Role::Combined;
+        let mut runtime = file.runtime.into_runtime(local, file.node_id);
         if let Some(authorization) = file.authorization {
             runtime.bootstrap_admin_token_file = authorization.bootstrap_admin_token_file;
         }
@@ -182,12 +270,23 @@ impl TryFrom<ConfigFile> for Config {
                 .unwrap_or_else(|| Self::default().listen),
             management_listen: file.management_listen,
             data_dir: file.data_dir,
-            replication_factor: file.replication_factor,
+            replication_factor: file.replication_factor.unwrap_or(1),
             memory: file.memory,
             protocol: file.protocol,
             logging: file.logging,
             tracing: file.tracing,
-            tls: file.tls,
+            tls: TlsConfig {
+                certificate: file.tls.certificate,
+                private_key: file.tls.private_key,
+                trust_roots: file.tls.trust_roots.unwrap_or_else(|| {
+                    if local {
+                        PathBuf::new()
+                    } else {
+                        TlsConfig::default().trust_roots
+                    }
+                }),
+            },
+            console: file.console.unwrap_or_default(),
             runtime,
         })
     }
@@ -195,6 +294,7 @@ impl TryFrom<ConfigFile> for Config {
 
 impl From<Config> for ConfigFile {
     fn from(config: Config) -> Self {
+        let local = config.role == Role::Combined;
         let gateway = config.role.serves_gateway().then_some(GatewayConfig {
             listen: config.listen,
         });
@@ -209,18 +309,23 @@ impl From<Config> for ConfigFile {
             role: Some(config.role),
             management_listen: config.management_listen,
             data_dir: config.data_dir,
-            replication_factor: config.replication_factor,
+            replication_factor: (!local).then_some(config.replication_factor),
             memory: config.memory,
             protocol: config.protocol,
             logging: config.logging,
             tracing: config.tracing,
-            tls: config.tls,
+            tls: TlsFile {
+                certificate: config.tls.certificate,
+                private_key: config.tls.private_key,
+                trust_roots: (!local).then_some(config.tls.trust_roots),
+            },
             authorization: Some(AuthorizationConfig {
                 bootstrap_admin_token_file: config.runtime.bootstrap_admin_token_file.clone(),
             }),
-            runtime: RuntimeFile::from(config.runtime),
+            runtime: RuntimeFile::from_runtime(config.runtime, local),
             gateway,
             storage,
+            console: local.then_some(config.console),
         }
     }
 }

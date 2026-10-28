@@ -143,6 +143,21 @@ impl RuntimeConfig {
             ));
         }
         self.validate_objects(config)?;
+        if config.role == Role::Combined {
+            if !self.peers.is_empty()
+                || self.bootstrap
+                || self.metadata_voters != [config.node_id]
+                || !config.tls.trust_roots.as_os_str().is_empty()
+            {
+                return Err(Error::invalid(
+                    "Local execution requires derived ownership without peer, bootstrap or trust root settings",
+                ));
+            }
+            return self.validate_local_groups(config.node_id);
+        }
+        if config.tls.trust_roots.as_os_str().is_empty() {
+            return Err(Error::invalid("Separated roles require tls.trust_roots"));
+        }
         self.validate_peers(config)?;
         self.validate_voters(&self.metadata_voters, config.replication_factor, true)?;
         self.validate_groups(config.replication_factor)?;
@@ -150,6 +165,27 @@ impl RuntimeConfig {
             return Err(Error::invalid(
                 "runtime.peers must include at least one broker or combined role",
             ));
+        }
+        Ok(())
+    }
+
+    fn validate_local_groups(&self, node: u64) -> Result<()> {
+        if self.metadata_group == 0 || !(1..=16).contains(&self.groups.len()) {
+            return Err(Error::invalid(
+                "Local execution requires a nonzero metadata_group and 1 to 16 data groups",
+            ));
+        }
+        let mut identifiers = BTreeSet::from([self.metadata_group]);
+        for group in &self.groups {
+            if group.group_id == 0
+                || !identifiers.insert(group.group_id)
+                || group.voters != [node]
+                || !group.standby.is_empty()
+            {
+                return Err(Error::invalid(
+                    "Local data groups require distinct nonzero IDs and derived ownership by this node",
+                ));
+            }
         }
         Ok(())
     }
@@ -225,6 +261,11 @@ impl RuntimeConfig {
         }
         let mut ids = BTreeSet::new();
         for peer in &self.peers {
+            if peer.role == Role::Combined {
+                return Err(Error::invalid(
+                    "Separated peers cannot use the combined role",
+                ));
+            }
             for (valid, reason) in [
                 (peer.node_id != 0, "node_id must be nonzero"),
                 (ids.insert(peer.node_id), "node_id is duplicated"),
