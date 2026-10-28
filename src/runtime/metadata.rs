@@ -460,7 +460,7 @@ impl Service {
             let owner = if replica.group.is_local() {
                 self.config.node_id
             } else {
-                self.select_initial_broker(deadline).await?
+                self.select_initial_broker(partition, deadline).await?
             };
             let metadata::Outcome::OwnershipGranted(grant) = self
                 .ownership_meta_write(

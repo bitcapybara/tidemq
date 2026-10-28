@@ -60,7 +60,7 @@ TlsTrust 接受服务端 CA 文件或 PEM，不接收 CA 私钥。Credentials �
 
 ## 生产与并发
 
-send 接受 `Into<Message>`，简单消息可写 `producer.send("hello").await`。Message 用于设置 key 和属性。成功回执表示数据 Raft 已持久提交；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。
+send 接受 `Into<Message>`，简单消息可写 `producer.send("hello").await`。Message 用于设置 key 和属性。成功回执表示消息已经沿当前部署的提交路径持久完成：Combined 使用本地日志，分离部署使用数据 Raft；QUIC packet ACK、发送入队和后台 S3 上传均不替代该完成点。
 
 一个 Producer 可并发发送到多个分片。应用使用有界 FuturesOrdered/FuturesUnordered 或任务池驱动多个 send；集合 push 本身不推进 Future。逐条 await 会按应用写法串行等待。同 key 的发送按同一逻辑 Producer 的准入顺序推进，返回回执的顺序不建立跨 key 顺序。
 
@@ -117,7 +117,7 @@ context.cancellation_token() 可接入宿主取消。嵌套调用使用更早期
 | admin.pending_subscription_deletions() | PendingSubscriptionDeletion::retry().await 继续固定 UUID 的删除 |
 | admin.pending_operations() | PendingAdmin::retry().await 查询或继续原资源创建、凭据变更、Topic 拆分/合并/删除 |
 
-ACK / NACK 在所有权切换期间收到可重试的 `Fenced` / `Unavailable`，且服务端尚不能确定原结果时，SDK 保留原 `PendingAck` 和未完成批次，不将交付当作已退休或确认失败。检查错误携带的 pending 句柄或 `consumer.pending_acks().await?`，再对原句柄调用 `retry().await`；`progress()?` 可区分 pending、持久成功与明确拒绝。`outcome_unknown()` 为 false 也可能仍有可恢复的原 ACK，不能只凭此值丢弃句柄。重试沿用原 operation ID、交付身份和确认范围；已知的最终拒绝或权限拒绝不会重新发出，明确失效的交付仍按结构化错误处理，不能换 token、扩大累计确认范围或新建 consumer 冒充原确认。
+ACK / NACK 收到可重试的路由拒绝 `Fenced` / `Unavailable` 或容量拒绝 `QuotaExceeded`，且服务端尚未记录原操作的最终决定时，SDK 保留原 `PendingAck` 和未完成批次，不将交付当作已退休或确认失败。检查错误携带的 pending 句柄或 `consumer.pending_acks().await?`，再在有界请求上下文中对原句柄调用 `retry().await`；`progress()?` 可区分 pending、持久成功与明确拒绝。`outcome_unknown()` 为 false 也可能仍有可恢复的原 ACK，不能只凭此值丢弃句柄。重试沿用原 operation ID、交付身份和确认范围；已知的最终拒绝或权限拒绝不会重新发出，明确失效的交付仍按结构化错误处理，不能换 token、扩大累计确认范围或新建 consumer 冒充原确认。
 
 管理操作成功仍返回对应的强类型结果；未知结果返回携带原 PendingAdmin 的 Error::Administration。retry 返回 AdminReceipt，保持原操作、资源身份和布局条件。管理恢复共享 Client 的资源预留，最多保留 16 项，每项预留 128 KiB；其他逻辑实例占用预留时可能更早拒绝新操作。凭据原值只交付一次，回包丢失后只返回已提交的 Credential ID；收到 CredentialSecretUnavailable 后先撤销该凭据，再签发新值。
 

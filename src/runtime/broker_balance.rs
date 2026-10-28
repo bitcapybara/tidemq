@@ -2,12 +2,16 @@ use tokio::time::Instant;
 
 use super::{Error, Result, service::Service};
 use crate::{
-    metadata::Route,
+    metadata::{PartitionKey, Route},
     scaling::{DrainPlan, Handoff},
 };
 
 impl Service {
-    pub(super) async fn select_initial_broker(&self, deadline: Instant) -> Result<u64> {
+    pub(super) async fn select_initial_broker(
+        &self,
+        partition: PartitionKey,
+        deadline: Instant,
+    ) -> Result<u64> {
         use std::sync::atomic::Ordering;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
@@ -30,6 +34,8 @@ impl Service {
             .position(|(_, node)| *node == after)
             .map_or(0, |index| (index + 1) % candidates.len().max(1));
         // Continue after failed probes so unavailable low-count nodes cannot hide later capacity.
+        let mut responsive = 0_usize;
+        let mut unreachable = 0_usize;
         for (_, node) in candidates
             .iter()
             .cycle()
@@ -41,19 +47,62 @@ impl Service {
             }
             self.initial_broker_probe_after
                 .store(*node, Ordering::Relaxed);
-            if self
+            let probe = self
                 .probe_broker(
                     *node,
                     deadline.min(Instant::now() + std::time::Duration::from_millis(300)),
                 )
-                .await
-                == super::failover::Probe::Eligible
-            {
-                self.initial_broker_probe_after.store(0, Ordering::Relaxed);
-                return Ok(*node);
+                .await;
+            match probe {
+                super::failover::Probe::Eligible => {
+                    self.initial_broker_probe_after.store(0, Ordering::Relaxed);
+                    return Ok(*node);
+                }
+                super::failover::Probe::Responsive => responsive = responsive.saturating_add(1),
+                super::failover::Probe::Unreachable => unreachable = unreachable.saturating_add(1),
             }
         }
+        self.log_initial_broker_failure(
+            partition,
+            deadline,
+            candidates.len(),
+            responsive,
+            unreachable,
+        );
         Err(Error::unavailable())
+    }
+
+    fn log_initial_broker_failure(
+        &self,
+        partition: PartitionKey,
+        deadline: Instant,
+        candidates: usize,
+        responsive: usize,
+        unreachable: usize,
+    ) {
+        let quota = self
+            .quota
+            .lock()
+            .ok()
+            .map(|quota| quota.diagnose(std::time::Instant::now()));
+        let container = quota.and_then(|quota| quota.container);
+        tracing::warn!(
+            event_code = "initial_route_broker_unavailable",
+            topic_id = %partition.topic_id,
+            birth_partition = partition.partition,
+            stage = "select_initial_broker",
+            probe_reason = "no_eligible_broker",
+            candidates,
+            responsive,
+            unreachable,
+            deadline_expired = Instant::now() >= deadline,
+            caller_container_blocked = ?container.map(|sample| sample.blocked),
+            caller_container_current_bytes = ?container.and_then(|sample| sample.current_bytes),
+            caller_container_limit = ?container.map(|sample| sample.limit),
+            caller_container_sample_age_ms = ?container.map(|sample| sample.sample_age_ms),
+            caller_capacity_sample_age_ms = ?quota.and_then(|sample| sample.sample_age_ms),
+            "Initial ownership could not select an eligible Broker"
+        );
     }
 
     pub(super) async fn balance_broker_ownership(&self, deadline: Instant) -> Result<bool> {

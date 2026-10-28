@@ -71,7 +71,9 @@ lab_ssh tidemq-runner sudo systemctl show actions.runner.bitcapybara-tidemq.tide
 lab_ssh tidemq-runner sudo systemctl start tidemq-runner-maintenance.service
 ```
 
-GitHub 的 Linux Validate、Faults 和 Coverage 当前均指定 `tidemq-dev`，由单个现有 executor 顺序执行；macOS 继续使用 hosted runner。该路由避免功能测试承受长期容器 runner 的共享 cgroup 占用，不改本目录的容器规格、生产 quota 或真实容器限额负测。Coverage 等待两个测试 job 完成，下载 `coverage-inputs-native` / `coverage-inputs-lab`，校验同一提交、run、工具和工作区路径，合并已有二进制/profile，再导出报告及比较受保护基线，不重跑 Rust 测试。输入制品保留 3 天，最终覆盖率/VM 报告 30 天。完整流程和当前端到端缺口见 [测试指南](../../../docs/testing.zh-CN.md)。
+GitHub 的 Linux Validate、Faults 和 Coverage 当前均指定 `tidemq-dev`，由单个现有 executor 顺序执行；macOS 继续使用 hosted runner。Linux 全部五处 nextest 调用先在原生账户预编译，再用本目录已部署镜像的 immutable ID `sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b` 创建一次性测试容器，固定6GiB/4 CPU，与编译/Runner 分开计账；不使用长期容器的注册入口、state 或 HOME。公共 Rust/nextest/Node 工具只读挂载，source/target/TMPDIR 和 profile 路径保持原绝对值，不挂载 Docker socket 或实验室密钥。正常/TERM 精确删除自己的 ID，SIGKILL 遗留由更新后的原生维护 bundle 按 label/name/UID 回收；长期容器规格、生产 quota 和真实容器限额负测继续保留。
+
+该变更不要求重新 build/start 本目录镜像，但必须在空闲且独立 review 后更新原生维护 bundle。Coverage 等待两个测试 job 完成，下载 `coverage-inputs-native` / `coverage-inputs-lab`，校验同一提交、run、工具和工作区路径，合并已有二进制/profile，再导出报告及比较受保护基线，不重跑 Rust 测试。输入制品保留 3 天，最终覆盖率/VM 报告 30 天。完整流程和当前端到端缺口见 [测试指南](../../../docs/testing.zh-CN.md)。
 
 部署时的历史并行验收见 [runner-maintenance.json](../evidence/runner-maintenance.json)。当时两个 runner 均在线，两条 Linux job 同秒启动，671 项 Linux 测试、655 项 macOS 测试及 9 个 K8s/API 场景通过。原生与容器内 Cargo home 的设备号/inode 均为 `64784:1311125`，共用锁也为同一文件；已验证共享读锁会延后清理，空闲回收保留常驻容器及其镜像。历史覆盖率来自已有的 922 份 profile，未为生成报告重跑 Rust 测试。
 

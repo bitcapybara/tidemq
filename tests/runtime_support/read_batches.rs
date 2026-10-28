@@ -132,8 +132,15 @@ pub(super) async fn finish_original_ack(
     loop {
         match result {
             Err(tidemq_sdk::Error::Acknowledgement { pending, source })
-                if source.outcome_unknown() && Instant::now() < until =>
+                if Instant::now() < until
+                    && (source.outcome_unknown()
+                        || matches!(
+                            source.kind(),
+                            tidemq_sdk::ErrorKind::ResourceExhausted
+                                | tidemq_sdk::ErrorKind::Unavailable
+                        ) && pending.progress()?.pending > 0) =>
             {
+                // Backpressure and routing refusals keep the same ACK pending.
                 result = tidemq_sdk::RequestContext::with_deadline(until)
                     .scope(pending.retry())
                     .await;

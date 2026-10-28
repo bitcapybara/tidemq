@@ -46,3 +46,12 @@ test('trusted Linux validation shares the existing native executor with fault an
   assert.match(native, /bash scripts\/ci\/validate\.sh\nbash scripts\/ci\/integration\.sh normal/u);
   assert.match(native, /bundle\.mjs pack native target\/ci\/coverage-inputs/u);
 });
+
+test('every trusted Linux nextest lane enables the same immutable isolated executor', () => {
+  const image = 'sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b';
+  const settings = [...workflow.matchAll(/TIDEMQ_NEXTEST_IMAGE: ([^\n]+)/gu)].map(match => match[1]);
+  assert.deepEqual(settings, [image, image]);
+  const scripts = ['validate.sh', 'integration.sh'].map(name => fs.readFileSync(new URL('./' + name, import.meta.url), 'utf8'));
+  assert.equal(scripts.flatMap(source => [...source.matchAll(/bash scripts\/ci\/nextest\.sh /gu)]).length, 5);
+  assert(!scripts.some(source => /cargo nextest run/u.test(source)));
+});

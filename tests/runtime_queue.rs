@@ -227,7 +227,8 @@ async fn logical_consume(
         .await;
         assert!(
             Instant::now() < until,
-            "The original consumer did not recover every identity: {result:?}"
+            "The original consumer did not recover every identity: {result:?}; expected={expected:?}; confirmed={confirmed:?}; diagnostics={:?}",
+            consumer.diagnostics()
         );
         let message = match result {
             Ok(message) => message,
@@ -245,7 +246,7 @@ async fn logical_consume(
             .scope(consumer.ack(&message))
             .await;
         if let Err(error) = result {
-            if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery {
+            if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery && !error.outcome_unknown() {
                 continue;
             }
             let pending = consumer.pending_acks().await.unwrap();
@@ -263,7 +264,10 @@ async fn logical_consume(
                 .await;
                 match result {
                     Ok(tidemq_sdk::AckReceipt::Acknowledged) => break true,
-                    Err(error) if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery => {
+                    Err(error)
+                        if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery
+                            && !error.outcome_unknown() =>
+                    {
                         break false;
                     }
                     result => assert!(
@@ -370,7 +374,39 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     let last = logical_retry(original, deadline()).await;
     assert!(!initial.contains(&last));
     assert_ne!(last, next);
-    logical_consume(&consumer, &[last], b"minority-unknown").await;
+    let receiving = consumer.clone();
+    let mut pending_consume = tokio::spawn(async move {
+        logical_consume(&receiving, &[last], b"minority-unknown").await;
+    });
+    let mut resources = Box::pin(consumer_recovery_snapshot(
+        &fixture,
+        &consumer,
+        last,
+        "after-quorum",
+    ));
+    let mut resources_pending = true;
+    let mut samples = tokio::time::interval(Duration::from_secs(1));
+    samples.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            result = &mut pending_consume => {
+                if resources_pending {
+                    resources.as_mut().await;
+                }
+                if result.is_err() {
+                    consumer_recovery_snapshot(&fixture, &consumer, last, "timeout").await;
+                }
+                result.expect("The original consumer recovery failed; see its preserved snapshot");
+                break;
+            },
+            _ = &mut resources, if resources_pending => resources_pending = false,
+            _ = samples.tick() => eprintln!(
+                "RF3 consumer recovery ledger: expected={last:?} diagnostics={:?}",
+                consumer.diagnostics()
+            ),
+        }
+    }
+    drop(resources);
     consumer.close().await.unwrap();
     producer.close().await.unwrap();
     client.close().await.unwrap();
@@ -379,6 +415,89 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         let _ = process.wait().await.unwrap();
     }
     fixture.close().await;
+}
+
+async fn consumer_recovery_snapshot(
+    fixture: &Fixture,
+    consumer: &tidemq_sdk::QueueConsumer,
+    expected: tidemq_sdk::MessageId,
+    stage: &str,
+) {
+    let sdk = format!("{:?}", consumer.diagnostics());
+    let until = Instant::now() + Duration::from_secs(2);
+    let mut tasks = Vec::new();
+    for (node, config) in &fixture.configs {
+        let address = config.management_listen;
+        let process_watermark = config.runtime.capacity.process_memory;
+        tasks.push((
+            *node,
+            tokio::spawn(async move {
+                let diagnostics = tokio::time::timeout_at(until, http(address, "/diagnostics"))
+                    .await
+                    .ok()
+                    .and_then(|response| {
+                        response
+                            .split_once("\r\n\r\n")
+                            .map(|(_, body)| body.to_owned())
+                    })
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok());
+                let metrics = tokio::time::timeout_at(until, http(address, "/metrics"))
+                    .await
+                    .ok();
+                serde_json::json!({
+                    "configured_process_memory": process_watermark,
+                    "diagnostics": diagnostics,
+                    "metrics": metrics,
+                })
+            }),
+        ));
+    }
+    let mut nodes = BTreeMap::new();
+    for (node, task) in tasks {
+        let snapshot = match task.await {
+            Ok(snapshot) => snapshot,
+            Err(_) => serde_json::json!({"snapshot_task_failed": true}),
+        };
+        nodes.insert(node, snapshot);
+    }
+    let summary: BTreeMap<_, _> = nodes
+        .iter()
+        .map(|(node, value)| {
+            (
+                *node,
+                serde_json::json!({
+                    "rss": value.pointer("/diagnostics/quota/usage/process_memory_bytes"),
+                    "blocked": value.pointer("/diagnostics/quota/blocked"),
+                    "sample_age_ms": value.pointer("/diagnostics/quota/sample_age_ms"),
+                    "container": value.pointer("/diagnostics/quota/container"),
+                    "memory_budget": value.pointer("/diagnostics/memory_budget"),
+                }),
+            )
+        })
+        .collect();
+    eprintln!("RF3 resource recovery ledger: stage={stage} nodes={summary:?}");
+    let evidence = fixture
+        .directory
+        .join(format!("consumer-recovery-{stage}.json"));
+    let snapshot =
+        serde_json::json!({"expected": format!("{expected:?}"), "sdk": sdk, "nodes": nodes});
+    let bytes = match serde_json::to_vec_pretty(&snapshot) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("Failed to encode consumer recovery diagnostics: {error}");
+            return;
+        }
+    };
+    match tokio::time::timeout(Duration::from_secs(1), tokio::fs::write(&evidence, bytes)).await {
+        Ok(Ok(())) => eprintln!(
+            "Preserved consumer recovery diagnostics {}",
+            evidence.display()
+        ),
+        Ok(Err(error)) => eprintln!("Failed to write consumer recovery diagnostics: {error}"),
+        Err(_) => {
+            eprintln!("Writing consumer recovery diagnostics exceeded its diagnostic deadline")
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

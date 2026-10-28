@@ -91,8 +91,10 @@ async fn one_public_watch_keeps_a_healthy_changed_target_when_another_leader_is_
         let mut runtime = Fixture::new(
             &[
                 (1, Role::Metadata),
-                (2, Role::Combined),
+                (2, Role::Storage),
                 (3, Role::Storage),
+                (4, Role::Broker),
+                (5, Role::Gateway),
             ],
             &[1],
             &[2],
@@ -108,13 +110,13 @@ async fn one_public_watch_keeps_a_healthy_changed_target_when_another_leader_is_
         let cluster = runtime.configs.get(&1).unwrap().cluster_id.parse().unwrap();
         let placement = InitialTopicGroups::install(cluster, TOPIC.into(), vec![2, 3]).unwrap();
         runtime.start_all().await;
-        let admin = runtime.client(2).await;
+        let admin = runtime.client(5).await;
         let tenant = admin.admin().create_tenant("test").await.unwrap();
         admin.admin().create_namespace(tenant, "app").await.unwrap();
         let topic = admin.admin().create_topic(TOPIC).await.unwrap();
         let topic_id: Id = topic.id().into();
         assert_eq!(topic.shard_count(), 2);
-        let wire = WireClient::connect(&runtime, 2).await;
+        let wire = WireClient::connect(&runtime, 5).await;
         let routes = topic_layout(&wire, topic_id).await;
         assert_eq!(routes.len(), 2);
         assert_eq!(
@@ -129,7 +131,7 @@ async fn one_public_watch_keeps_a_healthy_changed_target_when_another_leader_is_
             let owner = runtime.running.get(&1).unwrap().route(
                 PartitionKey { topic_id, partition: route.birth_partition }, deadline()
             ).await.unwrap();
-            assert_eq!(owner.owner_node, 2, "The public entry node must own both target routes");
+            assert_eq!(owner.owner_node, 4, "The broker must own both target routes behind the public gateway");
         }
         let mut targets = Vec::new();
         for route in &routes {
@@ -149,9 +151,9 @@ async fn one_public_watch_keeps_a_healthy_changed_target_when_another_leader_is_
         }
         let producer = admin.new_producer(TOPIC).build().await.unwrap();
         runtime.stop(3).await;
-        let evicted = runtime.running.get(&2).unwrap().evict_watch_leader_hint(3).await;
+        let evicted = runtime.running.get(&4).unwrap().evict_watch_leader_hint(3).await;
         assert_eq!(evicted, Some(3), "The broken group's previously synchronized leader hint was not explicitly evicted");
-        eprintln!("Mixed-group discovery fault ledger: public_entry=2 owner=2 healthy_group=2 unreachable_group=3 evicted_leader=3");
+        eprintln!("Mixed-group discovery fault ledger: public_entry=5 owner=4 healthy_group=2 healthy_leader=2 unreachable_group=3 evicted_leader=3");
         let key = (0..128)
             .map(|index| format!("healthy-{index}"))
             .find(|key| {
@@ -219,20 +221,29 @@ async fn one_public_watch_keeps_a_healthy_changed_target_when_another_leader_is_
 async fn eight_real_authorizations_leave_default_metadata_core_and_single_gateway_core_available() {
     let _serial = SERIAL.lock().await;
     tokio::time::timeout(Duration::from_secs(60), async {
-        let mut runtime = Fixture::new(&[(1, Role::Combined), (2, Role::Gateway)], &[1], &[1]).await;
+        let mut runtime = Fixture::new(
+            &[
+                (1, Role::Metadata),
+                (2, Role::Storage),
+                (3, Role::Broker),
+                (4, Role::Gateway),
+            ],
+            &[1],
+            &[2],
+        ).await;
         let cluster = runtime.configs.get(&1).unwrap().cluster_id.parse().unwrap();
         let metadata_default = tidemq::server::DispatchConfig::default().core_handlers;
         assert_eq!(metadata_default, 8);
         let metadata_core = CoreHandlerLimit::install(cluster, 1, metadata_default).unwrap();
-        let gateway_core = CoreHandlerLimit::install(cluster, 2, 1).unwrap();
+        let gateway_core = CoreHandlerLimit::install(cluster, 4, 1).unwrap();
         runtime.start_all().await;
         assert!(metadata_core.applied());
         assert!(gateway_core.applied());
-        let admin = runtime.client(2).await;
+        let admin = runtime.client(4).await;
         let tenant = admin.admin().create_tenant("test").await.unwrap();
         admin.admin().create_namespace(tenant, "app").await.unwrap();
         let topic = admin.admin().create_topic(TOPIC).await.unwrap();
-        let wire = WireClient::connect(&runtime, 2).await;
+        let wire = WireClient::connect(&runtime, 4).await;
         let member = Member::join(&wire, topic.id().into(), "authority-isolation").await;
         let producer = admin.new_producer(TOPIC).build().await.unwrap();
         producer.send("ack-while-eight-authorizations-wait").await.unwrap();
@@ -241,7 +252,9 @@ async fn eight_real_authorizations_leave_default_metadata_core_and_single_gatewa
         let result = wire.watch(&sync).await;
         let token = target(&sync, &result, public::WatchStatus::WatchSync).observed_token.clone();
         let observer = runtime.running.get(&1).unwrap().watch_diagnostics();
+        let leader = runtime.running.get(&2).unwrap().watch_diagnostics();
         let before = observer.snapshot().await;
+        let data_before = leader.snapshot().await;
         let pause = AuthorizeQuorumPause::install(cluster, 1).unwrap();
         let mut pending = Vec::new();
         for _ in 0..8 {
@@ -265,9 +278,9 @@ async fn eight_real_authorizations_leave_default_metadata_core_and_single_gatewa
         assert!(status.next_heartbeat_sequence > heartbeat.heartbeat_sequence);
         tokio::time::timeout(Duration::from_secs(3), ack_and_retire_exact(&member, &wire, read.deliveries.first().unwrap()))
             .await.expect("Eight Watch authorizations starved a real ACK or retirement");
-        let acknowledged = observer.snapshot().await;
-        assert_eq!(acknowledged.group_reads, before.group_reads);
-        assert_eq!(acknowledged.group_retires, before.group_retires + 1);
+        let acknowledged = leader.snapshot().await;
+        assert_eq!(acknowledged.group_reads, data_before.group_reads);
+        assert_eq!(acknowledged.group_retires, data_before.group_retires + 1);
         assert_eq!(pause.parked(), 8);
         tokio::time::timeout(Duration::from_secs(3), producer.close())
             .await.expect("Eight Watch authorizations starved producer close").unwrap();
@@ -298,9 +311,9 @@ async fn eight_real_authorizations_leave_default_metadata_core_and_single_gatewa
         drop(pause);
         wire.close().await;
         admin.close().await.unwrap();
-        let remaining = runtime.running.get(&2).unwrap().watch_diagnostics();
+        let remaining: Vec<_> = runtime.running.values().map(RunningNode::watch_diagnostics).collect();
         runtime.close().await;
-        assert_released(&remaining.snapshot().await);
+        for observer in remaining { assert_released(&observer.snapshot().await); }
         eprintln!("Authority isolation ledger: parked=8 metadata_core_handlers=8 gateway_core_handlers=1 heartbeat=known ack=known retire=known producer_close=known metadata_shutdown=known parked_after_shutdown=0");
         drop(metadata_core);
         drop(gateway_core);
