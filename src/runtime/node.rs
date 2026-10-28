@@ -318,73 +318,100 @@ impl RunningNode {
         auth_service
             .set(Arc::downgrade(&service))
             .map_err(|_| Error::invalid("Authentication service was installed twice"))?;
-        let mut tasks = Vec::new();
+        let mut tasks = RequiredTasks::default();
         let internal_service = service.clone();
         let internal_config = dispatcher.clone();
         let internal_budget = budget.clone();
         let internal_dispatch = dispatch.clone();
         let internal_stopped = stopped.clone();
-        tasks.push(tokio::spawn(async move {
-            crate::server::run(
-                internal,
-                internal_service,
-                internal_config,
-                internal_budget,
-                internal_dispatch,
-                internal_stopped,
-            )
-            .await
-            .map_err(Error::foundation)
-        }));
+        tasks.push(
+            "internal_quic",
+            tokio::spawn(async move {
+                crate::server::run(
+                    internal,
+                    internal_service,
+                    internal_config,
+                    internal_budget,
+                    internal_dispatch,
+                    internal_stopped,
+                )
+                .await
+                .map_err(Error::foundation)
+            }),
+        );
         if let Some(external) = external {
             let external_service = service.clone();
             let external_stopped = service.external_stop.subscribe();
-            tasks.push(tokio::spawn(async move {
-                let result = crate::server::run(
-                    external,
-                    external_service.clone(),
-                    dispatcher,
-                    budget,
-                    dispatch,
-                    external_stopped,
-                )
-                .await
-                .map_err(Error::foundation);
-                external_service.external_drained.store(
-                    if result.is_ok() { 1 } else { 2 },
-                    std::sync::atomic::Ordering::Release,
-                );
-                result
-            }));
+            tasks.push(
+                "external_quic",
+                tokio::spawn(async move {
+                    let result = crate::server::run(
+                        external,
+                        external_service.clone(),
+                        dispatcher,
+                        budget,
+                        dispatch,
+                        external_stopped,
+                    )
+                    .await
+                    .map_err(Error::foundation);
+                    external_service.external_drained.store(
+                        if result.is_ok() { 1 } else { 2 },
+                        std::sync::atomic::Ordering::Release,
+                    );
+                    result
+                }),
+            );
         }
         let (management_address, task) =
             super::management::start(service.clone(), stopped.clone()).await?;
-        tasks.push(task);
-        tasks.push(tokio::spawn(service.clone().rebalance(stopped.clone())));
-        tasks.push(tokio::spawn(service.clone().scale_topics(stopped.clone())));
-        tasks.push(tokio::spawn(
-            service.clone().follow_node_drains(stopped.clone()),
-        ));
-        tasks.push(tokio::spawn(
-            service.clone().follow_registry(stopped.clone()),
-        ));
-        tasks.push(tokio::spawn(
-            service.clone().follow_metadata_membership(stopped.clone()),
-        ));
-        tasks.push(tokio::spawn(
-            service.clone().resume_authority_transfers(stopped.clone()),
-        ));
-        let maintenance = service.clone();
-        tasks.push(tokio::spawn(maintenance.maintain(stopped.clone())));
-        tasks.push(tokio::spawn(service.clone().expire_pins(stopped.clone())));
+        tasks.push("management", task);
+        if service.metadata.is_some() {
+            tasks.push(
+                "replica_placement",
+                tokio::spawn(service.clone().rebalance(stopped.clone())),
+            );
+            if service.config.runtime.topic_scaling.is_some() {
+                tasks.push(
+                    "topic_scaling",
+                    tokio::spawn(service.clone().scale_topics(stopped.clone())),
+                );
+            }
+            tasks.push(
+                "node_drains",
+                tokio::spawn(service.clone().follow_node_drains(stopped.clone())),
+            );
+            tasks.push(
+                "metadata_membership",
+                tokio::spawn(service.clone().follow_metadata_membership(stopped.clone())),
+            );
+            tasks.push(
+                "authority_transfers",
+                tokio::spawn(service.clone().resume_authority_transfers(stopped.clone())),
+            );
+        }
+        tasks.push(
+            "registry",
+            tokio::spawn(service.clone().follow_registry(stopped.clone())),
+        );
+        if !service.data.is_empty() {
+            tasks.push(
+                "data_maintenance",
+                tokio::spawn(service.clone().maintain(stopped.clone())),
+            );
+        }
+        if !service.objects.is_empty() {
+            tasks.push(
+                "lifecycle_pins",
+                tokio::spawn(service.clone().expire_pins(stopped.clone())),
+            );
+        }
         let bootstrap = service.clone();
-        tasks.push(tokio::spawn(
-            async move { bootstrap.reconcile(stopped).await },
-        ));
-        let tasks = tasks
-            .into_iter()
-            .map(|task| supervise(task, service.clone(), shutdown.subscribe()))
-            .collect();
+        tasks.push(
+            "metadata_reconcile",
+            tokio::spawn(async move { bootstrap.reconcile(stopped).await }),
+        );
+        let tasks = tasks.supervised(&service, shutdown.subscribe());
         Ok(Self {
             external_address,
             internal_address: Some(internal_address),
@@ -720,6 +747,50 @@ async fn join_workers(
     failure
 }
 
+#[derive(Default)]
+struct RequiredTasks(Vec<(&'static str, JoinHandle<Result<()>>)>);
+
+impl RequiredTasks {
+    fn push(&mut self, name: &'static str, task: JoinHandle<Result<()>>) {
+        self.0.push((name, task));
+    }
+
+    fn supervised(
+        &mut self,
+        service: &Arc<Service>,
+        stopped: watch::Receiver<bool>,
+    ) -> Vec<JoinHandle<Result<()>>> {
+        std::mem::take(&mut self.0)
+            .into_iter()
+            .map(|(name, task)| supervise(name, task, service.clone(), stopped.clone()))
+            .collect()
+    }
+
+    async fn abort_and_join(&mut self, deadline: tokio::time::Instant) -> Option<Error> {
+        self.abort();
+        join_workers(
+            std::mem::take(&mut self.0)
+                .into_iter()
+                .map(|(_, task)| task)
+                .collect(),
+            deadline,
+        )
+        .await
+    }
+
+    fn abort(&self) {
+        for (_, task) in &self.0 {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for RequiredTasks {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
 struct OwnedTask(JoinHandle<Result<()>>);
 
 impl Drop for OwnedTask {
@@ -729,6 +800,7 @@ impl Drop for OwnedTask {
 }
 
 fn supervise(
+    dependency: &'static str,
     task: JoinHandle<Result<()>>,
     service: Arc<Service>,
     stopped: watch::Receiver<bool>,
@@ -740,11 +812,20 @@ fn supervise(
             .map_err(|source| Error::operation("join required runtime task", source))
             .and_then(|result| result);
         if !*stopped.borrow() {
-            service.process.fail("runtime_task");
+            service.process.fail(dependency);
             service
                 .draining
                 .store(true, std::sync::atomic::Ordering::Release);
             let _ = service.external_stop.send(true);
+            if let Err(source) = result {
+                let error = anyhow::Error::new(source);
+                tracing::error!(event_code = "required_runtime_task_failed", dependency,
+                    error = %format_args!("{error:#}"), "A required runtime task returned an error");
+                return Err(Error::Operation {
+                    operation: "run required runtime task",
+                    source: std::io::Error::other(error),
+                });
+            }
         }
         result
     })
