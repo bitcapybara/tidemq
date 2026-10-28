@@ -1,12 +1,14 @@
 # 要求覆盖与验收状态
 
-来源为用户于 2026-10-19 批准的开发计划和历史架构文档。下表逐条保留原 76 项要求，加后续 NC01—NC08，共 84 项。S01—S12、M01 对应[测试证据索引](testing.zh-CN.md)中的实际源码、测试与复现命令。“本地已验”限于该行注明范围；包含三区、真实入口、规模、性能或长稳的完整要求仍保留待验边界。编译、纯模型或部分链路不能作为完整验收。
+来源为用户于 2026-10-19 批准的开发计划和历史架构文档。下表逐条保留原 76 项要求，加后续 NC01—NC08，共 84 项。S01—S12、M01 对应[测试证据索引](testing.zh-CN.md)中的实际源码、测试与复现命令。“本地已验”限于该行注明范围；未取消的三区、真实入口、规模与长稳要求仍保留待验边界。编译、纯模型或部分链路不能作为完整验收。
+
+当前部署契约以[产品架构](guide/architecture.zh-CN.md)、[配置](guide/configuration.zh-CN.md)和[测试门禁](testing.zh-CN.md)为准：Combined 使用本地 WAL 和原生 HTTPS，分离 RF1 / RF3 使用 Raft / QUIC。下表中的原 Raft 全链路与性能编号是历史需求映射；性能测试、工具及基线已取消，不作为当前验收要求或产品容量结论。
 
 ## 架构要求
 
 | 需求 | 架构小节 | 要求及边界 | 任务 | 验收证据要求 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| R01-01 | 01 / 已确定的要求 | 高吞吐低延迟、长期对象、独立元数据 Raft、同地域三区、单/多节点 | T02,T03,T07,T12,T13 | 部署、匹配语义性能/故障 | 本地契约 S02/S06/S08 与有限 RF1 基线 P01 已验；小消息消费约 60 条/秒，高吞吐低延迟与三区未放行 |
+| R01-01 | 01 / 已确定的要求 | 高吞吐低延迟、长期对象、独立元数据 Raft、同地域三区、单/多节点 | T02,T03,T07,T12,T13 | 部署、持久语义与故障 | 历史本地契约见 S02/S06/S08；没有当前吞吐、容量或三区承诺 |
 | R01-02 | 01 / 消息与运维语义 | 持久订阅/逐条 ACK/稳定 offset、两模式、统一入口恢复、保留积压保护与超限消费/ACK/回收 | T04,T05,T06,T09,T10 | 全链路契约、超限不丢 | 本地契约/接管已验 S04/S05/S08/S10；长期压力待验 |
 | R01-03 | 01 / 推荐实现，仍需验证 | Broker/WAL 分离、Gateway 组合/独立、RF3、多组、同组合装、单实例持分区/SDK 并发；共享 WAL 后续 | T02,T05,T06,T07,T10 | 角色部署与组/分配测试 | 本地角色/多组已验 S02/S08；规模 P01 待验 |
 | R01-04 | 01 / 尚未确定 | 已定 Rust/QUIC/SDK/S3；规模/数值/预算前置；拆分/容灾/死信等范围明确 | T00,T13,T14 | 决策与配置清单 | 决策已记录；规模/预算 P01 待输入 |
@@ -104,11 +106,11 @@
 | --- | --- | --- | --- | --- |
 | NC01 | 零复制等技术优化编解码，评估 rkyv/FlatBuffers/FlexBuffers | T01,T06,T07,T13 | 字节一致、完整所有权/容量计费、真实 QUIC 与分配/耗时对照 | 大块唯一所有 payload 分段发送与末引用许可已验；格式[研究](research/zero-copy-formats.zh-CN.md)已完成，未迁移现有格式；codec 探针不替代服务性能 |
 | NC02 | 使用 Tokio CancellationToken 约束异步调用，消除反复传递 client.deadline() | T06,T10 | 默认总预算、最早父期限、取消传播/隔离、关闭清理、发送后 Unknown 与身份保留 | SDK 全 feature 真实网络与文档测试通过，调用方/示例/部署工具已迁移；新 Tokio task 显式传 scope |
-| NC03 | CI RF1/RF3 性能测试、仓库基线与 PR 回退门禁 | T12,T13,T14 | 真持久语义、配对比较、受保护策略、回退/噪声失败、main 才晋升 | P02；`693f9bd` 完整 32 试次及原统计门禁通过，`d38fb80` 本地运行原联合脚本记录基线；历史失败／inconclusive 保留，RF3 两项 p99 仍 imprecise。公开后 main `addf6d9` 已实际重跑，不再仅记录计费未启动；main 当前未设置 required checks，新 WAL 版完整性能待验 |
-| NC04 | 最新 stable、全 Rust target Clippy、nextest、llvm-cov 三格式报告与不得下降的覆盖率基线、复用缓存 | T00,T12,T13,T14 | 固定工具版本、精确计数比较、真实 Linux main 报告、测试与性能均成功才联合晋升 | Rust 1.99.1；`693f9bd` Rust CI 8／8 job 成功，两平台各 310 passed／12 skipped、docs 各 4 passed；严格 Clippy／生产审计通过。`d38fb80` 接受行 27907／35176、函数 2576／3637、region 38365／49848 数值基线；计费阻塞和本地审计晋升见[证据](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-ci-refactor.zh-CN.md) |
+| NC03 | 原 CI RF1/RF3 性能测试、仓库基线与 PR 回退门禁 | T12,T13,T14 | 已按用户要求取消 | 性能 workflow、负载工具、比较器和性能基线已删除；历史记录不构成当前门禁或性能承诺 |
+| NC04 | 最新 stable、全 Rust target Clippy、nextest、llvm-cov 三格式报告与不得下降的覆盖率基线、复用缓存 | T00,T12,T13,T14 | 固定工具版本、精确计数比较、真实 Linux 报告及适用 CI gate | Rust 1.99.1；现有正确性与覆盖率门禁见[测试方法](testing.zh-CN.md#ci-与覆盖率)，覆盖率不得下降，不通过修改策略或排除源码抬高结果。旧版本结果见[历史证据](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-ci-refactor.zh-CN.md)，不能代替当前候选完整 CI |
 | NC05 | 清理无效参数，错误日志放 inspect_err，减少重复字符串分配 | T00,T01,T06,T07,T10 | 调用方同步、许可活到 owned worker／abort 完成、授权与取消匹配不变 | 复用 `Arc<str>` 而不新增 FastStr 依赖；授权共享及阻塞 abort 许可回归通过，见[代码质量证据](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-20-code-quality.zh-CN.md)；实际 RAII guard 保留 |
 | NC06 | 复用指标／日志生态，优先 OpenTelemetry，SDK 由宿主初始化 | T00,T06,T10,T14 | 固定 series、宿主设施共存、终态释放计数准确、导出预算由宿主管理 | SDK 可选 OpenTelemetry feature 新增十个固定无标签 instrument；39 项 SDK 测试及 Collector 配置校验通过；未新增本轮远端 OTLP 导出验证 |
-| NC07 | 按角色分离 TOML；开发阶段不兼容旧版本 | T10,T12,T14 | 当前生成器／本地／Docker 配置同构，拒绝旧字段、混合或无效角色段 | 仅接受公共段、runtime、authorization 和适用的 gateway／storage 段；旧字段及生成器第三参数均拒绝。配置和真实 RF1／分角色 RF3 CLI 回归通过；历史性能基线源码仅在对照工具中生成自身配置 |
-| NC08 | 分析并按确认的方案实现 segment WAL 及容量管理 | T02,T09,T13,T14 | 段轮转、唯一 manifest／引用检查点、读者 pin、有界搬迁、故障恢复／清理屏障、物理采样与迁移预留 | [分析](research/wal-segments.zh-CN.md)与[新存储设计](design/storage-recovery.zh-CN.md)已落地，S02 覆盖真实文件、发布边界 SIGKILL 和写失败；开发阶段使用新目录并明确拒绝旧格式。完整应用快照成本保留；[Linux 覆盖率](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-wal-segments-coverage.zh-CN.md)按源码标注，新冻结版覆盖率／性能尚待完整验收 |
+| NC07 | 按角色分离 TOML；开发阶段不兼容旧版本 | T10,T12,T14 | 当前生成器／本地／Docker 配置同构，拒绝旧字段、混合或无效角色段 | Combined 需 console/session 并拒绝 peer/voter/bootstrap/trust_roots；分离角色显式配置 RF 与内部信任；独立 Console 使用 tls/cluster/session。当前字段与只读 validate-config 边界见[配置](guide/configuration.zh-CN.md) |
+| NC08 | 分析并按确认的方案实现 segment WAL 及容量管理 | T02,T09,T13,T14 | 段轮转、唯一 manifest／引用检查点、读者 pin、有界搬迁、故障恢复／清理屏障、物理采样与迁移预留 | [分析](research/wal-segments.zh-CN.md)与[新存储设计](design/storage-recovery.zh-CN.md)已落地，S02 覆盖真实文件、发布边界 SIGKILL 和写失败；开发阶段使用新目录并明确拒绝旧格式。完整应用快照成本保留；[Linux 覆盖率](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-21-wal-segments-coverage.zh-CN.md)仅证明所标注源码，新候选须另行完成适用 CI |
 
 每个任务交付代码、正确性/故障证据、使用/设计文档、指标/事件/span、诊断/看板/告警和限制说明。具体进展见[实施状态](implementation-status.zh-CN.md)；本表按完整需求验收后更新，包含 54 项架构、8 项 QUIC、8 项观测、6 项内存与上述 8 项追加要求。
