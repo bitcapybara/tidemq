@@ -342,7 +342,8 @@ impl RunningNode {
         if let Some(external) = external {
             let external_service = service.clone();
             let external_stopped = service.external_stop.subscribe();
-            tasks.push(
+            let expected_stop = external_stopped.clone();
+            tasks.push_until(
                 "external_quic",
                 tokio::spawn(async move {
                     let result = crate::server::run(
@@ -361,6 +362,7 @@ impl RunningNode {
                     );
                     result
                 }),
+                expected_stop,
             );
         }
         let (management_address, task) =
@@ -748,11 +750,34 @@ async fn join_workers(
 }
 
 #[derive(Default)]
-struct RequiredTasks(Vec<(&'static str, JoinHandle<Result<()>>)>);
+struct RequiredTasks(Vec<RequiredTask>);
+
+struct RequiredTask {
+    name: &'static str,
+    task: JoinHandle<Result<()>>,
+    expected_stop: Option<watch::Receiver<bool>>,
+}
 
 impl RequiredTasks {
     fn push(&mut self, name: &'static str, task: JoinHandle<Result<()>>) {
-        self.0.push((name, task));
+        self.0.push(RequiredTask {
+            name,
+            task,
+            expected_stop: None,
+        });
+    }
+
+    fn push_until(
+        &mut self,
+        name: &'static str,
+        task: JoinHandle<Result<()>>,
+        expected_stop: watch::Receiver<bool>,
+    ) {
+        self.0.push(RequiredTask {
+            name,
+            task,
+            expected_stop: Some(expected_stop),
+        });
     }
 
     fn supervised(
@@ -762,7 +787,15 @@ impl RequiredTasks {
     ) -> Vec<JoinHandle<Result<()>>> {
         std::mem::take(&mut self.0)
             .into_iter()
-            .map(|(name, task)| supervise(name, task, service.clone(), stopped.clone()))
+            .map(|required| {
+                supervise_with_stop(
+                    required.name,
+                    required.task,
+                    service.clone(),
+                    stopped.clone(),
+                    required.expected_stop,
+                )
+            })
             .collect()
     }
 
@@ -771,7 +804,7 @@ impl RequiredTasks {
         join_workers(
             std::mem::take(&mut self.0)
                 .into_iter()
-                .map(|(_, task)| task)
+                .map(|required| required.task)
                 .collect(),
             deadline,
         )
@@ -779,8 +812,8 @@ impl RequiredTasks {
     }
 
     fn abort(&self) {
-        for (_, task) in &self.0 {
-            task.abort();
+        for required in &self.0 {
+            required.task.abort();
         }
     }
 }
@@ -805,13 +838,27 @@ fn supervise(
     service: Arc<Service>,
     stopped: watch::Receiver<bool>,
 ) -> JoinHandle<Result<()>> {
+    supervise_with_stop(dependency, task, service, stopped, None)
+}
+
+fn supervise_with_stop(
+    dependency: &'static str,
+    task: JoinHandle<Result<()>>,
+    service: Arc<Service>,
+    stopped: watch::Receiver<bool>,
+    expected_stop: Option<watch::Receiver<bool>>,
+) -> JoinHandle<Result<()>> {
     tokio::spawn(async move {
         let mut task = OwnedTask(task);
         let result = (&mut task.0)
             .await
             .map_err(|source| Error::operation("join required runtime task", source))
             .and_then(|result| result);
-        if !*stopped.borrow() {
+        let expected_exit = result.is_ok()
+            && expected_stop
+                .as_ref()
+                .is_some_and(|signal| *signal.borrow());
+        if !*stopped.borrow() && !expected_exit {
             service.process.fail(dependency);
             service
                 .draining
@@ -1041,5 +1088,92 @@ pub(crate) fn roles(role: crate::config::Role) -> BTreeSet<NodeRole> {
         crate::config::Role::Broker => BTreeSet::from([NodeRole::Broker]),
         crate::config::Role::Storage => BTreeSet::from([NodeRole::Storage]),
         crate::config::Role::Metadata => BTreeSet::from([NodeRole::Metadata]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Role;
+    use crate::runtime::data::consumer_tests::fixture::Fixture;
+
+    async fn assert_required_failure(
+        task: JoinHandle<Result<()>>,
+        expected_stop: Option<bool>,
+        returns_error: bool,
+    ) {
+        let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+        fixture.start_all().await;
+        let node = fixture.running.remove(&1).unwrap();
+        let result = supervise_with_stop(
+            "test_required_worker",
+            task,
+            node.service.clone(),
+            node.shutdown.subscribe(),
+            expected_stop.map(|signalled| watch::channel(signalled).1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_err(), returns_error);
+        assert_eq!(
+            node.service.process.phase(),
+            super::super::process::Phase::Failed
+        );
+        assert!(node.shutdown().await.is_err());
+        fixture.close().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn required_worker_return_without_stop_is_fatal() {
+        assert_required_failure(tokio::spawn(async { Ok(()) }), None, false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn external_worker_return_without_its_own_stop_is_fatal() {
+        assert_required_failure(tokio::spawn(async { Ok(()) }), Some(false), false).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn external_worker_error_after_expected_stop_is_fatal() {
+        assert_required_failure(
+            tokio::spawn(async { Err(Error::invalid("Injected required worker failure")) }),
+            Some(true),
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn external_worker_panic_after_expected_stop_is_fatal() {
+        assert_required_failure(
+            tokio::spawn(async { panic!("Injected required worker panic") }),
+            Some(true),
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn expected_external_stop_cannot_clear_an_existing_failure() {
+        let mut fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;
+        fixture.start_all().await;
+        let node = fixture.running.remove(&1).unwrap();
+        node.service.process.fail("another_required_worker");
+        supervise_with_stop(
+            "external_quic",
+            tokio::spawn(async { Ok(()) }),
+            node.service.clone(),
+            node.shutdown.subscribe(),
+            Some(watch::channel(true).1),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            node.service.process.phase(),
+            super::super::process::Phase::Failed
+        );
+        assert!(node.shutdown().await.is_err());
+        fixture.close().await;
     }
 }
