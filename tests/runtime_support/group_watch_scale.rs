@@ -1040,7 +1040,7 @@ async fn scale(shards_per_topic: usize) {
     runtime.configs.get_mut(&1).unwrap().runtime.groups = (2..10)
         .map(|group_id| GroupConfig {
             group_id,
-            voters: vec![1],
+            voters: Vec::new(),
             standby: Vec::new(),
         })
         .collect();
