@@ -23,4 +23,6 @@ pub use frame::{FrameReceiver, FrameSender, FramedStream, ReceivedFrame};
 pub use node_auth::{AuthorizedNode, NodeAuthorizations};
 pub use policy::{PeerTarget, TransportConfig};
 pub use session::{Connection, Session, StreamPurpose};
-pub use telemetry::{RecoverySnapshot, TransportMetrics, TransportSnapshot};
+pub use telemetry::{
+    RecoverySnapshot, TransportFailure, TransportFailures, TransportMetrics, TransportSnapshot,
+};

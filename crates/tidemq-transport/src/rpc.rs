@@ -135,6 +135,7 @@ struct Capacity {
 struct State {
     pending: Mutex<HashMap<Id, Pending>>,
     closed: AtomicBool,
+    failure_reported: AtomicBool,
     draining: AtomicBool,
     slots: Arc<Semaphore>,
     bytes: Arc<Semaphore>,
@@ -184,6 +185,7 @@ impl State {
         Ok(Arc::new(Self {
             pending: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            failure_reported: AtomicBool::new(false),
             draining: AtomicBool::new(false),
             slots: capacity.slots,
             bytes: capacity.bytes,
@@ -226,6 +228,21 @@ impl State {
         }
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
+        }
+    }
+
+    fn report_liveness_failure(&self, error: &crate::Error) {
+        if self.draining.load(Ordering::Acquire)
+            || self.closed.load(Ordering::Acquire)
+            || self.failure_reported.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        if let Some(connection) = &self.connection {
+            let mut failure = crate::TransportFailure::new("rpc_liveness", "rpc_root", Some(error));
+            failure.connection_id = Some(connection.physical_id());
+            failure.traffic_class = Some(crate::budget::class_name(connection.class()));
+            connection.state.metrics.record_failure(failure);
         }
     }
 
@@ -906,25 +923,39 @@ fn lane_task(
     let owner = state.protected.clone();
     let task = tokio::spawn(async move {
         let _owner = owner;
-        let result = tokio::select! {
-            result = write_loop(&mut sender, &mut queue) => result,
-            result = read_loop(&mut receiver, &weak, &identity, idle) => result,
+        let (phase, result) = tokio::select! {
+            result = write_loop(&mut sender, &mut queue) => ("rpc_write", result),
+            result = read_loop(&mut receiver, &weak, &identity, idle) => ("rpc_read", result),
         };
         // Reject enqueues before waking unknown callers; both stream halves stop together.
         queue.close();
-        let _ = sender.reset();
-        drop((sender, receiver));
-        if let Some(state) = weak.upgrade() {
-            if purpose == crate::StreamPurpose::Request
+        let state = weak.upgrade();
+        let lane_only = state.as_ref().is_some_and(|state| {
+            purpose == crate::StreamPurpose::Request
                 && state.protected.is_none()
                 && !state.connection.as_ref().is_some_and(Connection::is_closed)
                 && matches!(
-                    result,
+                    &result,
                     Err(crate::Error::Memory {
                         source: crate::budget::Error::Admission { .. }
                     })
                 )
-            {
+        });
+        if let Some(state) = &state
+            && !state.draining.load(Ordering::Acquire)
+            && !state.closed.load(Ordering::Acquire)
+            && (lane_only || !state.failure_reported.swap(true, Ordering::AcqRel))
+        {
+            receiver.record_failure(
+                phase,
+                if lane_only { "rpc_lane" } else { "rpc_root" },
+                result.as_ref().err(),
+            );
+        }
+        let _ = sender.reset();
+        drop((sender, receiver));
+        if let Some(state) = state {
+            if lane_only {
                 state.close_lane(&identity);
             } else {
                 state.close();
@@ -1082,6 +1113,7 @@ async fn watch_liveness(state: Weak<State>, timeout: Duration) {
             return;
         };
         if connection.is_closed() {
+            state.report_liveness_failure(&crate::Error::Closed);
             state.close();
             return;
         }
@@ -1098,10 +1130,14 @@ async fn watch_liveness(state: Weak<State>, timeout: Duration) {
             continue;
         }
         let Some(deadline) = Instant::now().checked_add(timeout) else {
+            state.report_liveness_failure(&crate::Error::Configuration {
+                reason: "liveness deadline overflow",
+            });
             state.close();
             return;
         };
-        if connection.probe(deadline).await.is_err() {
+        if let Err(error) = connection.probe(deadline).await {
+            state.report_liveness_failure(&error);
             state.close();
             return;
         }
@@ -1156,6 +1192,7 @@ mod tests {
         let state = Arc::new(State {
             pending: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            failure_reported: AtomicBool::new(false),
             draining: AtomicBool::new(false),
             slots: Arc::new(Semaphore::new(2)),
             bytes: Arc::new(Semaphore::new(100)),

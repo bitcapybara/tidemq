@@ -1,4 +1,10 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
+
+mod failure;
+pub use failure::{TransportFailure, TransportFailures};
 
 use prometheus_client::{
     collector::Collector,
@@ -9,6 +15,7 @@ use serde::Serialize;
 
 #[derive(Debug, Default)]
 pub struct TransportMetrics {
+    failures: Mutex<TransportFailures>,
     pub(super) connections: AtomicU64,
     pub(super) active_connections: AtomicU64,
     pub(super) liveness_probes: AtomicU64,
@@ -31,6 +38,8 @@ pub struct TransportMetrics {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct TransportSnapshot {
+    /// Eight most recent classified failures, including RPC close causes before cleanup.
+    pub failures: TransportFailures,
     pub connections_total: u64,
     /// Physical connection resources still retained, including draining handles.
     pub active_connections: u64,
@@ -67,6 +76,11 @@ pub struct RecoverySnapshot {
 impl TransportMetrics {
     pub fn snapshot(&self) -> TransportSnapshot {
         TransportSnapshot {
+            failures: self
+                .failures
+                .lock()
+                .map(|history| *history)
+                .unwrap_or_default(),
             connections_total: self.connections.load(Ordering::Relaxed),
             active_connections: self.active_connections.load(Ordering::Relaxed),
             liveness_probes_total: self.liveness_probes.load(Ordering::Relaxed),
