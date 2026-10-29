@@ -26,6 +26,7 @@
 | data 满时 C 重认证或 Core 失败 | data/normal/core/handshake 各自余量、旧连接引用、握手并发 | data 满不能解释为 Core 配额耗尽；C 长期 envelope/ACK 仍需 normal，握手有独立小额度。先结束失效连接引用/handler，避免旧 envelope 一直保留；不要让普通工作改用 try_reserve_core 绕过门禁 |
 | RSS 不回落但业务 Bytes 已释放 | allocator live/retained、RSS、native TLS/socket 量 | 结合内存排障手册区分真实存活、缓存/碎片与 native 缓冲；transport envelope 不是精确 RSS 计量 |
 | Deadline 后下一帧报 Poisoned | 是否发生部分 prefix/body 或 send | 关闭并恢复该 lane 的全部未决请求，沿用原业务身份；不能继续猜测帧边界，超时不等于未提交 |
+| RPC 返回 Closed 且 malformed 增长 | `TransportSnapshot.failures` 的 phase、scope、reason、io_kind 与连接/流标识 | 区分 IO、解码、身份校验和关闭事件；先核对同一连接的记录与原请求结果，不能仅由聚合计数认定坏帧，也不能把所有 Closed 当成可重试的业务拒绝 |
 | 活跃流正常但连接在固定应用读阈值后重连 | sibling Request/Core lane 是否一直无帧、deadline/malformed 与连接累计计数 | 长寿命 reader 应使用 `receive_next`，空闲 lane 不得触发整连接关闭；`read_idle_timeout`/dispatcher `idle_timeout` 只限已开始帧组装，不通过扩大配置或关闭原生探活掩盖 |
 | 退出时还有未决操作 | 准入/在途数量、业务持久结果 | 先停止准入并有限排空，按身份查询/重试未知结果，再关闭 Session 和 listener；QUIC finish 不作提交证明 |
 | 退出时 native I/O 或端口释放超时 | 原关闭期限、原生任务错误链、UDP 端口持有者 | 检查业务是否先停止、handler/session 是否排空；当前实现持有并回收原生 I/O 主任务，验证 RX/TX socket 释放。不能忽略错误、等待故障连接退避或用 SO_REUSEPORT 绕过 |
@@ -36,11 +37,13 @@
 
 `connections_total`/`streams_total` 是累计准入量。`active_connections` 随 ConnectionState 创建/最后引用释放计数，缓存/RPC 可暂留已原生关闭的连接；它不能单独证明网络仍存活。`frames_sent_total` 是已入队应用帧，不能作为持久成功。`bytes_sent_total` 含 4 字节前缀，接收统计不含前缀。`malformed_total` 包括 IO/读帧/解码失败；授权拒绝另进 rejected。`send_wait_seconds_total` 含 send-ready 与 enqueue 等待，不能标注为精确拥塞或 credit 时间。丢包通知包含 MTU probe；PTO 是最近一次 recovery 样本，不可跨连接相加当作业务重试次数。
 
+`TransportSnapshot.failures` 保留累计分类次数 `total`、已记录日志次数 `logged`、最近八条记录 `recent` 和最后一条 RPC 层记录 `last_rpc_failure`。记录使用固定阶段、范围、原因和 IO 类别，可附带连接、流、流量类别及用途；不保存错误展示文本、正文或凭据。日志 `event=transport_failure` 在最初四次及后续二次幂次数记录，每个 endpoint 生命周期最多 65 条。最近记录和最后一次 RPC 事件用于定位失败分支，不是完整时间线，也不能单独证明因果首错；结合原请求标识、已保留日志和业务持久结果判断。
+
 空等首字节本身不增加 `deadlines_total` 或 `malformed_total`；原生 idle 关闭带来的 IO 错误仍可计入后者。收到首字节后的慢 prefix/body 仍有有限组帧期限；超时或取消导致 poison，不执行外层 Deadline 重试来重用未知字节边界。新入口只在首字节之前允许安全取消。握手/短 ACK/单次读取仍用 `receive(absolute_deadline)`；客户端原请求取消仅移除其 waiter，不能因此关闭其他共享请求。
 
 Core Raft 的执行槽等待发生在完整帧接收并授权之后，沿用该 frame 的绝对 deadline。等待由既有 reader 持有 transport-charged ReceivedFrame，不增加任务、工作队列、字节或槽位额度；到期、连接关闭、服务关闭会归还待帧，已 owned handler 继续原有有限 drain。两条 lane 都等待时，同流后续 CANCEL 可能延至前帧到期后才继续处理，不承诺无队头阻塞。完整帧已接收后的等待结束，不等于部分 prefix/body 取消，也不因此 poison 健康共享流。
 
-独立回归 `native_idle_produce_connection_records_lane_read_errors_while_control_progresses` 配置原生 idle 一秒、组帧阈值 120 ms：P 的四条 lane 完成生产后静止，250 ms 时仍开；约 1.22 秒后 P 原生/RPC 关闭，两端 malformed 各增加四，deadline/探活失败/拒绝均为零，C 仍完成 52 次控制请求且没有新增连接。这个实验说明合法原生空闲关闭也能产生这组计数，不能仅由 malformed 推断坏帧或活跃连接误断；本地性能报告（相关性能资料已移除）中的原场景没有逐帧原因记录，归因仍保留推测边界。
+原生 idle 关闭空闲 Produce 连接时，其 lane 的 IO 读取错误也可能增加 malformed，而其他 Control 连接仍正常。应结合分类记录中的流量类别和连接标识判断影响范围，不能仅由聚合 malformed 推断坏帧或活跃连接误断。
 
 ## 本地回归
 
@@ -51,7 +54,7 @@ cargo test -p tidemq --test quic_transport -j 2 -- --test-threads=2
 cargo nextest run -p tidemq --test server_dispatch_internal --test server_dispatch --profile ci --locked
 ```
 
-后一个命令覆盖 `fd3c01e` 的四项真实内部 mTLS 准入/关闭边界及既有五项 dispatcher 回归，具体断言与证明范围见 [Raft 网络接入](../design/raft-network.zh-CN.md#实际验证)。`4f79a5` 原完整 RF3 性能 cohort 的失败记录仍保留，同版两个独立通过的 trial 不构成修复验收；完整性能结果必须对应新冻结代码重跑。
+后一个命令覆盖真实内部 mTLS 准入/关闭边界及 dispatcher 回归，具体断言与证明范围见 [Raft 网络接入](../design/raft-network.zh-CN.md#实际验证)。
 
 测试只监听 loopback 随机端口，内存生成独立证书与身份，不依赖固定证书目录、生产凭据或互联网服务。TLS、native s2n、socket 真实参与测试。当前未测真实网络丢包/带宽、Linux 生产宿主和四层 LB/CID；正式吞吐/尾延迟应遵循开发计划中的固定总资源、固定观测开销矩阵。
 

@@ -25,6 +25,8 @@ Combined使用本地执行、Group提交/维护和HTTPS生命周期的真实观�
 
 公共阶段 bucket 为 50μs、100μs、500μs、1ms、5ms、10ms、50ms、100ms、500ms、1s、5s、30s 和 +Inf。先合并相同口径的 bucket，再算分位；不要平均 P99、相加阶段 P99，或把服务端批次耗时当作 SDK 单消息持久时延。计数器重启会归零，不作为精确审计。
 
+Transport 的 `malformed_total` 同时包含 IO、读帧与解码失败，不能单独定位协议错误。`TransportSnapshot.failures` 提供固定大小的最近失败分类及最后一条 RPC 层记录；它是进程内诊断，不是新增的 Prometheus 指标族。连接/流标识只进入诊断与有界日志，不作为时序标签。分类字段、日志采样和解释边界见 [QUIC 排障](quic-troubleshooting.zh-CN.md#日志与指标口径)。
+
 `/diagnostics` 的每组 `storage.journal_runtime` 提供 active/sealed/checkpoint/staging/retired 字节、段数、存活引用数及估算索引字节、rotations、checkpoint_rewrites、relocation_operations/relocated_bytes、reclaimed_bytes 和 gc_failures。`storage.snapshots` 独立给出快照具名文件/退休字节、reader 数及上限。以上是有限诊断字段，不能当作已导出的 Prometheus 指标族；结合实际文件采样和 `available` 判断压力。索引估算不包含 BTreeMap 节点及 allocator 开销，不等于 RSS。
 
 ## 本地 Prometheus 与 Grafana
