@@ -19,6 +19,93 @@ const TOTAL: usize = 2 * 1024 * 1024;
 const REQUEST_BYTES: u32 = 516;
 const FRAME_BYTES: u32 = 3 * 32_768 + 8;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_quic_rpc_failure_diagnostics_distinguish_decode_io_and_identity_gates() {
+    use tokio::io::AsyncWriteExt;
+
+    for (fault, malformed, reason) in [
+        ("length", 1, "prelude"),
+        ("protobuf", 1, "protocol_invalid"),
+        ("prefix_eof", 1, "io"),
+        ("operation", 0, "authorization"),
+        ("clean_eof", 0, "lane_finished"),
+    ] {
+        let mut h = Harness::new(config(4, 4 * REQUEST_BYTES)).await;
+        let pending = h.normal.submit(request(1), deadline()).await.unwrap();
+        let received = h
+            .normal_peer
+            .receiver
+            .receive(deadline())
+            .await
+            .unwrap()
+            .unwrap();
+        match fault {
+            "length" => h
+                .normal_peer
+                .sender
+                .stream
+                .write_all(&[0; 4])
+                .await
+                .unwrap(),
+            "protobuf" => h
+                .normal_peer
+                .sender
+                .stream
+                .write_all(&[0, 0, 0, 1, 0xff])
+                .await
+                .unwrap(),
+            "prefix_eof" => {
+                h.normal_peer.sender.stream.write_all(&[0]).await.unwrap();
+                h.normal_peer.sender.finish().unwrap();
+            }
+            "operation" => {
+                let mut response = reply(received.frame(), 1);
+                response.operation_id = Bytes::copy_from_slice(Id::new_v7().unwrap().as_bytes());
+                h.normal_peer
+                    .sender
+                    .send_owned(response, deadline())
+                    .await
+                    .unwrap();
+            }
+            "clean_eof" => h.normal_peer.sender.finish().unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(
+            matches!(pending.receive().await, Err(Error::Closed)),
+            "{fault}"
+        );
+        assert!(h.normal.is_closed(), "{fault}");
+        let snapshot = h.client.metrics.snapshot();
+        assert_eq!(snapshot.malformed_total, malformed, "{fault}");
+        let cause = snapshot
+            .failures
+            .last_rpc_failure
+            .expect("Missing RPC close cause");
+        assert_eq!(cause.phase, "rpc_read", "{fault}");
+        assert_eq!(cause.scope, "rpc_root", "{fault}");
+        assert_eq!(cause.reason, reason, "{fault}");
+        assert_eq!(
+            cause.connection_id,
+            Some(h.session.connection().physical_id())
+        );
+        assert_eq!(cause.stream_id, Some(h.normal_peer.id()));
+        assert_eq!(cause.traffic_class, Some("delivery"));
+        assert_eq!(cause.purpose, Some("request"));
+        if fault == "prefix_eof" {
+            assert_eq!(cause.io_kind, Some("unexpected_eof"));
+        }
+        let diagnostics = format!("{snapshot:?}");
+        assert!(!diagnostics.contains(TOKEN));
+        drop(received);
+        let memory = h.finish().await;
+        until(
+            "The failed RPC must release every client allocation",
+            || memory.available_bytes() == TOTAL,
+        )
+        .await;
+    }
+}
+
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(3)
 }

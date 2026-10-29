@@ -17,7 +17,7 @@ use crate::budget::{FrameReservation, MemoryBudget, MemoryPermit};
 use super::{
     Error, Result, TransportConfig,
     session::{StreamLease, StreamPurpose},
-    telemetry::{TransportMetrics, add},
+    telemetry::{TransportFailure, TransportMetrics, add},
 };
 
 const RESET_INVALID: u32 = 0x101;
@@ -333,6 +333,25 @@ impl Drop for FrameSender {
 }
 
 impl FrameReceiver {
+    pub(crate) fn record_failure(
+        &self,
+        phase: &'static str,
+        scope: &'static str,
+        error: Option<&Error>,
+    ) {
+        let state = &self.lease.state;
+        let mut failure = TransportFailure::new(phase, scope, error);
+        failure.connection_id = Some(state.handle.id());
+        failure.stream_id = Some(self.stream.id());
+        failure.traffic_class = Some(crate::budget::class_name(state.class));
+        failure.purpose = Some(match self.lease.purpose {
+            StreamPurpose::Request => "request",
+            StreamPurpose::Core => "core",
+            StreamPurpose::Ack => "ack",
+        });
+        state.metrics.record_failure(failure);
+    }
+
     /// A canceled/expired receive poisons this lane because a prefix/body may be partial.
     pub async fn receive(&mut self, deadline: Instant) -> Result<Option<ReceivedFrame>> {
         self.receive_frame(Some(deadline), None).await
@@ -364,6 +383,7 @@ impl FrameReceiver {
                 Ok(None)
             }
             Err(error) => {
+                self.record_failure("frame_first_byte", "frame", Some(&error));
                 self.usable = false;
                 self.lease.invalidate();
                 add(&self.lease.state.metrics.malformed, 1);
@@ -407,6 +427,7 @@ impl FrameReceiver {
                     .validate_frame(&frame.frame, &state.config.protocol)
                     .and_then(|()| self.lease.validate_kind(&frame.frame));
                 if let Err(error) = validation {
+                    self.record_failure("frame_validation", "frame", Some(&error));
                     add(&state.metrics.rejected, 1);
                     let _ = self.stream.stop_sending(RESET_INVALID.into());
                     return Err(error);
@@ -420,6 +441,7 @@ impl FrameReceiver {
                 Ok(None)
             }
             Err(error) => {
+                self.record_failure("frame_read", "frame", Some(&error));
                 let _ = self.stream.stop_sending(RESET_INVALID.into());
                 Err(error)
             }
@@ -444,7 +466,14 @@ pub(super) async fn read_wire(
     metrics: &TransportMetrics,
     deadline: Instant,
 ) -> Result<Option<ReceivedFrame>> {
-    read_wire_started(stream, admission, config, budget, metrics, deadline, None).await
+    let result =
+        read_wire_started(stream, admission, config, budget, metrics, deadline, None).await;
+    if let Err(error) = &result {
+        let mut failure = TransportFailure::new("handshake_read", "frame", Some(error));
+        failure.stream_id = Some(stream.id());
+        metrics.record_failure(failure);
+    }
+    result
 }
 
 async fn read_wire_started(
