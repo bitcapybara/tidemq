@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use anyhow::Context;
 use bytes::Bytes;
 use rcgen::{CertificateParams, KeyPair};
 use tidemq::budget::MemoryBudget;
@@ -27,6 +28,10 @@ struct Service {
     replies: Semaphore,
     flushed: Semaphore,
     memory: MemoryBudget,
+    client_memory: MemoryBudget,
+    expired_ack: Mutex<Option<Id>>,
+    expired_ack_prepared: watch::Sender<Option<Instant>>,
+    sent_operations: Mutex<Vec<Id>>,
 }
 
 impl WireService for Service {
@@ -39,6 +44,10 @@ impl WireService for Service {
     fn response_sent(&self, _peer: &Authorization, request: &Frame, response: &Frame) {
         assert_eq!(request.kind, i32::from(FrameKind::GroupAck));
         assert_eq!(response.kind, i32::from(FrameKind::GroupAckResult));
+        self.sent_operations
+            .lock()
+            .unwrap()
+            .push(Id::from_slice(&request.operation_id).unwrap());
         self.flushed.add_permits(1);
     }
 
@@ -46,12 +55,12 @@ impl WireService for Service {
         &self,
         _peer: Authorization,
         request: &Frame,
-        _deadline: Instant,
+        deadline: Instant,
         order: Option<SubmissionOrder>,
     ) -> Result<Option<Frame>, Self::Error> {
         let kind = FrameKind::try_from(request.kind).unwrap();
         let class = TrafficClass::try_from(request.traffic_class).unwrap();
-        let response = match kind {
+        let mut response = match kind {
             FrameKind::Publish => {
                 let batch: Publish =
                     decode_payload(request.payload.clone(), &ProtocolLimits::default())?;
@@ -92,6 +101,12 @@ impl WireService for Service {
                 reply
             }
         };
+        if kind == FrameKind::GroupAck
+            && *self.expired_ack.lock().unwrap() == Some(Id::from_slice(&request.operation_id)?)
+        {
+            response.remaining_timeout_ms = 0;
+            self.expired_ack_prepared.send_replace(Some(deadline));
+        }
         Ok(Some(response))
     }
 }
@@ -164,6 +179,7 @@ impl Fixture {
             .self_signed(&key)
             .unwrap();
         let budget = MemoryBudget::new(&MemoryConfig::default()).unwrap();
+        let client_memory = MemoryBudget::new(&MemoryConfig::default()).unwrap();
         let server = Server::bind(
             "127.0.0.1:0".parse().unwrap(),
             ServerTls {
@@ -186,6 +202,10 @@ impl Fixture {
             replies: Semaphore::new(0),
             flushed: Semaphore::new(0),
             memory: budget.clone(),
+            client_memory: client_memory.clone(),
+            expired_ack: Mutex::new(None),
+            expired_ack_prepared: watch::channel(None).0,
+            sent_operations: Mutex::new(Vec::new()),
         });
         let (shutdown, receiver) = watch::channel(false);
         let task = tokio::spawn(tidemq::server::run(
@@ -204,7 +224,7 @@ impl Fixture {
                 expected_nodes: vec![],
             },
             config,
-            MemoryBudget::new(&MemoryConfig::default()).unwrap(),
+            client_memory,
         )
         .unwrap();
         let credentials = ClientCredentials::External {
@@ -229,6 +249,183 @@ impl Fixture {
             transport,
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn encode_expired_ack_reply_preserves_shared_requests_and_flush_notifications() {
+    let Fixture {
+        client,
+        service,
+        target,
+        credentials,
+        shutdown,
+        mut task,
+        transport,
+    } = Fixture::start(DispatchConfig::default()).await;
+    let session = client
+        .connect(target, &credentials, TrafficClass::Control, deadline())
+        .await
+        .unwrap();
+    let connection = session.connection();
+    let rpc = RpcClient::from_session(session, RpcConfig::default())
+        .await
+        .unwrap();
+    let mut expired = request(
+        FrameKind::GroupAck,
+        TrafficClass::Control,
+        &GroupAck::default(),
+    );
+    let expired_operation = Id::new_v7().unwrap();
+    expired.operation_id = Bytes::copy_from_slice(expired_operation.as_bytes());
+    *service.expired_ack.lock().unwrap() = Some(expired_operation);
+    let mut prepared = service.expired_ack_prepared.subscribe();
+    let valid = request(
+        FrameKind::GroupAck,
+        TrafficClass::Control,
+        &GroupAck::default(),
+    );
+    let valid_operation = Id::from_slice(&valid.operation_id).unwrap();
+    let before_client = client.metrics.clone();
+
+    // Every behavior failure is returned to the outer cleanup before it becomes an assertion.
+    let outcome: anyhow::Result<()> = async {
+        let deferred = |kind, name: &str| {
+            request(kind, TrafficClass::Control, &LogicalTopic { name: name.into() })
+        };
+        let core = rpc
+            .submit(deferred(FrameKind::Diagnose, "deferred-core"), deadline())
+            .await?;
+        let ordinary = rpc
+            .submit(
+                deferred(FrameKind::CreateLogicalTopic, "deferred-request"),
+                deadline(),
+            )
+            .await?;
+        tokio::time::timeout_at(deadline(), async {
+            while service.submitted.lock().unwrap().len() != 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .context("Both sibling requests must be held before the expired ACK reply")?;
+        let expired_waiter = rpc.submit(expired, deadline()).await?;
+        let ack_streams = client.metrics.snapshot().streams_total;
+        let queue_deadline = tokio::time::timeout_at(deadline(), async {
+            loop {
+                let observed = *prepared.borrow();
+                if let Some(deadline) = observed {
+                    break Ok::<_, anyhow::Error>(deadline);
+                }
+                prepared.changed().await?;
+            }
+        })
+        .await
+        .context("The selected ACK must reach the reply encoder")??;
+        let queue_deadline_live = Instant::now() < queue_deadline;
+        let premature_notifications = service.flushed.available_permits();
+        let acknowledged = rpc.call(valid, deadline()).await;
+        service.replies.add_permits(2);
+        let (core, ordinary) = tokio::join!(core.receive(), ordinary.receive());
+        eprintln!(
+            "Encode-expired ACK reply: queue_deadline_live={queue_deadline_live}, ack={:?}, core={:?}, request={:?}, streams_before={ack_streams}, streams_after={}, rpc_closed={}, connection_closed={}",
+            acknowledged.as_ref().map(|reply| reply.frame().kind),
+            core.as_ref().map(|reply| reply.frame().kind),
+            ordinary.as_ref().map(|reply| reply.frame().kind),
+            client.metrics.snapshot().streams_total,
+            rpc.is_closed(),
+            connection.is_closed(),
+        );
+        anyhow::ensure!(queue_deadline_live, "The original reply queue deadline must still be live");
+        anyhow::ensure!(premature_notifications == 0, "An unsent ACK must not notify response_sent");
+        let acknowledged = acknowledged.context("The next valid ACK must succeed on the same ACK lane")?;
+        anyhow::ensure!(
+            acknowledged.frame().kind == i32::from(FrameKind::GroupAckResult)
+                && acknowledged.frame().operation_id.as_ref() == valid_operation.as_bytes(),
+            "Only the valid ACK operation may receive a reply"
+        );
+        for (label, response) in [("Core", core), ("Request", ordinary)] {
+            let response = response.with_context(|| format!("The in-flight {label} request must survive"))?;
+            anyhow::ensure!(
+                response.frame().kind == i32::from(FrameKind::DiagnosticResult),
+                "The sibling reply must preserve its response kind"
+            );
+        }
+        let notified = tokio::time::timeout_at(deadline(), service.flushed.acquire())
+            .await
+            .context("The valid ACK must finish its flush notification")??;
+        drop(notified);
+        anyhow::ensure!(!rpc.is_closed() && !connection.is_closed(), "The shared connection must remain open");
+        anyhow::ensure!(
+            client.metrics.snapshot().streams_total == ack_streams
+                && client.metrics.snapshot().connections_total == 1
+                && rpc.lane_count() == 4,
+            "The valid ACK must reuse the existing lane without reconnecting"
+        );
+        drop((acknowledged, expired_waiter));
+        Ok(())
+    }
+    .await;
+
+    service.replies.add_permits(2);
+    let finish = deadline();
+    rpc.shutdown(finish).await;
+    let admission = rpc.snapshot();
+    drop((rpc, connection));
+    let client_closed = client.close(finish).await;
+    drop(client);
+    let _ = shutdown.send(true);
+    let server_closed = tokio::time::timeout_at(finish, &mut task).await;
+    if server_closed.is_err() {
+        task.abort();
+        let _ = task.await;
+    }
+    let available = |memory: &MemoryBudget| {
+        [
+            memory.available_bytes(),
+            memory.available_data_bytes(),
+            memory.available_normal_bytes(),
+            memory.available_core_bytes(),
+            memory.available_ack_bytes(),
+            memory.available_handshake_bytes(),
+        ]
+    };
+    let uncharged = MemoryBudget::new(&MemoryConfig::default()).unwrap();
+    while Instant::now() < finish
+        && (available(&service.memory) != available(&uncharged)
+            || available(&service.client_memory) != available(&uncharged)
+            || transport.snapshot().active_connections != 0
+            || before_client.snapshot().active_connections != 0)
+    {
+        tokio::task::yield_now().await;
+    }
+    eprintln!(
+        "Expired ACK cleanup: client_closed={client_closed:?}, server_closed={server_closed:?}, client_memory={:?}, server_memory={:?}, expected={:?}, admission={admission:?}, client_connections={}, server_connections={}, sent_operations={:?}, notifications={}",
+        available(&service.client_memory),
+        available(&service.memory),
+        available(&uncharged),
+        before_client.snapshot().active_connections,
+        transport.snapshot().active_connections,
+        service.sent_operations.lock().unwrap(),
+        service.flushed.available_permits(),
+    );
+    assert!(client_closed.is_ok(), "The client endpoint must close");
+    assert!(
+        matches!(server_closed, Ok(Ok(Ok(())))),
+        "The server must stop and join"
+    );
+    assert_eq!(available(&service.memory), available(&uncharged));
+    assert_eq!(available(&service.client_memory), available(&uncharged));
+    assert_eq!(before_client.snapshot().active_connections, 0);
+    assert_eq!(transport.snapshot().active_connections, 0);
+    assert_eq!(admission.admitted_requests, 0);
+    assert_eq!(admission.admitted_bytes, 0);
+    assert_eq!(admission.pending_responses, Some(0));
+    assert!(outcome.is_ok(), "{outcome:#?}");
+    assert_eq!(
+        *service.sent_operations.lock().unwrap(),
+        vec![valid_operation]
+    );
+    assert_eq!(service.flushed.available_permits(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
