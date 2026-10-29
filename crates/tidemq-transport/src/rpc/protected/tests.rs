@@ -1072,6 +1072,168 @@ async fn ordinary_send_failures_reopen_bounded_lanes_and_physical_close_still_cl
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn expired_control_ack_before_native_enqueue_preserves_other_lanes() {
+    let mut transport_config = transport();
+    transport_config.core_streams = 1;
+    let mut h = Harness::with_transport(config(8, 8 * REQUEST_BYTES), transport_config).await;
+    let session = h
+        .client
+        .connect(
+            Harness::target(&h.server),
+            &Harness::credentials(),
+            TrafficClass::Control,
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let peer_session = h.server.accept().await.unwrap();
+    let mut core_peer = peer_session.take_initial_streams().await.pop().unwrap();
+    let rpc = RpcClient::from_session(session.clone(), config(8, 8 * REQUEST_BYTES))
+        .await
+        .unwrap();
+    let heartbeat = rpc
+        .submit(
+            control_frame(
+                FrameKind::ConsumerControl,
+                &ConsumerControl {
+                    action: ConsumerAction::HeartbeatConsumer.into(),
+                    heartbeat_sequence: 1,
+                    ..Default::default()
+                },
+            ),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let heartbeat_request = core_peer
+        .receiver
+        .receive(deadline())
+        .await
+        .unwrap()
+        .unwrap();
+    let watch = rpc
+        .submit(
+            control_frame(
+                FrameKind::GroupWatch,
+                &GroupWatch {
+                    targets: vec![WatchTarget {
+                        shard_id: Bytes::from_static(&[4; 16]),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ),
+            deadline(),
+        )
+        .await
+        .unwrap();
+    let mut watch_peer = timeout_at(deadline(), peer_session.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let watch_request = watch_peer
+        .receiver
+        .receive(deadline())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let mut expired = control_frame(FrameKind::GroupAck, &GroupAck::default());
+    // The outer queue deadline can outlive the frame's already exhausted hop budget.
+    expired.remaining_timeout_ms = 0;
+    let expired = rpc
+        .submit(expired, Instant::now() + Duration::from_millis(200))
+        .await
+        .unwrap();
+    let mut ack_peer = timeout_at(deadline(), peer_session.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let expired_result = expired.receive().await;
+    let survived = !rpc.is_closed() && !session.connection().is_closed();
+    let pending_preserved = rpc.snapshot().pending_responses == Some(2);
+    let failures = h.client.metrics.snapshot().failures;
+    if survived {
+        assert!(pending_preserved);
+        answer_control(
+            heartbeat,
+            &mut core_peer,
+            &heartbeat_request,
+            FrameKind::ConsumerControlResult,
+            &ConsumerControlResult::default(),
+        )
+        .await;
+        answer_control(
+            watch,
+            &mut watch_peer,
+            &watch_request,
+            FrameKind::GroupWatchResult,
+            &GroupWatchResult {
+                targets: vec![WatchResult {
+                    shard_id: Bytes::from_static(&[4; 16]),
+                    status: WatchStatus::WatchChanged.into(),
+                    observed_token: Bytes::from(vec![7; 256]),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await;
+        let ack = rpc
+            .submit(
+                control_frame(FrameKind::GroupAck, &GroupAck::default()),
+                deadline(),
+            )
+            .await
+            .unwrap();
+        let request = ack_peer
+            .receiver
+            .receive(deadline())
+            .await
+            .unwrap()
+            .unwrap();
+        answer_control(
+            ack,
+            &mut ack_peer,
+            &request,
+            FrameKind::GroupAckResult,
+            &GroupAckResult::default(),
+        )
+        .await;
+        assert_eq!(rpc.snapshot().pending_responses, Some(0));
+    } else {
+        drop((heartbeat, watch));
+    }
+    rpc.shutdown(deadline()).await;
+    drop((
+        rpc,
+        core_peer,
+        watch_peer,
+        ack_peer,
+        heartbeat_request,
+        watch_request,
+    ));
+    session.shutdown(deadline()).await.unwrap();
+    peer_session.shutdown(deadline()).await.unwrap();
+    drop((session, peer_session));
+    let memory = h.finish().await;
+    until(
+        "An expired outbound frame must release all transport memory",
+        || memory.available_bytes() == TOTAL,
+    )
+    .await;
+    assert!(
+        survived,
+        "An unencoded expired ACK closed other lanes: {failures:?}"
+    );
+    assert!(pending_preserved);
+    assert!(
+        matches!(expired_result, Err(Error::Deadline { .. })),
+        "Unexpected expired request error: {:?}",
+        expired_result.as_ref().err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn control_request_receive_admission_failure_preserves_pending_heartbeat_and_ack() {
     for with_session in [true, false] {
         let mut transport_config = transport();

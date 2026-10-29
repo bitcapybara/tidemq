@@ -41,6 +41,8 @@
 
 空等首字节本身不增加 `deadlines_total` 或 `malformed_total`；原生 idle 关闭带来的 IO 错误仍可计入后者。收到首字节后的慢 prefix/body 仍有有限组帧期限；超时或取消导致 poison，不执行外层 Deadline 重试来重用未知字节边界。新入口只在首字节之前允许安全取消。握手/短 ACK/单次读取仍用 `receive(absolute_deadline)`；客户端原请求取消仅移除其 waiter，不能因此关闭其他共享请求。
 
+发送在尝试写入 native 队列前到期时，保留健康 lane，只结束该帧并计入 `deadlines_total`；RPC 请求与服务端回复 writer 都跳过该过期帧，未发送的回复不会触发 flush 成功通知。`FrameSender::is_usable()` 只说明帧边界是否仍安全，不证明业务未提交或已提交，已有 Unknown 仍须沿原身份恢复。尝试 native 写入后发生取消或失败，仍须 poison 和关闭对应 lane，不能继续拼接可能已部分写出的帧。原请求截止不重置，剩余不足一毫秒不向上延长。
+
 Core Raft 的执行槽等待发生在完整帧接收并授权之后，沿用该 frame 的绝对 deadline。等待由既有 reader 持有 transport-charged ReceivedFrame，不增加任务、工作队列、字节或槽位额度；到期、连接关闭、服务关闭会归还待帧，已 owned handler 继续原有有限 drain。两条 lane 都等待时，同流后续 CANCEL 可能延至前帧到期后才继续处理，不承诺无队头阻塞。完整帧已接收后的等待结束，不等于部分 prefix/body 取消，也不因此 poison 健康共享流。
 
 原生 idle 关闭空闲 Produce 连接时，其 lane 的 IO 读取错误也可能增加 malformed，而其他 Control 连接仍正常。应结合分类记录中的流量类别和连接标识判断影响范围，不能仅由聚合 malformed 推断坏帧或活跃连接误断。

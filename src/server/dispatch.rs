@@ -1074,7 +1074,10 @@ async fn serve_stream<S: WireService>(
             if Instant::now() >= reply.deadline {
                 continue;
             }
-            if sender.send(&reply.frame, reply.deadline).await.is_err() {
+            if let Err(error) = sender.send(&reply.frame, reply.deadline).await {
+                if matches!(error, crate::transport::Error::Deadline { .. }) && sender.is_usable() {
+                    continue;
+                }
                 return;
             }
             if let Some((peer, request)) = reply.notification {

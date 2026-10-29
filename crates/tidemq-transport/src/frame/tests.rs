@@ -476,6 +476,101 @@ async fn native_reservation_reconnects_only_on_its_original_budget_and_delivery_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_pre_enqueue_deadline_preserves_sender_and_peer() {
+    let memory = budget(2 * 1024 * 1024);
+    let total = memory.available_bytes();
+    let (client, server, session, peer) = native_pair(&memory, TrafficClass::Delivery).await;
+    let mut outgoing = session.take_initial_streams().await.pop().unwrap();
+    let mut incoming = peer.take_initial_streams().await.pop().unwrap();
+    let before = client.metrics.snapshot().frames_sent_total;
+    let deadlines_before = client.metrics.snapshot().deadlines_total;
+    let expired = outgoing
+        .sender
+        .send_owned(delivery_frame(&native_config()), Instant::now())
+        .await;
+    let usable = outgoing.sender.usable;
+    let counted_deadline = client.metrics.snapshot().deadlines_total == deadlines_before + 1;
+    assert_eq!(client.metrics.snapshot().frames_sent_total, before);
+    if usable {
+        let (sent, received) = tokio::join!(
+            outgoing
+                .sender
+                .send_owned(delivery_frame(&native_config()), native_deadline()),
+            incoming.receiver.receive(native_deadline()),
+        );
+        sent.unwrap();
+        drop(received.unwrap().unwrap());
+    }
+    drop((outgoing, incoming));
+    close_native_pair(client, server, session, peer).await;
+    timeout_at(native_deadline(), async {
+        while memory.available_bytes() != total {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(expired, Err(Error::Deadline { .. })));
+    assert!(
+        usable,
+        "A deadline before native enqueue poisoned the sender"
+    );
+    assert!(
+        counted_deadline,
+        "The pre-enqueue deadline must be counted once"
+    );
+}
+
+#[tokio::test]
+async fn native_cancel_after_enqueue_keeps_sender_poisoned() {
+    use tokio::io::AsyncReadExt;
+    let memory = budget(2 * 1024 * 1024);
+    let total = memory.available_bytes();
+    let (client, server, session, peer) = native_pair(&memory, TrafficClass::Delivery).await;
+    let mut outgoing = session.take_initial_streams().await.pop().unwrap();
+    let mut incoming = peer.take_initial_streams().await.pop().unwrap();
+    let mut sending = Box::pin(
+        outgoing
+            .sender
+            .send_owned(delivery_frame(&native_config()), native_deadline()),
+    );
+    std::future::poll_fn(|context| {
+        assert!(
+            sending.as_mut().poll(context).is_pending(),
+            "The bounded native send did not suspend"
+        );
+        std::task::Poll::Ready(())
+    })
+    .await;
+    let mut first = [0_u8; 1];
+    timeout_at(
+        native_deadline(),
+        incoming.receiver.stream.read_exact(&mut first),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    drop(sending);
+    assert!(!outgoing.sender.usable);
+    assert!(matches!(
+        outgoing
+            .sender
+            .send_owned(delivery_frame(&native_config()), native_deadline())
+            .await,
+        Err(Error::Poisoned)
+    ));
+    drop((outgoing, incoming));
+    close_native_pair(client, server, session, peer).await;
+    timeout_at(native_deadline(), async {
+        while memory.available_bytes() != total {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn native_core_ack_and_control_request_lanes_reject_delivery_regions() {
     let memory = budget(2 * 1024 * 1024);
     let (client, server, session, peer) = native_pair(&memory, TrafficClass::Control).await;

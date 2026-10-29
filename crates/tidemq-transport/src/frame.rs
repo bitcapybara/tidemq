@@ -176,6 +176,11 @@ impl FramedStream {
 }
 
 impl FrameSender {
+    /// Whether another frame can safely use this lane after the last send result.
+    pub fn is_usable(&self) -> bool {
+        self.usable
+    }
+
     /// Enqueue without waiting for a transport ACK, allowing durable-ACK-independent pipelining.
     pub async fn send(&mut self, frame: &Frame, deadline: Instant) -> Result<()> {
         self.send_owned(frame.clone(), deadline).await
@@ -193,11 +198,6 @@ impl FrameSender {
                 reason: "frame differs from the bound connection class",
             });
         }
-        self.usable = false;
-        let mut operation = LaneOperation {
-            lease: self.lease.clone(),
-            completed: false,
-        };
         let started = Instant::now();
         let deadline = deadline.min(
             started
@@ -217,18 +217,23 @@ impl FrameSender {
         );
         match result {
             Ok(Ok(length)) => {
-                self.usable = true;
-                operation.completed = true;
                 add(&state.metrics.frames_sent, 1);
                 add(&state.metrics.bytes_sent, u64::from(length));
                 Ok(())
             }
             Ok(Err(error)) => {
-                let _ = self.stream.reset(RESET_INVALID.into());
+                if matches!(&error, Error::Deadline { .. }) {
+                    add(&state.metrics.deadlines, 1);
+                }
+                if !self.usable {
+                    let _ = self.stream.reset(RESET_INVALID.into());
+                }
                 Err(error)
             }
             Err(_) => {
-                let _ = self.stream.reset(RESET_INVALID.into());
+                if !self.usable {
+                    let _ = self.stream.reset(RESET_INVALID.into());
+                }
                 add(&state.metrics.deadlines, 1);
                 Err(Error::Deadline {
                     operation: "send frame",
@@ -282,6 +287,17 @@ impl FrameSender {
             &state.budget,
             deadline,
         )?;
+        if Instant::now() >= deadline {
+            return Err(Error::Deadline {
+                operation: "enqueue frame",
+            });
+        }
+        // Only a native write attempt can leave a partial frame that requires poisoning.
+        self.usable = false;
+        let mut operation = LaneOperation {
+            lease: self.lease.clone(),
+            completed: false,
+        };
         let [header, payload, trailer] = &mut chunks;
         let result = if payload.is_empty() && trailer.is_empty() {
             self.stream.send(std::mem::take(header)).await
@@ -292,6 +308,8 @@ impl FrameSender {
             operation: "enqueue frame",
             source,
         })?;
+        self.usable = true;
+        operation.completed = true;
         Ok(length)
     }
 

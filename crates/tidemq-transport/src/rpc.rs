@@ -1054,7 +1054,11 @@ async fn write_loop(
         if Instant::now() >= outbound.deadline {
             continue;
         }
-        sender.send_owned(outbound.frame, outbound.deadline).await?;
+        let result = sender.send_owned(outbound.frame, outbound.deadline).await;
+        if matches!(&result, Err(crate::Error::Deadline { .. })) && sender.is_usable() {
+            continue;
+        }
+        result?;
     }
     Ok(())
 }
