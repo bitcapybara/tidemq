@@ -2,7 +2,7 @@ use super::*;
 use crate::runtime::wire::semantic_local_tests::{Fixture, TOKEN};
 
 #[cfg(feature = "test-hooks")]
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test]
 async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
     use crate::config::Role;
     use crate::runtime::data::consumer_tests::fixture::Fixture as RuntimeFixture;
@@ -37,13 +37,34 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
         .unwrap();
     let service = runtime.running.get(&1).unwrap().service.clone();
     service.auth_cache.0.lock().unwrap().clear();
-    let result = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(2))
-        .unwrap()
-        .scope(client.admin().topic_info("auth/app/events"))
+    let until = Instant::now() + Duration::from_secs(2);
+    service.leaders.write().await.insert(1, (1, until));
+    let pause = crate::runtime::test_hooks::InstalledPause::metadata_route(cluster, 1).unwrap();
+    let query = {
+        let client = client.clone();
+        tokio::spawn(async move {
+            tidemq_sdk::RequestContext::with_deadline(until)
+                .scope(client.admin().topic_info("auth/app/events"))
+                .await
+        })
+    };
+    pause.wait(until).await.unwrap();
+    service.auth_cache.0.lock().unwrap().clear();
+    service.leaders.write().await.clear();
+    // This current-thread runtime cannot repopulate the hint before auth polls leader discovery.
+    let cold = service
+        .auth_query(
+            AuthQuery::Authenticate(TokenDigest::of(TOKEN).unwrap()),
+            until,
+        )
         .await;
+    pause.resume();
+    let result = query.await.unwrap();
+    drop(pause);
     client.close().await.unwrap();
     runtime.close().await;
     drop(limit);
+    assert!(cold.unwrap().0.credential.is_some());
     assert_eq!(result.unwrap().id(), topic.id());
 }
 

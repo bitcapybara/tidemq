@@ -16,7 +16,7 @@ FORWARD 的委托来源角色、跳数或 principal/scope 长度不合法时，�
 
 处理前的 dispatcher 拒绝记录 `event_code=dispatch_admission_rejected`，包含固定 `reason`、执行队列 `purpose`、数值 frame kind、原请求标识及各队列可用槽位。可据此区分租户准入、处理槽位、处理内存和队列关闭，不能把所有 QuotaExceeded 都解释为进程或容器内存不足。该事件独立按每秒一次限频，不占用 handler Unknown 日志的窗口；其抑制数记入 `tidemq_dispatch_admission_suppressed_logs_total`，拒绝总数不采样。不记录正文、凭据或完整 frame。
 
-Metadata leader 在本节点处理授权缓存 miss 时直接执行已有授权处理函数，避免持有 Core 槽等待同一个队列中的自身 RPC；跨节点授权仍走原内部通路。直接执行仍检查 leader、当前引擎的读取屏障、权限与原请求截止；分离角色保留 Raft quorum read。`auth_query_local` trace 表示授权在本节点执行，既适用于 combined，也适用于分离角色的 metadata leader。
+Metadata leader 在本节点处理授权缓存 miss 时直接执行已有授权处理函数，避免持有 Core 槽等待同一个队列中的自身 RPC；跨节点授权仍走原内部通路。本节点已托管的 metadata/data leader 身份直接从 replica 查询，冷或过期的发现缓存不再触发自身 Core RPC；没有本机权威时仍走原远端发现。直接执行仍检查 leader、当前引擎的读取屏障、权限与原请求截止；分离角色保留 Raft quorum read。`auth_query_local` trace 表示授权在本节点执行，既适用于 combined，也适用于分离角色的 metadata leader。
 
 模块过滤禁用 regex。临时过滤限制 1024 字节与 1—300s，要求活动 Tokio runtime，代次隔离旧恢复计时器；无效表达式不覆盖原过滤。临时过滤通过服务端库 API 提供，管理入口必须执行认证与操作审计。SDK 不安装该设施。
 

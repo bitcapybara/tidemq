@@ -382,14 +382,15 @@ impl Service {
     }
 
     pub async fn leader(&self, group: u64, deadline: Instant) -> Result<u64> {
-        if self.rpc.is_local() {
+        let local_authority = if group == self.config.runtime.metadata_group {
+            self.metadata.as_ref().and_then(Replica::authority_node)
+        } else {
+            self.data.get(&group).and_then(Replica::authority_node)
+        };
+        // A hosted leader must not discover itself through the Core queue it already occupies.
+        if self.rpc.is_local() || local_authority == Some(self.config.node_id) {
             wire::remaining(deadline)?;
-            return if group == self.config.runtime.metadata_group {
-                self.metadata.as_ref().and_then(Replica::authority_node)
-            } else {
-                self.data.get(&group).and_then(Replica::authority_node)
-            }
-            .ok_or_else(Error::unavailable);
+            return local_authority.ok_or_else(Error::unavailable);
         }
         let cached = self.leaders.read().await.get(&group).copied();
         if let Some((leader, expires)) = cached
