@@ -37,7 +37,7 @@
 
 `connections_total`/`streams_total` 是累计准入量。`active_connections` 随 ConnectionState 创建/最后引用释放计数，缓存/RPC 可暂留已原生关闭的连接；它不能单独证明网络仍存活。`frames_sent_total` 是已入队应用帧，不能作为持久成功。`bytes_sent_total` 含 4 字节前缀，接收统计不含前缀。`malformed_total` 包括 IO/读帧/解码失败；授权拒绝另进 rejected。`send_wait_seconds_total` 含 send-ready 与 enqueue 等待，不能标注为精确拥塞或 credit 时间。丢包通知包含 MTU probe；PTO 是最近一次 recovery 样本，不可跨连接相加当作业务重试次数。
 
-`TransportSnapshot.failures` 保留累计分类次数 `total`、已记录日志次数 `logged`、最近八条记录 `recent` 和最后一条 RPC 层记录 `last_rpc_failure`。记录使用固定阶段、范围、原因和 IO 类别，可附带连接、流、流量类别及用途；不保存错误展示文本、正文或凭据。日志 `event=transport_failure` 在最初四次及后续二次幂次数记录，每个 endpoint 生命周期最多 65 条。最近记录和最后一次 RPC 事件用于定位失败分支，不是完整时间线，也不能单独证明因果首错；结合原请求标识、已保留日志和业务持久结果判断。
+`TransportSnapshot.failures` 保留累计分类次数 `total`、命中日志采样条件的次数 `logged`、最近八条记录 `recent` 和最后一条 RPC 层记录 `last_rpc_failure`。记录使用固定阶段、范围、原因和 IO 类别，可附带连接、流、流量类别及用途；不保存错误展示文本、正文或凭据。日志 `event=transport_failure` 在最初四次及后续二次幂次数记录，每个 endpoint 生命周期最多 65 条；`logged` 不代表日志已输出或持久化，实际写出仍受 subscriber、过滤和日志队列影响。最近记录和最后一次 RPC 事件用于定位失败分支，不是完整时间线，也不能单独证明因果首错；结合原请求标识、已保留日志和业务持久结果判断。
 
 空等首字节本身不增加 `deadlines_total` 或 `malformed_total`；原生 idle 关闭带来的 IO 错误仍可计入后者。收到首字节后的慢 prefix/body 仍有有限组帧期限；超时或取消导致 poison，不执行外层 Deadline 重试来重用未知字节边界。新入口只在首字节之前允许安全取消。握手/短 ACK/单次读取仍用 `receive(absolute_deadline)`；客户端原请求取消仅移除其 waiter，不能因此关闭其他共享请求。
 
