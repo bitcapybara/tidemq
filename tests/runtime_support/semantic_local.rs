@@ -1,9 +1,12 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::Role;
 use crate::metadata::{PartitionKey, TokenDigest};
+use crate::ownership::remote::Query;
 use crate::runtime::{data::consumer_tests::fixture, service::Service};
 use tidemq_protocol::Id;
+use tokio::time::Instant;
 
 pub(in crate::runtime) const TOKEN: &str = "runtime-test-access-token-with-at-least-32-characters";
 
@@ -235,4 +238,41 @@ async fn separated_rf3_native_sdk_preserves_stream_split_gates_and_deletion() {
         );
     }
     sdk_lifecycle(fixture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn separated_rf3_authority_query_honors_short_deadline_and_releases_rpc_path() {
+    let fixture = Fixture::separated().await;
+    let gateway = fixture.runtime.running.get(&8).unwrap().service.clone();
+    let request = || super::Request::control(super::AUTHORITY, &Query::Group(2)).unwrap();
+
+    let warm = gateway
+        .rpc
+        .call(1, 1, request(), Instant::now() + Duration::from_secs(3))
+        .await;
+    assert!(
+        warm.is_ok(),
+        "The remote authority path did not warm successfully: {warm:?}"
+    );
+
+    let started = Instant::now();
+    let expired = gateway
+        .rpc
+        .call(1, 1, request(), Instant::now() + Duration::from_millis(1))
+        .await;
+    assert!(
+        expired.is_err(),
+        "A one-millisecond authority call unexpectedly succeeded"
+    );
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    let recovered = gateway
+        .rpc
+        .call(1, 1, request(), Instant::now() + Duration::from_secs(3))
+        .await;
+    assert!(
+        recovered.is_ok(),
+        "A fresh authority query could not reuse the RPC path after expiry: {recovered:?}"
+    );
+    fixture.close().await;
 }

@@ -980,7 +980,7 @@ impl Service {
                     return Err(forbidden());
                 }
                 let proof = authority
-                    .remote_query(query)
+                    .remote_query(query, deadline.into_std())
                     .await
                     .map_err(|source| Error::operation("perform metadata quorum read", source))?;
                 wire::json(&proof)?

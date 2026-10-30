@@ -523,12 +523,13 @@ impl MetadataAuthority {
     pub(crate) async fn remote_query(
         &self,
         query: Query,
+        deadline: std::time::Instant,
     ) -> std::result::Result<Proof, super::AuthorityError> {
         if self.group.is_local() {
             return Err(super::AuthorityError::IdentityMismatch);
         }
         let ((value, position, cluster, group, voters), _) = self
-            .read(|state, position| {
+            .read_until(deadline, |state, position| {
                 let position = position.ok_or(super::AuthorityError::MissingCommitPosition)?;
                 let cluster = state
                     .cluster_id()
