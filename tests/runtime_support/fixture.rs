@@ -256,11 +256,12 @@ impl Fixture {
 
     pub(crate) async fn wait_for_quorum_leaders(
         &self,
-        client: &Client,
+        gateway: u64,
         storage_group: u64,
     ) -> (u64, u64) {
+        let client = self.client(gateway).await;
         let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
+        let leaders = loop {
             match client
                 .console_read(tidemq_protocol::console::Query::Cluster {
                     after: None,
@@ -290,7 +291,7 @@ impl Fixture {
                         })
                         .filter(|group| group.voters.len() == 3 && group.leader.is_some());
                     if let (Some(metadata), Some(storage)) = (metadata, storage) {
-                        return (metadata.leader.unwrap().0, storage.leader.unwrap().0);
+                        break (metadata.leader.unwrap().0, storage.leader.unwrap().0);
                     }
                 }
                 Err(error) => assert!(
@@ -308,7 +309,9 @@ impl Fixture {
                 "RF3 quorums did not elect leaders in time"
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+        };
+        client.close().await.unwrap();
+        leaders
     }
 
     pub(crate) async fn client(&self, gateway: u64) -> Client {
