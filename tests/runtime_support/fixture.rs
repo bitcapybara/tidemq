@@ -653,6 +653,35 @@ pub(crate) async fn http_checked_until(
     })?
 }
 
+pub(crate) fn validate_http_success(
+    response: &str,
+    address: SocketAddr,
+    path: &str,
+) -> std::io::Result<()> {
+    let status = response
+        .split_once("\r\n")
+        .map(|(status, _)| status)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("management HTTP response from {address} for {path} has no status line"),
+            )
+        })?;
+    let code = status.split_whitespace().nth(1).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("management HTTP response from {address} for {path} has no status code"),
+        )
+    })?;
+    if code != "200" {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("management HTTP response from {address} for {path} returned status {code}"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {
     let credentials_file = fixture.directory.join("object-credentials.toml");
     let (access, secret) = rustfs.credentials();

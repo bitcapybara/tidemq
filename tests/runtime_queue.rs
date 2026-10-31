@@ -409,21 +409,29 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         "after-quorum",
     ));
     let mut resources_pending = true;
+    let mut resource_failure: Option<String> = None;
     let mut samples = tokio::time::interval(Duration::from_secs(1));
     samples.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             result = &mut pending_consume => {
-                if resources_pending {
-                    resources.as_mut().await;
+                if resources_pending && let Err(error) = resources.as_mut().await {
+                    resource_failure = Some(error);
                 }
-                if result.is_err() {
-                    consumer_recovery_snapshot(&fixture, &consumer, last, "timeout").await;
+                if result.is_err()
+                    && let Err(error) = consumer_recovery_snapshot(&fixture, &consumer, last, "timeout").await
+                {
+                    resource_failure.get_or_insert(error);
                 }
                 result.expect("The original consumer recovery failed; see its preserved snapshot");
                 break;
             },
-            _ = &mut resources, if resources_pending => resources_pending = false,
+            result = &mut resources, if resources_pending => {
+                resources_pending = false;
+                if let Err(error) = result {
+                    resource_failure = Some(error);
+                }
+            },
             _ = samples.tick() => eprintln!(
                 "RF3 consumer recovery ledger: expected={last:?} diagnostics={:?}",
                 consumer.diagnostics()
@@ -439,6 +447,9 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         let _ = process.wait().await.unwrap();
     }
     fixture.close().await;
+    if let Some(error) = resource_failure {
+        panic!("Consumer recovery resource snapshot failed: {error}");
+    }
 }
 
 async fn node_recovery_diagnostics(
@@ -446,6 +457,7 @@ async fn node_recovery_diagnostics(
     until: Instant,
 ) -> std::io::Result<serde_json::Value> {
     let response = http_checked_until(address, "/diagnostics", until).await?;
+    validate_http_success(&response, address, "/diagnostics")?;
     let (_, body) = response.split_once("\r\n\r\n").ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -465,34 +477,34 @@ async fn consumer_recovery_snapshot(
     consumer: &tidemq_sdk::QueueConsumer,
     expected: tidemq_sdk::MessageId,
     stage: &str,
-) {
+) -> Result<(), String> {
     let sdk = format!("{:?}", consumer.diagnostics());
     let until = Instant::now() + Duration::from_secs(2);
+    let snapshot_stage = stage.to_owned();
     let mut tasks = Vec::new();
     for (node, config) in &fixture.configs {
+        let node = *node;
         let address = config.management_listen;
         let process_watermark = config.runtime.capacity.process_memory;
+        let snapshot_stage = snapshot_stage.clone();
         tasks.push((
-            *node,
-            tokio::spawn(async move {
-                let diagnostics = node_recovery_diagnostics(address, until).await.ok();
-                let metrics = tokio::time::timeout_at(until, http(address, "/metrics"))
-                    .await
-                    .ok();
-                serde_json::json!({
-                    "configured_process_memory": process_watermark,
-                    "diagnostics": diagnostics,
-                    "metrics": metrics,
-                })
-            }),
+            node,
+            tokio::spawn(consumer_recovery_node_snapshot(
+                node,
+                address,
+                process_watermark,
+                until,
+                snapshot_stage,
+            )),
         ));
     }
     let mut nodes = BTreeMap::new();
     for (node, task) in tasks {
-        let snapshot = match task.await {
-            Ok(snapshot) => snapshot,
-            Err(_) => serde_json::json!({"snapshot_task_failed": true}),
-        };
+        let snapshot = task.await.map_err(|error| {
+            format!(
+                "consumer recovery snapshot: node {node} stage={stage} task join failed: {error}"
+            )
+        })??;
         nodes.insert(node, snapshot);
     }
     let summary: BTreeMap<_, _> = nodes
@@ -520,7 +532,9 @@ async fn consumer_recovery_snapshot(
         Ok(bytes) => bytes,
         Err(error) => {
             eprintln!("Failed to encode consumer recovery diagnostics: {error}");
-            return;
+            return Err(format!(
+                "consumer recovery snapshot: stage={stage} evidence encoding failed: {error}"
+            ));
         }
     };
     match tokio::time::timeout(Duration::from_secs(1), tokio::fs::write(&evidence, bytes)).await {
@@ -528,11 +542,112 @@ async fn consumer_recovery_snapshot(
             "Preserved consumer recovery diagnostics {}",
             evidence.display()
         ),
-        Ok(Err(error)) => eprintln!("Failed to write consumer recovery diagnostics: {error}"),
+        Ok(Err(error)) => {
+            return Err(format!(
+                "consumer recovery snapshot: stage={stage} evidence write failed: {error}"
+            ));
+        }
         Err(_) => {
-            eprintln!("Writing consumer recovery diagnostics exceeded its diagnostic deadline")
+            return Err(format!(
+                "consumer recovery snapshot: stage={stage} evidence write exceeded its deadline"
+            ));
         }
     }
+    Ok(())
+}
+
+async fn consumer_recovery_node_snapshot(
+    node: u64,
+    address: std::net::SocketAddr,
+    process_watermark: tidemq::quota::Watermark,
+    until: Instant,
+    stage: String,
+) -> Result<serde_json::Value, String> {
+    let diagnostics = node_recovery_diagnostics(address, until)
+        .await
+        .map_err(|error| {
+            format!(
+                "consumer recovery snapshot: node {node} stage={stage} diagnostics failed: {error}"
+            )
+        })?;
+    let metrics = http_checked_until(address, "/metrics", until)
+        .await
+        .map_err(|error| {
+            format!("consumer recovery snapshot: node {node} stage={stage} metrics failed: {error}")
+        })?;
+    validate_http_success(&metrics, address, "/metrics").map_err(|error| {
+        format!("consumer recovery snapshot: node {node} stage={stage} metrics failed: {error}")
+    })?;
+    Ok(serde_json::json!({
+        "configured_process_memory": process_watermark,
+        "diagnostics": diagnostics,
+        "metrics": metrics,
+    }))
+}
+
+#[tokio::test]
+async fn consumer_recovery_snapshot_propagates_diagnostics_failure() {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut connection, _) = listener.accept().await.unwrap();
+        connection
+            .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    let error = consumer_recovery_node_snapshot(
+        7,
+        address,
+        tidemq::quota::Limits::default().process_memory,
+        Instant::now() + Duration::from_secs(2),
+        "diagnostics-failure".into(),
+    )
+    .await
+    .unwrap_err();
+    server.await.unwrap();
+    assert!(error.contains("node 7"));
+    assert!(error.contains("stage=diagnostics-failure"));
+    assert!(error.contains("diagnostics failed"));
+}
+
+#[tokio::test]
+async fn consumer_recovery_snapshot_propagates_metrics_failure() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut diagnostics, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 1024];
+        if diagnostics.read(&mut request).await.unwrap() == 0 {
+            return;
+        }
+        diagnostics
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+            .await
+            .unwrap();
+    });
+    let error = tokio::time::timeout(
+        Duration::from_secs(3),
+        consumer_recovery_node_snapshot(
+            7,
+            address,
+            tidemq::quota::Limits::default().process_memory,
+            Instant::now() + Duration::from_secs(2),
+            "metrics-failure".into(),
+        ),
+    )
+    .await
+    .expect("metrics failure snapshot should be bounded")
+    .unwrap_err();
+    server.abort();
+    let _ = server.await;
+    assert!(error.contains("node 7"), "{error}");
+    assert!(error.contains("stage=metrics-failure"), "{error}");
+    assert!(error.contains("metrics failed"), "{error}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

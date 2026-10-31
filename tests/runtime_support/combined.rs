@@ -497,15 +497,15 @@ async fn rf3_phase_snapshot(
                     std::io::Error::other(format!("RF3 node {node} diagnostics failed: {error}"))
                 })?;
             let metrics = if include_metrics {
-                Some(
-                    http_checked_until(address, "/metrics", until)
-                        .await
-                        .map_err(|error| {
-                            std::io::Error::other(format!(
-                                "RF3 node {node} metrics failed: {error}"
-                            ))
-                        })?,
-                )
+                let metrics = http_checked_until(address, "/metrics", until)
+                    .await
+                    .map_err(|error| {
+                        std::io::Error::other(format!("RF3 node {node} metrics failed: {error}"))
+                    })?;
+                validate_http_success(&metrics, address, "/metrics").map_err(|error| {
+                    std::io::Error::other(format!("RF3 node {node} metrics failed: {error}"))
+                })?;
+                Some(metrics)
             } else {
                 None
             };
@@ -647,81 +647,110 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     let phase_budget = Duration::from_secs(40);
     // Keep the correctness gate bounded; high-frequency metadata pressure belongs in a load test.
     const METADATA_READS: u64 = 16;
+    let worker_topics: Vec<_> = observers.iter().map(|(name, _)| name.clone()).collect();
     let mut running = tokio::task::JoinSet::new();
     for (name, topic, producer, consumer) in work {
         let client = client.clone();
+        let worker_name = name.clone();
         running.spawn(async move {
-            let started = Instant::now();
-            let until = started + phase_budget;
-            let context = tidemq_sdk::RequestContext::with_timeout(phase_budget).unwrap();
-            let produced = AtomicU64::new(0);
-            let acknowledged = AtomicU64::new(0);
-            let metadata_reads = AtomicU64::new(0);
-            let mut metadata_retries = MetadataReadRetries::default();
-            let failed = |stage: &str, error: &dyn std::fmt::Debug| {
-                eprintln!("RF3 worker failure ledger: topic={name} stage={stage} produced={} acknowledged={} metadata_reads={} remaining_ms={} error={error:?} consumer={:?} transport={:?}", produced.load(Ordering::Relaxed), acknowledged.load(Ordering::Relaxed), metadata_reads.load(Ordering::Relaxed), until.saturating_duration_since(Instant::now()).as_millis(), consumer.diagnostics(), client.transport_metrics().snapshot());
-            };
-            let worker_failure = |stage: &str, error: &dyn std::fmt::Debug| {
-                failed(stage, error);
-                format!("RF3 worker failed: topic={name} stage={stage} error={error:?}")
-            };
-            let produce = async {
-                for sequence in 0..64_u64 {
-                    let result = context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await;
-                    finish_original_send(result, until)
-                        .await
-                        .map_err(|error| worker_failure("send", &error))?;
-                    produced.store(sequence + 1, Ordering::Relaxed);
+            let result = async move {
+                let started = Instant::now();
+                let until = started + phase_budget;
+                let context = tidemq_sdk::RequestContext::with_timeout(phase_budget)
+                    .map_err(|error| {
+                        format!("RF3 worker failed: topic={name} stage=setup error={error:?}")
+                    })?;
+                let produced = AtomicU64::new(0);
+                let acknowledged = AtomicU64::new(0);
+                let metadata_reads = AtomicU64::new(0);
+                let mut metadata_retries = MetadataReadRetries::default();
+                let failed = |stage: &str, error: &dyn std::fmt::Debug| {
+                    eprintln!("RF3 worker failure ledger: topic={name} stage={stage} produced={} acknowledged={} metadata_reads={} remaining_ms={} error={error:?} consumer={:?} transport={:?}", produced.load(Ordering::Relaxed), acknowledged.load(Ordering::Relaxed), metadata_reads.load(Ordering::Relaxed), until.saturating_duration_since(Instant::now()).as_millis(), consumer.diagnostics(), client.transport_metrics().snapshot());
+                };
+                let worker_failure = |stage: &str, error: &dyn std::fmt::Debug| {
+                    failed(stage, error);
+                    format!("RF3 worker failed: topic={name} stage={stage} error={error:?}")
+                };
+                let produce = async {
+                    for sequence in 0..64_u64 {
+                        let result = context.scope(producer.send(tidemq_sdk::Message::new(sequence.to_le_bytes().to_vec()).key("combined"))).await;
+                        finish_original_send(result, until)
+                            .await
+                            .map_err(|error| worker_failure("send", &error))?;
+                        produced.store(sequence + 1, Ordering::Relaxed);
+                    }
+                    Ok::<_, String>(())
+                };
+                let consume = async {
+                    let mut seen = std::collections::HashSet::new();
+                    for sequence in 0..64_u64 {
+                        let delivery = context
+                            .scope(consumer.receive())
+                            .await
+                            .map_err(|error| worker_failure("receive", &error))?;
+                        if delivery.key() != Some(b"combined".as_slice()) {
+                            return Err(worker_failure("receive-key", &delivery.key()));
+                        }
+                        if delivery.payload() != sequence.to_le_bytes() {
+                            return Err(worker_failure("receive-payload", &delivery.payload()));
+                        }
+                        let message_id = delivery.message_id();
+                        if !seen.insert(message_id) {
+                            return Err(worker_failure("receive-duplicate", &message_id));
+                        }
+                        let result = context.scope(consumer.ack_cumulative(&delivery)).await;
+                        finish_original_ack(result, until)
+                            .await
+                            .map_err(|error| worker_failure("ack", &error))?;
+                        acknowledged.store(sequence + 1, Ordering::Relaxed);
+                    }
+                    Ok::<_, String>(())
+                };
+                let read_metadata = async {
+                    for _ in 0..METADATA_READS {
+                        let info = metadata_read_until(&client, &name, until, &mut metadata_retries)
+                            .await
+                            .map_err(|error| worker_failure("metadata", &error))?;
+                        if info.id() != topic {
+                            return Err(worker_failure("metadata-verify", &info.id()));
+                        }
+                        metadata_reads.fetch_add(1, Ordering::Relaxed);
+                        tokio::task::yield_now().await;
+                    }
+                    Ok::<_, String>(())
+                };
+                let (produce, consume, read_metadata) = tokio::join!(produce, consume, read_metadata);
+                produce?;
+                consume?;
+                read_metadata?;
+                if Instant::now() >= until {
+                    return Err(worker_failure("deadline", &"The RF3 phase exceeded its forty-second deadline"));
                 }
-                Ok::<_, String>(())
-            };
-            let consume = async {
-                let mut seen = std::collections::HashSet::new();
-                for sequence in 0..64_u64 {
-                    let delivery = context
-                        .scope(consumer.receive())
-                        .await
-                        .map_err(|error| worker_failure("receive", &error))?;
-                    assert_eq!(delivery.key(), Some(b"combined".as_slice()));
-                    assert_eq!(delivery.payload(), &sequence.to_le_bytes());
-                    assert!(seen.insert(delivery.message_id()), "A healthy Stream repeated an identity");
-                    let result = context.scope(consumer.ack_cumulative(&delivery)).await;
-                    finish_original_ack(result, until)
-                        .await
-                        .map_err(|error| worker_failure("ack", &error))?;
-                    acknowledged.store(sequence + 1, Ordering::Relaxed);
+                let produced_count = produced.load(Ordering::Relaxed);
+                if produced_count != 64 {
+                    return Err(worker_failure("produce-count", &produced_count));
                 }
-                Ok::<_, String>(())
-            };
-            let read_metadata = async {
-                for _ in 0..METADATA_READS {
-                    let info = metadata_read_until(&client, &name, until, &mut metadata_retries)
-                        .await
-                        .map_err(|error| worker_failure("metadata", &error))?;
-                    assert_eq!(info.id(), topic);
-                    metadata_reads.fetch_add(1, Ordering::Relaxed);
-                    tokio::task::yield_now().await;
+                let acknowledged_count = acknowledged.load(Ordering::Relaxed);
+                if acknowledged_count != 64 {
+                    return Err(worker_failure("ack-count", &acknowledged_count));
                 }
+                let metadata_count = metadata_reads.load(Ordering::Relaxed);
+                if metadata_count != METADATA_READS {
+                    return Err(worker_failure("metadata-count", &metadata_count));
+                }
+                eprintln!("Separated RF3 phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads={METADATA_READS}, metadata_admission_rejections={}, metadata_unavailable_rejections={}, metadata_unavailable_unknown={}", started.elapsed().as_millis(), metadata_retries.admission_rejected, metadata_retries.unavailable_rejected, metadata_retries.unavailable_unknown);
+                consumer
+                    .close()
+                    .await
+                    .map_err(|error| worker_failure("consumer-close", &error))?;
+                producer
+                    .close()
+                    .await
+                    .map_err(|error| worker_failure("producer-close", &error))?;
                 Ok::<_, String>(())
-            };
-            let (produce, consume, read_metadata) = tokio::join!(produce, consume, read_metadata);
-            produce?;
-            consume?;
-            read_metadata?;
-            assert!(Instant::now() < until, "The RF3 phase extended its original forty-second deadline");
-            assert_eq!(produced.load(Ordering::Relaxed), 64);
-            assert_eq!(acknowledged.load(Ordering::Relaxed), 64);
-            assert_eq!(metadata_reads.load(Ordering::Relaxed), METADATA_READS);
-            eprintln!("Separated RF3 phase completed: topic={name}, elapsed_ms={}, produced=64, acknowledged=64, metadata_reads={METADATA_READS}, metadata_admission_rejections={}, metadata_unavailable_rejections={}, metadata_unavailable_unknown={}", started.elapsed().as_millis(), metadata_retries.admission_rejected, metadata_retries.unavailable_rejected, metadata_retries.unavailable_unknown);
-            consumer
-                .close()
-                .await
-                .map_err(|error| worker_failure("consumer-close", &error))?;
-            producer
-                .close()
-                .await
-                .map_err(|error| worker_failure("producer-close", &error))?;
-            Ok::<_, String>(())
+            }
+            .await;
+            (worker_name, result)
         });
     }
     let mut snapshot = Box::pin(rf3_phase_snapshot(&fixture, &client, &observers, "started"));
@@ -738,13 +767,13 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     loop {
         tokio::select! {
             result = running.join_next() => match result {
-                Some(Ok(Ok(()))) => {},
-                Some(Ok(Err(error))) => {
+                Some(Ok((_topic, Ok(())))) => {},
+                Some(Ok((_topic, Err(error)))) => {
                     failure = Some(error);
                     break;
                 },
                 Some(Err(error)) => {
-                    failure = Some(format!("RF3 worker task failed: {error}"));
+                    failure = Some(format!("RF3 worker task join failed: topics={worker_topics:?} stage=join source={error}"));
                     break;
                 },
                 None => break,
@@ -775,12 +804,12 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     }
     while let Some(result) = running.join_next().await {
         match result {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
+            Ok((_topic, Ok(()))) => {}
+            Ok((_topic, Err(error))) => {
                 failure.get_or_insert(error);
             }
             Err(error) => {
-                failure.get_or_insert_with(|| format!("RF3 worker cleanup failed: {error}"));
+                failure.get_or_insert_with(|| format!("RF3 worker cleanup join failed: topics={worker_topics:?} stage=join source={error}"));
             }
         }
     }
