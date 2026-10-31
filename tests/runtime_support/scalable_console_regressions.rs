@@ -398,50 +398,6 @@ async fn console_http_lost_send_response_recovers_after_restart_without_republis
     fixture.close().await;
 }
 
-async fn quorum_leaders(client: &Client) -> (u64, u64) {
-    let until = Instant::now() + Duration::from_secs(20);
-    loop {
-        match client
-            .console_read(Query::Cluster {
-                after: None,
-                limit: 32,
-            })
-            .await
-        {
-            Ok(Reply::Cluster(page)) => {
-                let leaders: BTreeMap<_, _> = page
-                    .items
-                    .iter()
-                    .flat_map(|node| &node.groups)
-                    .filter(|group| group.quorum_confirmed == Some(true))
-                    .map(|group| {
-                        assert_eq!(group.voters.len(), 3);
-                        (group.role.as_str(), group.leader.unwrap().0)
-                    })
-                    .collect();
-                if let (Some(metadata), Some(storage)) =
-                    (leaders.get("metadata"), leaders.get("storage"))
-                {
-                    return (*metadata, *storage);
-                }
-            }
-            Err(error) => assert!(
-                matches!(
-                    error.kind(),
-                    tidemq_sdk::ErrorKind::Unavailable | tidemq_sdk::ErrorKind::DeadlineExceeded
-                ),
-                "Cluster observation failed permanently: {error:?}"
-            ),
-            reply => panic!("Expected the native cluster observation: {reply:?}"),
-        }
-        assert!(
-            Instant::now() < until,
-            "RF3 quorums did not elect leaders in time"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-}
-
 async fn recover_original_console_send(
     consoles: &Consoles,
     session: &BrowserSession,
@@ -549,6 +505,7 @@ async fn console_http_lost_send_receipt_recovers_across_rf3_leader_failover_with
     let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
     fixture.start_all().await;
     let root = fixture.client(1).await;
+    fixture.wait_for_quorum_leaders(&root, 2).await;
     let tenant = root.admin().create_tenant("acme").await.unwrap();
     let namespace = root.admin().create_namespace(tenant, "app").await.unwrap();
     let topic = root
@@ -634,10 +591,10 @@ async fn console_http_lost_send_receipt_recovers_across_rf3_leader_failover_with
     let delegated =
         super::delegation::assert_bindings(&fixture, &root, operation, &token, tenant, principal)
             .await;
-    let (metadata, storage) = quorum_leaders(&root).await;
+    let (metadata, storage) = fixture.wait_for_quorum_leaders(&root, 2).await;
     fixture.stop(metadata).await;
     fixture.stop(storage).await;
-    let (next_metadata, next_storage) = quorum_leaders(&root).await;
+    let (next_metadata, next_storage) = fixture.wait_for_quorum_leaders(&root, 2).await;
     eprintln!("RF3 Console leaders changed: metadata={next_metadata}, storage={next_storage}");
     assert_ne!(metadata, next_metadata);
     assert_ne!(storage, next_storage);
