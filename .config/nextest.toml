@@ -13,15 +13,5 @@ global-timeout = "40m"
 filter = 'binary(runtime_group_watch) & test(=group_watch_scale::hot_ack_and_control_progress_leave_one_thousand_real_idle_shards_clean_and_fair)'
 slow-timeout = { period = "60s", terminate-after = 18 }
 
-[[profile.ci.overrides]]
-# RF3 phase deadlines are business limits; reserve the full four-CPU test container for this process-heavy fixture.
-filter = 'binary(runtime_queue) & test(=combined::separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable_acks)'
-threads-required = 4
-
-[[profile.ci.overrides]]
-# Process-kill transfer recovery also needs an isolated runtime container to avoid stale-generation races from host contention.
-filter = 'binary(runtime_queue) & test(=scalable::transfer::cancelled_operator_waiter_recovers_the_original_public_transfer_after_process_kill)'
-threads-required = 4
-
 [profile.ci.junit]
 path = "junit.xml"
