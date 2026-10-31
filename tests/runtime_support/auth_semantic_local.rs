@@ -43,31 +43,115 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
         .map(serde_json::from_str::<serde_json::Value>)
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
-    let names = events
-        .iter()
-        .map(|event| event.get("event").and_then(serde_json::Value::as_str))
-        .collect::<Vec<_>>();
-    let installed = names
-        .iter()
-        .position(|event| *event == Some("core_handler_limit_installed"))
-        .unwrap();
-    let applied = names
-        .iter()
-        .position(|event| *event == Some("core_handler_limit_applied"))
-        .unwrap();
-    let first_ready = names
-        .iter()
-        .position(|event| *event == Some("fixture_ready"))
-        .unwrap();
-    assert!(installed < applied);
-    assert!(applied < first_ready);
-    assert_eq!(
-        names
+    let mut previous_elapsed = 0;
+    for event in &events {
+        assert!(
+            event
+                .get("event")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        );
+        assert!(
+            event
+                .get("elapsed_ms")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|elapsed| {
+                    let monotonic = elapsed >= previous_elapsed;
+                    previous_elapsed = elapsed;
+                    monotonic
+                })
+        );
+        assert!(
+            event
+                .get("detail")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        );
+        let name = event
+            .get("event")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        match name {
+            "running_node_started" | "readyz_state_changed" => {
+                let node = event
+                    .get("node_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap();
+                assert!((1..=4).contains(&node));
+            }
+            "core_handler_limit_installed" | "core_handler_limit_applied" => {
+                assert_eq!(
+                    event.get("node_id").and_then(serde_json::Value::as_u64),
+                    Some(1)
+                );
+            }
+            "fixture_start"
+            | "readiness_wait_start"
+            | "fixture_ready"
+            | "readiness_deadline_elapsed"
+            | "readiness_diagnostics_written" => {
+                assert!(event.get("node_id").is_some_and(serde_json::Value::is_null));
+            }
+            other => panic!("Unexpected runtime startup event: {other}"),
+        }
+    }
+    let event_index = |name: &str, node: Option<u64>| {
+        events
             .iter()
-            .filter(|event| **event == Some("fixture_ready"))
-            .count(),
-        2
-    );
+            .position(|event| {
+                event.get("event").and_then(serde_json::Value::as_str) == Some(name)
+                    && event.get("node_id").and_then(serde_json::Value::as_u64) == node
+            })
+            .unwrap()
+    };
+    let installed = event_index("core_handler_limit_installed", Some(1));
+    let metadata_started = event_index("running_node_started", Some(1));
+    let applied = event_index("core_handler_limit_applied", Some(1));
+    let ready_events = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| {
+            event.get("event").and_then(serde_json::Value::as_str) == Some("readyz_state_changed")
+                && event.get("detail").and_then(serde_json::Value::as_str) == Some("readyz_200")
+        })
+        .collect::<Vec<_>>();
+    let first_ready = events
+        .iter()
+        .position(|event| {
+            event.get("event").and_then(serde_json::Value::as_str) == Some("fixture_ready")
+        })
+        .unwrap();
+    let second_ready = events
+        .iter()
+        .enumerate()
+        .find(|(index, event)| {
+            *index > first_ready
+                && event.get("event").and_then(serde_json::Value::as_str) == Some("fixture_ready")
+        })
+        .map(|(index, _)| index)
+        .unwrap();
+    assert!(installed < metadata_started);
+    assert!(metadata_started < applied);
+    assert!(applied < first_ready);
+    for node in [2, 3, 4] {
+        let started = event_index("running_node_started", Some(node));
+        assert!(first_ready < started);
+        assert!(started < second_ready);
+        assert!(ready_events.iter().any(|(index, event)| {
+            *index > started
+                && *index < second_ready
+                && event.get("node_id").and_then(serde_json::Value::as_u64) == Some(node)
+        }));
+    }
+    assert!(ready_events.iter().any(|(index, event)| {
+        *index < first_ready && event.get("node_id").and_then(serde_json::Value::as_u64) == Some(1)
+    }));
+    for node in 1..=4 {
+        assert!(ready_events.iter().any(|(index, event)| {
+            *index < second_ready
+                && event.get("node_id").and_then(serde_json::Value::as_u64) == Some(node)
+        }));
+    }
     let client = runtime.client(4).await;
     let tenant = client.admin().create_tenant("auth").await.unwrap();
     client
