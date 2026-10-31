@@ -268,6 +268,8 @@ impl Error {
                 outcome: Outcome::Rejected,
                 retryable: true,
                 ..
+            } | Self::Rpc {
+                source: tidemq_transport::rpc::Error::Admission { .. },
             }
         )
     }
@@ -445,5 +447,16 @@ mod tests {
             .preserve_uncertainty(true)
             .retry_original()
         );
+    }
+
+    #[test]
+    fn local_rpc_admission_is_retryable_before_submission() {
+        let error = Error::Rpc {
+            source: tidemq_transport::rpc::Error::Admission {
+                resource: "max_pending_requests",
+            },
+        };
+        assert!(error.retry_admission());
+        assert!(!error.outcome_unknown());
     }
 }
