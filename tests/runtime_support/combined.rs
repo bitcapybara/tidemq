@@ -628,10 +628,13 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     let phase_budget = Duration::from_secs(40);
     // Keep the correctness gate bounded; high-frequency metadata pressure belongs in a load test.
     const METADATA_READS: u64 = 16;
+    let worker_gate = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
     let mut running = tokio::task::JoinSet::new();
     for (name, topic, producer, consumer) in work {
         let client = client.clone();
+        let worker_gate = worker_gate.clone();
         running.spawn(async move {
+            let _worker_permit = worker_gate.acquire_owned().await.unwrap();
             let started = Instant::now();
             let until = started + phase_budget;
             let context = tidemq_sdk::RequestContext::with_timeout(phase_budget).unwrap();
