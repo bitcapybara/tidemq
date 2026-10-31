@@ -152,9 +152,9 @@ async fn consumer_prefetch_must_fit_one_full_message_before_creating_a_subscript
     assert_eq!(first.message_id(), sent.message_id());
     assert_eq!(first.payload(), payload);
     stream.ack_cumulative(&first).await.unwrap();
-    let second = tokio::time::timeout(Duration::from_secs(30), queue.receive())
+    let second = tokio::time::timeout(Duration::from_secs(10), queue.receive())
         .await
-        .expect("queue did not receive the committed message within the bounded CI wait")
+        .expect("queue did not receive the committed message within the bounded wait")
         .unwrap();
     assert_eq!(second.message_id(), sent.message_id());
     assert_eq!(second.payload(), payload);

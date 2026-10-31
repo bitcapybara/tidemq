@@ -779,11 +779,11 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
                 None => break,
             },
             result = &mut snapshot, if snapshot_pending => {
+                snapshot_pending = false;
                 if let Err(error) = result {
                     failure = Some(format!("RF3 during evidence write failed: {error}"));
                     break;
                 }
-                snapshot_pending = false;
             },
             _ = samples.tick(), if !snapshot_pending => {
                 snapshot = Box::pin(rf3_phase_snapshot(&fixture, &client, &observers, "during"));
