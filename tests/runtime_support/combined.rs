@@ -686,56 +686,113 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
         Duration::from_secs(5),
     );
     samples.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let completion = tokio::time::timeout(phase_budget + Duration::from_secs(5), async {
-        loop {
-            tokio::select! {
-                result = running.join_next() => match result {
-                    Some(Ok(())) => {},
-                    Some(Err(error)) => return Err(error),
-                    None => return Ok(()),
+    let phase_timeout =
+        tokio::time::sleep_until(Instant::now() + phase_budget + Duration::from_secs(5));
+    tokio::pin!(phase_timeout);
+    let mut failure: Option<String> = None;
+    loop {
+        tokio::select! {
+            result = running.join_next() => match result {
+                Some(Ok(())) => {},
+                Some(Err(error)) => {
+                    failure = Some(format!("RF3 worker task failed: {error}"));
+                    break;
                 },
-                result = &mut snapshot, if snapshot_pending => {
-                    result.expect("RF3 phase evidence write failed");
-                    snapshot_pending = false;
-                },
-                _ = samples.tick(), if !snapshot_pending => {
-                    snapshot = Box::pin(rf3_phase_snapshot(&fixture, &client, &observers, "during"));
-                    snapshot_pending = true;
-                },
+                None => break,
+            },
+            result = &mut snapshot, if snapshot_pending => {
+                if let Err(error) = result {
+                    failure = Some(format!("RF3 during evidence write failed: {error}"));
+                    break;
+                }
+                snapshot_pending = false;
+            },
+            _ = samples.tick(), if !snapshot_pending => {
+                snapshot = Box::pin(rf3_phase_snapshot(&fixture, &client, &observers, "during"));
+                snapshot_pending = true;
+            },
+            _ = &mut phase_timeout => {
+                failure = Some("RF3 phase exceeded its forty-five-second execution bound".into());
+                break;
+            },
+        }
+    }
+    if snapshot_pending && let Err(error) = snapshot.as_mut().await {
+        failure.get_or_insert_with(|| format!("RF3 during evidence write failed: {error}"));
+    }
+    drop(snapshot);
+    if failure.is_some() {
+        running.abort_all();
+    }
+    while let Some(result) = running.join_next().await {
+        if let Err(error) = result {
+            failure.get_or_insert_with(|| format!("RF3 worker cleanup failed: {error}"));
+        }
+    }
+    if failure.is_none() {
+        let stress_topic = observers.first().unwrap().0.clone();
+        let stress_until = Instant::now() + Duration::from_secs(20);
+        let mut stress_retries = MetadataReadRetries::default();
+        for _ in 0..64 {
+            match metadata_read_until(&client, &stress_topic, stress_until, &mut stress_retries)
+                .await
+            {
+                Ok(info) => assert_eq!(info.name(), stress_topic),
+                Err(error) => {
+                    failure = Some(format!(
+                        "RF3 high-frequency metadata phase failed: {error:?}"
+                    ));
+                    break;
+                }
             }
         }
-    }).await;
-    drop(snapshot);
-    let stage = if matches!(&completion, Ok(Ok(()))) {
+        if failure.is_none() {
+            eprintln!(
+                "Separated RF3 high-frequency metadata phase completed: topic={stress_topic}, reads=64, admission_rejections={}, unavailable_rejections={}, unavailable_unknown={}",
+                stress_retries.admission_rejected,
+                stress_retries.unavailable_rejected,
+                stress_retries.unavailable_unknown
+            );
+        }
+    }
+    let stage = if failure.is_none() {
         "finished"
     } else {
         "failed"
     };
-    rf3_phase_snapshot(&fixture, &client, &observers, stage)
-        .await
-        .unwrap();
-    completion.unwrap().unwrap();
-    let stress_topic = observers.first().unwrap().0.clone();
-    let stress_until = Instant::now() + Duration::from_secs(20);
-    let mut stress_retries = MetadataReadRetries::default();
-    for _ in 0..64 {
-        let info = metadata_read_until(&client, &stress_topic, stress_until, &mut stress_retries)
-            .await
-            .unwrap();
-        assert_eq!(info.name(), stress_topic);
+    if let Err(error) = rf3_phase_snapshot(&fixture, &client, &observers, stage).await {
+        failure.get_or_insert_with(|| format!("RF3 {stage} evidence write failed: {error}"));
     }
-    eprintln!(
-        "Separated RF3 high-frequency metadata phase completed: topic={stress_topic}, reads=64, admission_rejections={}, unavailable_rejections={}, unavailable_unknown={}",
-        stress_retries.admission_rejected,
-        stress_retries.unavailable_rejected,
-        stress_retries.unavailable_unknown
-    );
-    client.close().await.unwrap();
-    for (_, mut process) in processes {
-        process.kill().await.unwrap();
-        let _ = process.wait().await.unwrap();
+    match tokio::time::timeout(Duration::from_secs(10), client.close()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            failure.get_or_insert_with(|| format!("RF3 client cleanup failed: {error:?}"));
+        }
+        Err(_) => {
+            failure
+                .get_or_insert_with(|| "RF3 client cleanup exceeded its ten-second bound".into());
+        }
+    }
+    for (node, mut process) in processes {
+        if let Err(error) = process.kill().await {
+            failure.get_or_insert_with(|| format!("RF3 process {node} kill failed: {error}"));
+        }
+        match tokio::time::timeout(Duration::from_secs(10), process.wait()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                failure.get_or_insert_with(|| format!("RF3 process {node} wait failed: {error}"));
+            }
+            Err(_) => {
+                failure.get_or_insert_with(|| {
+                    format!("RF3 process {node} wait exceeded its ten-second bound")
+                });
+            }
+        }
     }
     fixture.close().await;
+    if let Some(error) = failure {
+        panic!("Separated RF3 phase failed: {error}");
+    }
 }
 
 #[tokio::test]

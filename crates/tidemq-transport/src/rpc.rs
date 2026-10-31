@@ -493,6 +493,44 @@ impl RpcClient {
         }
     }
 
+    pub fn try_snapshot(&self) -> Option<RpcSnapshot> {
+        let ack_writer = self.inner.ack_writer.try_lock().ok()?;
+        let request_writer = self.inner.request_writer.try_lock().ok()?;
+        let pending = self.inner.state.pending.try_lock().ok()?;
+        Some(RpcSnapshot {
+            lanes: self
+                .inner
+                .writers
+                .iter()
+                .filter(|lane| !lane.sender.is_closed())
+                .count()
+                + self
+                    .inner
+                    .core_writers
+                    .iter()
+                    .filter(|lane| !lane.sender.is_closed())
+                    .count()
+                + usize::from(
+                    ack_writer
+                        .as_ref()
+                        .is_some_and(|lane| !lane.sender.is_closed()),
+                )
+                + usize::from(
+                    request_writer
+                        .as_ref()
+                        .is_some_and(|lane| !lane.sender.is_closed()),
+                ),
+            admitted_requests: self
+                .inner
+                .max_pending_requests
+                .saturating_sub(self.inner.state.available_requests()),
+            admitted_bytes: (self.inner.max_pending_bytes as usize)
+                .saturating_sub(self.inner.state.available_bytes()),
+            pending_responses: Some(pending.len()),
+            closed: self.is_closed(),
+        })
+    }
+
     /// A caller deadline removes its waiter, never resets a lane shared with other requests.
     pub async fn call(&self, frame: Frame, deadline: Instant) -> Result<ReceivedFrame> {
         self.submit(frame, deadline).await?.receive().await

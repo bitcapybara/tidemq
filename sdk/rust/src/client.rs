@@ -346,7 +346,7 @@ impl Client {
                 let snapshot = pool
                     .try_lock()
                     .ok()
-                    .and_then(|guard| guard.as_ref().map(|rpc| rpc.snapshot()));
+                    .and_then(|guard| guard.as_ref().and_then(|rpc| rpc.try_snapshot()));
                 (name, snapshot)
             })
             .collect()
