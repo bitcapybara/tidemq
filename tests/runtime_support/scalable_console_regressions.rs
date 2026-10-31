@@ -505,7 +505,7 @@ async fn console_http_lost_send_receipt_recovers_across_rf3_leader_failover_with
     let mut fixture = Fixture::new(&nodes, &[11, 12, 13], &[21, 22, 23]).await;
     fixture.start_all().await;
     let root = fixture.client(1).await;
-    fixture.wait_for_quorum_leaders(1, 2).await;
+    fixture.wait_for_quorum_leaders(&root, 2).await;
     let tenant = root.admin().create_tenant("acme").await.unwrap();
     let namespace = root.admin().create_namespace(tenant, "app").await.unwrap();
     let topic = root
@@ -591,10 +591,10 @@ async fn console_http_lost_send_receipt_recovers_across_rf3_leader_failover_with
     let delegated =
         super::delegation::assert_bindings(&fixture, &root, operation, &token, tenant, principal)
             .await;
-    let (metadata, storage) = fixture.wait_for_quorum_leaders(1, 2).await;
+    let (metadata, storage) = fixture.wait_for_quorum_leaders(&root, 2).await;
     fixture.stop(metadata).await;
     fixture.stop(storage).await;
-    let (next_metadata, next_storage) = fixture.wait_for_quorum_leaders(1, 2).await;
+    let (next_metadata, next_storage) = fixture.wait_for_quorum_leaders(&root, 2).await;
     eprintln!("RF3 Console leaders changed: metadata={next_metadata}, storage={next_storage}");
     assert_ne!(metadata, next_metadata);
     assert_ne!(storage, next_storage);
