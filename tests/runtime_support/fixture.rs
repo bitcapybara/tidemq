@@ -423,13 +423,15 @@ impl Fixture {
     ) {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            if let Ok(tidemq_protocol::console::Reply::Cluster(page)) = client
-                .console_read(tidemq_protocol::console::Query::Cluster {
-                    after: None,
-                    limit: 32,
-                })
-                .await
-            {
+            let query = tidemq_sdk::RequestContext::with_deadline(deadline)
+                .scope(
+                    client.console_read(tidemq_protocol::console::Query::Cluster {
+                        after: None,
+                        limit: 32,
+                    }),
+                )
+                .await;
+            if let Ok(tidemq_protocol::console::Reply::Cluster(page)) = query {
                 let stable = page
                     .items
                     .iter()
