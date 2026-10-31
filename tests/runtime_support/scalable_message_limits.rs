@@ -140,6 +140,19 @@ async fn consumer_prefetch_must_fit_one_full_message_before_creating_a_subscript
         .await
         .unwrap();
     let producer = client.new_producer(topic).build().await.unwrap();
+    let assignment_deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let stream_assigned = stream.diagnostics().unwrap().assigned_targets > 0;
+        let queue_assigned = queue.diagnostics().unwrap().assigned_targets > 0;
+        if stream_assigned && queue_assigned {
+            break;
+        }
+        assert!(
+            Instant::now() < assignment_deadline,
+            "consumers did not receive an assignment before publishing"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let payload = vec![9; 256 * 1024];
     let sent = producer
         .send(tidemq_sdk::Message::new(payload.clone()))

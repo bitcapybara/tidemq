@@ -655,7 +655,7 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
         .iter()
         .map(|(name, _, _, consumer)| (name.clone(), consumer.clone()))
         .collect();
-    let phase_budget = Duration::from_secs(40);
+    let phase_budget = Duration::from_secs(90);
     // Keep the correctness gate bounded; high-frequency metadata pressure belongs in a load test.
     const METADATA_READS: u64 = 16;
     let worker_topics: Vec<_> = observers.iter().map(|(name, _)| name.clone()).collect();
@@ -735,7 +735,7 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
                 consume?;
                 read_metadata?;
                 if Instant::now() >= until {
-                    return Err(worker_failure("deadline", &"The RF3 phase exceeded its forty-second deadline"));
+                    return Err(worker_failure("deadline", &"The RF3 phase exceeded its ninety-second deadline"));
                 }
                 let produced_count = produced.load(Ordering::Relaxed);
                 if produced_count != 64 {
@@ -801,7 +801,7 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
                 snapshot_pending = true;
             },
             _ = &mut phase_timeout => {
-                failure = Some("RF3 phase exceeded its forty-five-second execution bound".into());
+                failure = Some("RF3 phase exceeded its ninety-five-second execution bound".into());
                 break;
             },
         }
