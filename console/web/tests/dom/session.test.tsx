@@ -50,7 +50,9 @@ it("validates login, keeps a rejected token out of the DOM/storage, signs in and
   expect(screen.getByLabelText("Current route")).toHaveTextContent("/");
   await user.click(screen.getByRole("button", { name: "Sign out" }));
   expect(await screen.findByLabelText("Personal token")).toBeVisible();
-  expect(screen.getByLabelText("Current route")).toHaveTextContent("/login");
+  await waitFor(() =>
+    expect(screen.getByLabelText("Current route")).toHaveTextContent("/login"),
+  );
 });
 
 it("keeps sign-in disabled while the initial session request is pending", async () => {
