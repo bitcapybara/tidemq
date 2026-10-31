@@ -1229,6 +1229,78 @@ mod tests {
         .unwrap()
     }
 
+    fn snapshot_client() -> RpcClient {
+        let lane = || {
+            let (sender, _receiver) = mpsc::channel(1);
+            Lane {
+                sender,
+                identity: Arc::new(()),
+            }
+        };
+        RpcClient {
+            inner: Arc::new(Inner {
+                state: Arc::new(State {
+                    pending: Mutex::new(HashMap::new()),
+                    closed: AtomicBool::new(false),
+                    failure_reported: AtomicBool::new(false),
+                    draining: AtomicBool::new(false),
+                    slots: Arc::new(Semaphore::new(8)),
+                    bytes: Arc::new(Semaphore::new(1024)),
+                    connection: None,
+                    completion: None,
+                    core: None,
+                    shared: None,
+                    protected: None,
+                }),
+                writers: Vec::new(),
+                core_writers: Vec::new(),
+                request_writer: Mutex::new(Some(lane())),
+                request_open: tokio::sync::Mutex::new(()),
+                protocol: ProtocolLimits::default(),
+                next_lane: AtomicUsize::new(0),
+                ack_writer: Mutex::new(Some(lane())),
+                ack_open: tokio::sync::Mutex::new(()),
+                tasks: Mutex::new(Vec::new()),
+                _session: None,
+                max_pending_requests: 8,
+                max_pending_bytes: 1024,
+                read_idle_timeout: Duration::from_secs(1),
+            }),
+        }
+    }
+
+    #[test]
+    fn try_snapshot_returns_none_when_any_snapshot_lock_is_contended() {
+        let client = snapshot_client();
+
+        let ack_guard = client.inner.ack_writer.lock().unwrap();
+        assert!(client.try_snapshot().is_none());
+        drop(ack_guard);
+
+        let request_guard = client.inner.request_writer.lock().unwrap();
+        assert!(client.try_snapshot().is_none());
+        drop(request_guard);
+
+        let pending_guard = client.inner.state.pending.lock().unwrap();
+        assert!(client.try_snapshot().is_none());
+        drop(pending_guard);
+    }
+
+    #[test]
+    fn try_snapshot_matches_snapshot_without_contention() {
+        let client = snapshot_client();
+        let expected = client.snapshot();
+        let actual = client
+            .try_snapshot()
+            .expect("an uncontended RPC snapshot should be available");
+
+        assert_eq!(actual.lanes, expected.lanes);
+        assert_eq!(actual.admitted_requests, expected.admitted_requests);
+        assert_eq!(actual.admitted_bytes, expected.admitted_bytes);
+        assert_eq!(actual.pending_responses, expected.pending_responses);
+        assert_eq!(actual.closed, expected.closed);
+    }
+
     #[tokio::test]
     async fn dropping_an_old_waiter_cannot_remove_a_new_waiter_with_the_same_id() {
         let state = Arc::new(State {

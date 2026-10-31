@@ -624,19 +624,33 @@ pub(crate) async fn http(address: SocketAddr, path: &str) -> String {
 }
 
 pub(crate) async fn http_until(address: SocketAddr, path: &str, deadline: Instant) -> String {
+    http_checked_until(address, path, deadline)
+        .await
+        .unwrap_or_default()
+}
+
+pub(crate) async fn http_checked_until(
+    address: SocketAddr,
+    path: &str,
+    deadline: Instant,
+) -> std::io::Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     tokio::time::timeout_at(deadline, async {
-        let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+        let mut connection = tokio::net::TcpStream::connect(address).await?;
         connection
             .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
-            .await
-            .unwrap();
+            .await?;
         let mut response = String::new();
-        connection.read_to_string(&mut response).await.unwrap();
-        response
+        connection.read_to_string(&mut response).await?;
+        Ok::<_, std::io::Error>(response)
     })
     .await
-    .unwrap_or_default()
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "management HTTP request exceeded its deadline",
+        )
+    })?
 }
 
 pub(crate) async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {

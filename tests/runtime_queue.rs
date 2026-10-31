@@ -444,16 +444,20 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
 async fn node_recovery_diagnostics(
     address: std::net::SocketAddr,
     until: Instant,
-) -> Option<serde_json::Value> {
-    tokio::time::timeout_at(until, http(address, "/diagnostics"))
-        .await
-        .ok()
-        .and_then(|response| {
-            response
-                .split_once("\r\n\r\n")
-                .map(|(_, body)| body.to_owned())
-        })
-        .and_then(|body| serde_json::from_str(&body).ok())
+) -> std::io::Result<serde_json::Value> {
+    let response = http_checked_until(address, "/diagnostics", until).await?;
+    let (_, body) = response.split_once("\r\n\r\n").ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "management diagnostics response has no HTTP body",
+        )
+    })?;
+    serde_json::from_str(body).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("management diagnostics response is not JSON: {error}"),
+        )
+    })
 }
 
 async fn consumer_recovery_snapshot(
@@ -471,7 +475,7 @@ async fn consumer_recovery_snapshot(
         tasks.push((
             *node,
             tokio::spawn(async move {
-                let diagnostics = node_recovery_diagnostics(address, until).await;
+                let diagnostics = node_recovery_diagnostics(address, until).await.ok();
                 let metrics = tokio::time::timeout_at(until, http(address, "/metrics"))
                     .await
                     .ok();
