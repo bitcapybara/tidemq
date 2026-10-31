@@ -410,6 +410,7 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
     ));
     let mut resources_pending = true;
     let mut resource_failure: Option<String> = None;
+    let mut consume_failure: Option<String> = None;
     let mut samples = tokio::time::interval(Duration::from_secs(1));
     samples.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -423,7 +424,11 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
                 {
                     resource_failure.get_or_insert(error);
                 }
-                result.expect("The original consumer recovery failed; see its preserved snapshot");
+                if let Err(error) = result {
+                    consume_failure = Some(format!(
+                        "The original consumer recovery failed; see its preserved snapshot: {error}"
+                    ));
+                }
                 break;
             },
             result = &mut resources, if resources_pending => {
@@ -439,15 +444,56 @@ async fn independent_rf3_processes_preserve_acks_and_stop_receipts_without_quoru
         }
     }
     drop(resources);
-    consumer.close().await.unwrap();
-    producer.close().await.unwrap();
-    client.close().await.unwrap();
+    let mut cleanup_failure: Option<String> = None;
+    match tokio::time::timeout(Duration::from_secs(10), consumer.close()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => cleanup_failure = Some(format!("Consumer cleanup failed: {error:?}")),
+        Err(_) => cleanup_failure = Some("Consumer cleanup exceeded its ten-second bound".into()),
+    }
+    match tokio::time::timeout(Duration::from_secs(10), producer.close()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            cleanup_failure.get_or_insert_with(|| format!("Producer cleanup failed: {error:?}"));
+        }
+        Err(_) => {
+            cleanup_failure
+                .get_or_insert_with(|| "Producer cleanup exceeded its ten-second bound".into());
+        }
+    }
+    match tokio::time::timeout(Duration::from_secs(10), client.close()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            cleanup_failure.get_or_insert_with(|| format!("Client cleanup failed: {error:?}"));
+        }
+        Err(_) => {
+            cleanup_failure
+                .get_or_insert_with(|| "Client cleanup exceeded its ten-second bound".into());
+        }
+    }
     for process in processes.values_mut() {
-        process.kill().await.unwrap();
-        let _ = process.wait().await.unwrap();
+        match tokio::time::timeout(Duration::from_secs(10), process.kill()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                cleanup_failure.get_or_insert_with(|| format!("Process kill failed: {error}"));
+            }
+            Err(_) => {
+                cleanup_failure
+                    .get_or_insert_with(|| "Process kill exceeded its ten-second bound".into());
+            }
+        }
+        match tokio::time::timeout(Duration::from_secs(10), process.wait()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                cleanup_failure.get_or_insert_with(|| format!("Process wait failed: {error}"));
+            }
+            Err(_) => {
+                cleanup_failure
+                    .get_or_insert_with(|| "Process wait exceeded its ten-second bound".into());
+            }
+        }
     }
     fixture.close().await;
-    if let Some(error) = resource_failure {
+    if let Some(error) = consume_failure.or(resource_failure).or(cleanup_failure) {
         panic!("Consumer recovery resource snapshot failed: {error}");
     }
 }

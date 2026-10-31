@@ -565,15 +565,26 @@ async fn phase_resource_evidence_retains_real_diagnostics_and_appends_complete_r
     let path = std::path::Path::new("target/ci/resource-observations")
         .join(fixture.directory.file_name().unwrap())
         .join("rf3-phase-resources.jsonl");
-    rf3_phase_snapshot(&fixture, &client, &[], "started")
-        .await
-        .unwrap();
-    rf3_phase_snapshot(&fixture, &client, &[], "finished")
-        .await
-        .unwrap();
-    let bytes = tokio::fs::read_to_string(&path).await.unwrap();
-    client.close().await.unwrap();
+    let evidence = async {
+        rf3_phase_snapshot(&fixture, &client, &[], "started")
+            .await
+            .map_err(|error| format!("started snapshot failed: {error}"))?;
+        rf3_phase_snapshot(&fixture, &client, &[], "finished")
+            .await
+            .map_err(|error| format!("finished snapshot failed: {error}"))?;
+        tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|error| format!("resource evidence read failed: {error}"))
+    }
+    .await;
+    let client_cleanup = tokio::time::timeout(Duration::from_secs(10), client.close()).await;
     fixture.close().await;
+    let bytes = evidence.unwrap_or_else(|error| panic!("{error}"));
+    match client_cleanup {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => panic!("Resource evidence client cleanup failed: {error:?}"),
+        Err(_) => panic!("Resource evidence client cleanup exceeded its ten-second bound"),
+    }
     let records: Vec<serde_json::Value> = bytes
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -858,8 +869,16 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
         }
     }
     for (node, mut process) in processes {
-        if let Err(error) = process.kill().await {
-            failure.get_or_insert_with(|| format!("RF3 process {node} kill failed: {error}"));
+        match tokio::time::timeout(Duration::from_secs(10), process.kill()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                failure.get_or_insert_with(|| format!("RF3 process {node} kill failed: {error}"));
+            }
+            Err(_) => {
+                failure.get_or_insert_with(|| {
+                    format!("RF3 process {node} kill exceeded its ten-second bound")
+                });
+            }
         }
         match tokio::time::timeout(Duration::from_secs(10), process.wait()).await {
             Ok(Ok(_)) => {}
