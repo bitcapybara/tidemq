@@ -5,6 +5,7 @@ pub(crate) struct Fixture {
     pub(crate) roots: Bytes,
     pub(crate) configs: BTreeMap<u64, Config>,
     pub(crate) running: BTreeMap<u64, RunningNode>,
+    created_at: Instant,
 }
 
 async fn embedded_console(directory: &std::path::Path) -> tidemq::console::EmbeddedConsoleConfig {
@@ -211,6 +212,7 @@ impl Fixture {
             roots: ca.pem().into(),
             configs,
             running: BTreeMap::new(),
+            created_at: Instant::now(),
         }
     }
 
@@ -220,11 +222,49 @@ impl Fixture {
     }
 
     pub(crate) async fn start_all_with_ready_timeout(&mut self, timeout: Duration) {
+        let detail = format!("timeout_ms={}", timeout.as_millis());
+        self.record_startup_event("fixture_start", None, &detail)
+            .await;
         for (node, config) in &self.configs {
+            let started = Instant::now();
             self.running
                 .insert(*node, RunningNode::start(config.clone()).await.unwrap());
+            let detail = format!("startup_ms={}", started.elapsed().as_millis());
+            self.record_startup_event("running_node_started", Some(*node), &detail)
+                .await;
         }
         self.wait_ready_with_timeout(timeout).await;
+    }
+
+    pub(crate) async fn record_startup_event(&self, event: &str, node: Option<u64>, detail: &str) {
+        use tokio::io::AsyncWriteExt;
+
+        let entry = serde_json::json!({
+            "event": event,
+            "node_id": node,
+            "elapsed_ms": self.created_at.elapsed().as_millis(),
+            "detail": detail,
+        });
+        let line = match serde_json::to_string(&entry) {
+            Ok(line) => line,
+            Err(error) => {
+                eprintln!("Failed to encode runtime startup event: {error}");
+                return;
+            }
+        };
+        let path = self.directory.join("readiness-timeline.jsonl");
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .await;
+        let Ok(mut file) = file else {
+            eprintln!("Failed to open runtime startup timeline {}", path.display());
+            return;
+        };
+        if let Err(error) = file.write_all(format!("{line}\n").as_bytes()).await {
+            eprintln!("Failed to write runtime startup timeline: {error}");
+        }
     }
 
     pub(crate) async fn wait_ready(&self) {
@@ -233,17 +273,38 @@ impl Fixture {
 
     async fn wait_ready_with_timeout(&self, timeout: Duration) {
         let deadline = Instant::now() + timeout;
+        self.record_startup_event("readiness_wait_start", None, "waiting_for_all_nodes")
+            .await;
+        let mut states = BTreeMap::new();
         loop {
             let mut ready = true;
-            for node in self.running.values() {
-                ready &= http_until(node.management_address, "/readyz", deadline)
-                    .await
-                    .starts_with("HTTP/1.1 200");
+            for (id, node) in &self.running {
+                let response = http_until(node.management_address, "/readyz", deadline).await;
+                let node_ready = response.starts_with("HTTP/1.1 200");
+                ready &= node_ready;
+                if states.get(id).copied() != Some(node_ready) {
+                    states.insert(*id, node_ready);
+                    let detail = if node_ready {
+                        "readyz_200"
+                    } else {
+                        "readyz_not_ready"
+                    };
+                    self.record_startup_event("readyz_state_changed", Some(*id), detail)
+                        .await;
+                }
             }
             if ready {
+                self.record_startup_event("fixture_ready", None, "all_nodes_ready")
+                    .await;
                 return;
             }
             if Instant::now() >= deadline {
+                self.record_startup_event(
+                    "readiness_deadline_elapsed",
+                    None,
+                    "collecting_diagnostics",
+                )
+                .await;
                 let mut diagnostics = BTreeMap::new();
                 for (id, node) in &self.running {
                     let diagnostics_deadline = Instant::now() + Duration::from_secs(2);
@@ -263,6 +324,12 @@ impl Fixture {
                 )
                 .await
                 .unwrap();
+                self.record_startup_event(
+                    "readiness_diagnostics_written",
+                    None,
+                    "readiness-failure.json",
+                )
+                .await;
                 panic!(
                     "Runtime readiness deadline elapsed; inspect {}",
                     self.directory.join("readiness-failure.json").display()
