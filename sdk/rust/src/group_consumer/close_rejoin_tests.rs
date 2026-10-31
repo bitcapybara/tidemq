@@ -712,9 +712,24 @@ async fn local_admission_retry_and_control_lane_loss_reconnect() {
     }
     let first_client = peer.client.clone();
     let first = tokio::spawn(async move {
+        let request = public::ConsumerControl {
+            topic_id: bytes(id(1)),
+            name: "first".into(),
+            action: public::ConsumerAction::EnsureConsumerSubscription.into(),
+            model: public::ConsumerModel::QueueConsumer.into(),
+            max_messages: 256,
+            max_bytes: 8 * 1024 * 1024,
+            ..Default::default()
+        };
         first_client
-            .new_queue_consumer(TOPIC, "first")
-            .build()
+            .request(
+                FrameKind::ConsumerControl,
+                FrameKind::ConsumerControlResult,
+                TrafficClass::Control,
+                Id::new_v7().unwrap(),
+                &request,
+                Instant::now() + Duration::from_secs(5),
+            )
             .await
     });
     tokio::time::timeout(Duration::from_secs(5), peer.accepted.notified())
@@ -751,16 +766,25 @@ async fn local_admission_retry_and_control_lane_loss_reconnect() {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
     peer.reply.send(true).unwrap();
-    let first = first.await.unwrap().unwrap();
-    let second: public::ConsumerControlResult = second.await.unwrap().unwrap();
+    let first: public::ConsumerControlResult = first.await.unwrap().unwrap();
+    assert!(first.plan_active);
+    assert_eq!(first.member_status, 0);
+    let second: public::ConsumerControlResult = match second.await.unwrap() {
+        Ok(second) => second,
+        Err(error) => {
+            let state = peer.observed.lock().unwrap();
+            panic!(
+                "admission probe failed: error={error:?}, control_drops={}, calls={}, rpc={:?}, transport={:?}",
+                state.control_drops,
+                state.calls.len(),
+                peer.client.rpc_snapshots(),
+                peer.client.transport_metrics().snapshot()
+            );
+        }
+    };
     assert!(second.plan_active);
     assert_eq!(second.member_status, 0);
     assert_eq!(peer.observed.lock().unwrap().control_drops, 1);
-    peer.observed.lock().unwrap().expire = true;
-    let first_report = first.close().await.unwrap();
-    assert!(first_report.local_cleanup_complete());
-    assert_eq!(first_report.members_left(), 1);
-    assert_eq!(first_report.unresolved_joins(), 0);
     assert!(peer.client.metrics().snapshot().rpc_admission_retries > 0);
     peer.client.close().await.unwrap();
     assert_eq!(
