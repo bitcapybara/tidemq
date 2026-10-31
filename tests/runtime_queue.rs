@@ -114,12 +114,16 @@ async fn management_probe_deadline_bounds_an_unresponsive_listener() {
         let (_connection, _) = listener.accept().await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
     });
-    let response = http_until(
-        address,
-        "/readyz",
-        Instant::now() + Duration::from_millis(50),
+    let response = tokio::time::timeout(
+        Duration::from_millis(500),
+        http_until(
+            address,
+            "/readyz",
+            Instant::now() + Duration::from_millis(50),
+        ),
     )
-    .await;
+    .await
+    .expect("Management probe exceeded its outer test deadline");
     assert!(response.is_empty());
     accept.abort();
 }
