@@ -492,12 +492,17 @@ fn control_reply(frame: &Frame, session: &Session, state: &mut Observed) -> (Fra
 }
 
 async fn rejoining(peer: &Peer) -> QueueConsumer {
-    let consumer = peer
-        .client
-        .new_queue_consumer(TOPIC, "jobs")
-        .build()
-        .await
-        .unwrap();
+    let consumer = match peer.client.new_queue_consumer(TOPIC, "jobs").build().await {
+        Ok(consumer) => consumer,
+        Err(error) => {
+            eprintln!(
+                "Close/rejoin fixture consumer build failed: error={error:?}, rpc={:?}, transport={:?}",
+                peer.client.rpc_snapshots().await,
+                peer.client.transport_metrics().snapshot()
+            );
+            panic!("Close/rejoin fixture consumer build failed")
+        }
+    };
     {
         let mut state = peer.observed.lock().unwrap();
         state.consumer = Arc::downgrade(&consumer.owner.core);

@@ -17,6 +17,9 @@ use tidemq_transport::{
     budget::{MemoryBudget, MemoryLimits},
     rpc::{RpcBudget, RpcClient, RpcConfig},
 };
+
+#[cfg(test)]
+use tidemq_transport::rpc::RpcSnapshot;
 use tokio::{
     sync::{Mutex, Semaphore},
     time::{Instant, timeout_at},
@@ -329,6 +332,24 @@ impl Drop for ClientOwner {
 }
 
 impl Client {
+    #[cfg(test)]
+    pub(crate) async fn rpc_snapshots(&self) -> Vec<(&'static str, RpcSnapshot)> {
+        let pools = [
+            ("control", &self.inner.pool.control),
+            ("produce", &self.inner.pool.produce),
+            ("delivery", &self.inner.pool.delivery),
+            ("bulk", &self.inner.pool.bulk),
+        ];
+        let mut snapshots = Vec::new();
+        for (name, pool) in pools {
+            let guard = pool.lock().await;
+            if let Some(rpc) = guard.as_ref() {
+                snapshots.push((name, rpc.snapshot()));
+            }
+        }
+        snapshots
+    }
+
     /// Connects within the configured total connect budget; reconnects resolve the endpoint again.
     pub(crate) async fn connect(
         config: ClientConfig,
