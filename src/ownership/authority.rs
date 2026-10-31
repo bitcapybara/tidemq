@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use snafu::{ResultExt, Snafu};
 use tidemq_protocol::Id;
@@ -138,10 +138,34 @@ impl MetadataAuthority {
         &self,
         query: impl FnOnce(&MetadataState, Option<CommitPosition>) -> Result<R, Error> + Send,
     ) -> Result<(R, Instant), Error> {
+        let deadline = Instant::now()
+            .checked_add(self.policy.ttl)
+            .ok_or(Error::InvalidConfiguration)?;
+        self.read_until(deadline, query).await
+    }
+
+    /// Bound a remote authority projection by the caller's deadline as well as its freshness TTL.
+    pub(super) async fn read_until<R: Send>(
+        &self,
+        deadline: Instant,
+        query: impl FnOnce(&MetadataState, Option<CommitPosition>) -> Result<R, Error> + Send,
+    ) -> Result<(R, Instant), Error> {
         let started = Instant::now();
-        let result = tokio::time::timeout(self.policy.ttl, async {
+        let deadline = deadline.min(
+            started
+                .checked_add(self.policy.ttl)
+                .ok_or(Error::InvalidConfiguration)?,
+        );
+        if deadline <= started {
+            let expired = tokio::time::timeout(Duration::ZERO, std::future::pending::<()>()).await;
+            let Err(source) = expired else {
+                return Err(Error::InvalidConfiguration);
+            };
+            return Err(Error::ReadDeadline { source });
+        }
+        let result = tokio::time::timeout(deadline.saturating_duration_since(started), async {
             self.group
-                .ensure_read(tokio::time::Instant::now() + self.policy.ttl)
+                .ensure_read(tokio::time::Instant::from_std(deadline))
                 .await
                 .map_err(|source| Error::LinearizableRead {
                     source: Box::new(source),
@@ -438,4 +462,44 @@ fn commit_position(position: Option<CommitPosition>) -> Result<CommitPosition, E
     position
         .filter(|position| position.validate())
         .ok_or(Error::MissingCommitPosition)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn metadata_read_honors_an_expired_caller_deadline() {
+        let directory = std::env::temp_dir().join(format!(
+            "tidemq-authority-deadline-{}",
+            Id::new_v7().unwrap()
+        ));
+        let cluster = Id::new_v7().unwrap();
+        let group = GroupHandle::Local(
+            crate::execution::LocalGroup::open(
+                &directory,
+                crate::execution::StorageIdentity::new::<MetadataState>(cluster, 1, 1),
+                Default::default(),
+                MetadataState::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let authority =
+            MetadataAuthority::new(group.clone(), cluster, 1, ControlPolicy::default()).unwrap();
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
+        let result = authority.read_until(deadline, |_, _| Ok(())).await;
+        assert!(matches!(
+            result,
+            Err(Error::ReadDeadline { .. }) | Err(Error::LinearizableRead { .. })
+        ));
+        group
+            .close(tokio::time::Instant::now() + Duration::from_secs(1))
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(directory).await.unwrap();
+    }
 }
