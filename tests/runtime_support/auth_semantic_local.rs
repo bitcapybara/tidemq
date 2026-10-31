@@ -21,6 +21,7 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
     .await;
     let cluster: Id = runtime.configs.get(&1).unwrap().cluster_id.parse().unwrap();
     let limit = CoreHandlerLimit::install(cluster, 1, 1).unwrap();
+    runtime.enable_startup_timeline();
     runtime
         .record_startup_event("core_handler_limit_installed", Some(1), "limit=1")
         .await;

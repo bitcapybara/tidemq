@@ -6,6 +6,7 @@ pub(crate) struct Fixture {
     pub(crate) configs: BTreeMap<u64, Config>,
     pub(crate) running: BTreeMap<u64, RunningNode>,
     created_at: Instant,
+    timeline_enabled: bool,
 }
 
 async fn embedded_console(directory: &std::path::Path) -> tidemq::console::EmbeddedConsoleConfig {
@@ -213,6 +214,7 @@ impl Fixture {
             configs,
             running: BTreeMap::new(),
             created_at: Instant::now(),
+            timeline_enabled: false,
         }
     }
 
@@ -242,7 +244,17 @@ impl Fixture {
             .await;
     }
 
+    // The auth semantic test is compiled into the library test target; other targets do not use this opt-in.
+    #[allow(dead_code)]
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn enable_startup_timeline(&mut self) {
+        self.timeline_enabled = true;
+    }
+
     pub(crate) async fn record_startup_event(&self, event: &str, node: Option<u64>, detail: &str) {
+        if !self.timeline_enabled {
+            return;
+        }
         use tokio::io::AsyncWriteExt;
 
         let entry = serde_json::json!({
@@ -397,6 +409,45 @@ impl Fixture {
             assert!(
                 Instant::now() < deadline,
                 "RF3 quorums did not elect leaders in time"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    pub(crate) async fn wait_for_group_leader(
+        &self,
+        client: &Client,
+        group_id: u64,
+        role: &str,
+        voter_count: usize,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(tidemq_protocol::console::Reply::Cluster(page)) = client
+                .console_read(tidemq_protocol::console::Query::Cluster {
+                    after: None,
+                    limit: 32,
+                })
+                .await
+            {
+                let stable = page
+                    .items
+                    .iter()
+                    .flat_map(|node| &node.groups)
+                    .any(|group| {
+                        group.id == tidemq_protocol::console::Decimal(group_id)
+                            && group.role == role
+                            && group.voters.len() == voter_count
+                            && group.leader.is_some()
+                            && group.quorum_confirmed == Some(true)
+                    });
+                if stable {
+                    return;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Group {group_id} ({role}) did not regain a stable leader"
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }

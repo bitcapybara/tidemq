@@ -357,6 +357,13 @@ async fn console_http_lost_send_response_recovers_after_restart_without_republis
         );
     }
     fixture.wait_ready().await;
+    let probe = fixture.client(1).await;
+    fixture
+        .wait_for_group_leader(&probe, 1, "metadata", 1)
+        .await;
+    fixture.wait_for_group_leader(&probe, 2, "storage", 1).await;
+    fixture.wait_for_group_leader(&probe, 3, "storage", 1).await;
+    probe.close().await.unwrap();
     assert_original_console_receipt(&consoles, &session, &expected).await;
     let replay = write(&consoles, 1, &session, Method::POST, &path, &original).await;
     succeeded(&replay);
