@@ -24,20 +24,49 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
     runtime
         .record_startup_event("core_handler_limit_installed", Some(1), "limit=1")
         .await;
-    // The one-core-handler hook can delay four-process placement during a full nextest run.
-    runtime
-        .start_all_with_ready_timeout(Duration::from_secs(60))
-        .await;
+    runtime.start_node(1).await;
     assert!(limit.applied());
     runtime
         .record_startup_event("core_handler_limit_applied", Some(1), "applied=true")
         .await;
+    runtime.wait_ready().await;
+    for node in [2, 3, 4] {
+        runtime.start_node(node).await;
+    }
+    runtime.wait_ready().await;
     let timeline = tokio::fs::read_to_string(runtime.directory.join("readiness-timeline.jsonl"))
         .await
         .unwrap();
-    assert!(timeline.contains("\"event\":\"core_handler_limit_installed\""));
-    assert!(timeline.contains("\"event\":\"core_handler_limit_applied\""));
-    assert!(timeline.contains("\"event\":\"fixture_ready\""));
+    let events = timeline
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    let names = events
+        .iter()
+        .map(|event| event.get("event").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>();
+    let installed = names
+        .iter()
+        .position(|event| *event == Some("core_handler_limit_installed"))
+        .unwrap();
+    let applied = names
+        .iter()
+        .position(|event| *event == Some("core_handler_limit_applied"))
+        .unwrap();
+    let first_ready = names
+        .iter()
+        .position(|event| *event == Some("fixture_ready"))
+        .unwrap();
+    assert!(installed < applied);
+    assert!(applied < first_ready);
+    assert_eq!(
+        names
+            .iter()
+            .filter(|event| **event == Some("fixture_ready"))
+            .count(),
+        2
+    );
     let client = runtime.client(4).await;
     let tenant = client.admin().create_tenant("auth").await.unwrap();
     client

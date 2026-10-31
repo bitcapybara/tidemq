@@ -225,15 +225,21 @@ impl Fixture {
         let detail = format!("timeout_ms={}", timeout.as_millis());
         self.record_startup_event("fixture_start", None, &detail)
             .await;
-        for (node, config) in &self.configs {
-            let started = Instant::now();
-            self.running
-                .insert(*node, RunningNode::start(config.clone()).await.unwrap());
-            let detail = format!("startup_ms={}", started.elapsed().as_millis());
-            self.record_startup_event("running_node_started", Some(*node), &detail)
-                .await;
+        let nodes = self.configs.keys().copied().collect::<Vec<_>>();
+        for node in nodes {
+            self.start_node(node).await;
         }
         self.wait_ready_with_timeout(timeout).await;
+    }
+
+    pub(crate) async fn start_node(&mut self, node: u64) {
+        let config = self.configs.get(&node).unwrap().clone();
+        let started = Instant::now();
+        self.running
+            .insert(node, RunningNode::start(config).await.unwrap());
+        let detail = format!("startup_ms={}", started.elapsed().as_millis());
+        self.record_startup_event("running_node_started", Some(node), &detail)
+            .await;
     }
 
     pub(crate) async fn record_startup_event(&self, event: &str, node: Option<u64>, detail: &str) {
