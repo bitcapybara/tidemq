@@ -254,7 +254,11 @@ impl Fixture {
         }
     }
 
-    pub(crate) async fn wait_for_quorum_leaders(&self, client: &Client) -> (u64, u64) {
+    pub(crate) async fn wait_for_quorum_leaders(
+        &self,
+        client: &Client,
+        storage_group: u64,
+    ) -> (u64, u64) {
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
             match client
@@ -265,20 +269,28 @@ impl Fixture {
                 .await
             {
                 Ok(tidemq_protocol::console::Reply::Cluster(page)) => {
-                    let leaders: BTreeMap<_, _> = page
+                    let metadata = page
                         .items
                         .iter()
                         .flat_map(|node| &node.groups)
-                        .filter(|group| group.quorum_confirmed == Some(true))
-                        .map(|group| {
-                            assert_eq!(group.voters.len(), 3);
-                            (group.role.as_str(), group.leader.unwrap().0)
+                        .find(|group| {
+                            group.id == tidemq_protocol::console::Decimal(1)
+                                && group.role == "metadata"
+                                && group.quorum_confirmed == Some(true)
                         })
-                        .collect();
-                    if let (Some(metadata), Some(storage)) =
-                        (leaders.get("metadata"), leaders.get("storage"))
-                    {
-                        return (*metadata, *storage);
+                        .filter(|group| group.voters.len() == 3 && group.leader.is_some());
+                    let storage = page
+                        .items
+                        .iter()
+                        .flat_map(|node| &node.groups)
+                        .find(|group| {
+                            group.id == tidemq_protocol::console::Decimal(storage_group)
+                                && group.role == "storage"
+                                && group.quorum_confirmed == Some(true)
+                        })
+                        .filter(|group| group.voters.len() == 3 && group.leader.is_some());
+                    if let (Some(metadata), Some(storage)) = (metadata, storage) {
+                        return (metadata.leader.unwrap().0, storage.leader.unwrap().0);
                     }
                 }
                 Err(error) => assert!(
