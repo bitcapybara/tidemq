@@ -104,6 +104,26 @@ async fn wait_process(fixture: &Fixture, node: u64, child: &mut tokio::process::
     }
 }
 
+#[tokio::test]
+async fn management_probe_deadline_bounds_an_unresponsive_listener() {
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let accept = tokio::spawn(async move {
+        let (_connection, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    });
+    let response = http_until(
+        address,
+        "/readyz",
+        Instant::now() + Duration::from_millis(50),
+    )
+    .await;
+    assert!(response.is_empty());
+    accept.abort();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cli_crash_restart_preserves_original_sdk_producer_batch_and_consumer() {
     let fixture = Fixture::new(&[(1, Role::Combined)], &[1], &[1]).await;

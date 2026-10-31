@@ -236,7 +236,7 @@ impl Fixture {
         loop {
             let mut ready = true;
             for node in self.running.values() {
-                ready &= http(node.management_address, "/readyz")
+                ready &= http_until(node.management_address, "/readyz", deadline)
                     .await
                     .starts_with("HTTP/1.1 200");
             }
@@ -246,7 +246,16 @@ impl Fixture {
             if Instant::now() >= deadline {
                 let mut diagnostics = BTreeMap::new();
                 for (id, node) in &self.running {
-                    diagnostics.insert(*id, http(node.management_address, "/diagnostics").await);
+                    let diagnostics_deadline = Instant::now() + Duration::from_secs(2);
+                    diagnostics.insert(
+                        *id,
+                        http_until(
+                            node.management_address,
+                            "/diagnostics",
+                            diagnostics_deadline,
+                        )
+                        .await,
+                    );
                 }
                 tokio::fs::write(
                     self.directory.join("readiness-failure.json"),
@@ -485,15 +494,23 @@ pub(crate) fn deadline() -> Instant {
 }
 
 pub(crate) async fn http(address: SocketAddr, path: &str) -> String {
+    http_until(address, path, Instant::now() + Duration::from_secs(2)).await
+}
+
+pub(crate) async fn http_until(address: SocketAddr, path: &str, deadline: Instant) -> String {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
-    connection
-        .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
-        .await
-        .unwrap();
-    let mut response = String::new();
-    connection.read_to_string(&mut response).await.unwrap();
-    response
+    tokio::time::timeout_at(deadline, async {
+        let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+        connection
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        connection.read_to_string(&mut response).await.unwrap();
+        response
+    })
+    .await
+    .unwrap_or_default()
 }
 
 pub(crate) async fn enable_objects(fixture: &mut Fixture, rustfs: &rustfs::RustFs) {
