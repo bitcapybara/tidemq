@@ -21,7 +21,10 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
     .await;
     let cluster: Id = runtime.configs.get(&1).unwrap().cluster_id.parse().unwrap();
     let limit = CoreHandlerLimit::install(cluster, 1, 1).unwrap();
-    runtime.start_all().await;
+    // The one-core-handler hook can delay four-process placement during a full nextest run.
+    runtime
+        .start_all_with_ready_timeout(Duration::from_secs(60))
+        .await;
     assert!(limit.applied());
     let client = runtime.client(4).await;
     let tenant = client.admin().create_tenant("auth").await.unwrap();

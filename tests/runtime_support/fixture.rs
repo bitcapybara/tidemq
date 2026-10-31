@@ -215,15 +215,24 @@ impl Fixture {
     }
 
     pub(crate) async fn start_all(&mut self) {
+        self.start_all_with_ready_timeout(Duration::from_secs(15))
+            .await;
+    }
+
+    pub(crate) async fn start_all_with_ready_timeout(&mut self, timeout: Duration) {
         for (node, config) in &self.configs {
             self.running
                 .insert(*node, RunningNode::start(config.clone()).await.unwrap());
         }
-        self.wait_ready().await;
+        self.wait_ready_with_timeout(timeout).await;
     }
 
     pub(crate) async fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        self.wait_ready_with_timeout(Duration::from_secs(15)).await;
+    }
+
+    async fn wait_ready_with_timeout(&self, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
         loop {
             let mut ready = true;
             for node in self.running.values() {
