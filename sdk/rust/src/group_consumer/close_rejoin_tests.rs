@@ -81,6 +81,7 @@ struct Observed {
     refuse_close_join_once: bool,
     transient_refusals: usize,
     close_replays: usize,
+    hold_ensure_once: bool,
     drop_control_once: bool,
 }
 
@@ -111,6 +112,14 @@ impl Peer {
     }
 
     async fn configured(delayed_commit: bool, close_timeout: Duration) -> Self {
+        Self::configured_with_pending(delayed_commit, close_timeout, 256).await
+    }
+
+    async fn configured_with_pending(
+        delayed_commit: bool,
+        close_timeout: Duration,
+        pending_requests: u32,
+    ) -> Self {
         let key = KeyPair::generate().unwrap();
         let certificate = CertificateParams::new(vec!["localhost".into()])
             .unwrap()
@@ -153,6 +162,7 @@ impl Peer {
             crate::Credentials::token(TOKEN),
         )
         .close_timeout(close_timeout)
+        .pending_requests(pending_requests)
         .build()
         .await
         .unwrap();
@@ -233,6 +243,7 @@ async fn serve_stream(
                 let drop_control = {
                     let mut state = observed.lock().unwrap();
                     if state.drop_control_once
+                        && !state.hold_ensure_once
                         && received.frame().kind == i32::from(FrameKind::ConsumerControl)
                     {
                         state.drop_control_once = false;
@@ -372,6 +383,10 @@ fn control_reply(frame: &Frame, session: &Session, state: &mut Observed) -> (Fra
         );
     }
     let mut hold = false;
+    if action == public::ConsumerAction::EnsureConsumerSubscription && state.hold_ensure_once {
+        state.hold_ensure_once = false;
+        hold = true;
+    }
     let (epoch, status) = match action {
         public::ConsumerAction::EnsureConsumerSubscription => (0, 0),
         public::ConsumerAction::JoinConsumer if request.member_epoch == 1 => (1, 2),
@@ -677,14 +692,64 @@ async fn close_waits_for_the_same_inflight_join_to_commit_without_starting_a_new
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn control_lane_loss_reconnects_before_initial_join() {
-    let peer = Peer::new().await;
-    peer.observed.lock().unwrap().drop_control_once = true;
-    let consumer = rejoining(&peer).await;
-    let report = consumer.close().await.unwrap();
-    assert!(report.local_cleanup_complete());
-    assert_eq!(report.members_left(), 1);
-    assert_eq!(report.unresolved_joins(), 0);
+async fn local_admission_retry_and_control_lane_loss_reconnect() {
+    let peer = Peer::configured_with_pending(false, Duration::from_secs(5), 3).await;
+    {
+        let mut state = peer.observed.lock().unwrap();
+        state.hold_ensure_once = true;
+        state.drop_control_once = true;
+    }
+    let first_client = peer.client.clone();
+    let first = tokio::spawn(async move {
+        first_client
+            .new_queue_consumer(TOPIC, "first")
+            .build()
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), peer.accepted.notified())
+        .await
+        .unwrap();
+    let second_client = peer.client.clone();
+    let second = tokio::spawn(async move {
+        let request = public::ConsumerControl {
+            topic_id: bytes(id(1)),
+            name: "admission-probe".into(),
+            action: public::ConsumerAction::EnsureConsumerSubscription.into(),
+            model: public::ConsumerModel::QueueConsumer.into(),
+            max_messages: 256,
+            max_bytes: 8 * 1024 * 1024,
+            ..Default::default()
+        };
+        second_client
+            .request(
+                FrameKind::ConsumerControl,
+                FrameKind::ConsumerControlResult,
+                TrafficClass::Control,
+                Id::new_v7().unwrap(),
+                &request,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .await
+    });
+    let until = Instant::now() + Duration::from_secs(5);
+    while peer.client.metrics().snapshot().rpc_admission_retries == 0 {
+        assert!(
+            Instant::now() < until,
+            "the second consumer never hit RPC admission"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    peer.reply.send(true).unwrap();
+    let first = first.await.unwrap().unwrap();
+    let second: public::ConsumerControlResult = second.await.unwrap().unwrap();
+    assert!(second.plan_active);
+    assert_eq!(second.member_status, 0);
+    peer.observed.lock().unwrap().expire = true;
+    let first_report = first.close().await.unwrap();
+    assert!(first_report.local_cleanup_complete());
+    assert_eq!(first_report.members_left(), 1);
+    assert_eq!(first_report.unresolved_joins(), 0);
+    assert!(peer.client.metrics().snapshot().rpc_admission_retries > 0);
     peer.client.close().await.unwrap();
     assert_eq!(
         peer.client
