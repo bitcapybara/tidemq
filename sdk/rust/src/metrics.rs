@@ -7,6 +7,7 @@ mod otel;
 pub struct Metrics {
     requests: AtomicU64,
     retries: AtomicU64,
+    rpc_admission_retries: AtomicU64,
     unknown: AtomicU64,
     deliveries: AtomicU64,
     acknowledged: AtomicU64,
@@ -26,6 +27,7 @@ impl Default for Metrics {
         Self {
             requests: AtomicU64::new(0),
             retries: AtomicU64::new(0),
+            rpc_admission_retries: AtomicU64::new(0),
             unknown: AtomicU64::new(0),
             deliveries: AtomicU64::new(0),
             acknowledged: AtomicU64::new(0),
@@ -48,6 +50,7 @@ impl Default for Metrics {
 pub struct MetricsSnapshot {
     pub requests: u64,
     pub retries: u64,
+    pub rpc_admission_retries: u64,
     pub unknown: u64,
     pub deliveries: u64,
     pub acknowledged: u64,
@@ -69,6 +72,12 @@ impl Metrics {
         increment(&self.retries, 1);
         #[cfg(feature = "opentelemetry")]
         self.telemetry.retries.add(1, &[]);
+    }
+
+    pub(crate) fn record_rpc_admission_retry(&self) {
+        increment(&self.rpc_admission_retries, 1);
+        #[cfg(feature = "opentelemetry")]
+        self.telemetry.rpc_admission_retries.add(1, &[]);
     }
 
     pub(crate) fn record_unknown(&self) {
@@ -93,6 +102,7 @@ impl Metrics {
         MetricsSnapshot {
             requests: self.requests.load(Ordering::Relaxed),
             retries: self.retries.load(Ordering::Relaxed),
+            rpc_admission_retries: self.rpc_admission_retries.load(Ordering::Relaxed),
             unknown: self.unknown.load(Ordering::Relaxed),
             deliveries: self.deliveries.load(Ordering::Relaxed),
             acknowledged: self.acknowledged.load(Ordering::Relaxed),
@@ -247,6 +257,11 @@ impl prometheus_client::collector::Collector for MetricsCollector {
         for (name, help, count) in [
             ("requests", "SDK RPC attempts.", value.requests),
             ("retries", "SDK transport retries.", value.retries),
+            (
+                "rpc_admission_retries",
+                "SDK retries caused by bounded local RPC request admission.",
+                value.rpc_admission_retries,
+            ),
             (
                 "unknown",
                 "SDK operations with an unknown result.",

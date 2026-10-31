@@ -52,6 +52,7 @@ fn shared_meter_preserves_counters_and_releases_all_client_charges() {
     for metrics in &clients {
         metrics.record_request();
         metrics.record_retry();
+        metrics.record_rpc_admission_retry();
         metrics.record_unknown();
         metrics.record_deliveries(3);
         metrics.record_acknowledged(2);
@@ -73,6 +74,7 @@ fn shared_meter_preserves_counters_and_releases_all_client_charges() {
     for (name, expected) in [
         ("tidemq.sdk.requests", 2.0),
         ("tidemq.sdk.retries", 2.0),
+        ("tidemq.sdk.rpc_admission_retries", 2.0),
         ("tidemq.sdk.unknown", 2.0),
         ("tidemq.sdk.deliveries", 6.0),
         ("tidemq.sdk.acknowledged", 4.0),
@@ -84,6 +86,6 @@ fn shared_meter_preserves_counters_and_releases_all_client_charges() {
     ] {
         assert_eq!(finished.get(name), Some(&expected), "{name}");
     }
-    assert_eq!(finished.len(), 10);
+    assert_eq!(finished.len(), 11);
     provider.shutdown().unwrap();
 }

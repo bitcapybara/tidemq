@@ -269,9 +269,20 @@ impl Error {
                 retryable: true,
                 ..
             } | Self::Rpc {
-                source: tidemq_transport::rpc::Error::Admission { .. },
+                source: tidemq_transport::rpc::Error::Admission {
+                    resource: "max_pending_requests",
+                },
             }
         )
+    }
+
+    pub(crate) fn rpc_admission_resource(&self) -> Option<&'static str> {
+        match self {
+            Self::Rpc {
+                source: tidemq_transport::rpc::Error::Admission { resource },
+            } if *resource == "max_pending_requests" => Some(*resource),
+            _ => None,
+        }
     }
 
     pub fn outcome_unknown(&self) -> bool {
@@ -457,6 +468,23 @@ mod tests {
             },
         };
         assert!(error.retry_admission());
+        assert_eq!(error.rpc_admission_resource(), Some("max_pending_requests"));
         assert!(!error.outcome_unknown());
+    }
+
+    #[test]
+    fn other_rpc_admission_resources_are_not_retried() {
+        for resource in [
+            "max_pending_bytes",
+            "RPC lane queue",
+            "RPC priority capacity",
+            "consumer protected client share",
+        ] {
+            let error = Error::Rpc {
+                source: tidemq_transport::rpc::Error::Admission { resource },
+            };
+            assert!(!error.retry_admission(), "unexpected retry for {resource}");
+            assert_eq!(error.rpc_admission_resource(), None);
+        }
     }
 }

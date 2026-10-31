@@ -829,6 +829,13 @@ impl Client {
                             error_code = code.as_str_name(), reason = message,
                             "The original SDK request will retry a server refusal");
                     }
+                    if let Some(resource) = error.rpc_admission_resource() {
+                        tracing::debug!(target: "tidemq_sdk::retry", event_code = "sdk_rpc_admission_retry",
+                            resource,
+                            attempt = attempt + 1,
+                            "The SDK request will retry after local RPC admission");
+                        self.inner.metrics.record_rpc_admission_retry();
+                    }
                     self.inner.metrics.record_retry();
                     if self.backoff(operation, attempt, deadline).await.is_err() {
                         return Err(error.preserve_uncertainty(uncertain));

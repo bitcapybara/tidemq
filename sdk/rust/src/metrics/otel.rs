@@ -4,6 +4,7 @@ use opentelemetry::metrics::{Counter, Histogram, Meter, UpDownCounter};
 pub(super) struct Instruments {
     pub requests: Counter<u64>,
     pub retries: Counter<u64>,
+    pub rpc_admission_retries: Counter<u64>,
     pub unknown: Counter<u64>,
     pub deliveries: Counter<u64>,
     pub acknowledged: Counter<u64>,
@@ -32,6 +33,10 @@ impl Instruments {
         Self {
             requests: counter("tidemq.sdk.requests", "SDK RPC attempts."),
             retries: counter("tidemq.sdk.retries", "SDK transport retries."),
+            rpc_admission_retries: counter(
+                "tidemq.sdk.rpc_admission_retries",
+                "SDK retries caused by bounded local RPC request admission.",
+            ),
             unknown: counter(
                 "tidemq.sdk.unknown",
                 "SDK operations with an unknown result.",

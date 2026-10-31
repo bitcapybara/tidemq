@@ -81,6 +81,7 @@ struct Observed {
     refuse_close_join_once: bool,
     transient_refusals: usize,
     close_replays: usize,
+    drop_control_once: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -229,6 +230,18 @@ async fn serve_stream(
         tokio::select! {
             received = receiver.receive(Instant::now() + Duration::from_secs(15)) => {
                 let Ok(Some(received)) = received else { return };
+                let drop_control = {
+                    let mut state = observed.lock().unwrap();
+                    if state.drop_control_once
+                        && received.frame().kind == i32::from(FrameKind::ConsumerControl)
+                    {
+                        state.drop_control_once = false;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if drop_control { return; }
                 let (response, hold, delayed, closing) = {
                     let mut state = observed.lock().unwrap();
                     let (response, hold) = handle(received.frame(), &session, &mut state);
@@ -661,6 +674,25 @@ async fn close_resolves_the_original_committed_join_before_leaving_its_confirmed
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn close_waits_for_the_same_inflight_join_to_commit_without_starting_a_new_join() {
     close_inflight_join(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn control_lane_loss_reconnects_before_initial_join() {
+    let peer = Peer::new().await;
+    peer.observed.lock().unwrap().drop_control_once = true;
+    let consumer = rejoining(&peer).await;
+    let report = consumer.close().await.unwrap();
+    assert!(report.local_cleanup_complete());
+    assert_eq!(report.members_left(), 1);
+    assert_eq!(report.unresolved_joins(), 0);
+    peer.client.close().await.unwrap();
+    assert_eq!(
+        peer.client
+            .transport_metrics()
+            .snapshot()
+            .active_connections,
+        0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
