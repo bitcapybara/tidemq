@@ -478,7 +478,7 @@ async fn rf3_phase_snapshot(
     client: &Client,
     consumers: &[(String, tidemq_sdk::StreamConsumer)],
     stage: &str,
-) {
+) -> std::io::Result<()> {
     let observed_at_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -534,13 +534,8 @@ async fn rf3_phase_snapshot(
     let path = std::path::Path::new("target/ci/resource-observations")
         .join(fixture.directory.file_name().unwrap())
         .join("rf3-phase-resources.jsonl");
-    if let Err(error) = tokio::fs::create_dir_all(path.parent().unwrap()).await {
-        eprintln!("RF3 phase diagnostic directory creation failed: {error}");
-        return;
-    }
-    if let Err(error) = append_rf3_phase_evidence(&path, &bytes).await {
-        eprintln!("RF3 phase diagnostic write did not complete: {error}");
-    }
+    tokio::fs::create_dir_all(path.parent().unwrap()).await?;
+    append_rf3_phase_evidence(&path, &bytes).await
 }
 
 #[tokio::test]
@@ -551,8 +546,12 @@ async fn phase_resource_evidence_retains_real_diagnostics_and_appends_complete_r
     let path = std::path::Path::new("target/ci/resource-observations")
         .join(fixture.directory.file_name().unwrap())
         .join("rf3-phase-resources.jsonl");
-    rf3_phase_snapshot(&fixture, &client, &[], "started").await;
-    rf3_phase_snapshot(&fixture, &client, &[], "finished").await;
+    rf3_phase_snapshot(&fixture, &client, &[], "started")
+        .await
+        .unwrap();
+    rf3_phase_snapshot(&fixture, &client, &[], "finished")
+        .await
+        .unwrap();
     let bytes = tokio::fs::read_to_string(&path).await.unwrap();
     client.close().await.unwrap();
     fixture.close().await;
@@ -695,7 +694,10 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
                     Some(Err(error)) => return Err(error),
                     None => return Ok(()),
                 },
-                _ = &mut snapshot, if snapshot_pending => snapshot_pending = false,
+                result = &mut snapshot, if snapshot_pending => {
+                    result.expect("RF3 phase evidence write failed");
+                    snapshot_pending = false;
+                },
                 _ = samples.tick(), if !snapshot_pending => {
                     snapshot = Box::pin(rf3_phase_snapshot(&fixture, &client, &observers, "during"));
                     snapshot_pending = true;
@@ -709,8 +711,25 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     } else {
         "failed"
     };
-    rf3_phase_snapshot(&fixture, &client, &observers, stage).await;
+    rf3_phase_snapshot(&fixture, &client, &observers, stage)
+        .await
+        .unwrap();
     completion.unwrap().unwrap();
+    let stress_topic = observers.first().unwrap().0.clone();
+    let stress_until = Instant::now() + Duration::from_secs(20);
+    let mut stress_retries = MetadataReadRetries::default();
+    for _ in 0..64 {
+        let info = metadata_read_until(&client, &stress_topic, stress_until, &mut stress_retries)
+            .await
+            .unwrap();
+        assert_eq!(info.name(), stress_topic);
+    }
+    eprintln!(
+        "Separated RF3 high-frequency metadata phase completed: topic={stress_topic}, reads=64, admission_rejections={}, unavailable_rejections={}, unavailable_unknown={}",
+        stress_retries.admission_rejected,
+        stress_retries.unavailable_rejected,
+        stress_retries.unavailable_unknown
+    );
     client.close().await.unwrap();
     for (_, mut process) in processes {
         process.kill().await.unwrap();

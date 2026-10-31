@@ -333,21 +333,23 @@ impl Drop for ClientOwner {
 
 impl Client {
     #[cfg(test)]
-    pub(crate) async fn rpc_snapshots(&self) -> Vec<(&'static str, RpcSnapshot)> {
+    pub(crate) fn rpc_snapshots(&self) -> Vec<(&'static str, Option<RpcSnapshot>)> {
         let pools = [
             ("control", &self.inner.pool.control),
             ("produce", &self.inner.pool.produce),
             ("delivery", &self.inner.pool.delivery),
             ("bulk", &self.inner.pool.bulk),
         ];
-        let mut snapshots = Vec::new();
-        for (name, pool) in pools {
-            let guard = pool.lock().await;
-            if let Some(rpc) = guard.as_ref() {
-                snapshots.push((name, rpc.snapshot()));
-            }
-        }
-        snapshots
+        pools
+            .into_iter()
+            .map(|(name, pool)| {
+                let snapshot = pool
+                    .try_lock()
+                    .ok()
+                    .and_then(|guard| guard.as_ref().map(|rpc| rpc.snapshot()));
+                (name, snapshot)
+            })
+            .collect()
     }
 
     /// Connects within the configured total connect budget; reconnects resolve the endpoint again.

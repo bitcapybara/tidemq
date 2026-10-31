@@ -497,10 +497,10 @@ async fn rejoining(peer: &Peer) -> QueueConsumer {
         Err(error) => {
             eprintln!(
                 "Close/rejoin fixture consumer build failed: error={error:?}, rpc={:?}, transport={:?}",
-                peer.client.rpc_snapshots().await,
+                peer.client.rpc_snapshots(),
                 peer.client.transport_metrics().snapshot()
             );
-            panic!("Close/rejoin fixture consumer build failed")
+            panic!("Close/rejoin fixture consumer build failed: {error:?}")
         }
     };
     {
