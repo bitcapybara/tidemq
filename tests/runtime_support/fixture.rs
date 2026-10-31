@@ -254,6 +254,51 @@ impl Fixture {
         }
     }
 
+    pub(crate) async fn wait_for_quorum_leaders(&self, client: &Client) -> (u64, u64) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            match client
+                .console_read(tidemq_protocol::console::Query::Cluster {
+                    after: None,
+                    limit: 32,
+                })
+                .await
+            {
+                Ok(tidemq_protocol::console::Reply::Cluster(page)) => {
+                    let leaders: BTreeMap<_, _> = page
+                        .items
+                        .iter()
+                        .flat_map(|node| &node.groups)
+                        .filter(|group| group.quorum_confirmed == Some(true))
+                        .map(|group| {
+                            assert_eq!(group.voters.len(), 3);
+                            (group.role.as_str(), group.leader.unwrap().0)
+                        })
+                        .collect();
+                    if let (Some(metadata), Some(storage)) =
+                        (leaders.get("metadata"), leaders.get("storage"))
+                    {
+                        return (*metadata, *storage);
+                    }
+                }
+                Err(error) => assert!(
+                    matches!(
+                        error.kind(),
+                        tidemq_sdk::ErrorKind::Unavailable
+                            | tidemq_sdk::ErrorKind::DeadlineExceeded
+                    ),
+                    "Cluster observation failed permanently: {error:?}"
+                ),
+                reply => panic!("Expected the native cluster observation: {reply:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "RF3 quorums did not elect leaders in time"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     pub(crate) async fn client(&self, gateway: u64) -> Client {
         self.client_with_timeouts(gateway, Duration::from_secs(10), Duration::from_secs(5))
             .await
