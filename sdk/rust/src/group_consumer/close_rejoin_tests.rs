@@ -83,6 +83,8 @@ struct Observed {
     close_replays: usize,
     hold_ensure_once: bool,
     drop_control_once: bool,
+    drop_control_name: Option<String>,
+    control_drops: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -245,8 +247,16 @@ async fn serve_stream(
                     if state.drop_control_once
                         && !state.hold_ensure_once
                         && received.frame().kind == i32::from(FrameKind::ConsumerControl)
+                        && state.drop_control_name.as_deref().is_none_or(|name| {
+                            decode_payload::<public::ConsumerControl>(
+                                received.frame().payload.clone(),
+                                &ProtocolLimits::default(),
+                            )
+                            .is_ok_and(|request| request.name == name)
+                        })
                     {
                         state.drop_control_once = false;
+                        state.control_drops += 1;
                         true
                     } else {
                         false
@@ -698,6 +708,7 @@ async fn local_admission_retry_and_control_lane_loss_reconnect() {
         let mut state = peer.observed.lock().unwrap();
         state.hold_ensure_once = true;
         state.drop_control_once = true;
+        state.drop_control_name = Some("admission-probe".into());
     }
     let first_client = peer.client.clone();
     let first = tokio::spawn(async move {
@@ -744,6 +755,7 @@ async fn local_admission_retry_and_control_lane_loss_reconnect() {
     let second: public::ConsumerControlResult = second.await.unwrap().unwrap();
     assert!(second.plan_active);
     assert_eq!(second.member_status, 0);
+    assert_eq!(peer.observed.lock().unwrap().control_drops, 1);
     peer.observed.lock().unwrap().expire = true;
     let first_report = first.close().await.unwrap();
     assert!(first_report.local_cleanup_complete());
