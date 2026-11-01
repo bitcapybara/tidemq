@@ -272,6 +272,8 @@ impl Error {
                 source: tidemq_transport::rpc::Error::Admission {
                     resource: "max_pending_requests",
                 },
+            } | Self::Transport {
+                source: tidemq_transport::Error::Admission { .. },
             }
         )
     }
@@ -469,6 +471,18 @@ mod tests {
         };
         assert!(error.retry_admission());
         assert_eq!(error.rpc_admission_resource(), Some("max_pending_requests"));
+        assert!(!error.outcome_unknown());
+    }
+
+    #[test]
+    fn transport_admission_is_retryable_before_submission() {
+        let error = Error::Transport {
+            source: tidemq_transport::Error::Admission {
+                resource: "remote authenticated connection capacity",
+            },
+        };
+        assert!(error.retry_admission());
+        assert!(!error.original_outcome_known());
         assert!(!error.outcome_unknown());
     }
 

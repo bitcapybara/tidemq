@@ -113,9 +113,9 @@ pub(super) async fn finish_original_send(
     loop {
         match result {
             Err(tidemq_sdk::Error::SendUnresolved { pending, source })
-                if source.outcome_unknown() && Instant::now() < until =>
+                if Instant::now() < until && source.outcome_unknown() =>
             {
-                // A live RPC can lose its result; preserve the original send identity.
+                // Preserve the original send identity only while its outcome is unknown.
                 result = tidemq_sdk::RequestContext::with_deadline(until)
                     .scope(pending.retry())
                     .await;
