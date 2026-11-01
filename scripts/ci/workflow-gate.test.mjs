@@ -55,3 +55,42 @@ test('every trusted Linux nextest lane enables the same immutable isolated execu
   assert.equal(scripts.flatMap(source => [...source.matchAll(/bash scripts\/ci\/nextest\.sh /gu)]).length, 5);
   assert(!scripts.some(source => /cargo nextest run/u.test(source)));
 });
+
+test('browser jobs run Chromium only and cache Playwright downloads', () => {
+  const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
+  for (const name of ['console', 'console-browser', 'console-browser-live']) {
+    const source = job(name);
+    assert.match(source, /actions\/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4\.3\.0/u,
+      `${name} must use the pinned Playwright cache action`);
+    assert.match(source, /path: ~\/\.cache\/ms-playwright/u, `${name} must cache the browser directory`);
+    assert.match(source,
+      /key: playwright-\$\{\{ runner\.os \}\}-\$\{\{ hashFiles\('console\/web\/package-lock\.json'\) \}\}/u,
+      `${name} must invalidate the browser cache when Playwright dependencies change`);
+  }
+  assert.match(job('console'), /- run: npx --no-install playwright install --with-deps chromium\n/u,
+    'console must install Chromium only');
+  assert.doesNotMatch(job('console'), /firefox|webkit/u,
+    'console must not install Firefox or WebKit');
+  assert.match(job('console'),
+    /- run: node --test \.\.\/\.\.\/scripts\/ci\/workflow-gate\.test\.mjs\n\s+- run: npx --no-install playwright install --with-deps chromium\n/u,
+    'console must enforce the workflow regression test before browser installation');
+  assert.match(job('console'), /timeout-minutes: 40/u,
+    'console must allow the first browser install to finish');
+  for (const name of ['console-browser', 'console-browser-live']) {
+    const source = job(name);
+    assert.match(source, /timeout-minutes: 40/u, `${name} must allow the first browser install to finish`);
+    assert.match(source, /browser: \[chromium\]/u, `${name} must run Chromium only`);
+    assert.match(source, /playwright install --with-deps \$\{\{ matrix\.browser \}\}/u,
+      `${name} must install the selected matrix browser`);
+    assert.equal((source.match(/playwright install --with-deps/gu) ?? []).length, 1,
+      `${name} must have one browser installation target`);
+  }
+  for (const name of ['console', 'console-browser', 'console-browser-live']) {
+    const source = job(name);
+    const cache = source.indexOf('actions/cache@');
+    const npm = source.indexOf('- run: npm ci');
+    const browser = source.indexOf('playwright install --with-deps');
+    assert(cache >= 0 && cache < npm && npm < browser,
+      `${name} must cache before npm install and install the browser last`);
+  }
+});
