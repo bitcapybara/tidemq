@@ -6,7 +6,8 @@ test-threads = 1
 retries = 0
 fail-fast = false
 slow-timeout = { period = "60s", terminate-after = 10 }
-global-timeout = "40m"
+# The single-threaded fault suite includes real RF3 and scale fixtures.
+global-timeout = "50m"
 
 [[profile.ci.overrides]]
 # Creating 1000 real shards and their Raft cursors has a separate bounded setup budget.

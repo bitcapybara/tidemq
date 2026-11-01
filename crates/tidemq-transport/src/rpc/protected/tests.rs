@@ -160,6 +160,26 @@ fn memory_quotas(memory: &MemoryBudget) -> [usize; 6] {
     ]
 }
 
+async fn settled_memory_quotas(memory: &MemoryBudget) -> [usize; 6] {
+    timeout_at(deadline(), async {
+        let mut previous = memory_quotas(memory);
+        loop {
+            tokio::task::yield_now().await;
+            let current = memory_quotas(memory);
+            if current != previous {
+                previous = current;
+                continue;
+            }
+            tokio::task::yield_now().await;
+            if memory_quotas(memory) == current {
+                return current;
+            }
+        }
+    })
+    .await
+    .expect("Memory quota snapshot did not settle")
+}
+
 async fn until(message: &'static str, condition: impl Fn() -> bool) {
     timeout_at(deadline(), async {
         while !condition() {
@@ -539,10 +559,10 @@ async fn registered_private_reads_survive_normal_pending_slot_and_byte_exhaustio
             },
         )
         .await;
-        let memory_before = memory_quotas(&h.memory);
+        let memory_before = settled_memory_quotas(&h.memory).await;
         assert!(h.normal.reserve_protected().is_err());
         assert_eq!(quotas(&h.budget), before);
-        assert_eq!(memory_quotas(&h.memory), memory_before);
+        assert_eq!(settled_memory_quotas(&h.memory).await, memory_before);
         drop(exchange(&private, &mut private_peer, 11, 16_384).await);
         assert_eq!(h.normal.snapshot().pending_responses, Some(count as usize));
         assert_eq!(quotas(&h.budget), before);
