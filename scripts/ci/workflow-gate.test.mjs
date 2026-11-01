@@ -7,6 +7,11 @@ const workflow = fs.readFileSync(new URL('../../.github/workflows/rust.yml', imp
 const gate = workflow.match(/node -e '([^'\n]+)'/)?.[1];
 assert(gate, 'The workflow must contain its final executable gate');
 const jobs = ['validate', 'faults', 'coverage', 'untrusted', 'console', 'console-browser', 'console-browser-live', 'documentation'];
+const read = relative => fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
+const mockPlaywright = read('../../console/web/playwright.config.ts');
+const livePlaywright = read('../../console/web/playwright.live.config.ts');
+const consolePackage = JSON.parse(read('../../console/web/package.json'));
+const liveRunner = read('./console-browser-live.mjs');
 
 function evaluate(fork, patch = {}) {
   const results = Object.fromEntries(jobs.map((job) => [job, { result: 'success' }]));
@@ -85,6 +90,12 @@ test('browser jobs run Chromium only and cache Playwright downloads', () => {
     assert.equal((source.match(/playwright install --with-deps/gu) ?? []).length, 1,
       `${name} must have one browser installation target`);
   }
+  assert.match(job('console-browser'),
+    /- run: npm run test:e2e -- --project=\$\{\{ matrix\.browser \}\}/u,
+    'console-browser must execute the Chromium mock browser suite');
+  assert.match(job('console-browser-live'),
+    /- run: npm run test:e2e:live -- --project=\$\{\{ matrix\.browser \}\}/u,
+    'console-browser-live must execute the Chromium native browser suite');
   for (const name of ['console', 'console-browser', 'console-browser-live']) {
     const source = job(name);
     const cache = source.indexOf('actions/cache@');
@@ -93,4 +104,16 @@ test('browser jobs run Chromium only and cache Playwright downloads', () => {
     assert(cache >= 0 && cache < npm && npm < browser,
       `${name} must cache before npm install and install the browser last`);
   }
+});
+
+test('browser entry points expose Chromium only', () => {
+  for (const [name, source] of [['mock Playwright config', mockPlaywright], ['live Playwright config', livePlaywright]]) {
+    assert.match(source, /name: "chromium"/u, `${name} must define Chromium`);
+    assert.doesNotMatch(source, /firefox|webkit|Desktop Firefox|Desktop Safari/u,
+      `${name} must not define another browser`);
+  }
+  assert.match(consolePackage.scripts['test:e2e'], /--project=chromium/u);
+  assert.match(consolePackage.scripts['test:e2e:live'], /--project=chromium/u);
+  assert.match(liveRunner, /revocable\.chromium = await credential\('chromium'\)/u);
+  assert.doesNotMatch(liveRunner, /\['chromium', 'firefox', 'webkit'\]/u);
 });

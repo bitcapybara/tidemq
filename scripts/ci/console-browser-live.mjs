@@ -285,7 +285,7 @@ async function seedContext(state, binary, core, baseURL, topology, signal) {
   };
   const restricted = await credential('restricted');
   const revocable = {};
-  for (const browser of ['chromium', 'firefox', 'webkit']) revocable[browser] = await credential(browser);
+  revocable.chromium = await credential('chromium');
   const contextFile = path.join(state.privateDirectory, 'live-context.json');
   await fs.writeFile(contextFile, JSON.stringify({topology, tenantId, namespaceId,
     allowedTopicId: allowed.resourceId, sameTenantDeniedTopicId: denied.resourceId,

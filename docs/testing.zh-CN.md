@@ -33,7 +33,7 @@ Console 后端单元入口为 `cargo test --locked -p tidemq --lib console::`，
 
 Playwright 的 `mock-network` 套件覆盖确定性的页面操作和故障展示，不计作真实后端验收。`live` 套件分别运行 Combined 的单 PID 原生 HTTPS，以及 Separate RF1 四角色加独立原生 HTTPS Console，使用本次生成的私有身份和数据检查登录、导航、刷新、退出与凭据写入结果恢复。真实凭据用例禁用 trace、视频和截图；mock 套件保留失败制品。浏览器结果与 Vitest 源码覆盖率分别统计。
 
-mock 浏览器在 CI 中保留一次诊断重试，但 flaky 结果仍使 CI 失败；必须定位并修复首败原因，不能用重试通过解除门禁。`node --test tests/ci/*.test.mjs` 在 `console/web` 中启动受控 Playwright 用例，验证首败后重试通过仍返回失败；其中 flaky 判定负例不依赖浏览器。原生路由隐私负例另启动受控 HTTPS 服务和真实 Chromium，检查断线错误与报告不泄露 cookie / CSRF，因此 CI 先安装 Chromium 再运行这些检查。它们不替代三引擎真实后端交互测试。
+mock 浏览器在 CI 中保留一次诊断重试，但 flaky 结果仍使 CI 失败；必须定位并修复首败原因，不能用重试通过解除门禁。`node --test tests/ci/*.test.mjs` 在 `console/web` 中启动受控 Playwright 用例，验证首败后重试通过仍返回失败；其中 flaky 判定负例不依赖浏览器。原生路由隐私负例另启动受控 HTTPS 服务和真实 Chromium，检查断线错误与报告不泄露 cookie / CSRF，因此 CI 先安装 Chromium 再运行这些检查。它们不替代真实后端交互测试。
 
 ```sh
 npm --prefix console/web ci
@@ -41,18 +41,18 @@ npm --prefix console/web run typecheck
 npm --prefix console/web run lint
 npm --prefix console/web run test:coverage
 npm --prefix console/web run build
-npm --prefix console/web exec -- playwright install chromium firefox webkit
+npm --prefix console/web exec -- playwright install chromium
 npm --prefix console/web run test:e2e
 cargo build --locked -p tidemq -j2
 npm --prefix console/web run test:e2e:live
 TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 ```
 
-真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。PR 运行 Chromium，main 和手动候选验收运行 Chromium/Firefox/WebKit；Rust 最终 gate 同时要求前端覆盖率、mock 浏览器、真实后端浏览器和文档构建/链接检查 job 成功。真实后端 job 校验同一次 Linux 构建制品的源码提交与二进制 SHA256，fork PR 不访问自托管服务。未实际运行的检查不计作该版本验收结果。
+真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。受信任的 PR、main 和手动候选验收统一运行 Chromium/Chrome；fork PR 不访问自托管真实后端，只运行不依赖共享服务的前端和模拟浏览器门禁。Rust 最终 gate 同时要求前端覆盖率、mock 浏览器、真实后端浏览器和文档构建/链接检查 job 成功。真实后端 job 校验同一次 Linux 构建制品的源码提交与二进制 SHA256。未实际运行的检查不计作该版本验收结果。
 
 合入 main 前，按根目录 [AGENTS.md](https://github.com/bitcapybara/tidemq/blob/main/AGENTS.md) 完成独立 agent review 和候选分支 CI；偶发失败也要定位原因并修复。新功能的检查同时包含正确性、log/trace/metrics 和相应层次测试。长轮询真实 QUIC/Raft 回归由 `runtime_group_watch` 在 test-hooks 故障流程执行；同一流程显式运行根 crate 的 test-hooks 单元测试，覆盖拒绝回复背压等私有组件边界。原生保护帧与 RPC 隔离测试随 transport 单元流程执行；测试配置不代替实际运行结果。
 
-千分片回归通过公开管理接口建立 1000 个真实 shard 及读取游标，测试内部总预算为 900 秒，包含初始化、测量与清理；CI 只为该用例设置 18 分钟的进程终止边界，给失败后的清理留余量。其余用例保留原单例限制，整个集成 lane 最长 40 分钟；这些是测试资源边界，生产 Watch 仍最多等待 1 秒。
+千分片回归通过公开管理接口建立 1000 个真实 shard 及读取游标，测试内部总预算为 900 秒，包含初始化、测量与清理；CI 只为该用例设置 18 分钟的进程终止边界，给失败后的清理留余量。其余用例保留原单例限制，整个集成 lane 最长 50 分钟；这些是测试资源边界，生产 Watch 仍最多等待 1 秒。
 
 `runtime_consumer_close` 在 test-hooks 故障流程中运行真实 RF1/QUIC/Raft 关闭回归，覆盖重加入提交与回复之间关闭的边界，校验原 Join 身份、正确 member epoch、有限关闭预算和未决 Join 报告；它与长轮询、成员故障用例一起运行并纳入同一份 JUnit。
 
