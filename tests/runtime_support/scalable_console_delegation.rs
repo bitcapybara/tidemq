@@ -141,6 +141,34 @@ async fn call(rpc: &RpcClient, operation: Id, request: &Delegation) -> Frame {
         .clone()
 }
 
+async fn call_until_routable(rpc: &RpcClient, operation: Id, request: &Delegation) -> Frame {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let response = call(rpc, operation, request).await;
+        if response.kind != i32::from(FrameKind::Error) {
+            return response;
+        }
+        let error: ErrorReply =
+            decode_payload(response.payload.clone(), &ProtocolLimits::default()).unwrap();
+        let retryable_route = !error.original_outcome_known
+            && matches!(
+                ErrorCode::try_from(error.code),
+                Ok(ErrorCode::Fenced | ErrorCode::Unavailable | ErrorCode::DeadlineExceeded)
+            );
+        if !retryable_route {
+            return response;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "The direct delegation route did not converge: {error:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(
+            error.retry_after_ms.unwrap_or(25).clamp(1, 250),
+        ))
+        .await;
+    }
+}
+
 fn forbidden(response: Frame, name: &str) {
     assert_eq!(
         response.kind,
@@ -225,7 +253,7 @@ pub(super) async fn assert_bindings(
     let base = request(operation, token.id().into(), tenant.into(), &publish);
     let (client, rpc) = metadata_rpc(fixture).await;
     let limits = ProtocolLimits::default();
-    let valid = call(&rpc, operation, &base).await;
+    let valid = call_until_routable(&rpc, operation, &base).await;
     assert_eq!(valid.kind, i32::from(FrameKind::InternalResult));
     let result: InternalResult = decode_payload(valid.payload, &limits).unwrap();
     let inner = decode_frame(result.encoded_result, TrafficClass::Produce, &limits).unwrap();

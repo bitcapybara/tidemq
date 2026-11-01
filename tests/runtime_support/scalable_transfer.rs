@@ -23,6 +23,31 @@ async fn separated_transfer_topology() -> Fixture {
     fixture
 }
 
+async fn wait_for_consumer_assignment(consumer: &tidemq_sdk::QueueConsumer, deadline: Instant) {
+    let mut stable = None;
+    loop {
+        let diagnostics = consumer.diagnostics().unwrap();
+        let identity = (diagnostics.member_epoch, diagnostics.assignment_version);
+        let converged = diagnostics.lease_live
+            && diagnostics.unassigned_targets == 0
+            && diagnostics.busy_targets == 0
+            && diagnostics.delivered_unacked == 1;
+        if converged {
+            if stable == Some(identity) {
+                return;
+            }
+            stable = Some(identity);
+        } else {
+            stable = None;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Consumer assignment did not converge after authority transfer: {diagnostics:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 #[cfg(feature = "test-hooks")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn broker_ack_delegation_refreshes_the_original_operation_when_the_authority_group_changes() {
@@ -166,6 +191,9 @@ async fn cancelled_operator_waiter_recovers_the_original_public_transfer_after_p
         Some(after)
     );
     assert!(admin.pending_operations().unwrap().is_empty());
+    fixture.wait_for_quorum_leaders(&client, 2).await;
+    fixture.wait_for_quorum_leaders(&client, 3).await;
+    wait_for_consumer_assignment(&queue, deadline()).await;
     queue.ack(&held).await.unwrap();
     for (index, identity) in expected.iter().enumerate().skip(1) {
         let message = tokio::time::timeout_at(deadline(), queue.receive())

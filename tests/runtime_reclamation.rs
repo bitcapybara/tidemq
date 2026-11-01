@@ -139,9 +139,10 @@ async fn run_reclaimed_read(paused_offset: u64) {
         .find_map(|line| line.strip_prefix("tidemq_runtime_read_hot_reclaim_conflicts_total "))
         .and_then(|value| value.trim().parse::<u64>().ok())
         .unwrap_or(0);
+    // The eight 1 KiB deliveries span two archive pages under the cold-page budget.
     assert_eq!(
-        conflicts, 1,
-        "The Read must reload and reuse one bounded cold page"
+        conflicts, 2,
+        "The Read must reload and reuse bounded cold pages"
     );
     consumer.close().await.unwrap();
     producer.close().await.unwrap();
