@@ -191,8 +191,6 @@ async fn cancelled_operator_waiter_recovers_the_original_public_transfer_after_p
         Some(after)
     );
     assert!(admin.pending_operations().unwrap().is_empty());
-    fixture.wait_for_quorum_leaders(&client, 2).await;
-    fixture.wait_for_quorum_leaders(&client, 3).await;
     wait_for_consumer_assignment(&queue, deadline()).await;
     queue.ack(&held).await.unwrap();
     for (index, identity) in expected.iter().enumerate().skip(1) {
