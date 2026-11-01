@@ -508,7 +508,7 @@ async fn exercise(scenario: Scenario) {
             match driver.execute(&plan, deadline).await {
                 Err(Error::Unknown) => {
                     // Retiring the joint leader can leave the original plan's result unknown.
-                    driver.execute(&plan, deadline).await.unwrap();
+                    driver.execute(&plan, Instant::now() + WAIT).await.unwrap();
                 }
                 result => result.unwrap(),
             }
