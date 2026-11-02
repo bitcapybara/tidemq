@@ -275,11 +275,36 @@ async fn registered_nodes_and_an_independent_group_join_without_restarting_exist
     let group = client.admin().create_data_group(3, [2]).await.unwrap();
     assert_eq!(group.voters, [2]);
     assert_eq!(client.admin().data_groups().await.unwrap().len(), 2);
-    client
-        .admin()
-        .split_topic_at(topic, 1_u64 << 63)
-        .await
-        .unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
+    let split_context = tidemq_sdk::RequestContext::with_deadline(until);
+    loop {
+        match split_context
+            .scope(client.admin().split_topic_at(topic, 1_u64 << 63))
+            .await
+        {
+            Ok(_) => break,
+            Err(error)
+                if matches!(
+                    &error,
+                    tidemq_sdk::Error::Query { source }
+                        if matches!(
+                            source.as_ref(),
+                            tidemq_sdk::Error::Remote {
+                                code: tidemq_protocol::common::ErrorCode::Unavailable,
+                                outcome: tidemq_protocol::common::Outcome::Unknown,
+                                retryable: true,
+                                original_outcome_known: false,
+                                ..
+                            }
+                        )
+                ) =>
+            {
+                tokio::time::sleep_until(until.min(Instant::now() + Duration::from_millis(10)))
+                    .await;
+            }
+            Err(error) => panic!("Topic split failed: {error:?}"),
+        }
+    }
     let mut expected = BTreeSet::new();
     for index in 0..32 {
         expected.insert(
