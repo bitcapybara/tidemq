@@ -1,5 +1,23 @@
 use super::*;
 
+fn retryable_data_replacement_error(error: &tidemq_sdk::Error) -> bool {
+    match error {
+        tidemq_sdk::Error::Administration { source, .. } => {
+            retryable_data_replacement_error(source)
+        }
+        tidemq_sdk::Error::RequestUnknown { source } => retryable_data_replacement_error(source),
+        tidemq_sdk::Error::Remote {
+            code: tidemq_protocol::common::ErrorCode::Unavailable,
+            outcome:
+                tidemq_protocol::common::Outcome::Rejected | tidemq_protocol::common::Outcome::Unknown,
+            retryable: true,
+            original_outcome_known: false,
+            ..
+        } => true,
+        _ => false,
+    }
+}
+
 async fn resources(
     client: &Client,
 ) -> (
@@ -131,11 +149,33 @@ async fn rf3_operator_replaces_a_storage_voter_and_retires_the_source_with_origi
             .unwrap(),
     );
     fixture.wait_ready().await;
-    let result = client.admin().replace_data_replica(2, removed, 5).await;
-    if result.is_err() {
-        evidence(&fixture).await;
-    }
-    let result = result.unwrap();
+    let until = deadline();
+    let result = match tidemq_sdk::RequestContext::with_deadline(until)
+        .scope(client.admin().replace_data_replica(2, removed, 5))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            evidence(&fixture).await;
+            let tidemq_sdk::Error::Administration { pending, .. } = error else {
+                panic!("The data replacement failed without a recovery handle");
+            };
+            loop {
+                match tidemq_sdk::RequestContext::with_deadline(until)
+                    .scope(pending.retry())
+                    .await
+                {
+                    Ok(tidemq_sdk::AdminReceipt::DataGroupReconfigured(result)) => break result,
+                    Err(error)
+                        if retryable_data_replacement_error(&error) && Instant::now() < until =>
+                    {
+                        tokio::task::yield_now().await;
+                    }
+                    other => panic!("The original data replacement could not complete: {other:?}"),
+                }
+            }
+        }
+    };
     let expected: Vec<_> = [2, 3, 4, 5]
         .into_iter()
         .filter(|node| *node != removed)
