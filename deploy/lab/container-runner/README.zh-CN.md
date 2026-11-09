@@ -23,11 +23,13 @@ runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 run
 
 两个 runner 共享下载缓存可避免重复下载；各自 target 仍需编译。独立构建可以同时进行，Cargo 自身的包锁保护下载/解压。[with-cargo-cache.sh](../../../scripts/ci/with-cargo-cache.sh) 在整个流程持有共享 flock，清理取得非阻塞独占锁后才删除 registry/git。手动 Cargo 命令也必须通过该入口；不可绕过锁清理共享目录。
 
-action 缓存使用 runner 2.338.1 的 `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`。仅保存 checkout、upload-artifact、download-artifact 三个固定提交的归档，提交及 SHA-256 见 [binaries.json](../binaries.json)，workflow 使用相同提交。缓存由 root 安装，两个 runner 只读；重建时先验证全部下载，再替换带所有权标记的旧缓存，因此只保留三个当前归档，总量上限 64 MiB。篡改或不完整的下载不会覆盖有效缓存。action 更新需一起更新 workflow、提交和归档校验值，再重新部署缓存。
+Action 缓存使用 runner 2.338.1 的 `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE`。缓存包含 checkout、upload-artifact 和 download-artifact 的固定归档，其中 download-artifact 的浏览器作业和覆盖率作业分别使用各自的提交。提交和 SHA-256 见 [binaries.json](../binaries.json)，CI 按仓库和提交逐一核对归档清单与 workflow。缓存由 root 安装，两个 runner 只读。重建时先验证全部下载，再替换带所有权标记的缓存，只保留清单中的归档，总量上限 64 MiB。Action 更新时同步修改 workflow 和归档清单，再重新部署缓存。
+
+归档清单测试解析 workflow 的实际步骤。原生 Linux runner 和本地 Linux 使用系统 Python 的 PyYAML，原生 runner 初始化时安装 `python3-yaml`。GitHub 托管 runner 和本地 macOS 使用 Ruby 自带的 YAML 解析器。
 
 dev 下载缓慢时，可先在本机执行下列命令，复制生成的 `tools/action*.archive` 到宿主 `/var/lib/tidemq-lab/tools/`，然后在两个 runner 空闲时安装并重新创建容器。归档来源始终为官方 codeload，完整性在安装时再次校验。
 
-使用本机已有代理时，按 [curl 代理环境变量说明](https://everything.curl.dev/usingcurl/proxies/env.html)为下载脚本设置 `HTTPS_PROXY` 或 `ALL_PROXY`，地址采用本机实际配置；仅设置 macOS 系统代理不保证命令行 curl 使用该代理。离线缓存只替代上述三个 Action 归档的下载；runner 的 GitHub 会话、源码 checkout 和制品传输仍需要网络连通，临时借用本机代理不能作为 dev 的常态网络保障。
+使用本机已有代理时，按 [curl 代理环境变量说明](https://everything.curl.dev/usingcurl/proxies/env.html)为下载脚本设置 `HTTPS_PROXY` 或 `ALL_PROXY`，地址采用本机实际配置；仅设置 macOS 系统代理不保证命令行 curl 使用该代理。离线缓存只替代清单中固定 Action 归档的下载；runner 的 GitHub 会话、源码 checkout 和制品传输仍需要网络连通，临时借用本机代理不能作为 dev 的常态网络保障。
 
 ```bash
 TIDEMQ_LAB_STATE="$HOME/.cache/tidemq-lab" bash scripts/lab/download-tools.sh actions

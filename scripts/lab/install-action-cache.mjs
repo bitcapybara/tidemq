@@ -20,11 +20,15 @@ export function installActionCache(manifest, source, destination) {
     }
   }
   const entries = Object.entries(manifest).filter(([, value]) => value.action);
-  assert.deepEqual(entries.map(([, value]) => value.action).sort(), repositories, 'Expected exactly three pinned actions');
+  assert.deepEqual([...new Set(entries.map(([, value]) => value.action))].sort(), repositories, 'Unexpected action repositories');
+  const revisions = new Set();
   let total = 0;
   const archives = entries.map(([name, value]) => {
     assert.match(name, /^action[A-Za-z]+$/, 'Invalid action archive name');
     assert.match(value.commit, /^[a-f0-9]{40}$/, 'Invalid action commit');
+    const revision = `${value.action}@${value.commit}`;
+    assert.ok(!revisions.has(revision), 'Duplicate action archive identity');
+    revisions.add(revision);
     assert.match(value.sha256, /^[a-f0-9]{64}$/, 'Invalid action archive digest');
     assert.equal(value.url, `https://codeload.github.com/${value.action}/tar.gz/${value.commit}`, 'Unexpected action source');
     const file = path.join(source, `${name}.archive`);
@@ -41,7 +45,7 @@ export function installActionCache(manifest, source, destination) {
     // Preserve shared read permissions even when the installer inherits umask 077.
     for (const archive of archives) {
       const directory = path.join(staging, archive.action.replace('/', '_'));
-      fs.mkdirSync(directory, {mode: 0o755});
+      fs.mkdirSync(directory, {mode: 0o755, recursive: true});
       fs.chmodSync(directory, 0o755);
       const file = path.join(directory, `${archive.commit}.tar.gz`);
       fs.writeFileSync(file, archive.contents, {mode: 0o444});

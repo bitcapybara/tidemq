@@ -55,6 +55,12 @@
     "url": "https://codeload.github.com/actions/download-artifact/tar.gz/d3f86a106a0bac45b974a628896c90dbdf5c8093",
     "sha256": "ede236531fa097435a9ecd9c2f75ad1eb43cbfced4d9c8d472e617751f40c452"
   },
+  "actionDownloadCoverage": {
+    "action": "actions/download-artifact",
+    "commit": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+    "url": "https://codeload.github.com/actions/download-artifact/tar.gz/9000827ccba6bdab643e8b6fd33ac0654aef8333",
+    "sha256": "0469682bf9b16a2ec8fe730420bef575b829dd5c6ab89e37748a361bcad45358"
+  },
   "helm": {
     "url": "https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz",
     "sha256": "0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b",

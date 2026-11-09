@@ -4,7 +4,7 @@ set -euo pipefail
 bundle=$1
 [[ $(cat /etc/tidemq-lab-role) == runner ]] || exit 1
 export DEBIAN_FRONTEND=noninteractive
-apt-get install -y cmake
+apt-get install -y cmake python3-yaml
 mountpoint -q /srv/tidemq || exit 1
 id actions >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --groups docker actions
 install -d -m 0755 -o actions -g actions /srv/tidemq/actions-runner /srv/tidemq/work /srv/tidemq/tools /srv/tidemq/cargo-target /srv/tidemq/tmp
