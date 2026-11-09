@@ -92,6 +92,8 @@ pub struct RunningNode {
     pub console_address: Option<SocketAddr>,
     pub management_address: SocketAddr,
     pub(crate) service: Arc<Service>,
+    #[cfg(all(test, feature = "test-hooks"))]
+    pub(crate) internal_core_slots: Option<Arc<std::sync::OnceLock<Arc<tokio::sync::Semaphore>>>>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<Result<()>>>,
     console: Option<crate::console::RunningConsole>,
@@ -321,6 +323,13 @@ impl RunningNode {
         let mut tasks = RequiredTasks::default();
         let internal_service = service.clone();
         let internal_config = dispatcher.clone();
+        #[cfg(all(test, feature = "test-hooks"))]
+        let internal_core_slots = Arc::new(std::sync::OnceLock::new());
+        #[cfg(all(test, feature = "test-hooks"))]
+        let internal_config = DispatchConfig {
+            core_slots: Some(internal_core_slots.clone()),
+            ..internal_config
+        };
         let internal_budget = budget.clone();
         let internal_dispatch = dispatch.clone();
         let internal_stopped = stopped.clone();
@@ -448,6 +457,8 @@ impl RunningNode {
             console_address: None,
             management_address,
             service,
+            #[cfg(all(test, feature = "test-hooks"))]
+            internal_core_slots: Some(internal_core_slots),
             shutdown,
             tasks,
             console: None,

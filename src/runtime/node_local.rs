@@ -253,6 +253,8 @@ async fn assemble(config: Config, startup: &mut LocalStartup) -> Result<RunningN
         console_address,
         management_address,
         service,
+        #[cfg(all(test, feature = "test-hooks"))]
+        internal_core_slots: None,
         shutdown,
         tasks,
         console: startup.console.take(),

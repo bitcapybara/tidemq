@@ -90,6 +90,8 @@ pub struct DispatchConfig {
     pub idle_timeout: Duration,
     pub drain_timeout: Duration,
     pub protocol: ProtocolLimits,
+    #[cfg(all(test, feature = "test-hooks"))]
+    pub(crate) core_slots: Option<Arc<std::sync::OnceLock<Arc<Semaphore>>>>,
 }
 
 impl Default for DispatchConfig {
@@ -103,6 +105,8 @@ impl Default for DispatchConfig {
             idle_timeout: Duration::from_secs(30),
             drain_timeout: Duration::from_secs(5),
             protocol: ProtocolLimits::default(),
+            #[cfg(all(test, feature = "test-hooks"))]
+            core_slots: None,
         }
     }
 }
@@ -683,6 +687,10 @@ pub async fn run<S: WireService>(
     // Semantic handlers can await Raft; they must never occupy its own control execution slots.
     let (raft, mut raft_rx) = ClassQueue::new(config.raft_handlers);
     let (core, mut core_rx) = ClassQueue::new(config.core_handlers);
+    #[cfg(all(test, feature = "test-hooks"))]
+    if let Some(observer) = &config.core_slots {
+        let _ = observer.set(core.slots.clone());
+    }
     let (ack, mut ack_rx) = ClassQueue::new(config.ack_handlers);
     let (data, mut data_rx) = ClassQueue::new(config.data_handlers);
     let maximum_frame = [

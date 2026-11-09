@@ -6,7 +6,7 @@ use crate::runtime::wire::semantic_local_tests::{Fixture, TOKEN};
 async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
     use crate::config::Role;
     use crate::runtime::data::consumer_tests::fixture::Fixture as RuntimeFixture;
-    use crate::runtime::watch_test_hooks::CoreHandlerLimit;
+    use crate::server::DispatchConfig;
 
     let mut runtime = RuntimeFixture::new(
         &[
@@ -20,16 +20,8 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
     )
     .await;
     let cluster: Id = runtime.configs.get(&1).unwrap().cluster_id.parse().unwrap();
-    let limit = CoreHandlerLimit::install(cluster, 1, 1).unwrap();
     runtime.enable_startup_timeline();
-    runtime
-        .record_startup_event("core_handler_limit_installed", Some(1), "limit=1")
-        .await;
     runtime.start_node(1).await;
-    assert!(limit.applied());
-    runtime
-        .record_startup_event("core_handler_limit_applied", Some(1), "applied=true")
-        .await;
     runtime.wait_ready().await;
     for node in [2, 3, 4] {
         runtime.start_node(node).await;
@@ -79,12 +71,6 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
                     .unwrap();
                 assert!((1..=4).contains(&node));
             }
-            "core_handler_limit_installed" | "core_handler_limit_applied" => {
-                assert_eq!(
-                    event.get("node_id").and_then(serde_json::Value::as_u64),
-                    Some(1)
-                );
-            }
             "fixture_start"
             | "readiness_wait_start"
             | "fixture_ready"
@@ -104,9 +90,7 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
             })
             .unwrap()
     };
-    let installed = event_index("core_handler_limit_installed", Some(1));
     let metadata_started = event_index("running_node_started", Some(1));
-    let applied = event_index("core_handler_limit_applied", Some(1));
     let ready_events = events
         .iter()
         .enumerate()
@@ -130,9 +114,7 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
         })
         .map(|(index, _)| index)
         .unwrap();
-    assert!(installed < metadata_started);
-    assert!(metadata_started < applied);
-    assert!(applied < first_ready);
+    assert!(metadata_started < first_ready);
     for node in [2, 3, 4] {
         let started = event_index("running_node_started", Some(node));
         assert!(first_ready < started);
@@ -164,7 +146,15 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
         .create_topic("auth/app/events")
         .await
         .unwrap();
-    let service = runtime.running.get(&1).unwrap().service.clone();
+    let metadata = runtime.running.get(&1).unwrap();
+    let service = metadata.service.clone();
+    let slots = metadata
+        .internal_core_slots
+        .as_ref()
+        .unwrap()
+        .get()
+        .unwrap();
+    let spare = u32::try_from(DispatchConfig::default().core_handlers - 1).unwrap();
     service.auth_cache.0.lock().unwrap().clear();
     let until = Instant::now() + Duration::from_secs(2);
     service.leaders.write().await.insert(1, (1, until));
@@ -178,6 +168,12 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
         })
     };
     pause.wait(until).await.unwrap();
+    // Reserve spare slots only after the remote request owns its handler.
+    let reserved = tokio::time::timeout_at(until, slots.acquire_many(spare))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(slots.available_permits(), 0);
     service.auth_cache.0.lock().unwrap().clear();
     service.leaders.write().await.clear();
     // This current-thread runtime cannot repopulate the hint before auth polls leader discovery.
@@ -187,14 +183,14 @@ async fn metadata_authorization_does_not_reenter_its_only_core_handler() {
             until,
         )
         .await;
+    drop(reserved);
     pause.resume();
     let result = query.await.unwrap();
     drop(pause);
     client.close().await.unwrap();
-    runtime.close().await;
-    drop(limit);
     assert!(cold.unwrap().0.credential.is_some());
     assert_eq!(result.unwrap().id(), topic.id());
+    runtime.close().await;
 }
 
 #[tokio::test]
