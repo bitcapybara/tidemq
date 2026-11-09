@@ -1,13 +1,14 @@
 # AGENTS.md
 
-本文件适用于整个项目。
+These rules apply throughout the repository.
 
-1. **合入 main 前通过 CI。** 在候选分支运行 CI，确认所有适用测试和门禁通过后才能合入 main。偶发性失败也必须排查到根因、修复并复验，不能仅靠重跑成功视为解决。
-2. **同步维护文档和可复用工具。** 修改代码后，检查 README 和 docs 是否仍准确，必要时同步更新。需要反复执行或使用的脚本、配置文件应考虑纳入项目，并提供使用说明。
-3. **仅维护当前版本。** 项目处于积极开发阶段，不考虑旧版本兼容；修改时直接更新协议、接口、配置及其调用方，删除无用的兼容分支。
-4. **复杂任务并行开发。** 尽量拆分为边界明确的子任务，使用多个 agent 和多个 worktree 并行开发；明确文件归属和依赖，统一集成与验证成果。
-5. **及时清理资源。** 开发、测试结束后清理遗留进程、临时文件、容器、集群资源及无用 worktree；清理前确认必要代码和验证证据已保存。
-6. **通过独立代码评审后合入。** 代码必须由 subagent 或其他 agent 独立 review，解决所有发现的问题并确认没有未解决问题后，才可以提交或合入 main；作者自审不能代替独立评审。
-7. **正确性与可观测性优先。** 新增功能必须检查 log、trace、metrics 是否覆盖关键行为和故障，并检查 CI 中的单元测试、集成测试、自动化测试是否覆盖该功能；缺失的观测和必要用例应随功能一起补齐、验证。
-8. **先独立评审再运行 CI。** 每完成一部分代码，先由 subagent 或其他 agent 独立 review；发现问题就修改并重新 review，直到 review 明确 CLOSED 后再触发或重触发 CI。CI 失败后先定位首个真实失败和根因，完成修复后重新执行独立 review，只有 review CLOSED 后才启动下一轮 CI；保留旧 run 的失败证据，避免用重跑替代根因修复并减少无效 CI 触发。
-9. **每轮评审使用新 agent。** 每次代码修改后或 CI 失败修复后的独立 review 都必须新建 subagent 或其他 agent 执行，不复用上一轮 reviewer；记录新 agent、审查范围和报告结论，直到当前提交的 review CLOSED。
+1. **Keep the task handoff current.** Read and follow the `task-handoff-memory` skill throughout each task. Consult it when starting or resuming work and before design, implementation, or testing. Update the task ledger and evidence at each checkpoint and before pausing, handing off, or closing the task.
+2. **Pass CI before merging into main.** Run all applicable tests and gates on the exact candidate revision. Investigate intermittent failures and verify fixes; a successful rerun alone does not establish a root cause.
+3. **Keep documentation and reusable tools current.** Update the README and relevant docs when behavior or workflows change. Consider checking in reusable scripts and configuration with usage instructions.
+4. **Support the current version.** TideMQ is under active development. Update protocols, interfaces, configuration, and callers together, and remove obsolete compatibility paths.
+5. **Parallelize complex work.** Where practical, divide work among agents in separate worktrees with clear ownership and dependencies. Integrate and verify their results together.
+6. **Clean up task resources.** Verify ownership and preserve source and evidence before removing task-created processes, temporary files, containers, cluster resources, or worktrees.
+7. **Require independent review before merging into main.** An independent agent must review the candidate and all in-scope findings must be resolved. Use a fresh agent for every review. State a fixed baseline, normally the merge base with the target branch, and review the complete diff from that baseline, including relevant working-tree changes.
+8. **Put correctness and observability first.** For new behavior, verify logs, traces, and metrics cover critical paths and failures. Cover the behavior with applicable unit, integration, and automated end-to-end tests in CI.
+9. **Get explicit approval before starting an iterative write-review cycle.** Once approved, run dependent tests or CI only after the independent reviewer closes the review with no unresolved in-scope findings. After every change, use a fresh reviewer and the same baseline before resuming those checks. Bind every review and validation result to the exact diff or commit it covered.
+10. **Triage failures before changing code or rerunning CI.** Preserve the first failing step and its evidence. Fix attributable failures, obtain a fresh independent review, and then rerun the applicable checks. If evidence shows a failure is unrelated, record the diagnosis and wait for user direction. If attribution is uncertain, investigate and report the uncertainty.

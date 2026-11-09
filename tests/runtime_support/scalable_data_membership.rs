@@ -1,20 +1,95 @@
 use super::*;
+use tidemq_protocol::common::{ErrorCode, Outcome};
+use tidemq_sdk::{AdminReceipt, DataGroupInfo, Error, RequestContext};
 
-fn retryable_data_replacement_error(error: &tidemq_sdk::Error) -> bool {
+fn retryable_data_replacement_error(error: &Error) -> bool {
     match error {
-        tidemq_sdk::Error::Administration { source, .. } => {
-            retryable_data_replacement_error(source)
-        }
-        tidemq_sdk::Error::RequestUnknown { source } => retryable_data_replacement_error(source),
-        tidemq_sdk::Error::Remote {
-            code: tidemq_protocol::common::ErrorCode::Unavailable,
-            outcome:
-                tidemq_protocol::common::Outcome::Rejected | tidemq_protocol::common::Outcome::Unknown,
+        Error::Administration { source, .. } => retryable_data_replacement_error(source),
+        Error::RequestUnknown { source } => retryable_data_replacement_error(source),
+        Error::Remote {
+            code: ErrorCode::Unavailable,
+            outcome: Outcome::Rejected | Outcome::Unknown,
             retryable: true,
             original_outcome_known: false,
             ..
         } => true,
         _ => false,
+    }
+}
+
+#[test]
+fn data_replacement_recovery_accepts_only_unresolved_retryable_unavailability() {
+    for (code, outcome, retryable, original_outcome_known, expected) in [
+        (ErrorCode::Unavailable, Outcome::Rejected, true, false, true),
+        (ErrorCode::Unavailable, Outcome::Unknown, true, false, true),
+        (
+            ErrorCode::Unavailable,
+            Outcome::Unknown,
+            false,
+            false,
+            false,
+        ),
+        (ErrorCode::Unavailable, Outcome::Rejected, true, true, false),
+        (ErrorCode::Forbidden, Outcome::Rejected, false, false, false),
+    ] {
+        let error = Error::RequestUnknown {
+            source: Box::new(Error::Remote {
+                code,
+                message: String::new(),
+                outcome,
+                retryable,
+                expected_sequence: None,
+                expected_registration_epoch: None,
+                retry_after_ms: None,
+                original_outcome_known,
+            }),
+        };
+        assert_eq!(retryable_data_replacement_error(&error), expected);
+    }
+    assert!(!retryable_data_replacement_error(&Error::RequestUnknown {
+        source: Box::new(Error::ResponseMismatch {
+            reason: "The reply did not match the original operation".into(),
+        }),
+    }));
+}
+
+async fn replace_original_replica(
+    client: &Client,
+    removed: u64,
+) -> tidemq_sdk::Result<DataGroupInfo> {
+    // The fixture caps each SDK call at ten seconds; leave time to recover the same handle.
+    let until = Instant::now() + Duration::from_secs(20);
+    let context = RequestContext::with_deadline(until);
+    let initial = context
+        .scope(client.admin().replace_data_replica(2, removed, 5))
+        .await;
+    let pending = match initial {
+        Ok(receipt) => return Ok(receipt),
+        Err(Error::Administration { pending, source })
+            if retryable_data_replacement_error(&source) && Instant::now() < until =>
+        {
+            eprintln!("Recovering the original data replacement: {pending:?}; {source:#}");
+            pending
+        }
+        Err(error) => return Err(error),
+    };
+    loop {
+        match context.scope(pending.retry()).await {
+            Ok(AdminReceipt::DataGroupReconfigured(receipt)) => return Ok(receipt),
+            Ok(_) => {
+                return Err(Error::ResponseMismatch {
+                    reason: "The original data replacement returned another receipt kind".into(),
+                });
+            }
+            Err(error) if retryable_data_replacement_error(&error) && Instant::now() < until => {
+                tokio::time::sleep_until(until.min(Instant::now() + Duration::from_millis(25)))
+                    .await;
+                if Instant::now() >= until {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -149,33 +224,11 @@ async fn rf3_operator_replaces_a_storage_voter_and_retires_the_source_with_origi
             .unwrap(),
     );
     fixture.wait_ready().await;
-    let until = deadline();
-    let result = match tidemq_sdk::RequestContext::with_deadline(until)
-        .scope(client.admin().replace_data_replica(2, removed, 5))
-        .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            evidence(&fixture).await;
-            let tidemq_sdk::Error::Administration { pending, .. } = error else {
-                panic!("The data replacement failed without a recovery handle");
-            };
-            loop {
-                match tidemq_sdk::RequestContext::with_deadline(until)
-                    .scope(pending.retry())
-                    .await
-                {
-                    Ok(tidemq_sdk::AdminReceipt::DataGroupReconfigured(result)) => break result,
-                    Err(error)
-                        if retryable_data_replacement_error(&error) && Instant::now() < until =>
-                    {
-                        tokio::task::yield_now().await;
-                    }
-                    other => panic!("The original data replacement could not complete: {other:?}"),
-                }
-            }
-        }
-    };
+    let result = replace_original_replica(&client, removed).await;
+    if result.is_err() {
+        evidence(&fixture).await;
+    }
+    let result = result.expect("The original data replacement must complete");
     let expected: Vec<_> = [2, 3, 4, 5]
         .into_iter()
         .filter(|node| *node != removed)
