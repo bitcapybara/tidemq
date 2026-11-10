@@ -390,7 +390,14 @@ impl Service {
         let started = Instant::now();
         let leader = self
             .leader(self.config.runtime.metadata_group, deadline)
-            .await?;
+            .await;
+        tracing::debug!(
+            target: "tidemq::internal_rpc",
+            event_code = "authorization_leader_resolved",
+            leader_node_id = ?leader.as_ref().ok(),
+            "Finished resolving the metadata leader for authorization"
+        );
+        let leader = leader?;
         let reply = if self.rpc.is_local() || leader == self.config.node_id {
             use tracing::Instrument;
             // A metadata handler must not reenter the Core queue it already occupies.
@@ -457,11 +464,19 @@ impl Service {
         wire::remaining(deadline)?;
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        replica
-            .group
-            .ensure_read(deadline)
-            .await
-            .map_err(crate::runtime::wire::execution_error)?;
+        let started = tracing::enabled!(target: "tidemq::internal_rpc", tracing::Level::DEBUG)
+            .then(Instant::now);
+        let barrier = replica.group.ensure_read(deadline).await;
+        if let Some(started) = started {
+            tracing::debug!(
+                target: "tidemq::internal_rpc",
+                event_code = "authorization_read_barrier_finished",
+                elapsed_us = started.elapsed().as_micros(),
+                succeeded = barrier.is_ok(),
+                "Finished the authorization read barrier"
+            );
+        }
+        barrier.map_err(crate::runtime::wire::execution_error)?;
         let now = super::data::unix_millis()?;
         let reply = replica
             .state

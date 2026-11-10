@@ -67,6 +67,10 @@ pub trait WireService: Send + Sync + 'static {
         false
     }
 
+    fn trace_control_rpc(&self, _request: &Frame) -> bool {
+        false
+    }
+
     /// Called after a requested native flush; transport receipt does not establish business commit.
     fn response_sent(&self, _peer: &Authorization, _request: &Frame, _response: &Frame) {}
 }
@@ -115,6 +119,7 @@ struct Reply {
     frame: Frame,
     deadline: Instant,
     notification: Option<(Authorization, ReceivedFrame)>,
+    trace_control: bool,
 }
 struct Job {
     peer: Authorization,
@@ -670,6 +675,7 @@ fn reject_local_queued(job: Job, limits: &ProtocolLimits) {
             frame: response,
             deadline: job.frame.deadline(),
             notification: None,
+            trace_control: false,
         });
     }
 }
@@ -849,6 +855,7 @@ async fn execute<S: WireService>(
                     frame: response,
                     deadline,
                     notification: None,
+                    trace_control: false,
                 }),
             )
             .await;
@@ -858,6 +865,7 @@ async fn execute<S: WireService>(
     let notification_peer = service
         .response_requires_flush(&peer, frame.frame())
         .then(|| peer.clone());
+    let internal_request_id = traced_control_request_id(service.as_ref(), &peer, frame.frame());
     let result = if Instant::now() >= deadline {
         overload(frame.frame(), &limits, ErrorCode::DeadlineExceeded)
     } else {
@@ -890,16 +898,52 @@ async fn execute<S: WireService>(
             _tenant: tenant,
         });
         // Keep the bounded handler slot while the writer catches up; a full queue is not a lost reply.
-        let _ = timeout_at(
-            deadline,
-            reply.send(Reply {
+        queue_control_reply(
+            &reply,
+            Reply {
                 frame: response,
                 deadline,
                 notification: notification_peer
                     .and_then(|peer| frame.received().map(|frame| (peer, frame))),
-            }),
+                trace_control: internal_request_id.is_some(),
+            },
+            internal_request_id,
         )
         .await;
+    }
+}
+
+fn traced_control_request_id<S: WireService>(
+    service: &S,
+    peer: &Authorization,
+    frame: &Frame,
+) -> Option<Id> {
+    if matches!(peer, Authorization::Internal(_))
+        && frame.traffic_class == i32::from(TrafficClass::Control)
+        && tracing::enabled!(target: "tidemq::internal_rpc", tracing::Level::DEBUG)
+        && service.trace_control_rpc(frame)
+    {
+        Id::from_slice(&frame.request_id).ok()
+    } else {
+        None
+    }
+}
+
+async fn queue_control_reply(replies: &mpsc::Sender<Reply>, reply: Reply, request_id: Option<Id>) {
+    let queued = timeout_at(reply.deadline, replies.send(reply)).await;
+    if let Some(request_id) = request_id {
+        let verdict = match queued {
+            Ok(Ok(())) => "queued",
+            Ok(Err(_)) => "closed",
+            Err(_) => "deadline",
+        };
+        tracing::debug!(
+            target: "tidemq::internal_rpc",
+            event_code = "internal_rpc_reply_queue",
+            request_id = ?Some(request_id),
+            verdict,
+            "Finished handing an internal control RPC reply to the writer"
+        );
     }
 }
 
@@ -1040,6 +1084,7 @@ async fn serve_stream<S: WireService>(
                                     frame: response,
                                     deadline: frame.deadline(),
                                     notification: None,
+                                    trace_control: false,
                                 }),
                             )
                             .await;
@@ -1056,33 +1101,64 @@ async fn serve_stream<S: WireService>(
                 submitted = dispatcher.submit(peer.clone(), execution, AdmittedFrame::Remote(frame), replies.clone(), order, tenant) => submitted,
                 _ = shutdown.changed() => { drop(replies); return true },
             };
-            if let Err(frame) = submitted
-                && let Some(response) = overload(
+            if let Err(frame) = submitted {
+                let request_id =
+                    traced_control_request_id(admission.as_ref(), &peer, frame.frame());
+                if let Some(request_id) = request_id {
+                    tracing::debug!(
+                        target: "tidemq::internal_rpc",
+                        event_code = "internal_rpc_admission_rejected",
+                        request_id = ?Some(request_id),
+                        "Rejected internal control RPC admission"
+                    );
+                }
+                if let Some(response) = overload(
                     frame.frame(),
                     &dispatcher.config.protocol,
                     ErrorCode::QuotaExceeded,
-                )
-            {
-                dispatcher.health.rejected.inc();
-                let _ = timeout_at(
-                    frame.deadline(),
-                    replies.send(Reply {
-                        frame: response,
-                        deadline: frame.deadline(),
-                        notification: None,
-                    }),
-                )
-                .await;
+                ) {
+                    dispatcher.health.rejected.inc();
+                    queue_control_reply(
+                        &replies,
+                        Reply {
+                            frame: response,
+                            deadline: frame.deadline(),
+                            notification: None,
+                            trace_control: request_id.is_some(),
+                        },
+                        request_id,
+                    )
+                    .await;
+                }
             }
         }
     };
     let write = async {
         while let Some(reply) = outgoing.recv().await {
             // An expired reply must not reset other in-flight RPCs sharing this stream.
-            if Instant::now() >= reply.deadline {
-                continue;
+            let sent = if Instant::now() >= reply.deadline {
+                None
+            } else {
+                Some(sender.send(&reply.frame, reply.deadline).await)
+            };
+            if reply.trace_control {
+                let verdict = match &sent {
+                    None => "expired",
+                    Some(Ok(())) => "sent",
+                    Some(Err(crate::transport::Error::Deadline { .. })) => "deadline",
+                    Some(Err(_)) => "transport_error",
+                };
+                tracing::debug!(
+                    target: "tidemq::internal_rpc",
+                    event_code = "internal_rpc_reply",
+                    request_id = ?Id::from_slice(&reply.frame.request_id).ok(),
+                    reply_kind = reply.frame.kind,
+                    verdict,
+                    "Processed an internal control RPC reply"
+                );
             }
-            if let Err(error) = sender.send(&reply.frame, reply.deadline).await {
+            let Some(sent) = sent else { continue };
+            if let Err(error) = sent {
                 if matches!(error, crate::transport::Error::Deadline { .. }) && sender.is_usable() {
                     continue;
                 }

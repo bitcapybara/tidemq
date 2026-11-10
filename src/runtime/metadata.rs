@@ -355,9 +355,29 @@ impl Service {
     ) -> Result<Frame> {
         let replica = self.metadata.as_ref().ok_or_else(Error::unavailable)?;
         self.require_leader(replica)?;
-        wire::within(deadline, replica.group.ensure_read(deadline))
-            .await?
-            .map_err(wire::execution_error)?;
+        let started = (frame.kind == i32::from(FrameKind::GetClusterRegistry)
+            && tracing::enabled!(target: "tidemq::internal_rpc", tracing::Level::DEBUG))
+        .then(Instant::now);
+        if started.is_some() {
+            tracing::debug!(
+                target: "tidemq::internal_rpc",
+                event_code = "registry_read_barrier_started",
+                public_request_id = ?wire::id(&frame.request_id).ok(),
+                "Started the registry read barrier"
+            );
+        }
+        let barrier = wire::within(deadline, replica.group.ensure_read(deadline)).await;
+        if let Some(started) = started {
+            tracing::debug!(
+                target: "tidemq::internal_rpc",
+                event_code = "registry_read_barrier_finished",
+                public_request_id = ?wire::id(&frame.request_id).ok(),
+                elapsed_us = started.elapsed().as_micros(),
+                succeeded = barrier.as_ref().is_ok_and(|result| result.is_ok()),
+                "Finished the registry read barrier"
+            );
+        }
+        barrier?.map_err(wire::execution_error)?;
         if super::service::frame_kind(frame)? == FrameKind::ConsoleWrite {
             return self.console_write_public(&access, frame, deadline).await;
         }

@@ -5,6 +5,7 @@ features=tidemq-sdk/metrics,tidemq-sdk/opentelemetry,tidemq-protocol/codegen
 mode=${1:-all}
 [[ "$mode" =~ ^(all|normal|faults)$ ]] || exit 2
 export CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
+export TIDEMQ_TEST_REGISTRY_RPC_LOG=1
 mkdir -p target/ci
 export TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/tidemq-ci-integration.XXXXXX")
 cleanup() {

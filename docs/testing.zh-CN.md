@@ -92,6 +92,8 @@ LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://d
 
 普通/故障流程失败时，证据采集仍限制为总计2MiB、最多40个文件；新增诊断 JSON 仅允许 `consumer-recovery-after-quorum.json`、`consumer-recovery-timeout.json` 两个精确文件名，不扩大其他 JSON 规则，继续拒绝凭据和符号链接。manifest 保留 `files`，另以 `entries` 记录 `path/sourceBytes/copiedBytes/tailOffset/truncated`；短读只复制实际读到的字节，不补零伪装完整，截尾日志可据此识别。
 
+动态注册用例在种子重启期间或之后失败时，在普通和故障 CI 的制品中查看 `process-<pid>.log`。日志用同一个单调时钟记录种子重启和请求阶段，在重启后查询完成或异常退出时写盘，并标注内存缓冲丢弃的事件数。按 `public_request_id` 查找公开请求及关联的授权和转发调用，再用内部 `request_id` 串联提交、处理、读屏障、回复排队和发送，以及客户端等待结果。诊断事件使用 `tidemq::internal_rpc` 的 DEBUG 级别，仅记录请求标识、阶段、预算和结果。
+
 ## 远程 API 黑盒断言
 
 入口为 [tests/deployment/driver.rs](https://github.com/bitcapybara/tidemq/blob/main/tests/deployment/driver.rs)，保留 `cargo build --example deploy_validation` 构建接口。纯解析/账本单元测试只测试本地逻辑，外部服务行为由 [lab.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/ci/lab.sh) 在部署后显式运行，不混入 lib/bin 单元测试。

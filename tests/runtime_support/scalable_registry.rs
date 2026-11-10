@@ -1,5 +1,156 @@
 use super::*;
 
+use std::collections::VecDeque;
+use std::io::{self, BufWriter, Write};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+const TRACE_CORRELATED_EVENTS: usize = 72;
+const TRACE_SUPPORTING_EVENTS: usize = 160;
+const TRACE_EVENT_BYTES: usize = 1024;
+
+#[derive(Default)]
+struct RegistryTraceEvents {
+    correlated: VecDeque<Vec<u8>>,
+    supporting: VecDeque<Vec<u8>>,
+    internal_ids: BTreeSet<String>,
+}
+
+impl RegistryTraceEvents {
+    fn is_correlated(&mut self, event: &[u8]) -> bool {
+        let Ok(event) = std::str::from_utf8(event) else {
+            return false;
+        };
+        let primary = event.contains("public_request_id=") || event.contains("registry_seed_");
+        let internal_id = event
+            .split_once(" request_id=Some(Id(")
+            .or_else(|| event.split_once("{request_id=Some(Id("))
+            .and_then(|(_, rest)| rest.split_once("))"))
+            .map(|(id, _)| id);
+        if let Some(id) = internal_id {
+            if primary && self.internal_ids.len() < TRACE_CORRELATED_EVENTS {
+                self.internal_ids.insert(id.to_owned());
+            }
+            return primary || self.internal_ids.contains(id);
+        }
+        primary
+    }
+}
+
+#[test]
+fn registry_trace_correlates_authorization_barrier_span_with_submission() {
+    let mut events = RegistryTraceEvents::default();
+    assert!(events.is_correlated(
+        b"registry_query{public_request_id=Some(Id(public))}: event_code=connect request_id=Some(Id(internal))"
+    ));
+    assert!(events.is_correlated(
+        b"internal_authorization{request_id=Some(Id(internal))}: event_code=barrier_finished"
+    ));
+    assert!(!events.is_correlated(
+        b"internal_authorization{request_id=Some(Id(background))}: event_code=barrier_finished"
+    ));
+}
+
+#[derive(Default)]
+struct RegistryTraceBuffer {
+    active: AtomicBool,
+    events: Mutex<RegistryTraceEvents>,
+    dropped: AtomicUsize,
+}
+
+struct RegistryTraceWriter(Arc<RegistryTraceBuffer>);
+
+impl Write for RegistryTraceWriter {
+    fn write(&mut self, event: &[u8]) -> io::Result<usize> {
+        if !self.0.active.load(Ordering::Relaxed) {
+            return Ok(event.len());
+        }
+        if event.len() <= TRACE_EVENT_BYTES
+            && let Ok(mut buffer) = self.0.events.try_lock()
+        {
+            // Keep the registry request context even if background authorization fills its ring.
+            let correlated = buffer.is_correlated(event);
+            let (events, limit) = if correlated {
+                (&mut buffer.correlated, TRACE_CORRELATED_EVENTS)
+            } else {
+                (&mut buffer.supporting, TRACE_SUPPORTING_EVENTS)
+            };
+            if events.len() == limit {
+                events.pop_front();
+                self.0.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            events.push_back(event.to_vec());
+        } else {
+            self.0.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        Ok(event.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct RegistryTrace {
+    path: PathBuf,
+    buffer: Arc<RegistryTraceBuffer>,
+}
+
+impl RegistryTrace {
+    fn start(directory: &std::path::Path) -> Option<Self> {
+        std::env::var_os("TIDEMQ_TEST_REGISTRY_RPC_LOG")?;
+        let buffer = Arc::new(RegistryTraceBuffer::default());
+        buffer.active.store(true, Ordering::Relaxed);
+        let writer_buffer = buffer.clone();
+        tracing_subscriber::fmt()
+            .with_env_filter("tidemq::internal_rpc=debug")
+            .with_timer(tracing_subscriber::fmt::time::Uptime::default())
+            .with_ansi(false)
+            .with_writer(move || RegistryTraceWriter(writer_buffer.clone()))
+            .try_init()
+            .expect("Install the registry RPC evidence subscriber in the isolated test");
+        Some(Self {
+            path: directory.join(format!("process-{}.log", std::process::id())),
+            buffer,
+        })
+    }
+
+    fn save(&self) -> io::Result<()> {
+        self.buffer.active.store(false, Ordering::Relaxed);
+        let events = {
+            let mut events = self
+                .buffer
+                .events
+                .lock()
+                .map_err(|_| io::Error::other("Registry trace buffer was poisoned"))?;
+            std::mem::take(&mut *events)
+        };
+        let mut file = BufWriter::new(std::fs::File::create(&self.path)?);
+        writeln!(
+            file,
+            "Registry RPC trace uses monotonic time. Events discarded: {}",
+            self.buffer.dropped.load(Ordering::Relaxed)
+        )?;
+        writeln!(file, "Registry request context and restart markers:")?;
+        for event in events.correlated {
+            file.write_all(&event)?;
+        }
+        writeln!(file, "Supporting internal RPC events:")?;
+        for event in events.supporting {
+            file.write_all(&event)?;
+        }
+        file.flush()
+    }
+}
+
+impl Drop for RegistryTrace {
+    fn drop(&mut self) {
+        if let Err(error) = self.save() {
+            eprintln!("Could not save registry RPC evidence: {error}");
+        }
+    }
+}
+
 #[cfg(feature = "test-hooks")]
 async fn proxied_client(fixture: &Fixture) -> (udp_proxy::Proxy, Client) {
     let address = fixture.configs.get(&1).unwrap().listen;
@@ -349,10 +500,24 @@ async fn registered_nodes_and_an_independent_group_join_without_restarting_exist
         .unwrap();
     second.ack(&message).await.unwrap();
     assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 6);
+    let rpc_trace = RegistryTrace::start(&fixture.directory);
+    tracing::debug!(
+        target: "tidemq::internal_rpc",
+        event_code = "registry_seed_restart_started",
+        node_id = 1,
+        "Restarting the metadata seed"
+    );
     fixture.stop(1).await;
     fixture.restart(1).await;
+    tracing::debug!(
+        target: "tidemq::internal_rpc",
+        event_code = "registry_seed_ready",
+        node_id = 1,
+        "The metadata seed is ready for the original client's registry query"
+    );
     assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 6);
     assert_eq!(client.admin().data_groups().await.unwrap().len(), 2);
+    drop(rpc_trace);
     let continued = producer
         .send("after-seed-restart")
         .await

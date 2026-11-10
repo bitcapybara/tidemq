@@ -13,6 +13,7 @@ use tidemq_protocol::internal::{InternalCommand, RaftRequest, SnapshotChunk};
 use tidemq_protocol::public;
 use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio::time::Instant;
+use tracing::Instrument;
 
 use crate::broker::{DataApplication, ProducerMetrics};
 use crate::budget::MemoryBudget;
@@ -542,7 +543,17 @@ impl Service {
             }
             let leader = self
                 .leader(self.config.runtime.metadata_group, deadline)
-                .await?;
+                .await;
+            if kind == FrameKind::GetClusterRegistry {
+                tracing::debug!(
+                    target: "tidemq::internal_rpc",
+                    event_code = "registry_leader_resolved",
+                    public_request_id = ?wire::id(&frame.request_id).ok(),
+                    leader_node_id = ?leader.as_ref().ok(),
+                    "Finished resolving the metadata leader for the registry query"
+                );
+            }
+            let leader = leader?;
             if leader == self.config.node_id {
                 drop(order);
                 return self.metadata_public(access, frame, deadline).await;
@@ -746,11 +757,14 @@ impl Service {
         }
     }
 
-    fn internal_execution_purpose(&self, frame: &Frame) -> Option<StreamPurpose> {
+    fn decode_internal_request(&self, frame: &Frame) -> Option<Request> {
         let envelope: InternalCommand =
             decode_payload(frame.payload.clone(), &self.config.protocol).ok()?;
-        let request: Request =
-            decode_payload(envelope.encoded_command, &self.config.protocol).ok()?;
+        decode_payload(envelope.encoded_command, &self.config.protocol).ok()
+    }
+
+    fn internal_execution_purpose(&self, frame: &Frame) -> Option<StreamPurpose> {
+        let request = self.decode_internal_request(frame)?;
         match request.kind {
             wire::AUTHORITY
             | wire::OWNERSHIP
@@ -800,6 +814,21 @@ impl Service {
         let request: Request = decode_payload(envelope.encoded_command, &self.config.protocol)
             .map_err(|source| Error::operation("decode semantic operation", source))?;
         let group = envelope.group_id;
+        if frame.traffic_class == i32::from(TrafficClass::Control)
+            && wire::trace_control_kind(request.kind)
+        {
+            tracing::debug!(
+                target: "tidemq::internal_rpc",
+                event_code = "internal_rpc_handler_enter",
+                request_id = ?wire::id(&frame.request_id).ok(),
+                request_kind = request.kind,
+                group_id = group,
+                node_id = self.config.node_id,
+                peer_node_id = peer.node_id,
+                remaining_ms = deadline.saturating_duration_since(Instant::now()).as_millis(),
+                "Handling an internal control RPC"
+            );
+        }
         let value = match request.kind {
             super::consumer_watch_authority::AUTHORIZE => {
                 drop(order);
@@ -936,7 +965,13 @@ impl Service {
                 {
                     return Err(forbidden());
                 }
-                self.auth_command(&request.body, deadline).await?
+                self.auth_command(&request.body, deadline)
+                    .instrument(tracing::debug_span!(
+                        target: "tidemq::internal_rpc",
+                        "internal_authorization",
+                        request_id = ?wire::id(&frame.request_id).ok(),
+                    ))
+                    .await?
             }
             super::topology::SEAL_SHARD => {
                 drop(order);
@@ -1103,6 +1138,23 @@ impl Service {
                     decode_frame(request.body, class, &self.config.protocol).map_err(|source| {
                         Error::operation("validate delegated public frame", source)
                     })?;
+                let registry = if inner.kind == i32::from(FrameKind::GetClusterRegistry) {
+                    tracing::debug!(
+                        target: "tidemq::internal_rpc",
+                        event_code = "registry_rpc_forward",
+                        request_id = ?wire::id(&frame.request_id).ok(),
+                        public_request_id = ?wire::id(&inner.request_id).ok(),
+                        "Decoded a forwarded registry query"
+                    );
+                    tracing::debug_span!(
+                        target: "tidemq::internal_rpc",
+                        "delegated_registry_query",
+                        request_id = ?wire::id(&frame.request_id).ok(),
+                        public_request_id = ?wire::id(&inner.request_id).ok(),
+                    )
+                } else {
+                    tracing::Span::none()
+                };
                 let credential: Id = request
                     .principal
                     .strip_prefix("credential:")
@@ -1144,6 +1196,7 @@ impl Service {
                 } else {
                     let (access, expires) = self
                         .dynamic_access(credential, session, &inner, deadline)
+                        .instrument(registry)
                         .await?;
                     (access, super::auth::admit_deadline(deadline, expires)?)
                 };
@@ -1277,6 +1330,13 @@ impl WireService for Service {
         self.shutdown_response(peer, request)
     }
 
+    fn trace_control_rpc(&self, frame: &Frame) -> bool {
+        frame.kind == i32::from(FrameKind::InternalCommand)
+            && self
+                .decode_internal_request(frame)
+                .is_some_and(|request| wire::trace_control_kind(request.kind))
+    }
+
     fn response_sent(&self, peer: &Authorization, request: &Frame, response: &Frame) {
         if response.kind == i32::from(FrameKind::InternalResult)
             && response.request_id == request.request_id
@@ -1301,6 +1361,18 @@ impl WireService for Service {
             self.config.node_id,
             self.config.role.name(),
         );
+        let registry = if frame.kind == i32::from(FrameKind::GetClusterRegistry)
+            && matches!(&peer, Authorization::Credential { .. })
+        {
+            tracing::debug_span!(
+                target: "tidemq::internal_rpc",
+                "registry_query",
+                public_request_id = ?wire::id(&frame.request_id).ok(),
+                node_id = self.config.node_id,
+            )
+        } else {
+            tracing::Span::none()
+        };
         crate::observability::tracing::observe_until(async {
         let started = tracing::enabled!(tracing::Level::TRACE).then(std::time::Instant::now);
         let result = async {
@@ -1308,6 +1380,14 @@ impl WireService for Service {
             Authorization::External { .. } | Authorization::Credential { .. } => {
                 let kind = frame_kind(frame)?;
                 let Authorization::Credential { credential, session_id, tenant, .. } = &peer else { return Err(forbidden()); };
+                if kind == FrameKind::GetClusterRegistry {
+                    tracing::debug!(
+                        target: "tidemq::internal_rpc",
+                        event_code = "registry_query_started",
+                        public_request_id = ?wire::id(&frame.request_id).ok(),
+                        "Received a public registry query"
+                    );
+                }
                 if matches!(kind, FrameKind::GroupWatch | FrameKind::GroupWatchCancel) {
                     // Watch performs the current permission/member check in its bounded AUTHORIZE path.
                     let access = Access {
@@ -1392,7 +1472,7 @@ impl WireService for Service {
                 response
             }
         }
-        }, span, deadline.into_std()).await
+        }, span, deadline.into_std()).instrument(registry).await
     }
 }
 

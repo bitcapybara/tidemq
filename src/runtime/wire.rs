@@ -19,6 +19,10 @@ pub(crate) const OWNERSHIP: u32 = 2;
 pub(crate) const FORWARD: u32 = 3;
 pub(crate) const LEADER: u32 = 4;
 
+pub(super) fn trace_control_kind(kind: u32) -> bool {
+    matches!(kind, FORWARD | super::auth::AUTH_QUERY)
+}
+
 // A full 128-member grant plan needs room for maximum-width counters and both RPC envelopes.
 const MAX_TYPED_BYTES: usize = 14 * 1024;
 
@@ -185,6 +189,7 @@ pub(crate) struct Pending {
     request_id: Bytes,
     operation_id: Bytes,
     class: TrafficClass,
+    trace_control: bool,
     limits: ProtocolLimits,
 }
 
@@ -315,6 +320,7 @@ impl PeerRpc {
                 }));
         let request_id = Id::new_v7()
             .map_err(|source| Error::operation("allocate internal request identity", source))?;
+        let request_kind = request.kind;
         let payload = InternalCommand {
             group_id: group,
             operation_id: Bytes::copy_from_slice(operation.as_bytes()),
@@ -335,10 +341,41 @@ impl PeerRpc {
         .map_err(|source| Error::operation("frame internal request", source))?;
         frame.traceparent = crate::observability::tracing::current_traceparent();
         drop(payload);
+        let trace_control = class == TrafficClass::Control && trace_control_kind(request_kind);
+        if trace_control {
+            tracing::debug!(
+                target: "tidemq::internal_rpc",
+                event_code = "internal_rpc_connect_started",
+                request_id = ?Some(request_id),
+                request_kind,
+                group_id = group,
+                peer_node_id = target,
+                remaining_ms = deadline.saturating_duration_since(Instant::now()).as_millis(),
+                "Acquiring an internal control RPC connection"
+            );
+        }
         let rpc = pool
             .connection(target, class, deadline)
             .await
-            .map_err(|source| Error::operation("connect internal peer", source))?;
+            .map_err(|source| {
+                if trace_control {
+                    tracing::debug!(
+                        target: "tidemq::internal_rpc",
+                        event_code = "internal_rpc_connect_failed",
+                        request_id = ?Some(request_id),
+                        "Failed to acquire an internal control RPC connection"
+                    );
+                }
+                Error::operation("connect internal peer", source)
+            })?;
+        if trace_control {
+            tracing::debug!(
+                target: "tidemq::internal_rpc",
+                event_code = "internal_rpc_submit",
+                request_id = ?Some(request_id),
+                "Submitting an internal control RPC"
+            );
+        }
         let response = if completion {
             rpc.submit_completion(frame, deadline).await
         } else if core {
@@ -348,13 +385,24 @@ impl PeerRpc {
         } else {
             rpc.submit_affinity(frame, deadline, affinity).await
         }
-        .map_err(|source| Error::operation("submit internal semantic request", source))?;
+        .map_err(|source| {
+            if trace_control {
+                tracing::debug!(
+                    target: "tidemq::internal_rpc",
+                    event_code = "internal_rpc_submit_failed",
+                    request_id = ?Some(request_id),
+                    "Failed to submit an internal control RPC"
+                );
+            }
+            Error::operation("submit internal semantic request", source)
+        })?;
         Ok(Pending {
             response,
             rpc,
             request_id: Bytes::copy_from_slice(request_id.as_bytes()),
             operation_id,
             class,
+            trace_control,
             limits: self.limits.clone(),
         })
     }
@@ -449,10 +497,23 @@ impl PeerRpc {
 
 impl Pending {
     pub async fn receive(self) -> Result<Bytes> {
-        let frame = self
-            .response
-            .receive()
-            .await
+        let received = self.response.receive().await;
+        if self.trace_control {
+            let verdict = match &received {
+                Ok(_) => "received",
+                Err(crate::transport::rpc::Error::Closed) => "closed",
+                Err(crate::transport::rpc::Error::Deadline { .. }) => "deadline",
+                Err(_) => "transport_error",
+            };
+            tracing::debug!(
+                target: "tidemq::internal_rpc",
+                event_code = "internal_rpc_receive",
+                request_id = ?id(&self.request_id).ok(),
+                verdict,
+                "Finished waiting for an internal control RPC"
+            );
+        }
+        let frame = received
             .map_err(|source| Error::operation("receive internal semantic result", source))?
             .frame()
             .clone();
