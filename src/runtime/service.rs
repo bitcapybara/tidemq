@@ -1028,6 +1028,13 @@ impl Service {
                 } else {
                     self.data.get(&group).and_then(Replica::authority_node)
                 };
+                tracing::debug!(
+                    target: "tidemq::internal_rpc",
+                    event_code = "internal_leader_reply",
+                    request_id = ?wire::id(&frame.request_id).ok(),
+                    leader_node_id = ?leader,
+                    "Resolved the local leader hint for an internal probe"
+                );
                 wire::json(&leader)?
             }
             wire::AUTHORITY => {

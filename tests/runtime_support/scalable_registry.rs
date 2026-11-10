@@ -508,12 +508,34 @@ async fn registered_nodes_and_an_independent_group_join_without_restarting_exist
         "Restarting the metadata seed"
     );
     fixture.stop(1).await;
+    // Observe the outage before restart so the fixture cannot reuse the gateway's old ready sample.
+    let gateway_management = fixture.running.get(&41).unwrap().management_address;
+    let readiness_deadline = Instant::now() + Duration::from_secs(5);
+    while !http_until(gateway_management, "/readyz", readiness_deadline)
+        .await
+        .starts_with("HTTP/1.1 503")
+    {
+        assert!(
+            Instant::now() < readiness_deadline,
+            "The original gateway did not report unready while the metadata seed was stopped"
+        );
+        tokio::time::sleep_until(
+            readiness_deadline.min(Instant::now() + Duration::from_millis(25)),
+        )
+        .await;
+    }
+    tracing::debug!(
+        target: "tidemq::internal_rpc",
+        event_code = "registry_seed_outage_observed",
+        node_id = 41,
+        "The original gateway reported unready while the metadata seed was stopped"
+    );
     fixture.restart(1).await;
     tracing::debug!(
         target: "tidemq::internal_rpc",
         event_code = "registry_seed_ready",
         node_id = 1,
-        "The metadata seed is ready for the original client's registry query"
+        "The metadata seed and the original gateway are ready for the registry query"
     );
     assert_eq!(client.admin().cluster_nodes().await.unwrap().len(), 6);
     assert_eq!(client.admin().data_groups().await.unwrap().len(), 2);

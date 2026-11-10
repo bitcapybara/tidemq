@@ -9,7 +9,7 @@ use tidemq_protocol::internal::{InternalCommand, InternalResult};
 use tidemq_protocol::{Id, ProtocolLimits};
 use tokio::time::{Instant, timeout_at};
 
-use crate::replication::rpc::PeerPool;
+use crate::replication::rpc::{Error as PeerError, PeerPool};
 use crate::transport::rpc::{RpcClient, RpcResponse};
 
 use super::{Error, Failure, Result};
@@ -20,7 +20,7 @@ pub(crate) const FORWARD: u32 = 3;
 pub(crate) const LEADER: u32 = 4;
 
 pub(super) fn trace_control_kind(kind: u32) -> bool {
-    matches!(kind, FORWARD | super::auth::AUTH_QUERY)
+    matches!(kind, FORWARD | LEADER | super::auth::AUTH_QUERY)
 }
 
 // A full 128-member grant plan needs room for maximum-width counters and both RPC envelopes.
@@ -359,10 +359,20 @@ impl PeerRpc {
             .await
             .map_err(|source| {
                 if trace_control {
+                    let stage = match &source {
+                        PeerError::Invalid { reason } => *reason,
+                        PeerError::Transport {
+                            source: crate::transport::Error::Deadline { operation },
+                        } => *operation,
+                        PeerError::Transport { .. } => "transport",
+                        PeerError::Rpc { .. } => "open RPC lanes",
+                        _ => "resolve peer",
+                    };
                     tracing::debug!(
                         target: "tidemq::internal_rpc",
                         event_code = "internal_rpc_connect_failed",
                         request_id = ?Some(request_id),
+                        stage,
                         "Failed to acquire an internal control RPC connection"
                     );
                 }
