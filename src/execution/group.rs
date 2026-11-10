@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use openraft::RaftSnapshotBuilder;
+use openraft::error::{CheckIsLeaderError, RaftError};
 use tokio::time::{Instant, timeout_at};
 
 use crate::replication::{DiskLog, DiskStateMachine, Raft};
@@ -100,22 +101,47 @@ impl<A: Application> GroupHandle<A> {
     }
 
     pub async fn ensure_read(&self, deadline: Instant) -> Result<()> {
-        timeout_at(deadline, async {
-            if let Some(raft) = self.raft() {
-                raft.ensure_linearizable()
-                    .await
-                    .map_err(|error| match error {
-                        openraft::error::RaftError::APIError(
-                            openraft::error::CheckIsLeaderError::ForwardToLeader(source),
-                        ) => Error::ForwardToLeader { source },
-                        openraft::error::RaftError::Fatal(error) => Error::fatal(error.to_string()),
-                        error => Error::unknown(format!("Raft read barrier failed: {error}")),
-                    })?;
-            }
-            self.state().try_with_application(|_| ()).await
+        let deadline_elapsed = || Error::unknown("Group read barrier deadline elapsed");
+        let retried = timeout_at(deadline, async {
+            let retried = if let Some(raft) = self.raft() {
+                let result = raft.ensure_linearizable().await;
+                // One short confirmation round can miss a quorum during follower recovery.
+                let retry = matches!(
+                    &result,
+                    Err(RaftError::APIError(CheckIsLeaderError::QuorumNotEnough(_)))
+                ) && Instant::now() < deadline;
+                let result = if retry {
+                    tracing::debug!(
+                        event_code = "raft_read_quorum_retry",
+                        group_id = self.identity().group.group_id,
+                        node_id = self.local_node(),
+                        "Retrying Raft read confirmation within the original deadline"
+                    );
+                    raft.ensure_linearizable().await
+                } else {
+                    result
+                };
+                result.map_err(|error| match error {
+                    RaftError::APIError(CheckIsLeaderError::ForwardToLeader(source)) => {
+                        Error::ForwardToLeader { source }
+                    }
+                    RaftError::Fatal(error) => Error::fatal(error.to_string()),
+                    error => Error::unknown(format!("Raft read barrier failed: {error}")),
+                })?;
+                retry
+            } else {
+                false
+            };
+            self.state().try_with_application(|_| ()).await?;
+            Ok::<_, Error>(retried)
         })
         .await
-        .map_err(|_| Error::unknown("Group read barrier deadline elapsed"))?
+        .map_err(|_| deadline_elapsed())??;
+        // A ready future can win over an elapsed Tokio timer on the same poll.
+        if retried && Instant::now() >= deadline {
+            return Err(deadline_elapsed());
+        }
+        Ok(())
     }
 
     pub async fn snapshot(&self, deadline: Instant) -> Result<Option<SnapshotInfo>> {
