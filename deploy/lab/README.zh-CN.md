@@ -115,14 +115,16 @@ Kubernetes 节点通过最小只读 ACL 允许 `otelcol` 访问 CRI 日志，新
 | 组件 | 版本 | 本地监听 | 持久化与保留 |
 |---|---|---|---|
 | OTel contrib agent / central | 0.163.2 | agent 127.0.0.1:4318；自监控管理 IP:8888；central 127.0.0.1:24318 / 8889 | agent `/var/lib/otelcol`；central `/srv/tidemq/collector-queue` |
-| Prometheus | 3.15.1 | 127.0.0.1:9090 | 14 天 / 2 GB |
-| Loki | 3.7.9 | 127.0.0.1:3100，gRPC 3101 | 本地 TSDB/filesystem，7 天 |
-| Tempo | 3.1.1 | HTTP 3200，OTLP 14318，gRPC 9095，均 loopback | 单体、本地块存储，72 小时 |
+| Prometheus | 3.15.1 | 127.0.0.1:9090 | 48 小时 / 2 GB，先达到的条件生效 |
+| Loki | 3.7.9 | 127.0.0.1:3100，gRPC 3101 | 本地 TSDB/filesystem，48 小时 |
+| Tempo | 3.1.1 | HTTP 3200，OTLP 14318，gRPC 9095，均 loopback | 单体、本地块存储，48 小时 |
 | Grafana | 13.2.4 | 127.0.0.1:3000 | `/srv/tidemq/grafana` |
 | Alertmanager | 0.34.1 | 127.0.0.1:9093 | `/srv/tidemq/alertmanager` |
 | alert-audit | 仓库脚本 | 127.0.0.1:19094 | 有界 current / previous JSONL，各 8 MiB |
 
 配置在 [observe/](observe)。Grafana 自动配置 Prometheus/Loki/Tempo 数据源和实验室 dashboard。日志、trace 与业务指标使用 service/instance/node/namespace 关联；CI namespace 保存在 structured metadata / resource attributes 中，不创建按消息 ID、Topic 名或任意 payload 增长的索引标签。
+
+Tempo 的保留时长由 backend worker 执行，scheduler 每 10 分钟安排检查。过期块先被标记，经过默认 1 小时的压缩块保留期后才可删除。Loki 和 Prometheus 同样由各自的后台维护任务回收过期数据。更新配置后可检查有效保留值、后台回收进度和共享盘水位。
 
 直接打开 `https://grafana.lab.tidemq.test:18444/d/tidemq-lab` 查看 agent、后端、对象存储和按 namespace 过滤的应用状态。业务面板的 UID 分别是 `tidemq-runtime`、`tidemq-producer`、`tidemq-lifecycle`、`tidemq-scaling`；在同一 Grafana 的 `/d/UID` 路径访问。RustFS fixture 的 metrics/traces 也带有 `k8s.namespace.name=ci-RUN-ATTEMPT` 和对应的 `service.instance.id`，便于回查同一次故障。
 

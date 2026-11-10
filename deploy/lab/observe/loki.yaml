@@ -24,7 +24,7 @@ compactor:
   retention_enabled: true
   delete_request_store: filesystem
 limits_config:
-  retention_period: 168h
+  retention_period: 48h
   ingestion_rate_mb: 2
   ingestion_burst_size_mb: 4
   max_query_parallelism: 4

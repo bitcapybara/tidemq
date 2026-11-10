@@ -6,7 +6,7 @@ services:
     network_mode: host
     restart: unless-stopped
     mem_limit: 768m
-    command: [--config.file=/config/prometheus.yaml, --storage.tsdb.path=/data, --storage.tsdb.retention.time=14d, --storage.tsdb.retention.size=2GB, --web.listen-address=127.0.0.1:9090, --web.enable-otlp-receiver]
+    command: [--config.file=/config/prometheus.yaml, --storage.tsdb.path=/data, --storage.tsdb.retention.time=48h, --storage.tsdb.retention.size=2GB, --web.listen-address=127.0.0.1:9090, --web.enable-otlp-receiver]
     volumes: [./:/config:ro, /srv/tidemq/prometheus:/data]
   loki:
     image: grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28
