@@ -3,7 +3,9 @@ FROM ${RUNTIME_IMAGE}
 USER 0:0
 COPY ubuntu-archive-ca.crt /tmp/ubuntu-archive-ca.crt
 RUN chmod 0644 /tmp/ubuntu-archive-ca.crt \
-    && sed -i -E 's@https?://(archive|security)\.ubuntu\.com/ubuntu/?@https://mirrors.aliyun.com/ubuntu@g' /etc/apt/sources.list.d/ubuntu.sources \
+    && sed -i -E \
+        -e 's@https?://(archive|security)\.ubuntu\.com/ubuntu/?@https://mirrors.aliyun.com/ubuntu@g' \
+        -e 's/^Components:.*/Components: main/' /etc/apt/sources.list.d/ubuntu.sources \
     && timeout --kill-after=5s 240s apt-get \
         -o APT::Update::Error-Mode=any -o Acquire::Retries=2 -o Acquire::https::Timeout=20 \
         -o Acquire::https::CaInfo=/tmp/ubuntu-archive-ca.crt update \

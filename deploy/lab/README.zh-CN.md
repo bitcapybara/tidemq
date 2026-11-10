@@ -173,7 +173,7 @@ RF3 集群测试由 loadgen VM 运行真实 SDK，runner 仅控制和收集证�
 
 Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。故障/部署流程取得宿主 flock 租约；Validate普通测试与只读报告合并不占用故障租约。所有手动Cargo命令须经 `scripts/ci/with-cargo-cache.sh` 持有共享缓存锁；涉及共享实验室服务的手动测试和部署还必须经 `scripts/lab/with-lease.sh`。root运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`。故障指令白名单只允许cp、worker、fixtures、loadgen，禁止操作storage、observe、runner；持续时间5–300秒，宿主先注册systemd恢复计时器再执行故障。
 
-此仓库为公共仓库：fork PR 的单元测试走 GitHub-hosted runner；self-hosted jobs 不接受 fork 代码。GitHub outside contributor 审批策略设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
+此仓库为公共仓库。fork PR 的 Console web、mock 浏览器和文档检查使用 GitHub-hosted runner。自托管作业仅接受仓库内可信任务。GitHub outside contributor 审批策略设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
 
 CI 的 VM 故障作用于共享的三个 worker，因此同时位于这些 worker 的 `tidemq-dev` 也会受故障影响；公共 RustFS 和观测 VM 保持独立。需要公共 MQ 连续服务时，应为 CI 增配独立 worker 集群。
 
@@ -214,7 +214,7 @@ bash scripts/lab/deploy-workload.sh tidemq-dev PRIVATE_BUILD \
 
 `deploy-workload.sh` 会导入固定镜像、创建资源并等待全部角色 Ready。它要求新 namespace / 输出目录；重部署已有持久实例应先保存数据和身份材料，再按变更策略操作，不能直接删除公共 namespace 作为日常升级方式。
 
-实验室镜像冷构建使用与容器 runner 相同的阿里云 Ubuntu HTTPS 镜像。构建从 Linux 宿主复制系统 CA bundle 供第一次 APT 请求使用，并将其纳入镜像输入哈希。Ubuntu 的签名校验继续生效。索引更新和安装分别限时 240 秒，连接超时 20 秒，重试 2 次。构建错误记录在 `build.log`，镜像输入哈希保留在 `runtime-sha256.txt`。
+实验室镜像冷构建使用与容器 runner 相同的阿里云 Ubuntu HTTPS 镜像。镜像的运行时软件包和依赖均来自 Ubuntu `main`，构建只下载这个组件的索引。构建从 Linux 宿主复制系统 CA bundle 供第一次 APT 请求使用，并将其纳入镜像输入哈希。Ubuntu 的签名校验继续生效。索引更新和安装分别限时 240 秒，连接超时 20 秒，重试 2 次。构建错误记录在 `build.log`，镜像输入哈希保留在 `runtime-sha256.txt`。
 
 `build-image.sh` 现在同时从同一源码和前端锁文件构建 Console 静态资源，镜像内路径为 `/opt/tidemq/console`。打包需要支持的 Node.js 和 npm；runner 只有 Node 24 二进制而没有 npm 时，脚本从官方 registry 临时下载固定 npm 包，先核验完整 SHA512，再执行，不改变 runner 的全局安装。普通 Cargo 构建及 Rust 工具链镜像继续不依赖 Node/npm。全部静态文件（含 Vite manifest 与源码树哈希）纳入 runtime 校验清单和镜像标签；`source-patch-sha256.txt` 还组合前端完整源码树哈希，覆盖尚未提交的前端文件。Console 以 `role = "console"` 独立部署，提供登录、授权/Topic/消息管理及消费和组件状态；HTTPS、共享密钥和探针配置见 [Console 部署与验证](../console/README.zh-CN.md)。现有十角色 workload 不自动新增 Console 实例，lab 主机的 loopback 观测端点也不会因此变为 Pod 可访问；本文件的历史验收不代表这次 Console 版本已经在平台验收。
 

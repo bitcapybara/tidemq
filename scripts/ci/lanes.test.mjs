@@ -28,6 +28,7 @@ test('integration lanes select every suite once and keep reports separate', t =>
     assert.equal(calls.includes('--test runtime_group_watch'), mode !== 'normal');
     assert.equal(calls.includes('--test sdk_consumer_long_poll'), mode !== 'normal');
     assert.equal(calls.includes('--lib --test runtime_queue'), mode !== 'normal');
+    assert.equal(/--profile ci -E\s+binary\(=/u.test(calls), mode !== 'normal');
     assert.equal(calls.includes('--run-ignored only'), external);
     for (const name of ['rustfs-version.txt', 'collector-version.txt', 'external-binary-sha256.txt']) assert.equal(fs.existsSync(path.join(root, 'target/ci', name)), external);
   }

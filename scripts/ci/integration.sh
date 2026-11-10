@@ -26,8 +26,34 @@ bash scripts/ci/nextest.sh --workspace --all-targets --locked --features "$featu
 cp target/nextest/ci/junit.xml target/ci/integration-junit.xml
 fi
 if [[ "$mode" != normal ]]; then
+# The dedicated binaries require test-hooks. For shared binaries, select only
+# hook-specific cases and the two tests with distinct hook-enabled variants.
+fault_filter='
+  binary(=runtime_reclamation) |
+  binary(=runtime_consumer_reads) |
+  binary(=runtime_consumer_close) |
+  binary(=runtime_group_watch) |
+  binary(=sdk_consumer_long_poll) |
+  test(=broker::application::group_watch::tests::local_committed_commands_publish_observations_without_notifying_rejections) |
+  test(=runtime::auth::local_tests::metadata_authorization_does_not_reenter_its_only_core_handler) |
+  test(=runtime::consumer_read_test_hooks::tests::persistent_fault_matches_scope_records_original_identity_and_releases) |
+  test(=runtime::data::consumer_tests::consumer_retirement::a_stale_storage_leader_hint_cannot_turn_original_read_retirement_into_forbidden) |
+  test(=runtime::data::consumer_tests::consumer_retirement::an_unknown_committed_read_retirement_recovers_through_a_stale_storage_leader_hint) |
+  test(/\Aruntime::group_watch_reply_pressure::/) |
+  test(=runtime::read_trace_test_hooks::tests::scopes_isolate_reused_ids_and_bound_registration_and_event_retention) |
+  test(=scalable::data_membership::accepted_data_replacement_survives_controller_restart_before_native_prepare_and_keeps_one_original_plan) |
+  test(=scalable::metadata_membership::cancelled_metadata_waiter_and_controller_restart_resume_one_original_membership_plan) |
+  test(=scalable::metadata_membership::metadata_replacement_checkpoints_the_new_voter_and_old_seed_restart_keeps_original_sdk_working) |
+  test(=scalable::node_drain::lost_local_retirement_proof_survives_a_restart_without_reopening_business_admission) |
+  test(=scalable::registry::lost_split_reply_resumes_its_original_targets_after_new_capacity_becomes_preferable) |
+  test(=scalable::registry::lost_topic_creation_recovers_its_original_identity_after_placement_load_changes) |
+  test(=scalable::retention::creating_subscription_protects_available_history_across_metadata_restart) |
+  test(=scalable::sdk::cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_handles) |
+  test(=scalable::transfer::broker_ack_delegation_refreshes_the_original_operation_when_the_authority_group_changes) |
+  test(=scalable::transfer::operator_sdk_transfers_live_authority_and_tenant_credentials_cannot_move_or_inspect_it) |
+  test(=topic_deletion::a_lost_publish_reply_recovers_its_original_success_after_topic_removal)'
 bash scripts/ci/nextest.sh -p tidemq --lib --test runtime_queue --test runtime_consumer_reads --test runtime_consumer_close --test runtime_reclamation --test runtime_group_watch --test sdk_consumer_long_poll \
-  --locked --features "$features,test-hooks" --profile ci
+  --locked --features "$features,test-hooks" --profile ci -E "$fault_filter"
 cp target/nextest/ci/junit.xml target/ci/runtime-faults-junit.xml
 if [[ ${TIDEMQ_REQUIRE_EXTERNAL:-0} == 1 ]]; then
   [[ -x ${TIDEMQ_TEST_RUSTFS_BIN:-} && -x ${TIDEMQ_OTELCOL_BIN:-} ]] || { printf 'Verified external dependency binaries are required\n' >&2; exit 1; }

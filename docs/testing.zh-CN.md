@@ -48,7 +48,7 @@ npm --prefix console/web run test:e2e:live
 TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 ```
 
-真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。受信任的 PR、main 和手动候选验收统一运行 Chromium/Chrome；fork PR 不访问自托管真实后端，只运行不依赖共享服务的前端和模拟浏览器门禁。Rust 最终 gate 同时要求前端覆盖率、mock 浏览器、真实后端浏览器和文档构建/链接检查 job 成功。真实后端 job 校验同一次 Linux 构建制品的源码提交与二进制 SHA256。未实际运行的检查不计作该版本验收结果。
+真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。受信任的 PR、main 和手动候选验收统一运行 Chromium/Chrome。fork PR 只运行 GitHub 托管的 Console web、mock 浏览器和文档构建及链接检查。可信运行的 Rust 最终 gate 还要求 Linux/macOS 验证、故障与部署验证、Rust 覆盖率和真实后端浏览器作业成功。真实后端作业校验同一次 Linux 构建制品的源码提交与二进制 SHA256。未实际运行的检查不计作该版本验收结果。
 
 合入 main 前，按根目录 [AGENTS.md](https://github.com/bitcapybara/tidemq/blob/main/AGENTS.md) 完成独立 agent review 和候选分支 CI；偶发失败也要定位原因并修复。新功能的检查同时包含正确性、log/trace/metrics 和相应层次测试。长轮询真实 QUIC/Raft 回归由 `runtime_group_watch` 在 test-hooks 故障流程执行；同一流程显式运行根 crate 的 test-hooks 单元测试，覆盖拒绝回复背压等私有组件边界。原生保护帧与 RPC 隔离测试随 transport 单元流程执行；测试配置不代替实际运行结果。
 
@@ -58,7 +58,9 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 ## CI 与覆盖率
 
-[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux Validate、Faults 和 Coverage 使用现有 `tidemq-dev` 原生 runner 顺序执行，macOS 使用 GitHub-hosted runner。容器 runner 的部署保留，当前 Linux Validate 不使用其长期存活的执行上下文。workflow 负责调度与制品，执行步骤位于 [scripts/ci](https://github.com/bitcapybara/tidemq/tree/main/scripts/ci)。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
+[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 和 macOS 的 Validate 都执行 `validate.sh` 和 `integration.sh normal`。Linux Validate、Faults 和 Coverage 使用 `tidemq-dev` runner 顺序执行，macOS 使用 GitHub-hosted runner。容器 runner 的部署保留，当前 Linux Validate 不使用其长期存活的执行上下文。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
+
+Faults 单独运行专用 `test-hooks` 用例、确实使用故障钩子的共享用例变体、真实外部依赖和部署故障场景。为共享测试目标新增或重命名故障用例时，同步更新 `scripts/ci/integration.sh` 中的 nextest 选择条件。
 
 先运行 fmt、workspace 全目标 Clippy、生产 panic / 索引审计、脚本自检、协议生成检查，再运行单元与集成。单元阶段只运行 lib / bin / example，移除外部服务环境变量；需要 RustFS、Collector 或网络服务的场景位于 tests/，Linux 显式运行真实依赖测试，缺少固定工具则失败。SDK 默认与 instrumentation 两条路径均覆盖。
 

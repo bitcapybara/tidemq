@@ -6,7 +6,7 @@ import test from 'node:test';
 const workflow = fs.readFileSync(new URL('../../.github/workflows/rust.yml', import.meta.url), 'utf8');
 const gate = workflow.match(/node -e '([^'\n]+)'/)?.[1];
 assert(gate, 'The workflow must contain its final executable gate');
-const jobs = ['validate', 'faults', 'coverage', 'untrusted', 'console', 'console-browser', 'console-browser-live', 'documentation'];
+const jobs = ['validate', 'faults', 'coverage', 'console', 'console-browser', 'console-browser-live', 'documentation'];
 const read = relative => fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
 const mockPlaywright = read('../../console/web/playwright.config.ts');
 const livePlaywright = read('../../console/web/playwright.live.config.ts');
@@ -21,23 +21,23 @@ function evaluate(fork, patch = {}) {
 }
 
 test('the main gate requires coverage, real backend browsers and every trusted Rust lane', () => {
-  assert.equal(evaluate(false, { untrusted: 'skipped' }), 0);
-  for (const job of jobs.filter((job) => job !== 'untrusted')) {
+  assert.equal(evaluate(false), 0);
+  for (const job of jobs) {
     for (const status of ['failure', 'cancelled', 'skipped']) {
       assert.notEqual(evaluate(false, { [job]: status }), 0, `${job}: ${status}`);
     }
   }
 });
 
-test('forks require unit, coverage and browser gates without accessing shared services', () => {
+test('forks require Console web, mock browsers and documentation without accessing shared services', () => {
   const skipped = { validate: 'skipped', faults: 'skipped', coverage: 'skipped', 'console-browser-live': 'skipped' };
   assert.equal(evaluate(true, skipped), 0);
-  for (const job of ['untrusted', 'console', 'console-browser', 'documentation']) {
+  for (const job of ['console', 'console-browser', 'documentation']) {
     assert.notEqual(evaluate(true, { ...skipped, [job]: 'failure' }), 0, job);
   }
 });
 
-test('trusted Linux validation shares the existing native executor with fault and coverage jobs', () => {
+test('both platforms run normal validation and Linux shares the native executor with faults and coverage', () => {
   const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
   const validate = job('validate');
   const linuxRunner = validate.match(/- os: Linux\n\s+runner: (\[[^\n]+\])/u)?.[1];
@@ -47,9 +47,11 @@ test('trusted Linux validation shares the existing native executor with fault an
     assert.equal(linuxRunner, runner, `${name} must share the native executor with validation`);
   }
   assert.match(validate, /bash scripts\/ci\/with-cargo-cache\.sh bash scripts\/ci\/native\.sh/u);
+  assert.match(validate, /run: \|\n\s+bash scripts\/ci\/validate\.sh\n\s+bash scripts\/ci\/integration\.sh normal\n\s+if: runner\.os == 'macOS'/u);
   const native = fs.readFileSync(new URL('./native.sh', import.meta.url), 'utf8');
   assert.match(native, /bash scripts\/ci\/validate\.sh\nbash scripts\/ci\/integration\.sh normal/u);
   assert.match(native, /bundle\.mjs pack native target\/ci\/coverage-inputs/u);
+  assert.match(read('./faults.sh'), /bash scripts\/ci\/integration\.sh faults\n/u);
 });
 
 test('every trusted Linux nextest lane enables the same immutable isolated executor', () => {

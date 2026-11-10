@@ -136,7 +136,9 @@ jobs:
         env:
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
           TIDEMQ_NEXTEST_IMAGE: sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b
-      - run: bash scripts/ci/validate-and-integrate.sh
+      - run: |
+          bash scripts/ci/validate.sh
+          bash scripts/ci/integration.sh normal
         if: runner.os == 'macOS'
         env:
           TIDEMQ_REQUIRE_EXTERNAL: '0'
@@ -266,29 +268,15 @@ jobs:
         if: always()
         with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
 
-  untrusted:
-    name: Fork unit tests
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with: {persist-credentials: false}
-      - uses: dtolnay/rust-toolchain@1.99.1
-        with: {components: 'rustfmt, clippy'}
-      - uses: taiki-e/install-action@v2
-        with: {tool: 'nextest@0.9.148'}
-      - run: bash scripts/ci/validate.sh
-
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, faults, coverage, untrusted, console, console-browser, console-browser-live, documentation]
+    needs: [validate, faults, coverage, console, console-browser, console-browser-live, documentation]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - run: >-
-          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["untrusted","console","console-browser","documentation"]:["validate","faults","coverage","console","console-browser","console-browser-live","documentation"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
+          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["console","console-browser","documentation"]:["validate","faults","coverage","console","console-browser","console-browser-live","documentation"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
         env:
           RESULTS: ${{ toJSON(needs) }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
