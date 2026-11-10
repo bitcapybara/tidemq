@@ -377,6 +377,11 @@ async fn committed_load_samples_keep_work_across_storage_restart_and_fence_proce
     );
     fixture.stop(2).await;
     fixture.restart(2).await;
+    // Process readiness does not guarantee the restarted storage group can serve quorum reads.
+    let client = fixture.client(4).await;
+    fixture
+        .wait_for_group_leader(&client, 2, "storage", 1)
+        .await;
     let after = fixture
         .running
         .get(&1)
@@ -386,5 +391,6 @@ async fn committed_load_samples_keep_work_across_storage_restart_and_fence_proce
         .unwrap();
     assert_ne!(after.instance, before.instance);
     assert_eq!(after.reports, before.reports);
+    client.close().await.unwrap();
     fixture.close().await;
 }
