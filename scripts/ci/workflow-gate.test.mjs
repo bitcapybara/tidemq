@@ -50,8 +50,13 @@ test('both platforms run normal validation and Linux shares the native executor 
   assert.match(validate, /run: \|\n\s+bash scripts\/ci\/validate\.sh\n\s+bash scripts\/ci\/integration\.sh normal\n\s+if: runner\.os == 'macOS'/u);
   const native = fs.readFileSync(new URL('./native.sh', import.meta.url), 'utf8');
   assert.match(native, /bash scripts\/ci\/validate\.sh\nbash scripts\/ci\/integration\.sh normal/u);
-  assert.match(native, /bundle\.mjs pack native target\/ci\/coverage-inputs/u);
-  assert.match(read('./faults.sh'), /bash scripts\/ci\/integration\.sh faults\n/u);
+  assert.match(native, /bundle\.mjs pack native\n/u);
+  const faults = read('./faults.sh');
+  assert.match(faults, /bash scripts\/ci\/integration\.sh faults\n/u);
+  assert.match(faults, /bundle\.mjs pack lab\n/u);
+  const coverage = job('coverage');
+  assert.doesNotMatch(coverage, /download-artifact/u);
+  assert.match(coverage, /name: coverage-report[^\n]+\n\s+- name: Remove local coverage inputs\n\s+if: always\(\)\n\s+run: node scripts\/coverage\/bundle\.mjs clean/u);
 });
 
 test('every trusted Linux nextest lane enables the same immutable isolated executor', () => {

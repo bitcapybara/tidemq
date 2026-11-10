@@ -9,4 +9,4 @@ rustc --version > target/ci/rustc.txt
 bash scripts/ci/integration.sh faults
 export TIDEMQ_API_COVERAGE=1
 bash scripts/ci/lab.sh
-node scripts/coverage/bundle.mjs pack lab target/ci/coverage-inputs
+node scripts/coverage/bundle.mjs pack lab

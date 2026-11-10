@@ -4,6 +4,7 @@ import {execFileSync} from 'node:child_process';
 import * as fs from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
+import {coverageInputs, coverageStore, publishCoverage, removeCoverageInputs} from './handoff.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', {mode: 0o600});
@@ -78,7 +79,7 @@ export function restoreBundles(bundles, target, reports, expected) {
   for (let index = 0; index < bundles.length; index++) {
     const value = manifests[index];
     assert.equal(value.schema_version, 1, 'Unsupported coverage bundle');
-    for (const key of ['source_commit', 'run_id', 'workspace', 'toolchain']) assert.deepEqual(value[key], expected[key], 'Coverage bundle identity differs: ' + key);
+    for (const key of ['source_commit', 'run_id', 'run_attempt', 'workspace', 'toolchain']) assert.deepEqual(value[key], expected[key], 'Coverage bundle identity differs: ' + key);
     assert.ok(value.entries.length > 0 && value.entries.length <= 10000, 'Invalid bundle entry count');
     const names = new Set();
     for (const entry of value.entries) {
@@ -124,16 +125,23 @@ function identity(lane) {
   const version = args => execFileSync('cargo', args, {encoding: 'utf8'}).trim();
   execFileSync('git', ['diff', '--exit-code'], {stdio: 'pipe'});
   execFileSync('git', ['diff', '--cached', '--exit-code'], {stdio: 'pipe'});
-  return {lane, source_commit: execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}).trim(),
-    run_id: process.env.GITHUB_RUN_ID, workspace: fs.realpathSync('.'),
+  const source = execFileSync('git', ['rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+  assert.equal(source, process.env.GITHUB_SHA, 'Coverage checkout differs from workflow commit');
+  return {lane, source_commit: source,
+    run_id: process.env.GITHUB_RUN_ID, run_attempt: process.env.GITHUB_RUN_ATTEMPT, workspace: fs.realpathSync('.'),
     toolchain: {rustc: execFileSync('rustc', ['--version'], {encoding: 'utf8'}).trim(), nextest: version(['nextest', '--version']), llvm_cov: version(['llvm-cov', '--version'])}};
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const [mode, ...args] = process.argv.slice(2), target = process.env.CARGO_LLVM_COV_TARGET_DIR;
-  assert.ok(target && process.env.CARGO_LLVM_COV_SHOW_ENV === '1', 'Coverage environment is required');
-  assert.match(process.env.GITHUB_RUN_ID ?? '', /^[0-9]+$/, 'A CI run identity is required');
-  if (mode === 'pack') packBundle(target, 'target/ci', args[1], identity(args[0]));
-  else if (mode === 'restore') restoreBundles(args, target, 'target/ci', identity(null));
-  else throw new Error('Usage: bundle.mjs pack native|lab output-directory | restore native-directory lab-directory');
+  const [mode, lane] = process.argv.slice(2), target = process.env.CARGO_LLVM_COV_TARGET_DIR;
+  if (mode === 'clean') {
+    removeCoverageInputs(coverageStore, process.env);
+  } else {
+    assert.ok(target && process.env.CARGO_LLVM_COV_SHOW_ENV === '1', 'Coverage environment is required');
+    if (mode === 'pack') {
+      publishCoverage(coverageStore, process.env, lane, output => packBundle(target, 'target/ci', output, identity(lane)));
+    } else if (mode === 'restore') {
+      restoreBundles(coverageInputs(coverageStore, process.env), target, 'target/ci', identity(null));
+    } else throw new Error('Usage: bundle.mjs pack native|lab | restore | clean');
+  }
 }

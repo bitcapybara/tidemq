@@ -8,7 +8,7 @@ import {packBundle, restoreBundles} from './bundle.mjs';
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemq-coverage-bundle-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const identity = {source_commit: 'a'.repeat(40), run_id: '123', workspace: '/work/tidemq', toolchain: {rustc: 'fixed', nextest: 'fixed', llvm_cov: 'fixed'}};
+  const identity = {source_commit: 'a'.repeat(40), run_id: '123', run_attempt: '1', workspace: '/work/tidemq', toolchain: {rustc: 'fixed', nextest: 'fixed', llvm_cov: 'fixed'}};
   const bundles = [];
   for (const lane of ['native', 'lab']) {
     const target = path.join(root, lane, 'target'), reports = path.join(root, lane, 'reports'), output = path.join(root, lane, 'bundle');
@@ -44,7 +44,7 @@ test('parallel coverage retains both feature objects, all profiles and every tes
 });
 
 test('coverage merge rejects other cohorts, missing lanes and modified profiles before restoring files', t => {
-  for (const change of ['source_commit', 'run_id', 'workspace', 'toolchain']) {
+  for (const change of ['source_commit', 'run_id', 'run_attempt', 'workspace', 'toolchain']) {
     const f = fixture(t), expected = {...f.identity, [change]: 'different'};
     assert.throws(() => restoreBundles(f.bundles, f.target, f.reports, expected), /identity differs/);
     assert.ok(!fs.existsSync(f.target));

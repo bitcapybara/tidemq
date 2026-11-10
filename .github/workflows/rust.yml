@@ -149,13 +149,9 @@ jobs:
           path: |
             target/ci
             !target/ci/coverage
-            !target/ci/coverage-inputs
             !target/ci/lab-report
             !target/ci/console-server
           retention-days: 14
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: success() && runner.os == 'Linux'
-        with: {name: coverage-inputs-native, path: target/ci/coverage-inputs, compression-level: 6, retention-days: 3}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: success() && runner.os == 'Linux'
         with: {name: console-server-linux, path: target/ci/console-server, retention-days: 3}
@@ -226,12 +222,8 @@ jobs:
           name: tests-Linux-faults
           path: |
             target/ci
-            !target/ci/coverage-inputs
             !target/ci/lab-report
           retention-days: 14
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: success()
-        with: {name: coverage-inputs-lab, path: target/ci/coverage-inputs, compression-level: 6, retention-days: 3}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -254,8 +246,6 @@ jobs:
           path: trusted
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with: {pattern: coverage-inputs-*, path: coverage-inputs}
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/coverage-report.sh
       - run: node --test trusted/scripts/coverage/*.test.mjs
       - run: >-
@@ -267,6 +257,9 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
+      - name: Remove local coverage inputs
+        if: always()
+        run: node scripts/coverage/bundle.mjs clean
 
   rust:
     name: Rust gate

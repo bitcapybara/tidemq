@@ -29,7 +29,7 @@
 
 数据盘可用量低于 12 GiB 或根盘低于 2 GiB 时，再清理可重建的 Cargo / 临时缓存。仍未达到额度则拒绝继续任务，保留运行数据供排查。额度是空闲时的保留限制；单个运行中任务仍受 64 GiB 数据盘及 CI 超时约束，不能把它当成无限临时空间。近期 runner 日志和 file commands 可能暂时超过软额度，磁盘检查不会为腾空间删除它们。
 
-LLVM profile 与编译产物在各自任务内保留到 `coverage-inputs-native` / `coverage-inputs-lab` 上传之后；10 个服务实例受控退出、profile 回传后，才删除 worker 上该 CI run 的 coverage 目录。完成钩子可以清理超额本地 target；独立 coverage job 从制品恢复二进制/profile，合并导出并比较报告，没有重编译或重跑 Rust 测试。报告 job 的 disposable `report` 目录每次先删除再重建。
+LLVM profile 与编译产物由两条 Linux lane 完整写入 `/srv/tidemq/maintenance/coverage-handoff` 后发布。该目录独立于会被维护钩子清理的 checkout、tmp 和 target。十个服务实例受控退出并回传 profile 后，清理 worker 上对应的 coverage 目录。Coverage 在同一原生 runner 校验并合并本地输入。报告生成退出时清理临时 target，最终报告上传后清理本次交接目录。后续生产 lane 回收超过一天的同仓库遗留目录。
 
 Docker 删除包括 runtime base 的本地副本。[ensure-runtime-base.sh](../../scripts/lab/ensure-runtime-base.sh) 按 inventory 的官方完整 digest 拉取并核验；已有镜像身份错误会失败，不静默接受。冷重建需要访问固定镜像及依赖的下载源。
 
