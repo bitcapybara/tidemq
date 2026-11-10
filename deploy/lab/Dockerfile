@@ -1,8 +1,17 @@
 ARG RUNTIME_IMAGE
 FROM ${RUNTIME_IMAGE}
 USER 0:0
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl libatomic1 libgcc-s1 libssl3t64 libstdc++6 openssl passwd \
+COPY ubuntu-archive-ca.crt /tmp/ubuntu-archive-ca.crt
+RUN chmod 0644 /tmp/ubuntu-archive-ca.crt \
+    && sed -i -E 's@https?://(archive|security)\.ubuntu\.com/ubuntu/?@https://mirrors.aliyun.com/ubuntu@g' /etc/apt/sources.list.d/ubuntu.sources \
+    && timeout --kill-after=5s 240s apt-get \
+        -o APT::Update::Error-Mode=any -o Acquire::Retries=2 -o Acquire::https::Timeout=20 \
+        -o Acquire::https::CaInfo=/tmp/ubuntu-archive-ca.crt update \
+    && timeout --kill-after=5s 240s apt-get \
+        -o Acquire::Retries=2 -o Acquire::https::Timeout=20 \
+        -o Acquire::https::CaInfo=/tmp/ubuntu-archive-ca.crt \
+        install -y --no-install-recommends ca-certificates curl libatomic1 libgcc-s1 libssl3t64 libstdc++6 openssl passwd \
+    && rm -f /tmp/ubuntu-archive-ca.crt \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 tidemq \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /var/lib/tidemq --shell /usr/sbin/nologin tidemq \

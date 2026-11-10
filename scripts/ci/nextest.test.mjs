@@ -60,12 +60,13 @@ test('all five lane selections preserve build and execution arguments', t => {
     ['--profile', 'ci', '--run-ignored', 'only', '-E', 'kind(test)'],
   ];
   for (const [index, args] of selections.entries()) {
-    const f = fixture(t), env = {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)};
+    const f = fixture(t), env = {...f.env, TIDEMQ_NEXTEST_LOG_MODE: 'live', TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)};
     const result = spawnSync('bash', [script, ...args], {cwd: f.root, env, encoding: 'utf8'});
     assert.equal(result.status, 0, result.stderr);
     const calls = f.calls(), create = calls.find(a => a.includes('create'));
     assert.deepEqual(calls.find(a => a.includes('--no-run')), ['cargo', 'nextest', 'run', '--no-run', ...args]);
     assert.deepEqual(calls.find(a => a[0] === 'cargo' && a.includes('list')), ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', ...args]);
+    assert(create.includes('TIDEMQ_NEXTEST_LOG_MODE'));
     const run = create.slice(create.indexOf('/srv/tidemq/tools/cargo-nextest'));
     assert.deepEqual(create.slice(create.indexOf('/srv/tidemq/tools/cargo-nextest') - 2, create.indexOf('/srv/tidemq/tools/cargo-nextest')),
       ['/usr/bin/bash', 'scripts/ci/capture-nextest.sh']);

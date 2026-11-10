@@ -40,8 +40,8 @@ collect_api_coverage() {
 cleanup() {
   local result=$? cleanup_result=0
   trap - EXIT
-  for file in build.log source-commit.txt source-patch-sha256.txt toolchain.txt sha256.txt image-id.txt image.txt profile.txt; do
-    [[ ! -f "$private/build/$file" ]] || cp "$private/build/$file" "$report/$file"
+  for file in build.log source-commit.txt source-patch-sha256.txt toolchain.txt sha256.txt runtime-sha256.txt image-id.txt image.txt profile.txt; do
+    [[ ! -f "$private/build/$file" ]] || cp "$private/build/$file" "$report/$file" || cleanup_result=1
   done
   if [[ -n "$validator_pid" ]]; then kill "$validator_pid" 2>/dev/null || true; wait "$validator_pid" 2>/dev/null || true; fi
   lab_ssh tidemq-loadgen pkill -TERM -f "^$load_root/deploy_validation( |$)" >/dev/null 2>&1 || true

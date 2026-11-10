@@ -12,7 +12,7 @@ const waitFor = async condition => {
   while (!condition()) { assert(Date.now() < until, 'The controlled FIFO must reach its requested boundary'); await new Promise(resolve => setTimeout(resolve, 2)); }
 };
 
-async function fixture(t, {status = 0, timeout, closeStderrBeforeRelease = false} = {}) {
+async function fixture(t, {status = 0, timeout, closeStderrBeforeRelease = false, mode = 'buffered'} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemq-forward-fifo-'));
   const payloads = [Buffer.alloc(196631), Buffer.alloc(131087)];
   payloads.forEach((buffer, index) => { for (let i = 0; i < buffer.length; i++) buffer[i] = (i * 31 + index * 17) % 256; fs.writeFileSync(path.join(root, `payload-${index}`), buffer); });
@@ -33,7 +33,9 @@ const tick = setInterval(() => {
   process.exit(${status});
 }, 2);`);
   const args = timeout === undefined ? [capture, process.execPath, producer] : ['--input-type=module', '-e', `import {main} from ${JSON.stringify(moduleUrl)}; process.exit(await main(${JSON.stringify([process.execPath, producer])}, ${timeout}));`];
-  const child = spawn(timeout === undefined ? 'bash' : process.execPath, args, {cwd: root, stdio: ['ignore', writers[0], writers[1]]});
+  const child = spawn(timeout === undefined ? 'bash' : process.execPath, args, {
+    cwd: root, env: {...process.env, TIDEMQ_NEXTEST_LOG_MODE: mode}, stdio: ['ignore', writers[0], writers[1]],
+  });
   let result;
   const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => { result = {code, signal}; resolve(result); }); });
   let initializer, initializerExit, directory, cleaned = false;
@@ -108,6 +110,15 @@ test('transient console EAGAIN resumes partial writes without losing or duplicat
   assert.equal(receipt.stdout_forward_exit, 0); assert.equal(receipt.stderr_forward_exit, 0);
 });
 
+test('live mode drains both saturated console pipes without duplicating captured bytes', {timeout: 15000}, async t => {
+  const f = await fixture(t, {mode: 'live'});
+  await f.pending('stdout'); await f.pending('stderr');
+  f.drain.fill(true);
+  assert.deepEqual(await f.finish(), {code: 0, signal: null});
+  for (let i = 0; i < 2; i++) assert.deepEqual(f.collected(i), Buffer.concat([f.prefixes[i], f.payloads[i]]));
+  assert.equal(f.receipt().forward_mode, 'live');
+});
+
 test('SIGINT and TERM during stderr forwarding preserve the completed stdout boundary', {timeout: 15000}, async t => {
   for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
     const f = await fixture(t);
@@ -134,6 +145,18 @@ test('both console streams share one deadline and permanent backpressure remains
   assert.equal(f.receipt().stderr_forward_error, 'ETIMEDOUT');
 });
 
+test('live mode bounds the final drain when both console pipes stay blocked', {timeout: 10000}, async t => {
+  const f = await fixture(t, {mode: 'live', timeout: 1000});
+  await f.pending('stdout'); await f.pending('stderr');
+  assert.deepEqual(await f.finish(), {code: 1, signal: null});
+  const receipt = f.receipt();
+  assert.equal(receipt.nextest_exit, 0);
+  for (const [index, stream] of ['stdout', 'stderr'].entries()) {
+    assert.equal(receipt[stream + '_forward_error'], 'ETIMEDOUT');
+    assert.deepEqual(fs.readFileSync(path.join(f.directory, stream + '.log')), f.payloads[index]);
+  }
+});
+
 test('permanent EPIPE stays nonzero and preserves original test failure codes', {timeout: 15000}, async t => {
   for (const status of [0, 100, 110]) {
     const f = await fixture(t, {status, closeStderrBeforeRelease: true});
@@ -143,4 +166,15 @@ test('permanent EPIPE stays nonzero and preserves original test failure codes', 
     assert.equal(f.receipt().stderr_forward_error, 'EPIPE');
     assert.deepEqual(fs.readFileSync(path.join(f.directory, 'stderr.log')), f.payloads[1]);
   }
+});
+
+test('live mode preserves the test exit and complete files when a console reader is closed', {timeout: 10000}, async t => {
+  const f = await fixture(t, {mode: 'live', status: 100, closeStderrBeforeRelease: true});
+  await f.pending('stdout'); f.drain[0] = true;
+  assert.deepEqual(await f.finish(), {code: 100, signal: null});
+  const receipt = f.receipt();
+  assert.equal(receipt.nextest_exit, 100);
+  assert.equal(receipt.stderr_forward_error, 'EPIPE');
+  assert.deepEqual(fs.readFileSync(path.join(f.directory, 'stderr.log')), f.payloads[1]);
+  assert.deepEqual(f.collected(0), Buffer.concat([f.prefixes[0], f.payloads[0]]));
 });

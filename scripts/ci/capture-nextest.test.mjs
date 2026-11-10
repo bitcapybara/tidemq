@@ -25,12 +25,13 @@ function fixture(t) {
     '};',
     'if (process.env.GATE) {',
     '  for (const [signal, status] of [["SIGTERM", 143], ["SIGINT", 130]]) process.on(signal, () => { fs.writeSync(2, "Cancellation reached the owned test command\\n"); fs.writeFileSync(process.env.GATE + ".done", "cancelled"); process.exit(Number(process.env.CANCEL_EXIT ?? status)); });',
+    '  if (process.env.LIVE_MARKERS) { fs.writeSync(1, "Live stdout\\n"); fs.writeSync(2, "Live stderr\\n"); }',
     '  fs.writeFileSync(process.env.GATE + ".ready", "ready");',
     '  const tick = setInterval(() => { if (fs.existsSync(process.env.GATE)) { clearInterval(tick); run(); } }, 2);',
     '} else run();',
   ].join('\n');
   fs.writeFileSync(path.join(root, 'bin', 'cargo'), source, {mode: 0o755});
-  const env = {...process.env, PATH: path.join(root, 'bin') + ':' + process.env.PATH};
+  const env = {...process.env, TIDEMQ_NEXTEST_LOG_MODE: 'buffered', PATH: path.join(root, 'bin') + ':' + process.env.PATH};
   delete env.TIDEMQ_NEXTEST_IMAGE;
   const output = () => {
     const entries = fs.readdirSync(path.join(root, 'target/ci')).filter(name => name.startsWith('nextest-output.'));
@@ -58,10 +59,44 @@ test('actual native nextest entry uses regular files and forwards both streams w
   for (const name of ['stdout.log', 'stderr.log', 'receipt.json']) assert.equal(fs.statSync(path.join(output.dir, name)).mode & 0o777, 0o600);
 });
 
-test('cancellation reaches and joins the owned command before recording its terminal result', {timeout: 10000}, async t => {
-  for (const [signal, cancelled, actual] of [['SIGTERM', 143, 143], ['SIGINT', 130, 130], ['SIGTERM', 143, 0], ['SIGTERM', 143, 110]]) {
+test('live mode delivers both streams before the test process exits and flushes the final bytes once', {timeout: 10000}, async t => {
   const f = fixture(t), gate = path.join(f.root, 'gate');
-  const child = spawn('bash', [nextest, '--lib'], {cwd: f.root, env: {...f.env, GATE: gate, CANCEL_EXIT: String(actual)}, stdio: ['ignore', 'pipe', 'pipe']});
+  const child = spawn('bash', [nextest, '--lib'], {cwd: f.root,
+    env: {...f.env, TIDEMQ_NEXTEST_LOG_MODE: 'live', GATE: gate, LIVE_MARKERS: '1'},
+    stdio: ['ignore', 'pipe', 'pipe']});
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => resolve({code, signal}));
+  });
+  let stdout = '', stderr = '';
+  child.stdout.setEncoding('utf8').on('data', data => { stdout += data; });
+  child.stderr.setEncoding('utf8').on('data', data => { stderr += data; });
+  try {
+    const until = Date.now() + 3000;
+    while (!stdout.includes('Live stdout\n') || !stderr.includes('Live stderr\n')) {
+      assert(Date.now() < until, 'Both console streams must publish while the producer is still held');
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert(!fs.existsSync(gate + '.done'));
+  } finally {
+    fs.writeFileSync(gate, 'release');
+    assert.deepEqual(await exited, {code: 0, signal: null});
+  }
+  const output = f.output();
+  assert.equal(output.receipt.forward_mode, 'live');
+  assert.equal(stdout, output.stdout);
+  assert.equal(stderr, output.stderr);
+  assert.equal(output.receipt.stdout_acknowledged_bytes, Buffer.byteLength(output.stdout));
+  assert.equal(output.receipt.stderr_acknowledged_bytes, Buffer.byteLength(output.stderr));
+});
+
+test('cancellation reaches and joins the owned command before recording its terminal result', {timeout: 10000}, async t => {
+  const cases = [['SIGTERM', 143, 143], ['SIGINT', 130, 130], ['SIGTERM', 143, 0],
+    ['SIGTERM', 143, 110], ['SIGTERM', 143, 0, 'live']];
+  for (const [signal, cancelled, actual, mode = 'buffered'] of cases) {
+  const f = fixture(t), gate = path.join(f.root, 'gate');
+    const child = spawn('bash', [nextest, '--lib'], {cwd: f.root, env: {...f.env, GATE: gate,
+      TIDEMQ_NEXTEST_LOG_MODE: mode, CANCEL_EXIT: String(actual)}, stdio: ['ignore', 'pipe', 'pipe']});
   child.stdout.resume(); child.stderr.resume();
   const exited = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({code, signal})); });
   const waitFor = async file => {

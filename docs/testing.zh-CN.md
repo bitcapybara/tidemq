@@ -64,9 +64,11 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 固定 nextest 0.9.148，ci profile 逐测试隔离、并发为 1、不重试失败项，保留 JUnit；业务测试内部并发不变。doctest 单独由 cargo test 执行。Linux 的固定 RustFS / Collector 版本与哈希由 inventory 和制品记录，不使用用户既有数据。
 
-CI 的本机与隔离容器执行入口均先把实际 nextest 的 stdout/stderr 写入每次独有的 `target/ci/nextest-output.*/stdout.log`、`stderr.log`，完成后再完整转发控制台。目录随现有 `target/ci` 制品上传；`receipt.json` 分别记录 nextest、控制台转发、取消和最终返回码，以及完整文件字节数和可取得的控制台 FD 类型/flags；转发自身的错误另存文件。nextest 的100/110等非零结果原样保留，nextest成功但转发或记录失败仍使流程失败；取消会转发给当前 owned 命令并等待退出，不新增业务期限或重试。
+CI 的本机与隔离容器执行入口均把 nextest 的 stdout 和 stderr 写入每次独有的 `target/ci/nextest-output.*/stdout.log` 和 `stderr.log`。GitHub Actions 默认使用 `live`，独立读取文件的新增内容并实时转发两路日志。仓库 Actions 变量 `TIDEMQ_NEXTEST_LOG_MODE=buffered` 可让后续运行改为测试进程退出后再转发。本地直接调用脚本默认使用 `buffered`，也可通过同名环境变量开启 `live`。
 
-捕获入口由一个 Node owner 管理命令与转发两个阶段，容器复用已挂载的 Node24。POSIX pipe 转发逐块等待标准流写回调，临时背压解除后继续同一笔部分写；stdout/stderr共用一个30秒总转发截止，不逐流或逐块续期。永久EPIPE、文件错误和超时仍失败，转发阶段的SIGINT/SIGTERM返回取消状态。每路首次排队会留存小型背压状态；`acknowledged_bytes`仅计完整成功回调，失败时不能把它解释为精确送达字节数。该转发截止不修改nextest或业务原期限。
+每路转发按字节位置读取并等待写回调，控制台暂时堵塞时，nextest 仍可继续向文件写入。进程退出后，两路剩余日志共用 30 秒转发期限。目录随 `target/ci` 制品上传，`receipt.json` 记录模式、原始文件字节数、完整写回调确认的字节数以及 nextest、转发和取消的退出码。nextest 的非零退出码优先保留。控制台永久断开、落盘错误或转发超时也会使流程失败。捕获器收到 SIGINT 或 SIGTERM 时，会把信号交给它启动的子进程，并等待该子进程退出后收尾。
+
+Linux 隔离测试通过现有 Docker attach 将容器内的控制台输出传到 Actions。完整 nextest 原始日志仍保存在 `nextest-output.*` 制品。
 
 控制台写失败可能触发 nextest 的 reporter 取消并使 JUnit 缺少事件；因此不能仅以 JUnit 用例数或退出110判定业务失败。0.9.148对 JUnit 建文件/序列化错误有带路径的独立文案，普通输出错误的最终文案不包含底层 errno。保留完整捕获和原返回码，不裁剪失败输出，也不把某次完整 CI 绿灯当作先前 I/O 错误的根因证据。
 
