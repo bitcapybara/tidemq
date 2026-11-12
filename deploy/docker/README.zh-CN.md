@@ -2,6 +2,8 @@
 
 [English](../../docs/guide/deployment.md#containers-and-kubernetes)
 
+> 本页是仓库维护者的 Docker 隔离验证流程，不是新手的最短试用路径。第一次运行请先看[快速开始](../../docs/guide/quickstart.zh-CN.md)；生产部署还需要按目标环境独立验收。
+
 本目录用于在已有业务容器的 Linux Docker 主机上，先验证单进程 Combined（rf1），再验证分离 RF3 的10个角色。Combined 使用本地持久执行，不运行Raft或内部peer监听；分离角色保留真实Raft/QUIC。所有命令必须使用新目录和生成的独立 Compose 项目名；结束 RF1 后再启动 RF3。构建、启动和故障注入应由同一个操作者协调。
 
 RF3项目使用私有internal bridge。RF1额外接入console-ingress bridge，仅将Combined原生HTTPS发布为宿主loopback的8443；共享namespace允许egress。`network` 容器持有网络 namespace，TideMQ、RustFS 和验证客户端通过 `network_mode: service:network` 共用该项目的 loopback。每个角色仍有独立 PID namespace、cgroup 和数据卷，管理 HTTP 和对象存储 HTTP 保持 loopback 策略。没有host网络、MQ/管理host端口、特权容器或Docker socket挂载。浏览器信任开发CA后可访问 `https://localhost:8443`；证书覆盖localhost。[Compose 网络与资源选项](https://docs.docker.com/reference/compose-file/services/)说明了这些设置的语义。

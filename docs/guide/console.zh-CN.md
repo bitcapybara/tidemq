@@ -38,6 +38,8 @@ Combined 的 ready 由 MQ、存储与内置 Console 共同决定，必需资源�
 | Combined | `/healthz`、`/readyz`、`/metrics`、`/diagnostics` | 整个 MQ、存储、容量与内置 Console |
 | 独立 Console | `/health/live`、`/health/ready`、`/metrics` | 本地 Console 依赖 |
 
+### 资源故障与内部指标（平台运维）
+
 发布资源必须包含 `index.html`、`.vite/manifest.json` 和构建实际引用的必需 JS/CSS。启动捕获必需文件的长度与内容指纹；合法资源的打开、读取、流式输出失败或检测到内容损坏时，每个资源最多保留一次待复核任务，共享有界队列。首次检测起一秒内恢复可继续服务；逾期仍无法验证原内容则进入 Failed，并主动通知进程监督器停止新准入。修复后须用同一完整发布版本重新启动；迟到的读取成功不会恢复 Failed / Draining。普通未知路径 404、客户端断连或慢 TLS 握手不会触发全 MQ 失败。HTTPS 连接、握手并发和等待时间均有限。
 
 启动恢复阶段禁止新业务写入。SIGTERM 或必需依赖失败后，已有 ACK、原结果恢复和已接受工作仍须满足权限及期限才能收尾；所有 owned 任务共用五秒关闭总预算。保存退出结果和 SDK close 报告，超时不能当作业务回滚或完成。

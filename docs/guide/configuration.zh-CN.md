@@ -24,8 +24,8 @@
 | 字段 | 作用与边界 |
 | --- | --- |
 | `node_id` / `cluster_id` / `data_dir` | 非零节点 ID、非 nil UUID、独立持久目录。恢复时保留三者与原有节点证书身份 |
-| `role` / `replication_factor` | MQ 角色为 `combined/gateway/broker/storage/metadata`；角色直接决定执行方式；Combined 不接受 replication_factor，分离角色必须显式配置 RF 为1或3，并提供 tls.trust_roots，失去多数派不降级；无额外 mode 开关 |
-| `gateway.listen` / `runtime.internal_listen` / `management_listen` | 外部业务 QUIC、内部 mTLS QUIC、管理 HTTP。只有 Gateway/Combined 配置并占用外部监听，Combined 不接受或启动内部监听；管理必须 loopback，同一协议的监听地址不得冲突（包括通配绑定）；QUIC的UDP端口号可与HTTPS/管理TCP相同，两个TCP监听不得重叠；远程管理由受保护代理提供 |
+| `role` / `replication_factor` | MQ 角色为 `combined/gateway/broker/storage/metadata`；角色直接决定执行方式；Combined 不接受 `replication_factor`，分离角色必须显式配置 RF 为 1 或 3，并提供 `tls.trust_roots`，失去多数派不降级；无额外 mode 开关 |
+| `gateway.listen` / `runtime.internal_listen` / `management_listen` | 外部业务 QUIC、内部 mTLS QUIC、管理 HTTP。只有 Gateway/Combined 配置并占用外部监听，Combined 不接受或启动内部监听；管理必须 loopback，同一协议的监听地址不得冲突（包括通配绑定）；QUIC 的 UDP 端口号可与 HTTPS / 管理 TCP 相同，两个 TCP 监听不得重叠；远程管理由受保护代理提供 |
 | `memory.total_bytes` / `control_reserved_bytes` | 应用许可预算及其中的控制预留，单位字节；数据不能消耗控制预留。这不是进程 RSS 上限 |
 | `memory.max_connections` / `max_streams_per_connection` / `max_pending_requests` | 有限连接、流、未决请求；范围分别为 1—4096、2—4096、1—65536，实际 transport 还按类别限制池和队列 |
 | `protocol` | 帧、消息、批次条数和解码字段上限联合校验。默认消息 256 KiB 包含 key 与 body，默认帧 1 MiB，消息必须能放进帧 |

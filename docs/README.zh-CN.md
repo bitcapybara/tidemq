@@ -1,15 +1,15 @@
 # TideMQ 使用文档
 
-从[产品能力与限制](guide/overview.zh-CN.md)了解适用场景，再按下面的路径运行、接入和维护。指南描述当前源码中的接口；带日期的测试记录仅证明对应版本及环境。
+中文文档是 TideMQ 的主入口。先从[产品能力与限制](guide/overview.zh-CN.md)了解适用场景，再按下面的路径运行、接入和维护。指南描述当前源码中的接口；带日期的测试记录仅证明对应版本及环境。
 
-[English deployment and configuration manual](guide/deployment.md)涵盖单进程、分离 RF1/RF3、HTTPS、配置和部署边界。
+[英文部署与配置手册](guide/deployment.md)涵盖单进程、分离 RF1/RF3、HTTPS、配置和部署边界；两种语言的内容以当前源码为准，英文页暂时作为补充参考。
 
 ## 开始使用
 
 | 目标 | 文档 |
 | --- | --- |
 | 了解产品和职责 | [产品概览](guide/overview.zh-CN.md)、[架构与角色](guide/architecture.zh-CN.md) |
-| 完成第一条消息 | [快速开始：启动、建资源、发送、消费、ACK](guide/quickstart.zh-CN.md) |
+| 完成第一条消息 | [快速开始：启动、建资源、发送、消费、ACK](guide/quickstart.zh-CN.md)（源码验证路径） |
 | 部署单机或集群 | [RF1 / RF3 与独立角色](guide/running.zh-CN.md)、[Docker](https://github.com/bitcapybara/tidemq/blob/main/deploy/docker/README.zh-CN.md)、[Kubernetes](https://github.com/bitcapybara/tidemq/blob/main/deploy/kubernetes/README.zh-CN.md) |
 | 配置进程 | [配置来源、单位、校验和角色示例](guide/configuration.zh-CN.md) |
 | 使用浏览器 | [Console](guide/console.zh-CN.md)、[HTTPS / 多副本部署](https://github.com/bitcapybara/tidemq/blob/main/deploy/console/README.zh-CN.md) |
@@ -39,6 +39,8 @@
 
 [当前实现设计](design/architecture.zh-CN.md)链接协议、WAL、所有权、订阅、对象、安全回收与运行时细节；这些资料用于理解实现，不替代用户指南。[历史架构草案](architecture.zh-CN.md)保留原始需求与候选目标。
 
-[实施状态](implementation-status.zh-CN.md)、[要求覆盖](requirements-coverage.zh-CN.md)和[证据索引](evidence/README.zh-CN.md)包含带日期的记录，不能据此判断当前部署状态。[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)、[2026-10-25 部署验收](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/evidence/2026-10-25/README.zh-CN.md)和[runner 维护](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/runner-maintenance.zh-CN.md)面向仓库的具体实验环境。真实三区、容量、吞吐和长期稳定性需要独立验证。
+> “实现与历史资料”及实验室页面面向仓库维护者，不是产品支持矩阵。它们包含带日期的记录、提交 SHA 和具体实验环境，不能据此判断当前部署状态、生产 SLA 或容量。
+
+[实施状态](implementation-status.zh-CN.md)、[要求覆盖](requirements-coverage.zh-CN.md)和[证据索引](evidence/README.zh-CN.md)包含带日期的记录；[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)、[2026-10-25 部署验收](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/evidence/2026-10-25/README.zh-CN.md)和[runner 维护](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/runner-maintenance.zh-CN.md)只用于复核仓库实验环境。真实三区、容量、吞吐和长期稳定性需要独立验证。
 
 文档站的本地构建、链接检查和 Pages 发布入口见[维护指南](site.zh-CN.md)。

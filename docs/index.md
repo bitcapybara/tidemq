@@ -22,4 +22,16 @@ features:
 
 [完整文档目录](README.zh-CN.md) · [English project README](https://github.com/bitcapybara/tidemq#readme)
 
-[English deployment and configuration manual](guide/deployment.md)
+当前文档对应 TideMQ `0.1.0` 开发版本。中文文档是用户主入口；[英文部署与配置手册](guide/deployment.md)提供同一版本的补充说明。
+
+## 先选你的目标
+
+| 你想做什么 | 从这里开始 |
+| --- | --- |
+| 先在一台电脑上试用 | [快速开始](guide/quickstart.zh-CN.md)：从源码启动 Combined，完成第一条消息 |
+| 了解 Topic、Stream、Queue 和 ACK | [产品能力与限制](guide/overview.zh-CN.md) |
+| 接入 Rust 应用 | [SDK 接入与恢复](guide/rust-sdk.zh-CN.md)，再看[生产](guide/production.zh-CN.md)和[消费](guide/consumption.zh-CN.md) |
+| 部署多进程或 RF3 | [运行 TideMQ](guide/running.zh-CN.md) |
+| 处理线上故障 | [按现象排障](operations/troubleshooting.zh-CN.md)，再进入侧栏中的专项手册 |
+
+快速开始是源码验证路径，不代表生产部署或高可用承诺。生产环境请先阅读[产品边界](guide/overview.zh-CN.md)和[安全指南](operations/security.zh-CN.md)。

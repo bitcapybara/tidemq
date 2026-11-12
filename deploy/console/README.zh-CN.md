@@ -2,6 +2,8 @@
 
 [English](../../docs/guide/deployment.md#console-https-and-sessions)
 
+> 本页面向已部署集群的 Console 打包和平台验收。只想在本地查看页面时，请先看[Console 使用](../../docs/guide/console.zh-CN.md)和[快速开始](../../docs/guide/quickstart.zh-CN.md)。
+
 Combined 在单个进程内提供原生 HTTPS Console，与节点共用证书、预算和 loopback 管理入口。通过 `[console]` 配置 listen/static_dir，以及 `[console.session]` 的 key_file/public_origin；不用另起 Console 或 TLS 代理。
 
 分离部署使用同一 `tidemq` 二进制和镜像，以 `role = "console"` 启动独立无状态进程。镜像内的前端静态资源由 Rust HTTP 服务提供，浏览器经统一 HTTPS 入口访问，运行时不需要 Node.js。

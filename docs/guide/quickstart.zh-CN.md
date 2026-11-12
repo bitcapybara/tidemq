@@ -1,10 +1,12 @@
-# 快速开始
+# 快速开始：从源码跑通第一条消息
 
-本页在全新的本地 Combined 上完成启动、创建资源、发送、接收和持久 ACK。需要仓库固定的 Rust 1.99.1、Bash、OpenSSL 和构建 Console 所需的 Node.js（22 系列至少 22.22，或 24、26+）；单机没有节点级高可用。
+本页在全新的本地 Combined 上完成启动、创建资源、发送、接收和持久 ACK。它是源码验证路径，不是生产部署指南；单机没有节点级高可用。需要仓库固定的 Rust 1.99.1、Bash、OpenSSL 和构建 Console 所需的 Node.js（22 系列至少 22.22，或 24、26+）。
 
 ## 1. 启动单节点
 
 从仓库根目录执行，输出目录必须尚不存在：
+
+这里的 `rf1` 是生成器对单进程 Combined 的简称；分离 RF1 使用 `rf1-separated`。
 
 ```sh
 cargo build --locked -p tidemq -j2
@@ -15,7 +17,7 @@ bash deploy/local/run.sh /tmp/tidemq-demo target/debug/tidemq
 
 运行脚本首次构建生成目录下的 Console 静态资源，然后保留在前台，各节点输出写入生成目录的 `node-ID.log`。Ctrl-C 会向本次启动的进程发送 SIGTERM 并等待退出。重新启动使用同一配置和数据目录，不再运行生成器。
 
-生成器创建私有开发 CA、节点证书、32 字节会话密钥和 bootstrap 管理员 token；证书有效七天。不要输出或提交 `access.token`、`bootstrap.token`、CA/节点私钥。它们只适用于隔离开发环境，生产身份管理见[安全指南](../operations/security.zh-CN.md)。
+生成器创建私有开发 CA、节点证书、32 字节会话密钥和 bootstrap 管理员 token；证书有效七天。这个示例中的 `access.token` 是给本地 SDK 和首次 Console 登录使用的管理员 token 副本。不要输出或提交 `access.token`、`bootstrap.token`、CA/节点私钥。它们只适用于隔离开发环境，生产身份管理见[安全指南](../operations/security.zh-CN.md)。
 
 ## 2. 确认服务就绪
 
@@ -29,7 +31,7 @@ curl --fail http://127.0.0.1:8410/diagnostics
 
 `healthz` 表示本进程能响应；`readyz` 还检查控制可用性、数据初始化和新鲜容量，启动初期可能暂未 ready。失败时先看本次目录的节点日志，不删除 WAL。
 
-浏览器信任 `/tmp/tidemq-demo/ca.pem` 后打开 `https://localhost:8443`，以自己的 token 登录。节点证书 SAN 同时覆盖该 HTTPS Origin。内置 Console 与 MQ 共用一个 PID、预算和管理入口；单机不运行 Raft 或内部 peer 监听。
+浏览器信任 `/tmp/tidemq-demo/ca.pem` 后打开 `https://localhost:8443`，使用 `/tmp/tidemq-demo/access.token` 登录。节点证书 SAN 同时覆盖该 HTTPS Origin。只想验证 SDK 时可以跳过浏览器；示例代码会直接使用 `ca.pem` 和 `access.token`。内置 Console 与 MQ 共用一个 PID、预算和管理入口；单机不运行 Raft 或内部 peer 监听。
 
 ## 3. 创建一个使用 SDK 的应用
 
@@ -88,9 +90,28 @@ cargo run --manifest-path /tmp/tidemq-client-demo/Cargo.toml
 
 先创建订阅再发送需要保护的消息。成功时可对照发送与接收的 MessageId，并看到持久 ACK 完成。这里用打印代表最小业务处理；实际业务先成功执行幂等副作用，再 ACK。示例使用 bootstrap 管理员便于建资源，应用上线须改用最小权限的独立凭据。
 
+预期输出类似下面内容，其中 MessageId 每次运行都不同：
+
+```text
+Committed message <message-id>
+Received message <message-id>, bytes=5
+Durable acknowledgement completed
+Unresolved sends: 0
+```
+
 此示例展示成功路径；超时、取消或断线不证明操作未提交。生产使用原 `PendingSend`，确认使用原 `PendingAck`，管理创建使用原 `PendingAdmin` 恢复；不要直接重新运行建资源或发送代码。详见[生产](production.zh-CN.md)、[消费](consumption.zh-CN.md)和[SDK 恢复](rust-sdk.zh-CN.md)。
 
-## 4. 继续使用
+## 4. 停止与清理
+
+在服务终端按 Ctrl-C，等待进程退出。确认不再需要这次演示的数据后，再删除临时目录：
+
+```sh
+rm -rf -- /tmp/tidemq-client-demo /tmp/tidemq-demo
+```
+
+如果要再次运行示例，请重新使用一个不存在的输出目录；不要对未知结果直接重复创建资源或发送消息。
+
+## 5. 继续使用
 
 不配置对象存储也能运行有界热路径，达到容量上限会拒绝新写。需要归档、冷读和本地正文回收时，阅读[本地 RustFS](../operations/local-rustfs.zh-CN.md)。RF3、Docker、Kubernetes 及正常恢复见[运行指南](running.zh-CN.md)。
 

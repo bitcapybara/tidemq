@@ -2,6 +2,8 @@
 
 SDK 位于 sdk/rust，只依赖共享协议和传输库。应用使用逻辑 Topic、可选业务 key 和持久订阅；服务端与 SDK 处理分片、路由和成员代次。SDK 不安装全局分配器、日志订阅器或遥测出口。
 
+只想接入应用时，先读“创建与使用”“生产与并发”“两类持久订阅”和“总期限、取消和恢复”。本文后半部分的平台管理员接口用于集群变更，普通 Producer / Consumer 不需要使用。
+
 ## 创建与使用
 
 Topic 由管理端预先创建。订阅只保护其起始位置以来仍可用的消息；需要保护未来生产的消息时，先创建订阅。
@@ -127,7 +129,7 @@ ACK / NACK 收到可重试的路由拒绝 `Fenced` / `Unavailable` 或容量拒�
 
 管理端使用 `delete_topic(name)` 删除逻辑 Topic。必须先显式删除其全部订阅；操作固定原 Topic UUID，阻止新创建和布局变更，逐数据域持久封写后才成功。缺失数据组时保留进度并通过 `pending_operations()` 继续，不能以超时视为完成。同名重建使用新 UUID；原删除重试不作用于新资源。旧身份保留结果查询和清理路由；已提交但丢回包的发送仍返回原 MessageId。旧 Producer 不会刷新为同名新 Topic。逻辑删除不会绕过历史对象的保留、读取和恢复依赖。
 
-## 观测与验证
+## 观测与宿主集成
 
 平台管理员通过 `admin.register_node(NodeRegistration { ... })` 在线登记节点 ID、角色、故障域、内部地址、证书名与精确证书 pin；`NodeRegistration::certificate_pin(der)` 从叶证书 DER 计算 pin。登记信息由 Metadata Raft 持久保存，已有进程自动更新内部信任和目标目录。节点 ID 和证书绑定不可复用；新增进程仍需提供自己的 TLS 材料及初始 Metadata 地址。
 
@@ -148,6 +150,8 @@ cargo run -p tidemq-sdk --example host_observability --features metrics
 ```
 
 服务功能和故障集成测试位于仓库 tests 目录。功能测试不证明吞吐提升、线性扩展或已校准的容量。
+
+## 平台管理员与高级运维
 
 `admin.replace_metadata_replica(removed, added).await?` 受控替换一个 Metadata voter，保持配置的副本数及故障域要求。先登记并启动新 Metadata 进程；成功回执表示 Native Raft 已完成稳定成员变更，且所有目标 voter 已取得覆盖该变更的持久快照。取消等待或控制器重启沿原 `PendingAdmin` 计划恢复，旧节点在计划完成后才能继续排空。增加 Metadata 备用进程不增加控制面写吞吐。
 

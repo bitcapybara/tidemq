@@ -17,9 +17,11 @@ TideMQ 是使用 Rust 开发的持久消息队列，面向事件接入、流式�
 - 公共 QUIC TLS、作用域凭据、loopback 管理 HTTP，以及日志、指标和可选 OTLP；分离角色间使用固定身份 mTLS，Combined 使用进程内鉴权调用。
 - Combined 内置 Console，分离部署使用独立无状态 Console，用于日常浏览与授权范围内的操作；成员替换、扩缩容和排空使用现有 SDK / CLI。
 
-## 本地启动
+## 本地启动（源码示例）
 
 需要仓库固定的 Rust 1.99.1、Bash、OpenSSL，以及用于构建 Console 资源的 Node.js（22 系列至少 22.22，或 24、26+）。在仓库根目录使用尚不存在的输出目录：
+
+下面命令中的 `rf1` 是本地生成器对**单进程 Combined** 的简称；分离 RF1 使用 `rf1-separated`。本页路径用于源码验证，不代表生产部署。
 
 ```sh
 cargo build --locked -p tidemq -j2

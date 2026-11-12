@@ -2,6 +2,8 @@
 
 可执行程序的运行入口是 `tidemq serve --config <配置文件>`。Gateway、Broker、Storage、Metadata 和 Combined 使用同一个程序，通过 `role` 选择职责；Console 使用独立的进程配置。Combined 还必须配置 `[console]` / `[console.session]`；分离角色只包含其适用的 `[gateway]` / `[storage]` 表，字段位置见[配置指南](configuration.zh-CN.md)。外部 SDK 与分离节点通信使用 QUIC，Combined 内部直接调用；对象存储使用 S3 HTTP/HTTPS，浏览器使用 Console HTTPS 入口。
 
+本页的 `rf1` 表示单进程 Combined，`rf1-separated` 表示分离 RF1，`rf3` 表示分离 RF3。不要把生成器参数名直接当成部署类型名称。
+
 ## 选择部署方式
 
 | 方式 | 适用场景 | 入口与限制 |
@@ -30,9 +32,13 @@ bash deploy/local/run.sh /tmp/tidemq-rf1 target/debug/tidemq
 
 管理入口为 `http://127.0.0.1:8410`。`/healthz` 表示进程仍可响应；`/readyz` 还检查元数据控制可用性、本地数据初始化与新鲜容量采样，Combined 还检查内置 Console 和本地提交执行健康；分离角色在数据 Leader 上检查真实 quorum。`/metrics` 返回统一 OpenMetrics 文本；`/diagnostics` 返回有界的本进程诊断。管理监听必须是 loopback，只提供只读接口。`validate-config` 验证拓扑和容量限制，不打开监听或数据目录；证书、私密文件权限和 S3 连接在运行时检查。
 
+### 高级诊断（可跳过）
+
 Metadata/Combined 的 `/ownership/<topic UUID>/<partition u32>` 按键返回一个分区的 owner、phase、epoch 和 route generation，沿用两秒请求期限及并发、字节限额，不扫描全部分区。`partition` 使用现有的 `"<UUID>/<partition>"` 字符串格式。`source=local_applied` 表示该副本的已应用视图，不能当作线性一致读或写入授权证明；非 Metadata 节点或不存在的分区返回 404，非法键返回 400。本地读取不可用时返回 503，若已耗尽总期限则可能直接断开。故障验证先比对多数 Metadata 的 `active` owner/epoch/route generation，并结合实际生产、持久 ACK 确认结果。
 
 `config/combined.toml` 是路径示例，需要自行提供 `certs/` 与 `secrets/`。通过 `run.sh` 构建资源后启动；若直接执行 `serve`，先运行 `bash scripts/build-console.sh /tmp/tidemq-rf1/console`。首次初始化后，凭据和授权通过集群在线管理并持久存入 Metadata，不在各角色分发静态 token 白名单。Gateway 和 Storage 都重新检查业务授权。为应用提供独立的最小权限凭据，详见[安全](../operations/security.zh-CN.md)。
+
+### 高级存储诊断（可跳过）
 
 分离副本目录使用当前分段物理格式：`identity.bin`、`manifest.bin`、唯一 UUID 段、引用检查点和完整快照共同组成恢复状态。旧单文件布局不能复用；开发升级时另建私有状态目录并保留旧目录及匹配旧二进制，不运行自动迁移或删除命令。恢复/备份必须包含 manifest 指定的全部文件，不能只复制最新段或某个快照。详见[存储恢复](../design/storage-recovery.zh-CN.md)和[存储排障](../operations/storage-troubleshooting.zh-CN.md)。
 
@@ -43,7 +49,7 @@ bash deploy/local/generate.sh rf3 /tmp/tidemq-rf3
 bash deploy/local/run.sh /tmp/tidemq-rf3 target/debug/tidemq
 ```
 
-RF1 分离验证使用 `bash deploy/local/generate.sh rf1-separated /tmp/tidemq-separated-rf1`，随后运行同一 `run.sh`。
+分离 RF1 使用 `bash deploy/local/generate.sh rf1-separated /tmp/tidemq-separated-rf1`，随后运行同一 `run.sh`；RF3 使用上面的 `rf3`。两者都保留真实 Raft / QUIC，与单进程 Combined 的本地执行不同。
 
 RF3 配置启动三个 Metadata、三个 Storage、两个 Broker 和两个 Gateway 独立进程。Metadata 组为 1，数据组为 2。外部 Gateway 地址分别为 `127.0.0.1:7810`、`127.0.0.1:7820`；对应服务名为 `node-41.local`、`node-42.local`。其余节点只开放内部 QUIC 和本地管理入口。各节点端口遵循外部 `7400 + node_id * 10`、内部再加 1、管理再加 1000。
 

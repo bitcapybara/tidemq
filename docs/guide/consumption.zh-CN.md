@@ -42,7 +42,7 @@ Queue NACK 成功只表示已持久安排重投，不表示业务成功。业务
 
 一次 receive 可通过 `RequestContext::with_timeout(...)` 的 `scope` 设置总等待期限。没有显式 context 的 receive 持续等待，但其网络子请求仍有有限期限。
 
-## 空闲等待与公平读取
+## 高级读取与调度（平台运维）
 
 SDK 先用只读 `GroupWatch` 观察可读性，再用 `GroupRead` 领取消息。Watch 提示不分配消息、不签发交付 token，也不推进消费进度；收到变化提示仍须读取并取得持久结果。观察 token 失效、换主或路由变化时重新同步，不能把观察失败当作远端没有消息。
 

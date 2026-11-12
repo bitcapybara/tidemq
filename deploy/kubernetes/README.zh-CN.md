@@ -2,6 +2,8 @@
 
 [English](../../docs/guide/deployment.md#containers-and-kubernetes)
 
+> 本页是仓库维护者的 Kubernetes 隔离验证流程，不是新手的最短试用路径。第一次运行请先看[快速开始](../../docs/guide/quickstart.zh-CN.md)；生产部署还需要按目标集群独立验收。
+
 本目录部署真实分离角色 RF3：3 个 Metadata、3 个 Storage、2 个 Broker 和 2 个 Gateway。Metadata Group 1 的 voter 为 11/12/13，Data Group 2 的 voter 为 21/22/23；Gateway 为 41/42，Broker 为 31/32。Combined 是单进程本地执行版本，不参与该拓扑，也不能作为 peer 或 voter。
 
 独立 Console 使用同一二进制和镜像，以原生 HTTPS 提供页面和 API；见[Console 部署](../console/README.zh-CN.md)。它无 MQ 数据卷和平台写权限。
