@@ -19,18 +19,9 @@ Applications use logical Topics and durable Stream or Queue subscriptions throug
 
 ## Architecture
 
-```text
-Combined:
-  SDK -> QUIC/TLS -> local Gateway / Broker / Metadata / Storage
-  Browser -> native HTTPS Console -> authenticated local calls
+![TideMQ combined and separated architecture](docs/architecture-overview.svg)
 
-Separated:
-  SDK -> QUIC/TLS -> Gateway -> internal QUIC -> Broker -> Storage Raft
-                                               |               |
-                                               +-> Metadata Raft
-                                                               +-> S3
-  Browser -> native HTTPS Console -> authenticated QUIC -> Gateway
-```
+The diagram shows the public paths and the durability boundary. Combined keeps all MQ roles in one process; separated deployments use real internal QUIC and Raft groups.
 
 | Role | Responsibility |
 | --- | --- |

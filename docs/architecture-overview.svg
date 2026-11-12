@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 936" role="img" aria-labelledby="title desc">
+  <title id="title">TideMQ combined and separated architecture</title>
+  <desc id="desc">Both deployments expose the same SDK and HTTPS Console interfaces. Combined runs Gateway, Broker, Metadata, Storage, and Console in one process with local WAL and authenticated local calls. Separated deployments use independent roles, internal QUIC, Metadata Raft, Storage Raft, and a Console that connects through the SDK. Both support optional S3 archival and cold reads outside the publish acknowledgement path. Only primary paths are shown.</desc>
+  <defs>
+    <marker id="request-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#60758e" />
+    </marker>
+    <marker id="control-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#8d7cbb" />
+    </marker>
+    <marker id="archive-arrow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L8 4 L0 8 Z" fill="#b0844b" />
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .background { fill: #f5f7fb; }
+      .panel { fill: #ffffff; stroke: #d8e1ed; stroke-width: 1.5; }
+      .title { fill: #12263a; font-size: 32px; font-weight: 700; }
+      .panel-title { fill: #12263a; font-size: 28px; font-weight: 700; }
+      .subtitle { fill: #53677e; font-size: 20px; }
+      .label { fill: #193148; font-size: 24px; font-weight: 600; }
+      .detail { fill: #53677e; font-size: 18px; }
+      .zone { fill: #f8fafc; }
+      .boundary { stroke: #94a3b8; stroke-width: 1.5; stroke-dasharray: 7 6; }
+      .node { stroke-width: 1.5; }
+      .client { fill: #eef5ff; stroke: #9ebde8; }
+      .entry { fill: #f4f0ff; stroke: #b5a3e2; }
+      .core { fill: #ecf8f6; stroke: #8ecac1; }
+      .durable { fill: #fff5e9; stroke: #e7ba83; }
+      .optional { fill: #fffbf5; stroke: #d5b48b; stroke-dasharray: 5 4; }
+      .request, .control, .archive { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .request { stroke: #60758e; stroke-width: 2; marker-end: url(#request-arrow); }
+      .control { stroke: #8d7cbb; stroke-width: 1.75; stroke-dasharray: 6 5; marker-end: url(#control-arrow); }
+      .archive { stroke: #b0844b; stroke-width: 1.75; stroke-dasharray: 2 5; marker-end: url(#archive-arrow); }
+    </style>
+  </defs>
+
+  <rect width="1240" height="936" rx="20" class="background" />
+  <text x="52" y="48" class="title">TideMQ architecture</text>
+  <text x="52" y="80" class="subtitle">Same public interface. Two deployment shapes.</text>
+
+  <!-- Combined -->
+  <g>
+    <rect x="24" y="104" width="580" height="744" rx="18" class="panel" />
+    <text x="52" y="150" class="panel-title">Combined</text>
+    <text x="52" y="182" class="subtitle">Local durability in one process</text>
+
+    <rect x="44" y="308" width="540" height="356" rx="14" class="zone boundary" />
+    <text x="64" y="338" class="detail">One tidemq process</text>
+
+    <path d="M314 286 V350" class="request" />
+    <path d="M502 286 V350" class="request" />
+    <path d="M314 426 V458" class="request" />
+    <path d="M314 534 V566" class="request" />
+    <path d="M232 496 H200" class="control" />
+    <path d="M502 426 V496 H396" class="control" />
+    <path d="M314 642 V698" class="archive" />
+
+    <rect x="234" y="212" width="160" height="72" rx="12" class="node client" />
+    <text x="314" y="242" text-anchor="middle" class="label">Rust SDK</text>
+    <text x="314" y="266" text-anchor="middle" class="detail">QUIC / TLS</text>
+
+    <rect x="430" y="212" width="144" height="72" rx="12" class="node client" />
+    <text x="502" y="242" text-anchor="middle" class="label">Browser</text>
+    <text x="502" y="266" text-anchor="middle" class="detail">HTTPS</text>
+
+    <rect x="234" y="352" width="160" height="72" rx="12" class="node entry" />
+    <text x="314" y="382" text-anchor="middle" class="label">Gateway</text>
+    <text x="314" y="406" text-anchor="middle" class="detail">Public entry</text>
+
+    <rect x="430" y="352" width="144" height="72" rx="12" class="node entry" />
+    <text x="502" y="382" text-anchor="middle" class="label">Console</text>
+    <text x="502" y="406" text-anchor="middle" class="detail">Local calls</text>
+
+    <rect x="234" y="460" width="160" height="72" rx="12" class="node core" />
+    <text x="314" y="490" text-anchor="middle" class="label">Broker</text>
+    <text x="314" y="514" text-anchor="middle" class="detail">Coordination</text>
+
+    <rect x="54" y="460" width="144" height="72" rx="12" class="node core" />
+    <text x="126" y="490" text-anchor="middle" class="label">Metadata</text>
+    <text x="126" y="514" text-anchor="middle" class="detail">Control state</text>
+
+    <rect x="234" y="568" width="160" height="72" rx="12" class="node durable" />
+    <text x="314" y="598" text-anchor="middle" class="label">Storage</text>
+    <text x="314" y="622" text-anchor="middle" class="detail">Local WAL</text>
+
+    <rect x="222" y="700" width="184" height="72" rx="12" class="node optional" />
+    <text x="314" y="730" text-anchor="middle" class="label">Optional S3</text>
+    <text x="314" y="754" text-anchor="middle" class="detail">Archive / read</text>
+
+    <text x="314" y="800" text-anchor="middle" class="detail">No internal QUIC or Raft</text>
+    <text x="314" y="826" text-anchor="middle" class="detail">Shared budget and lifecycle</text>
+  </g>
+
+  <!-- Separated -->
+  <g transform="translate(612 0)">
+    <rect x="24" y="104" width="580" height="744" rx="18" class="panel" />
+    <text x="52" y="150" class="panel-title">Separated RF1 / RF3</text>
+    <text x="52" y="182" class="subtitle">Replicated WAL · internal QUIC</text>
+
+    <rect x="44" y="308" width="540" height="356" rx="14" class="zone" />
+    <text x="64" y="338" class="detail">Separate processes</text>
+
+    <path d="M314 286 V350" class="request" />
+    <path d="M502 286 V350" class="request" />
+    <path d="M314 426 V458" class="request" />
+    <path d="M314 534 V566" class="request" />
+    <path d="M232 496 H200" class="control" />
+    <path d="M428 388 H396" class="control" />
+    <path d="M314 642 V698" class="archive" />
+
+    <rect x="234" y="212" width="160" height="72" rx="12" class="node client" />
+    <text x="314" y="242" text-anchor="middle" class="label">Rust SDK</text>
+    <text x="314" y="266" text-anchor="middle" class="detail">QUIC / TLS</text>
+
+    <rect x="430" y="212" width="144" height="72" rx="12" class="node client" />
+    <text x="502" y="242" text-anchor="middle" class="label">Browser</text>
+    <text x="502" y="266" text-anchor="middle" class="detail">HTTPS</text>
+
+    <rect x="234" y="352" width="160" height="72" rx="12" class="node entry" />
+    <text x="314" y="382" text-anchor="middle" class="label">Gateway</text>
+    <text x="314" y="406" text-anchor="middle" class="detail">Public entry</text>
+
+    <rect x="430" y="352" width="144" height="72" rx="12" class="node entry" />
+    <text x="502" y="382" text-anchor="middle" class="label">Console</text>
+    <text x="502" y="406" text-anchor="middle" class="detail">SDK / QUIC</text>
+
+    <rect x="234" y="460" width="160" height="72" rx="12" class="node core" />
+    <text x="314" y="490" text-anchor="middle" class="label">Broker</text>
+    <text x="314" y="514" text-anchor="middle" class="detail">Ownership</text>
+
+    <rect x="54" y="460" width="144" height="72" rx="12" class="node core" />
+    <text x="126" y="490" text-anchor="middle" class="label">Metadata</text>
+    <text x="126" y="514" text-anchor="middle" class="detail">Raft · control</text>
+
+    <rect x="234" y="568" width="160" height="72" rx="12" class="node durable" />
+    <text x="314" y="598" text-anchor="middle" class="label">Storage</text>
+    <text x="314" y="622" text-anchor="middle" class="detail">Raft · WAL</text>
+
+    <rect x="222" y="700" width="184" height="72" rx="12" class="node optional" />
+    <text x="314" y="730" text-anchor="middle" class="label">Optional S3</text>
+    <text x="314" y="754" text-anchor="middle" class="detail">Archive / read</text>
+
+    <text x="314" y="800" text-anchor="middle" class="detail">RF1: one voter per group</text>
+    <text x="314" y="826" text-anchor="middle" class="detail">RF3: majority across failure domains</text>
+  </g>
+
+  <!-- Path legend -->
+  <path d="M64 884 H104" class="request" />
+  <text x="116" y="890" class="detail">Application requests</text>
+  <path d="M404 884 H444" class="control" />
+  <text x="456" y="890" class="detail">Control / Console calls</text>
+  <path d="M784 884 H824" class="archive" />
+  <text x="836" y="890" class="detail">Archive / cold read</text>
+  <text x="64" y="920" class="detail">Primary paths only. Optional S3 is outside the publish acknowledgement path.</text>
+</svg>

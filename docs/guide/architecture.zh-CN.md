@@ -2,16 +2,9 @@
 
 TideMQ 将入口连接、业务协调、复制 WAL、控制元数据和历史对象分开。一个 `tidemq` 二进制通过配置选择进程职责；`combined` 在单进程内包含四个 MQ 职责和 HTTPS Console，以本地 WAL 提交、直接调用与有界内存队列执行业务。分离角色使用内部 QUIC，Metadata / Storage 保留真实 Raft；`console` 为分离部署提供独立 HTTPS 浏览器入口。执行方式由 role 决定，没有额外 mode 开关。
 
-```text
-Combined: SDK -> QUIC -> local Gateway / Broker / Metadata / Storage
-          Browser -> native HTTPS Console -> local authenticated calls
+![TideMQ Combined 与分离部署架构图](../architecture-overview.svg)
 
-Separated: SDK -> Gateway -> Broker -> Storage data Raft -> S3
-                     |          |             |
-                     +----------+---- Metadata Raft
-
-Browser -> native HTTPS Console -> authenticated SDK -> Gateway
-```
+图中展示应用入口、角色职责和持久化边界：Combined 把 MQ 角色放在一个进程内；分离部署使用真实内部 QUIC、Metadata Raft 和 Storage Raft。
 
 ## 每个角色负责什么
 
