@@ -83,7 +83,7 @@ npm --prefix docs run docs:build
 npm --prefix docs run docs:preview
 ```
 
-Use Node.js 24 or newer. The preview serves the project at `/tidemq/`. The [site maintenance guide](docs/site.zh-CN.md) explains the pinned VitePress alpha toolchain, link checks and the manually gated GitHub Pages workflow. No site publication is implied by a successful local build.
+Use Node.js 24 or newer. The preview serves the project at `/tidemq/`. Documentation changes pushed or merged to `main` are published to GitHub Pages after the documentation build and link checks pass. The [site maintenance guide](docs/site.zh-CN.md) explains the pinned VitePress alpha toolchain, validation and manual republishing. A local build does not publish the site.
 
 ## License
 

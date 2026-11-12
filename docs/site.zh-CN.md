@@ -25,7 +25,7 @@ VitePress 构建保留默认的 Markdown 死链检查；随后 Node 检查所有
 
 [docs.yml](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/docs.yml)只在 docs、两份根 README 或该工作流变更时触发 PR / main 构建；也可手动运行。构建执行 npm ci、链接检查器自测、站点构建和链接检查，并上传 `github-pages` artifact，路径为 `docs/.vitepress/dist`。
 
-默认只构建。发布需要操作者先完成审核、本地构建和 GitHub Pages 设置，再从 main 手动 dispatch，明确勾选 `publish`。deploy job 受 `github-pages` environment 保护，且只在手动发布 main 时运行；`pages: write` 和 `id-token: write` 只授予该 job，build 仅 `contents: read`。不使用 `pull_request_target`、分支推送或第三方部署 token。
+文档变更推送或合并到 `main` 后，构建和链接检查通过即自动发布到 GitHub Pages。PR 只构建验证，不发布；手动运行默认只构建，需要重新发布时从 `main` dispatch 并勾选 `publish`。deploy job 依赖 build 成功并受 `github-pages` environment 保护；`pages: write` 和 `id-token: write` 只授予该 job，build 仅 `contents: read`。不使用 `pull_request_target` 或第三方部署 token，也不发布其他分支。
 
 仓库管理员在 Pages 的 Build and deployment 中选择 GitHub Actions，并核对 environment 的分支与审批规则。预计项目路径为 `https://bitcapybara.github.io/tidemq/`；以真正部署成功后的 `page_url` 为准。准备工作流或产物不表示远端已启用、发布或可访问。远端设置由仓库管理员单独配置。
 
