@@ -86,7 +86,7 @@ purge 不再重编码所有 retained payload。检查点引用仍存活的物理
 
 ## 初始资源预算
 
-单文件成本的历史分析和分段决策来源见 [WAL 分段与容量管理评估](../research/wal-segments.zh-CN.md)。当前运行使用上述新布局；以下默认值由 `StorageOptions` / `JournalOptions` 统一校验，不是新增的角色 TOML 选项。
+单文件成本的历史分析和分段决策来源见 [WAL 分段与容量管理评估](../research/wal-segments.zh-CN.md)。当前运行使用上述新布局；以下默认值由 `StorageOptions` / `JournalOptions` 统一校验，并可通过适用数据角色的 `[storage.wal]` TOML 表覆盖。
 
 | 项目 | 默认值与口径 |
 | --- | --- |

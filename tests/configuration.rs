@@ -308,12 +308,15 @@ fn storage_wal_configuration_reuses_journal_validation() {
     config.runtime.wal.max_pending_bytes = 0;
     assert!(config.runtime.validate(&config).is_err());
     config.runtime.wal = defaults.clone();
-    config.runtime.wal.max_pending_records = 0;
+    config.runtime.wal.max_pending_records = 1;
     assert!(config.runtime.validate(&config).is_err());
     config.runtime.wal = defaults.clone();
-    config.runtime.wal.group_commit_bytes = 0;
+    config.runtime.wal.max_pending_bytes = 4 * 1024 * 1024;
     assert!(config.runtime.validate(&config).is_err());
     config.runtime.wal = defaults;
+    config.runtime.wal.group_commit_bytes = 0;
+    assert!(config.runtime.validate(&config).is_err());
+    config.runtime.wal = Config::default().runtime.wal;
     config.runtime.wal.group_commit_delay_ms = 1_001;
     assert!(config.runtime.validate(&config).is_err());
 }
