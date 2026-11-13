@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {packBundle, restoreBundles} from './bundle.mjs';
+import {coverageByteTotal, packBundle, restoreBundles} from './bundle.mjs';
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tidemq-coverage-bundle-'));
@@ -41,6 +41,13 @@ test('parallel coverage retains both feature objects, all profiles and every tes
   assert.deepEqual(fs.readdirSync(f.target).filter(file => file.endsWith('.profraw')).sort(), ['lab.profraw', 'native.profraw']);
   assert.equal(fs.readdirSync(f.reports).filter(file => file.endsWith('-junit.xml')).length, 5);
   assert.ok(fs.existsSync(path.join(f.reports, 'api-coverage.json')));
+});
+
+test('coverage byte budget counts identical paths once across lanes', t => {
+  const bytes = 5 * 1024 * 1024 * 1024;
+  const entry = {file: 'objects/debug/shared', sha256: 'a'.repeat(64), bytes};
+  assert.equal(coverageByteTotal([entry, entry]), bytes);
+  assert.ok(coverageByteTotal([entry, {...entry, sha256: 'b'.repeat(64)}]) > bytes);
 });
 
 test('coverage merge accepts earlier attempts and rejects other cohorts, missing lanes and modified profiles before restoring files', t => {
