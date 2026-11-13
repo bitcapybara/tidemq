@@ -18,16 +18,21 @@ function privateDirectory(directory, create) {
   return stat;
 }
 
-function scope(root, env, create = false) {
+function validateIdentity(env) {
   const ids = [env.GITHUB_REPOSITORY_ID, env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT];
   assert.ok(ids.every(id => typeof id === 'string' && /^[0-9]+$/.test(id)), 'Invalid coverage workflow identity');
   assert.match(env.GITHUB_SHA ?? '', /^[0-9a-f]{40}$/, 'Invalid coverage commit');
+}
+
+function scope(root, env, create = false) {
+  validateIdentity(env);
   if (!privateDirectory(root, create)) return null;
-  const directory = path.join(root, [...ids, env.GITHUB_SHA].join('-'));
+  const directory = path.join(root, [env.GITHUB_REPOSITORY_ID, env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT, env.GITHUB_SHA].join('-'));
   return privateDirectory(directory, create) ? directory : null;
 }
 
-function scopes(root, env, current) {
+function scopes(root, env, current, includeFuture = false) {
+  validateIdentity(env);
   if (!privateDirectory(root, false)) return [];
   const prefix = `${env.GITHUB_REPOSITORY_ID}-${env.GITHUB_RUN_ID}-`;
   const suffix = `-${env.GITHUB_SHA}`;
@@ -37,7 +42,7 @@ function scopes(root, env, current) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !scopePattern.test(entry.name) ||
         !entry.name.startsWith(prefix) || !entry.name.endsWith(suffix)) continue;
     const attemptText = entry.name.slice(prefix.length, -suffix.length);
-    if (!/^[0-9]+$/.test(attemptText) || BigInt(attemptText) > currentAttempt) continue;
+    if (!/^[0-9]+$/.test(attemptText) || (!includeFuture && BigInt(attemptText) > currentAttempt)) continue;
     const directory = path.join(root, entry.name);
     if (directory === current) continue;
     if (privateDirectory(directory, false)) candidates.push({directory, attempt: BigInt(attemptText)});
@@ -82,6 +87,5 @@ export function coverageInputs(root, env) {
 }
 
 export function removeCoverageInputs(root, env) {
-  const directory = scope(root, env);
-  if (directory) fs.rmSync(directory, {recursive: true});
+  for (const directory of scopes(root, env, null, true)) fs.rmSync(directory, {recursive: true});
 }
