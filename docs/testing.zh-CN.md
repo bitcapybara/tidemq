@@ -135,7 +135,7 @@ LLVM 正常退出写入机制及文件名模板见 [Rust 官方文档](https://d
 
 9 个 K8s/API 场景、独立 watchdog、日志/trace/metrics 查询和退出清理均通过。最终报告合并 922 份 profile，其中 10 份服务端、11 份远程客户端；已逐个核对归档内容的大小和 SHA256，并核对全部 profile 出现在实际 LLVM 合并输入中。覆盖率 lines 89.36%、functions 80.98%、regions 86.15%，原基线和策略未修改，门禁通过。可长期定位的环境、哈希、失败尝试及验证记录见 [runner 验收](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/evidence/runner-maintenance.json)。
 
-第一次 coverage job 因 GitHub 制品下载停滞超时；随后只重跑报告 job，复用第一次尝试的两份输入和五份 JUnit，Rust 测试没有重跑。成功尝试的下载耗时 10 分 15 秒，恢复/导出脚本耗时 80 秒。当前输入未压缩总量约 3.99 GiB；后续配置将输入压缩等级设为 6、报告 job 总期限设为 45 分钟，并将恢复字节上限设为 8 GiB。该配置调整经过 Node 自检和 YAML 解析，尚未另跑整条 CI；上述完整运行验证的是 `87b3442`。
+第一次 coverage job 因 GitHub 制品下载停滞超时；随后只重跑报告 job，复用第一次尝试的两份输入和五份 JUnit，Rust 测试没有重跑。成功尝试的下载耗时 10 分 15 秒，恢复/导出脚本耗时 80 秒。当前输入未压缩总量约 3.99 GiB；报告 job 总期限为 45 分钟，恢复字节上限为 16 GiB。该配置调整经过 Node 自检和 YAML 解析，尚未另跑整条 CI；上述完整运行验证的是 `87b3442`。
 
 其中 62 个故障注入用例与普通集成测试同名；成员迁移和 Shard 转移等同名用例具有条件编译的额外故障断言，不能直接按重名删除。目前 `ci` profile 的 `test-threads = 1` 保持不变；拆分的是两条独立 job，同时保留原断言、五份 JUnit、插桩二进制和 profile。VM/网络故障仍持有实验室独占租约。测试层次的缺口不因增加 runner 自动消失。
 

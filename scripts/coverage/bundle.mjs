@@ -9,7 +9,7 @@ import {coverageInputs, coverageStore, publishCoverage, removeCoverageInputs} fr
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', {mode: 0o600});
 const stages = {native: ['unit', 'sdk-default-unit', 'integration'], lab: ['runtime-faults', 'external-services']};
-const coverageByteBudget = 8 * 1024 * 1024 * 1024;
+const coverageByteBudget = 16 * 1024 * 1024 * 1024;
 
 function countCoverageEntry(counted, entry) {
   let hashes = counted.get(entry.file);
@@ -112,7 +112,7 @@ export function restoreBundles(bundles, target, reports, expected) {
       assert.equal(bytes.length, entry.bytes, 'Bundle file size changed');
       assert.equal(hash(bytes), entry.sha256, 'Bundle file digest changed');
       total += countCoverageEntry(countedEntries, {file: entry.file, sha256: entry.sha256, bytes: bytes.length});
-      assert.ok(total <= coverageByteBudget, 'Coverage bundles exceed their byte budget');
+      assert.ok(total <= coverageByteBudget, `Coverage bundles exceed their byte budget: ${total} > ${coverageByteBudget}`);
     }
   }
   assert.ok(!fs.existsSync(target) || fs.readdirSync(target).length === 0, 'Coverage merge target must be empty');
