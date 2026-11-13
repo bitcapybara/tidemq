@@ -14,7 +14,7 @@ A successful publish or durable ACK requires commitment in its owning data group
 
 ## Run Combined
 
-Prerequisites: Rust 1.99.1, Bash, OpenSSL, and Node.js 22.22+ on the 22 series, 24, or 26+ for building Console assets. Run from the repository root and choose a new private output directory:
+Prerequisites: Rust 1.100.0, Bash, OpenSSL, and Node.js 22.22+ on the 22 series, 24, or 26+ for building Console assets. Run from the repository root and choose a new private output directory:
 
 ```sh
 cargo build --locked -p tidemq -j2

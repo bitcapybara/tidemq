@@ -25,7 +25,7 @@ case "$1" in
     cp /srv/tidemq/actions-runner/bin/installdependencies.sh "$context/"
     cp /etc/ssl/certs/ca-certificates.crt "$context/"
     base=$(jq -er .docker.runtimeBaseSource deploy/lab/inventory.json)
-    docker build --build-arg "UBUNTU_IMAGE=$base" -t localhost/tidemq-ci-runner:2.338.1-rust1.99.1 "$context"
+    docker build --build-arg "UBUNTU_IMAGE=$base" -t localhost/tidemq-ci-runner:2.338.1-rust1.100.0 "$context"
     rm -rf -- "$context"
     ;;
   register)

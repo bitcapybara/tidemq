@@ -34,16 +34,16 @@ RF3项目使用私有internal bridge。RF1额外接入console-ingress bridge，�
 
 需要 Linux x86_64、Docker Engine、支持这些 Compose 字段的 Compose（本次使用 5.6.0）、Bash、OpenSSL 和 coreutils。Docker 主机应支持 cgroup v2 和内存、swap、PID 限额。不要向主机安装 Rust 工具链。
 
-`Dockerfile.builder` 只准备 Rust 1.99.1、rustfmt、clippy、CMake、clang、pkg-config、OpenSSL 等构建依赖，不执行 Cargo 编译，也不要求 Node.js。`Dockerfile` 复制预编译的 `bin/tidemq`、`bin/deploy_validation` 和同一源码构建的 `console/` 静态目录，安装运行时库及 curl/OpenSSL。两者均要求显式传入已验证的基础镜像 digest，没有浮动默认值。普通 Cargo 构建继续不依赖 Node.js。
+`Dockerfile.builder` 只准备 Rust 1.100.0、rustfmt、clippy、CMake、clang、pkg-config、OpenSSL 等构建依赖，不执行 Cargo 编译，也不要求 Node.js。`Dockerfile` 复制预编译的 `bin/tidemq`、`bin/deploy_validation` 和同一源码构建的 `console/` 静态目录，安装运行时库及 curl/OpenSSL。两者均要求显式传入已验证的基础镜像 digest，没有浮动默认值。普通 Cargo 构建继续不依赖 Node.js。
 
-下面的 Rust 1.99.1 multiarch index digest 已从 Docker Hub 官方 registry 核对，包含 Linux amd64 和 arm64；目标机实际拉取后仍需记录本地镜像 ID。Debian digest 来自已有部署验证；Rust 1.96.0 的旧镜像和证据只供复核历史结果，不能作为 1.99.1 的部署验证结果。
+下面的 Rust 1.100.0 multiarch index digest 已从 Docker Hub 官方 registry 核对，包含 Linux amd64 和 arm64；目标机实际拉取后仍需记录本地镜像 ID。Debian digest 来自已有部署验证；Rust 1.96.0 的旧镜像和证据只供复核历史结果，不能作为 1.100.0 的部署验证结果。
 
 ```bash
-RUST_IMAGE=rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29
+RUST_IMAGE=rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea
 DEBIAN_IMAGE=debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 REPO=/absolute/clean/checkout
 STAGE=/absolute/new-build-directory
-BUILDER_IMAGE=tidemq-validation-builder:rust-1.99.1
+BUILDER_IMAGE=tidemq-validation-builder:rust-1.100.0
 TIDEMQ_IMAGE=tidemq-validation:source-commit
 mkdir -m 0700 "$STAGE"
 docker build -f "$REPO/deploy/docker/Dockerfile.builder" \

@@ -125,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
-      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: dtolnay/rust-toolchain@1.100.0
         if: runner.os == 'macOS'
         with: {components: 'rustfmt, clippy'}
       - uses: taiki-e/install-action@v2

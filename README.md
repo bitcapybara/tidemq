@@ -36,7 +36,7 @@ The producer receipt, durable consumer ACK, object publication and local WAL rec
 
 ## Run locally
 
-Prerequisites: the repository's pinned Rust **1.99.1** toolchain, Bash, OpenSSL and a supported Node.js (22.22+ on the 22 series, 24, or 26+) for Console assets. Run from the repository root with a new output directory:
+Prerequisites: the repository's pinned Rust **1.100.0** toolchain, Bash, OpenSSL and a supported Node.js (22.22+ on the 22 series, 24, or 26+) for Console assets. Run from the repository root with a new output directory:
 
 ```sh
 cargo build --locked -p tidemq -j2

@@ -9,7 +9,7 @@
     "runtimeBaseImageID": "sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
     "runtimeBaseSource": "docker.io/library/ubuntu@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac",
     "runtimeBaseOS": "Ubuntu 24.04 LTS",
-    "builderSource": "docker.io/library/rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29"
+    "builderSource": "docker.io/library/rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea"
   },
   "allowedClientCIDRs": [
     "192.168.126.0/24",
@@ -59,7 +59,7 @@
     "alertmanager": "v0.34.1",
     "runner": "2.338.1",
     "rustfs": "1.0.3",
-    "rust": "1.99.1",
+    "rust": "1.100.0",
     "nextest": "0.9.148",
     "llvmCov": "0.9.1"
   },

@@ -26,7 +26,7 @@ docker tag "$runtime_source" "$runtime_image"
 docker save -o "$lab_state/images/runtime-base.tar.next" "$runtime_image"
 mv -f "$lab_state/images/runtime-base.tar.next" "$lab_state/images/runtime-base.tar"
 sha256sum "$lab_state/images/runtime-base.tar" > "$lab_state/images/runtime-base.sha256"
-builder=localhost/tidemq-runner-tools:rust-1.99.1
+builder=localhost/tidemq-runner-tools:rust-1.100.0
 docker build -f "$lab_repo/deploy/docker/Dockerfile.builder" --build-arg "RUST_IMAGE=$builder_source" -t "$builder" "$lab_repo/deploy/docker" > "$lab_state/logs/runner-tools-build.log" 2>&1
 docker run --rm --network none --read-only "$builder" tar -czf - -C /usr/local --exclude=cargo/registry --exclude=cargo/git cargo rustup > "$bundle/rust-toolchain.tar.gz.next"
 gzip -t "$bundle/rust-toolchain.tar.gz.next"

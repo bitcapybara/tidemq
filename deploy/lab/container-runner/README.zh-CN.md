@@ -14,7 +14,7 @@ runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 run
 | `/srv/tidemq/container-runner/target` | `/srv/tidemq/cargo-target`，独立编译、profile 和临时报告目录 |
 | `/srv/tidemq/container-runner/tmp` | `/srv/tidemq/tmp`，独立测试临时文件 |
 | `/srv/tidemq/rust/cargo` | `/opt/tidemq-rust/cargo`，共享下载缓存及 Cargo 的全局缓存数据库/锁；其中 bin 只读 |
-| `/srv/tidemq/rust/rustup` | `/opt/tidemq-rust/rustup:ro`，固定 Rust 1.99.1 工具链 |
+| `/srv/tidemq/rust/rustup` | `/opt/tidemq-rust/rustup:ro`，固定 Rust 1.100.0 工具链 |
 | 原生 runner 的 bin / externals、固定 nextest / llvm-cov | 只读工具，不包含原生 runner 的注册状态 |
 | `/srv/tidemq/maintenance/cargo-cache.lock` | 同路径文件挂载，协调 Cargo 流程与缓存回收 |
 | `/srv/tidemq/action-archives` | 同路径只读挂载，供两个 runner 读取固定 SHA 的官方 action 归档 |

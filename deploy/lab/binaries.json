@@ -25,8 +25,8 @@
     "member": "cargo-llvm-cov"
   },
   "llvmTools": {
-    "url": "https://static.rust-lang.org/dist/2026-10-15/llvm-tools-1.99.1-x86_64-unknown-linux-gnu.tar.xz",
-    "sha256": "8429c5117debfb45c22cf2f97712ef00e0e94976c96cf92f661974a458ca7e84"
+    "url": "https://static.rust-lang.org/dist/2026-11-12/llvm-tools-1.100.0-x86_64-unknown-linux-gnu.tar.xz",
+    "sha256": "2c84cada1aef73339b1a2d101a35cd78d71072c8f6a3921bf1abb852c3f42ad3"
   },
   "mc": {
     "url": "https://github.com/minio/mc/releases/download/RELEASE.2025-08-13T08-35-41Z/mc.linux-amd64.RELEASE.2025-08-13T08-35-41Z",

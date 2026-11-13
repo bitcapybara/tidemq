@@ -1,7 +1,7 @@
 name: tidemq-ci-runner
 services:
   runner:
-    image: localhost/tidemq-ci-runner:2.338.1-rust1.99.1
+    image: localhost/tidemq-ci-runner:2.338.1-rust1.100.0
     container_name: tidemq-ci-runner
     labels: {tidemq.lab/runner: ci-container}
     init: true

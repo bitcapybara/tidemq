@@ -17,7 +17,7 @@ RUN chmod 0555 /opt/tidemq-runner/*.sh && chmod 0444 /opt/tidemq-runner/runner-m
     && ln -s hook.sh /opt/tidemq-runner/before.sh && ln -s hook.sh /opt/tidemq-runner/after.sh && ln -s hook.sh /opt/tidemq-runner/idle.sh \
     && ln -s /opt/actions-runner/externals/node24/bin/node /usr/local/bin/node
 ENV HOME=/home/actions RUSTUP_HOME=/opt/tidemq-rust/rustup CARGO_HOME=/opt/tidemq-rust/cargo \
-    RUSTUP_TOOLCHAIN=1.99.1 PATH=/opt/tidemq-rust/cargo/bin:/srv/tidemq/tools:/usr/local/bin:/usr/bin:/bin \
+    RUSTUP_TOOLCHAIN=1.100.0 PATH=/opt/tidemq-rust/cargo/bin:/srv/tidemq/tools:/usr/local/bin:/usr/bin:/bin \
     TMPDIR=/srv/tidemq/tmp CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 \
     CARGO_TARGET_DIR=/srv/tidemq/cargo-target/coverage CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
     ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/tidemq-runner/before.sh \

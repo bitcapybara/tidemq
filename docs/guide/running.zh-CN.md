@@ -17,10 +17,10 @@
 
 ## 单进程 Combined
 
-需要 Rust 1.99.1、Bash、OpenSSL 与支持的 Node.js（22 系列至少 22.22，或 24、26+），在仓库根目录执行：
+需要 Rust 1.100.0、Bash、OpenSSL 与支持的 Node.js（22 系列至少 22.22，或 24、26+），在仓库根目录执行：
 
 ```sh
-cargo +1.99.1 build -p tidemq -j2
+cargo +1.100.0 build -p tidemq -j2
 bash deploy/local/generate.sh rf1 /tmp/tidemq-rf1
 target/debug/tidemq validate-config --config /tmp/tidemq-rf1/node-1.toml
 bash deploy/local/run.sh /tmp/tidemq-rf1 target/debug/tidemq

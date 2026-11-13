@@ -58,7 +58,7 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 ## CI 与覆盖率
 
-[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.99.1，main push、PR 和手动 dispatch 触发。Linux 和 macOS 的 Validate 都执行 `validate.sh` 和 `integration.sh normal`。Linux Validate、Faults 和 Coverage 使用 `tidemq-dev` runner 顺序执行，macOS 使用 GitHub-hosted runner。容器 runner 的部署保留，当前 Linux Validate 不使用其长期存活的执行上下文。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
+[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.100.0，main push、PR 和手动 dispatch 触发。Linux 和 macOS 的 Validate 都执行 `validate.sh` 和 `integration.sh normal`。Linux Validate、Faults 和 Coverage 使用 `tidemq-dev` runner 顺序执行，macOS 使用 GitHub-hosted runner。容器 runner 的部署保留，当前 Linux Validate 不使用其长期存活的执行上下文。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
 
 Faults 单独运行专用 `test-hooks` 用例、确实使用故障钩子的共享用例变体、真实外部依赖和部署故障场景。为共享测试目标新增或重命名故障用例时，同步更新 `scripts/ci/integration.sh` 中的 nextest 选择条件。
 
@@ -78,7 +78,7 @@ Linux 保留两个独立 job：Validate 运行原 `native.sh` 的全部静态检
 
 仅把 job 路由到原生 runner 仍会让编译、Runner 和测试共用其 6GiB cgroup。[CI 40741140950](https://github.com/bitcapybara/tidemq/actions/runs/40741140950) 的五个进程用例在 create_topic 阶段失败，已有日志明确记录 caller_container_blocked=true 和约 90.2%～96.1% 的实际用量。较早同 image、8GiB 干净 cgroup 的 transfer 对照通过，不能代替当前同额度隔离验收，也不能把编译期高水位直接归为运行期拒绝。
 
-Linux 两个测试 job 通过 `TIDEMQ_NEXTEST_IMAGE` 固定已部署的 `sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b`（runner 2.338.1 / Rust 1.99.1）镜像。[nextest.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/ci/nextest.sh) 接管 unit、默认 SDK、normal、faults 和 ignored 全部五处调用：先在原生账户按原参数执行 `--no-run`，生成 binaries/cargo metadata；再通过 [nextest 官方 build reuse](https://nexte.st/docs/ci-features/archiving/) 复用 host 选定的二进制；容器仅传原有 profile、过滤和 runner 参数，构建选项不与 metadata 混传，执行账户不再编译。容器固定 UID/GID 1001、6,442,450,944 bytes、4 CPU、无额外 swap，位于独立的 systemd cgroup；编译仍受原生 6GiB/4 CPU 边界约束。macOS 和未配置此变量的本地入口继续原样执行。
+Linux 两个测试 job 通过 `TIDEMQ_NEXTEST_IMAGE` 固定已部署的 `sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b`（runner 2.338.1 / Rust 1.100.0）镜像。[nextest.sh](https://github.com/bitcapybara/tidemq/blob/main/scripts/ci/nextest.sh) 接管 unit、默认 SDK、normal、faults 和 ignored 全部五处调用：先在原生账户按原参数执行 `--no-run`，生成 binaries/cargo metadata；再通过 [nextest 官方 build reuse](https://nexte.st/docs/ci-features/archiving/) 复用 host 选定的二进制；容器仅传原有 profile、过滤和 runner 参数，构建选项不与 metadata 混传，执行账户不再编译。容器固定 UID/GID 1001、6,442,450,944 bytes、4 CPU、无额外 swap，位于独立的 systemd cgroup；编译仍受原生 6GiB/4 CPU 边界约束。macOS 和未配置此变量的本地入口继续原样执行。
 
 容器保留 source、Cargo target、TMPDIR 绝对路径及 LLVM_PROFILE_FILE，继承执行/插桩和测试依赖的指定环境变量，仅按变量名传递，不输出值；工具安装文件只读挂载，不挂载 runner 注册状态、凭据、真实 HOME、实验室密钥或 Docker socket。metadata 和启动时的 cgroup/memory/cpu 分项保存在 `target/ci/nextest.*/`；原有 JUnit、profile、二进制和覆盖率来源路径不变。测试退出码原样失败，不增加重试、过滤或业务期限，生产 90%/80% 迟滞和原 Pending 身份断言继续保留。
 

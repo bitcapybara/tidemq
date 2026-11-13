@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "accepted",
   "source_commit": "693f9bd91a570758f7891f15edb2e95fdcf47864",
-  "policy_sha256": "ff5e41e78593ce972649cee96b768db3132bb8a157d08bcded4f48329b0bed57",
+  "policy_sha256": "ae4ea8be1e2f6bf323e6bf9f842793588a9736246ff43477fe5496ca13c6af12",
   "llvm_report_sha256": "f62befee53ba66d1870dfa643acd61f5859c1a1191a2989e35cd3880b9eb23bf",
   "counts": {
     "lines": {
