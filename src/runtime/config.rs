@@ -74,7 +74,7 @@ impl Default for WalConfig {
 }
 
 impl WalConfig {
-    pub fn journal_options(&self) -> crate::wal::Result<JournalOptions> {
+    pub fn journal_options(&self) -> crate::execution::Result<JournalOptions> {
         let journal = JournalOptions {
             max_pending_bytes: self.max_pending_bytes,
             max_pending_records: self.max_pending_records,
@@ -82,7 +82,11 @@ impl WalConfig {
             group_commit_delay: Duration::from_millis(self.group_commit_delay_ms),
             ..JournalOptions::default()
         };
-        journal.validate_segmented()?;
+        crate::execution::LocalOptions {
+            journal: journal.clone(),
+            ..crate::execution::LocalOptions::default()
+        }
+        .validate()?;
         Ok(journal)
     }
 }
