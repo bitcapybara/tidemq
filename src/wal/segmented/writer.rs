@@ -341,7 +341,14 @@ impl Writer {
         Ok(frames)
     }
     async fn sync_data(&mut self) -> Result<()> {
-        self.sync_file(false).await
+        #[cfg(target_os = "linux")]
+        {
+            self.sync_file(false).await
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.sync_file(true).await
+        }
     }
     async fn sync_all(&mut self) -> Result<()> {
         self.sync_file(true).await

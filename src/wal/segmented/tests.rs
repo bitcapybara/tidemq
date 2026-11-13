@@ -64,6 +64,26 @@ async fn rolls_and_checkpoints_references_without_rewriting_payloads() {
     assert!(recovery.next().await.unwrap().is_none());
     journal.close().await.unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn ordinary_append_reopens_after_data_sync() {
+    let dir = Directory::new();
+    let (journal, _, recovery) = opened(dir.path()).await;
+    drop(recovery);
+    let payload = b"linux-data-sync".to_vec();
+    let durable = journal.append(payload.clone()).await.unwrap();
+    durable.durable().await.unwrap();
+    journal.close().await.unwrap();
+    drop(journal);
+
+    let (journal, _, mut recovery) = opened(dir.path()).await;
+    let record = recovery.next().await.unwrap().unwrap();
+    assert_eq!(record.data, payload);
+    assert!(recovery.next().await.unwrap().is_none());
+    journal.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn dropped_reference_is_not_revived_by_reused_raft_index_or_later_rotation() {
     let dir = Directory::new();

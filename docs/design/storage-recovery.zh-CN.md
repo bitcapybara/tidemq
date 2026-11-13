@@ -51,7 +51,7 @@ record frame 保留 88 字节头部：magic/格式版本 8 字节、payload 长�
 
 ## 持久顺序与 group commit
 
-一个副本的 vote、日志、committed、截断、checkpoint 和 manifest 发布进入同一 writer，禁止后发 IO 越过先发 IO。应用队列同时受字节与记录数 semaphore 限制，writer 将短时间内的有限批次聚合后一次 `sync_all`。写入前按整批实际 frame 长度判断段内余量，必要时先轮转。
+一个副本的 vote、日志、committed、截断、checkpoint 和 manifest 发布进入同一 writer，禁止后发 IO 越过先发 IO。应用队列同时受字节与记录数 semaphore 限制，writer 将短时间内的有限批次聚合后一次同步。Linux 普通 append 使用 `sync_data`，其 `fdatasync` 会持久化恢复所需的文件长度；其他平台以及轮转、checkpoint、manifest 发布继续使用 `sync_all`。写入前按整批实际 frame 长度判断段内余量，必要时先轮转。
 
 - `append` 返回前，日志已对 reader 可见；只有整个 group 同步成功后才调用 OpenRaft `LogFlushed` 成功回调。
 - `save_vote` 返回前 vote 已持久。vote 不得倒退或变得不可比较。

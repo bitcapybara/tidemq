@@ -14,7 +14,7 @@
 | Broker Admission / Queue | 前台业务许可与 owned submission 队列，各自有限 |
 | Broker Commit / Total | client_write 等待复制/提交/应用结果，以及本地整个生产 attempt；不是纯磁盘或纯网络 |
 | WAL WalAdmission / WalQueue | journal 字节/记录许可与 writer 排队；和 Broker 的准入/队列分开 |
-| WAL Append / Sync | 本地有限批次编码/文件写入与 sync_all；group commit 的一次样本不能当作每消息一次 fsync |
+| WAL Append / Sync | 本地有限批次编码/文件写入与 group sync；Linux 普通 append 使用 sync_data，其他路径使用 sync_all；一次 group 样本不能当作每消息一次 fsync |
 | CommitPersist | 本地持久 committed 标记；和 Broker 等待结果的 Commit 分开，禁止混样本算分位 |
 | Replicate / RepairPace | 原生 Raft RPC 含连接、修复 pacing 和对端响应的总等待；RepairPace 是其中受修复预算影响的部分，不与总时长相加 |
 | Apply | 本地已提交日志批次的状态机应用，包含实际应用锁/执行；不是客户端全链路 |

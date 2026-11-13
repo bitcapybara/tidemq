@@ -45,7 +45,7 @@
 
 默认 journal 文件上限 128 MiB；单 record payload 4 MiB；retained log 限制为 65,536 条及 64 MiB 编码字节；snapshot payload 上限 64 MiB。pending payload 16 MiB、64 条，group commit 目标 1 MiB 或 1 ms。所有值仍须共同满足 `StorageOptions::validate`，不是相互独立的生产容量承诺。
 
-生产 append、vote、committed、truncate 共用有序 writer。只有 `sync_all` 成功后，才完成对应 durable 回调。完整快照由 OpenRaft 或生命周期/迁移流程触发，不是每次生产请求触发。正常 core 先完成 durable snapshot，再指示 purge；低层 storage trait 的 purge 不能作为业务删除接口。
+生产 append、vote、committed、truncate 共用有序 writer。Linux 普通 append 在 `sync_data` 成功后完成对应 durable 回调，其他平台以及 vote、committed、truncate 和 manifest 路径使用 `sync_all`。完整快照由 OpenRaft 或生命周期/迁移流程触发，不是每次生产请求触发。正常 core 先完成 durable snapshot，再指示 purge；低层 storage trait 的 purge 不能作为业务删除接口。
 
 purge 持有 log mutex，克隆有限 `LogState`，对 trial 删除前缀，再构建 identity、vote、purged、剩余 entries、committed 的 checkpoint records。`Writer::rewrite` 顺序写 `.journal-checkpoint`，`sync_all`，rename 为 `raft.wal`，同步父目录，然后重新打开 append fd。成功后才发布 trial；失败 poison writer。删除边界落在文件中间时，所有保留 tail 都要重新编码、校验和写入。
 
