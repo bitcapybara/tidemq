@@ -140,6 +140,7 @@ fn node_schema(role: Role) -> Config {
         retention: defaults.retention,
         archive_interval_ms: defaults.archive_interval_ms,
         topic_scaling: role.stores_metadata().then(TopicScalingPolicy::default),
+        wal: configured.runtime.wal,
     };
     Config {
         node_id: configured.node_id,
@@ -249,6 +250,10 @@ fn node_templates_preserve_defaults_and_role_boundaries() {
             config.runtime.archive_interval_ms,
             defaults.runtime.archive_interval_ms
         );
+        assert_eq!(config.runtime.wal.max_pending_bytes, 16 * 1024 * 1024);
+        assert_eq!(config.runtime.wal.max_pending_records, 64);
+        assert_eq!(config.runtime.wal.group_commit_bytes, 1024 * 1024);
+        assert_eq!(config.runtime.wal.group_commit_delay_ms, 1);
         assert!(config.runtime.objects.is_none());
         assert!(config.runtime.topic_scaling.is_none());
         assert_eq!(document.contains_key("gateway"), role.serves_gateway());
@@ -261,6 +266,56 @@ fn node_templates_preserve_defaults_and_role_boundaries() {
         );
         config.runtime.validate(&config).unwrap();
     }
+}
+
+#[test]
+fn storage_wal_configuration_reuses_journal_validation() {
+    let defaults = Config::default().runtime.wal;
+    let template = node_template(Role::Combined);
+    let config: Config = toml::from_str(template).unwrap();
+    assert_eq!(
+        config.runtime.wal.max_pending_bytes,
+        defaults.max_pending_bytes
+    );
+    assert_eq!(
+        config.runtime.wal.max_pending_records,
+        defaults.max_pending_records
+    );
+    assert_eq!(
+        config.runtime.wal.group_commit_bytes,
+        defaults.group_commit_bytes
+    );
+    assert_eq!(
+        config.runtime.wal.group_commit_delay_ms,
+        defaults.group_commit_delay_ms
+    );
+    let custom = template
+        .replace(
+            "max_pending_bytes = 16777216",
+            "max_pending_bytes = 8388608",
+        )
+        .replace("max_pending_records = 64", "max_pending_records = 32")
+        .replace(
+            "group_commit_bytes = 1048576",
+            "group_commit_bytes = 524288",
+        )
+        .replace("group_commit_delay_ms = 1", "group_commit_delay_ms = 7");
+    let mut config: Config = toml::from_str(&custom).unwrap();
+    assert_eq!(config.runtime.wal.max_pending_bytes, 8 * 1024 * 1024);
+    assert_eq!(config.runtime.wal.max_pending_records, 32);
+    assert_eq!(config.runtime.wal.group_commit_bytes, 512 * 1024);
+    assert_eq!(config.runtime.wal.group_commit_delay_ms, 7);
+    config.runtime.wal.max_pending_bytes = 0;
+    assert!(config.runtime.validate(&config).is_err());
+    config.runtime.wal = defaults.clone();
+    config.runtime.wal.max_pending_records = 0;
+    assert!(config.runtime.validate(&config).is_err());
+    config.runtime.wal = defaults.clone();
+    config.runtime.wal.group_commit_bytes = 0;
+    assert!(config.runtime.validate(&config).is_err());
+    config.runtime.wal = defaults;
+    config.runtime.wal.group_commit_delay_ms = 1_001;
+    assert!(config.runtime.validate(&config).is_err());
 }
 
 #[test]

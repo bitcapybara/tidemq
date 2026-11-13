@@ -981,11 +981,17 @@ async fn open_replica<A: Application>(
     pool: Option<Arc<PeerPool>>,
     stages: Option<Arc<crate::observability::metrics::OperationMetrics>>,
 ) -> Result<Replica<A>> {
+    let journal = config
+        .runtime
+        .wal
+        .journal_options()
+        .map_err(|source| Error::operation("validate WAL configuration", source))?;
     if config.role == crate::config::Role::Combined {
         let local = LocalGroup::open(
             config.data_dir.join(format!("group-{group}")),
             StorageIdentity::new::<A>(cluster, group, config.node_id),
             LocalOptions {
+                journal,
                 metrics: stages,
                 ..LocalOptions::default()
             },
@@ -1005,7 +1011,10 @@ async fn open_replica<A: Application>(
     let store = DiskStore::<A>::open(
         config.data_dir.join(format!("group-{group}")),
         StorageIdentity::new::<A>(cluster, group, config.node_id),
-        StorageOptions::default(),
+        StorageOptions {
+            journal,
+            ..StorageOptions::default()
+        },
         stages,
     )
     .await

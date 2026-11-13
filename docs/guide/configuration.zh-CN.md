@@ -38,6 +38,8 @@
 | `authorization.bootstrap_admin_token_file` | 仅首次初始化的 Metadata/Combined 节点读取私有管理员 token 文件，将校验摘要持久提交到 Metadata Group；集群初始化后不再读取。其他角色无需业务 token 清单。凭据、授权、到期和撤销在线管理；确认域密钥由数据组持久保存，无共享密钥文件 |
 | `storage.objects` | 仅 Storage/Combined 配置；显式 endpoint/region/bucket/prefix/credentials_file，不使用隐式机器默认凭据链。仅显式开启时允许 loopback HTTP；公网使用 HTTPS |
 | `runtime.capacity` / `storage.retention` | 各进程共同使用容量水位；数据角色配置最短保留与有界时间索引。新鲜采样缺失或超限拒绝新写，已有 ACK/read/control/GC 保留各自准入 |
+| `storage.wal.max_pending_bytes` / `max_pending_records` | Local WAL 入队的字节和记录上限，默认分别为 16 MiB 和 64；与 JournalOptions 其余固定预算共同校验 |
+| `storage.wal.group_commit_bytes` / `group_commit_delay_ms` | Local WAL group commit 目标字节数与最长等待时间，默认分别为 1 MiB 和 1 ms；参数超出 JournalOptions 边界时拒绝启动 |
 | `storage.archive_interval_ms` | 仅 Storage/Combined 的后台归档/回收工作间隔；对象上传不进入 Producer ACK 关键路径，未知任务按原对象身份对账 |
 
 ## 按角色组织 TOML

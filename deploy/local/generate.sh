@@ -105,6 +105,11 @@ EOF
 
 [storage]
 archive_interval_ms = 1000
+[storage.wal]
+max_pending_bytes = 16777216
+max_pending_records = 64
+group_commit_bytes = 1048576
+group_commit_delay_ms = 1
 EOF
       ;;
   esac

@@ -76,6 +76,12 @@ listen = "127.0.0.1:7443"
 [storage]
 archive_interval_ms = 1000
 
+[storage.wal]
+max_pending_bytes = 16777216
+max_pending_records = 64
+group_commit_bytes = 1048576
+group_commit_delay_ms = 1
+
 # Code defaults. Retention also respects protecting subscriptions and durable ACKs.
 [storage.retention]
 minimum_age_ms = 3600000
