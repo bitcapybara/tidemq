@@ -22,7 +22,6 @@ const MAX_IO_RETRIES: usize = 3;
 struct InFlight<A: Application> {
     payload: Payload<A>,
     sequence: u64,
-    durability: SegmentedDurability,
 }
 
 pub(super) async fn run<A: Application>(
@@ -96,8 +95,10 @@ pub(super) async fn run<A: Application>(
                 continue;
             }
         }
-        let inflight = append(&shared, batch, &mut retained).await?;
-        apply(&shared, inflight).await?;
+        let Some((inflight, durability)) = append(&shared, batch, &mut retained).await? else {
+            continue;
+        };
+        apply(&shared, inflight, durability).await?;
     }
 }
 
@@ -112,6 +113,11 @@ fn collect<A: Application>(
     let mut bytes = 0u64;
     let mut next = Some(first);
     let completion = next.as_ref().is_some_and(|queued| queued.completion);
+    let batch_limit = shared
+        .storage
+        .options
+        .batch_bytes()
+        .min(shared.storage.options.journal.max_record_bytes as u64);
     while let Some(queued) = next.take() {
         if queued.completion != completion {
             return (batch, Some(queued), bytes);
@@ -120,9 +126,7 @@ fn collect<A: Application>(
             .as_ref()
             .map_or(0, |p| p.bytes.len().saturating_add(RECORD_RESERVE)) as u64;
         if size != 0 {
-            if !batch.is_empty()
-                && bytes.saturating_add(size) > shared.storage.options.batch_bytes()
-            {
+            if !batch.is_empty() && bytes.saturating_add(size) > batch_limit {
                 return (batch, Some(queued), bytes);
             }
             bytes = bytes.saturating_add(size);
@@ -213,7 +217,8 @@ async fn append<A: Application>(
     shared: &Shared<A>,
     batch: Vec<Arc<Queued<A>>>,
     retained: &mut VecDeque<(u64, RecordId)>,
-) -> Result<Vec<InFlight<A>>> {
+) -> Result<Option<(Vec<InFlight<A>>, SegmentedDurability)>> {
+    let mut records = Vec::new();
     let mut inflight = Vec::new();
     let mut sequence = shared.sequence.load(Ordering::Acquire);
     for queued in batch {
@@ -256,41 +261,54 @@ async fn append<A: Application>(
             .map_err(Into::into),
         )?;
         checked(shared, boundary(&shared.storage.directory, "before_append"))?;
-        let (id, durability) = checked(
-            shared,
-            shared
-                .storage
-                .journal
-                .append_retained(bytes)
-                .instrument(payload.span.clone())
-                .with_subscriber(payload.subscriber.clone())
-                .await
-                .map_err(Into::into),
-        )?;
+        records.push(bytes);
         payload.bytes = Vec::new();
-        retained.push_back((sequence, id));
-        inflight.push(InFlight {
-            payload,
-            sequence,
-            durability,
-        });
+        inflight.push(InFlight { payload, sequence });
     }
-    Ok(inflight)
+    if records.is_empty() {
+        return Ok(None);
+    }
+    let first = inflight
+        .first()
+        .ok_or_else(|| Error::fatal("Retained append batch has no in-flight records"))?;
+    let (ids, durability) = checked(
+        shared,
+        shared
+            .storage
+            .journal
+            .append_retained_batch(records)
+            .instrument(first.payload.span.clone())
+            .with_subscriber(first.payload.subscriber.clone())
+            .await
+            .map_err(Into::into),
+    )?;
+    if ids.len() != inflight.len() {
+        return Err(Error::fatal(
+            "Retained append returned mismatched record identities",
+        ));
+    }
+    for (item, id) in inflight.iter().zip(ids) {
+        retained.push_back((item.sequence, id));
+    }
+    Ok(Some((inflight, durability)))
 }
 
-async fn apply<A: Application>(shared: &Shared<A>, inflight: Vec<InFlight<A>>) -> Result<()> {
+async fn apply<A: Application>(
+    shared: &Shared<A>,
+    inflight: Vec<InFlight<A>>,
+    durability: SegmentedDurability,
+) -> Result<()> {
+    let mut durability = Some(durability);
     for item in inflight {
-        let InFlight {
-            payload,
-            sequence,
-            durability,
-        } = item;
+        let InFlight { payload, sequence } = item;
         checked(
             shared,
             boundary(&shared.storage.directory, "before_durable"),
         )?;
         let start = Instant::now();
-        checked(shared, durability.durable().await.map_err(Into::into))?;
+        if let Some(durability) = durability.take() {
+            checked(shared, durability.durable().await.map_err(Into::into))?;
+        }
         lock(&shared.stats).durable_sequence = sequence;
         if let Some(metrics) = &shared.storage.options.metrics {
             metrics.observe(Stage::Commit, start.elapsed().as_secs_f64());
