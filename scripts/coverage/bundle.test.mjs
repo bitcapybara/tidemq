@@ -43,12 +43,22 @@ test('parallel coverage retains both feature objects, all profiles and every tes
   assert.ok(fs.existsSync(path.join(f.reports, 'api-coverage.json')));
 });
 
-test('coverage merge rejects other cohorts, missing lanes and modified profiles before restoring files', t => {
-  for (const change of ['source_commit', 'run_id', 'run_attempt', 'workspace', 'toolchain']) {
+test('coverage merge accepts earlier attempts and rejects other cohorts, missing lanes and modified profiles before restoring files', t => {
+  const earlier = fixture(t);
+  const retryIdentity = {...earlier.identity, run_attempt: '2'};
+  restoreBundles(earlier.bundles, earlier.target, earlier.reports, retryIdentity);
+  for (const change of ['source_commit', 'run_id', 'workspace', 'toolchain']) {
     const f = fixture(t), expected = {...f.identity, [change]: 'different'};
     assert.throws(() => restoreBundles(f.bundles, f.target, f.reports, expected), /identity differs/);
     assert.ok(!fs.existsSync(f.target));
   }
+  const newer = fixture(t), expected = {...newer.identity, run_attempt: '1'};
+  const manifest = path.join(newer.bundles[0], 'manifest.json');
+  const value = JSON.parse(fs.readFileSync(manifest));
+  value.run_attempt = '2';
+  fs.writeFileSync(manifest, JSON.stringify(value));
+  assert.throws(() => restoreBundles(newer.bundles, newer.target, newer.reports, expected), /newer than expected/);
+  assert.ok(!fs.existsSync(newer.target));
   const f = fixture(t);
   assert.throws(() => restoreBundles([f.bundles[0], f.bundles[0]], f.target, f.reports, f.identity), /Both coverage lanes/);
   fs.writeFileSync(path.join(f.bundles[0], 'profiles', 'native.profraw'), 'tampered');

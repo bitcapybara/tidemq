@@ -27,6 +27,25 @@ function scope(root, env, create = false) {
   return privateDirectory(directory, create) ? directory : null;
 }
 
+function scopes(root, env, current) {
+  if (!privateDirectory(root, false)) return [];
+  const prefix = `${env.GITHUB_REPOSITORY_ID}-${env.GITHUB_RUN_ID}-`;
+  const suffix = `-${env.GITHUB_SHA}`;
+  const currentAttempt = BigInt(env.GITHUB_RUN_ATTEMPT);
+  const candidates = current ? [{directory: current, attempt: currentAttempt}] : [];
+  for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !scopePattern.test(entry.name) ||
+        !entry.name.startsWith(prefix) || !entry.name.endsWith(suffix)) continue;
+    const attemptText = entry.name.slice(prefix.length, -suffix.length);
+    if (!/^[0-9]+$/.test(attemptText) || BigInt(attemptText) > currentAttempt) continue;
+    const directory = path.join(root, entry.name);
+    if (directory === current) continue;
+    if (privateDirectory(directory, false)) candidates.push({directory, attempt: BigInt(attemptText)});
+  }
+  candidates.sort((left, right) => left.attempt === right.attempt ? 0 : left.attempt > right.attempt ? -1 : 1);
+  return candidates.map(candidate => candidate.directory);
+}
+
 export function publishCoverage(root, env, lane, pack) {
   assert.ok(lane === 'native' || lane === 'lab', 'Invalid coverage lane');
   const directory = scope(root, env, true);
@@ -50,12 +69,15 @@ export function publishCoverage(root, env, lane, pack) {
 }
 
 export function coverageInputs(root, env) {
-  const directory = scope(root, env);
-  assert.ok(directory, 'Local coverage inputs missing. Rerun all workflow jobs.');
+  const current = scope(root, env);
+  const directories = scopes(root, env, current);
+  assert.ok(directories.length, 'Local coverage inputs missing. Rerun all workflow jobs.');
   return ['native', 'lab'].map(lane => {
-    const input = path.join(directory, lane);
-    assert.ok(privateDirectory(input, false), 'Local coverage lane missing: ' + lane + '. Rerun all workflow jobs.');
-    return input;
+    for (const directory of directories) {
+      const input = path.join(directory, lane);
+      if (privateDirectory(input, false)) return input;
+    }
+    assert.fail('Local coverage lane missing: ' + lane + '. Rerun all workflow jobs.');
   });
 }
 

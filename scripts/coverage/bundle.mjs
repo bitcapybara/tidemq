@@ -75,11 +75,14 @@ export function packBundle(target, reports, output, identity) {
 export function restoreBundles(bundles, target, reports, expected) {
   const manifests = bundles.map(bundle => JSON.parse(boundedFile(bundle, 'manifest.json', 4 * 1024 * 1024)));
   assert.deepEqual(manifests.map(value => value.lane).sort(), ['lab', 'native'], 'Both coverage lanes are required exactly once');
+  const expectedAttempt = BigInt(expected.run_attempt);
   let total = 0;
   for (let index = 0; index < bundles.length; index++) {
     const value = manifests[index];
     assert.equal(value.schema_version, 1, 'Unsupported coverage bundle');
-    for (const key of ['source_commit', 'run_id', 'run_attempt', 'workspace', 'toolchain']) assert.deepEqual(value[key], expected[key], 'Coverage bundle identity differs: ' + key);
+    for (const key of ['source_commit', 'run_id', 'workspace', 'toolchain']) assert.deepEqual(value[key], expected[key], 'Coverage bundle identity differs: ' + key);
+    assert.match(value.run_attempt ?? '', /^[0-9]+$/, 'Coverage bundle identity differs: run_attempt');
+    assert.ok(BigInt(value.run_attempt) <= expectedAttempt, 'Coverage bundle run_attempt is newer than expected');
     assert.ok(value.entries.length > 0 && value.entries.length <= 10000, 'Invalid bundle entry count');
     const names = new Set();
     for (const entry of value.entries) {
