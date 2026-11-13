@@ -294,7 +294,7 @@ impl Writer {
         if let Some(metrics) = &self.metrics {
             metrics.observe(Stage::Append, start.elapsed().as_secs_f64());
         }
-        self.sync().await?;
+        self.sync_data().await?;
         self.sequence = self
             .sequence
             .checked_add(frames.len() as u64)
@@ -340,17 +340,30 @@ impl Writer {
         }
         Ok(frames)
     }
-    async fn sync(&mut self) -> Result<()> {
+    async fn sync_data(&mut self) -> Result<()> {
+        self.sync_file(false).await
+    }
+    async fn sync_all(&mut self) -> Result<()> {
+        self.sync_file(true).await
+    }
+    async fn sync_file(&mut self, sync_all: bool) -> Result<()> {
         let start = Instant::now();
         let path = self.directory.join(self.manifest.active.name());
         self.file
             .flush()
             .await
             .map_err(|error| Error::io(&path, error))?;
-        self.file
-            .sync_all()
-            .await
-            .map_err(|e| Error::io(&path, e))?;
+        if sync_all {
+            self.file
+                .sync_all()
+                .await
+                .map_err(|e| Error::io(&path, e))?;
+        } else {
+            self.file
+                .sync_data()
+                .await
+                .map_err(|e| Error::io(&path, e))?;
+        }
         if let Some(metrics) = &self.metrics {
             metrics.observe(Stage::Sync, start.elapsed().as_secs_f64());
         }
@@ -360,7 +373,7 @@ impl Writer {
     }
     async fn rotate(&mut self) -> Result<()> {
         let start = Instant::now();
-        self.sync().await?;
+        self.sync_all().await?;
         self.mutated = true;
         let (active, file) =
             create_segment(&self.directory, self.manifest.identity, self.sequence).await?;
@@ -489,7 +502,7 @@ impl Writer {
             false,
         )
         .await?;
-        self.sync().await?;
+        self.sync_all().await?;
         self.mutated = true;
         {
             let mut stats = lock(&self.shared.stats);
