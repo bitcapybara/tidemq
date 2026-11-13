@@ -67,7 +67,7 @@ use std::path::Path;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 
-pub use config::{GroupConfig, ObjectConfig, PeerConfig, RuntimeConfig};
+pub use config::{GroupConfig, ObjectConfig, PeerConfig, RuntimeConfig, WalConfig};
 pub use error::{Error, Failure, Result};
 pub use node::RunningNode;
 pub use shard_load::ShardLoadPage;

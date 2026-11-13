@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tidemq_protocol::ProtocolLimits;
 
 use super::{Config, LoggingConfig, MemoryConfig, Role, TlsConfig};
-use crate::runtime::{GroupConfig, ObjectConfig, PeerConfig, RuntimeConfig};
+use crate::runtime::{GroupConfig, ObjectConfig, PeerConfig, RuntimeConfig, WalConfig};
 use crate::{Error, Result};
 
 #[derive(Deserialize, Serialize)]
@@ -134,6 +134,7 @@ struct GatewayConfig {
 struct StorageConfig {
     retention: crate::retention::Policy,
     archive_interval_ms: u64,
+    wal: WalConfig,
     #[serde(skip_serializing_if = "Option::is_none")]
     objects: Option<ObjectConfig>,
 }
@@ -144,6 +145,7 @@ impl Default for StorageConfig {
         Self {
             retention: runtime.retention,
             archive_interval_ms: runtime.archive_interval_ms,
+            wal: runtime.wal,
             objects: None,
         }
     }
@@ -279,6 +281,7 @@ impl TryFrom<ConfigFile> for Config {
         if let Some(storage) = file.storage {
             runtime.retention = storage.retention;
             runtime.archive_interval_ms = storage.archive_interval_ms;
+            runtime.wal = storage.wal;
             runtime.objects = storage.objects;
         }
         Ok(Self {
@@ -316,6 +319,7 @@ impl From<Config> for ConfigFile {
         let storage = config.role.stores_data().then(|| StorageConfig {
             retention: config.runtime.retention,
             archive_interval_ms: config.runtime.archive_interval_ms,
+            wal: config.runtime.wal.clone(),
             objects: config.runtime.objects.clone(),
         });
         Self {

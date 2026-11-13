@@ -1,10 +1,12 @@
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, Role};
+use crate::wal::JournalOptions;
 
 use super::{Error, Result};
 
@@ -23,6 +25,7 @@ pub struct RuntimeConfig {
     pub retention: crate::retention::Policy,
     pub archive_interval_ms: u64,
     pub topic_scaling: Option<super::TopicScalingPolicy>,
+    pub wal: WalConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -44,7 +47,43 @@ impl Default for RuntimeConfig {
             retention: crate::retention::Policy::default(),
             archive_interval_ms: 1_000,
             topic_scaling: None,
+            wal: WalConfig::default(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WalConfig {
+    pub max_pending_bytes: u32,
+    pub max_pending_records: usize,
+    pub group_commit_bytes: usize,
+    pub group_commit_delay_ms: u64,
+}
+
+impl Default for WalConfig {
+    fn default() -> Self {
+        let journal = JournalOptions::default();
+        Self {
+            max_pending_bytes: journal.max_pending_bytes,
+            max_pending_records: journal.max_pending_records,
+            group_commit_bytes: journal.group_commit_bytes,
+            group_commit_delay_ms: journal.group_commit_delay.as_millis() as u64,
+        }
+    }
+}
+
+impl WalConfig {
+    pub fn journal_options(&self) -> crate::wal::Result<JournalOptions> {
+        let journal = JournalOptions {
+            max_pending_bytes: self.max_pending_bytes,
+            max_pending_records: self.max_pending_records,
+            group_commit_bytes: self.group_commit_bytes,
+            group_commit_delay: Duration::from_millis(self.group_commit_delay_ms),
+            ..JournalOptions::default()
+        };
+        journal.validate_segmented()?;
+        Ok(journal)
     }
 }
 
@@ -142,6 +181,9 @@ impl RuntimeConfig {
                 "Archive interval must be between 100 and 60000 milliseconds",
             ));
         }
+        self.wal
+            .journal_options()
+            .map_err(|source| Error::operation("validate WAL configuration", source))?;
         self.validate_objects(config)?;
         if config.role == Role::Combined {
             return self.validate_local();
