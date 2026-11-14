@@ -58,7 +58,7 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 ## CI 与覆盖率
 
-[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.100.0，main push、PR 和手动 dispatch 触发。Linux 和 macOS 的 Validate 都执行 `validate.sh` 和 `integration.sh normal`。Linux Validate、Faults 和 Coverage 使用 `tidemq-dev` runner 顺序执行，macOS 使用 GitHub-hosted runner。容器 runner 的部署保留，当前 Linux Validate 不使用其长期存活的执行上下文。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
+[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.100.0，main push、PR 和手动 dispatch 触发。Linux 和 macOS 的 Validate 都执行 `validate.sh` 和 `integration.sh normal`。Linux Validate 使用 `tidemq-ci-container`，Faults 和 Coverage 使用 `tidemq-dev`，macOS 使用 GitHub-hosted runner。两条 Linux 路径可并发运行，coverage handoff 通过 runner VM 的私有共享目录传递。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
 
 Faults 单独运行专用 `test-hooks` 用例、确实使用故障钩子的共享用例变体、真实外部依赖和部署故障场景。为共享测试目标新增或重命名故障用例时，同步更新 `scripts/ci/integration.sh` 中的 nextest 选择条件。
 
