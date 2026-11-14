@@ -60,7 +60,7 @@ test('both platforms run normal validation and Linux shares the native executor 
 });
 
 test('every trusted Linux nextest lane enables the same immutable isolated executor', () => {
-  const image = 'sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b';
+  const image = 'sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc';
   const settings = [...workflow.matchAll(/TIDEMQ_NEXTEST_IMAGE: ([^\n]+)/gu)].map(match => match[1]);
   assert.deepEqual(settings, [image, image]);
   const scripts = ['validate.sh', 'integration.sh'].map(name => fs.readFileSync(new URL('./' + name, import.meta.url), 'utf8'));
