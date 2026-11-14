@@ -4,7 +4,8 @@ import path from 'node:path';
 
 export const coverageStore = '/srv/tidemq/maintenance/coverage-handoff';
 const scopePattern = /^[0-9]+-[0-9]+-[0-9]+-[0-9a-f]{40}$/;
-const dayMs = 24 * 60 * 60 * 1000;
+const retentionMs = 2 * 60 * 60 * 1000;
+const coverageStoreByteBudget = 20 * 1024 * 1024 * 1024;
 
 function privateDirectory(directory, create) {
   if (create) {
@@ -29,6 +30,40 @@ function scope(root, env, create = false) {
   if (!privateDirectory(root, create)) return null;
   const directory = path.join(root, [env.GITHUB_REPOSITORY_ID, env.GITHUB_RUN_ID, env.GITHUB_RUN_ATTEMPT, env.GITHUB_SHA].join('-'));
   return privateDirectory(directory, create) ? directory : null;
+}
+
+function directoryBytes(directory) {
+  let total = 0;
+  for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+    if (entry.isSymbolicLink()) continue;
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) total += directoryBytes(file);
+    else if (entry.isFile()) total += fs.statSync(file).size;
+  }
+  return total;
+}
+
+function pruneCoverageStore(root, env, current) {
+  validateIdentity(env);
+  if (!privateDirectory(root, false)) return;
+  const prefix = `${env.GITHUB_REPOSITORY_ID}-`;
+  const candidates = [];
+  let total = 0;
+  for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !scopePattern.test(entry.name) || !entry.name.startsWith(prefix)) continue;
+    const directory = path.join(root, entry.name), stat = privateDirectory(directory, false);
+    if (!stat) continue;
+    const bytes = directoryBytes(directory);
+    candidates.push({directory, bytes, mtimeMs: stat.mtimeMs});
+    total += bytes;
+  }
+  candidates.sort((left, right) => left.mtimeMs - right.mtimeMs);
+  for (const candidate of candidates) {
+    if (total <= coverageStoreByteBudget) break;
+    if (candidate.directory === current) continue;
+    fs.rmSync(candidate.directory, {recursive: true});
+    total -= candidate.bytes;
+  }
 }
 
 function scopes(root, env, current, includeFuture = false) {
@@ -60,7 +95,7 @@ export function publishCoverage(root, env, lane, pack) {
     const previous = path.join(root, entry.name);
     if (previous === directory) continue;
     const stat = privateDirectory(previous, false);
-    if (stat && Date.now() - stat.mtimeMs > dayMs) fs.rmSync(previous, {recursive: true});
+    if (stat && Date.now() - stat.mtimeMs > retentionMs) fs.rmSync(previous, {recursive: true});
   }
   const destination = path.join(directory, lane);
   assert.ok(!fs.lstatSync(destination, {throwIfNoEntry: false}), 'Coverage lane already published');
@@ -68,6 +103,7 @@ export function publishCoverage(root, env, lane, pack) {
   try {
     pack(temporary);
     fs.renameSync(temporary, destination);
+    pruneCoverageStore(root, env, directory);
   } finally {
     fs.rmSync(temporary, {recursive: true, force: true});
   }
