@@ -56,7 +56,7 @@ function objects(directory, prefix = 'debug') {
     if (entry.isSymbolicLink() || ['.fingerprint', 'incremental'].includes(entry.name)) continue;
     const relative = prefix + '/' + entry.name, file = path.join(directory, entry.name);
     if (entry.isDirectory()) found.push(...objects(file, relative));
-    else if (entry.isFile() && (fs.statSync(file).mode & 0o111)) {
+    else if (entry.isFile()) {
       const fd = fs.openSync(file, 'r'), magic = Buffer.alloc(4);
       try { fs.readSync(fd, magic, 0, 4, 0); } finally { fs.closeSync(fd); }
       if (magic.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) found.push(relative);

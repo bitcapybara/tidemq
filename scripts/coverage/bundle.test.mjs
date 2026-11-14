@@ -14,7 +14,7 @@ function fixture(t) {
     const target = path.join(root, lane, 'target'), reports = path.join(root, lane, 'reports'), output = path.join(root, lane, 'bundle');
     fs.mkdirSync(path.join(target, 'debug', 'deps'), {recursive: true});
     fs.mkdirSync(reports);
-    fs.writeFileSync(path.join(target, 'debug', 'deps', 'tidemq-' + '1'.repeat(16)), Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from(lane)]), {mode: 0o755});
+    fs.writeFileSync(path.join(target, 'debug', 'deps', 'tidemq-' + '1'.repeat(16)), Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from(lane)]), {mode: 0o644});
     const build = path.join(target, 'debug', 'build', 'tidemq-protocol-' + '1'.repeat(16));
     fs.mkdirSync(build, {recursive: true});
     fs.writeFileSync(path.join(build, 'build-script-build'), Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from('build-' + lane)]), {mode: 0o755});

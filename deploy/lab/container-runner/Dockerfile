@@ -5,7 +5,7 @@ COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN chmod 0644 /etc/ssl/certs/ca-certificates.crt \
     && sed -i -E 's@https?://(archive|security).ubuntu.com/ubuntu/?@https://mirrors.aliyun.com/ubuntu@g' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get -o APT::Update::Error-Mode=any -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update && apt-get install -y --no-install-recommends \
-    build-essential ca-certificates clang cmake curl git jq libssl-dev perl pkg-config procps util-linux \
+    build-essential ca-certificates clang cmake curl git jq libssl-dev perl pkg-config procps python3 python3-yaml util-linux \
     && rm -rf /var/lib/apt/lists/*
 COPY runner /opt/actions-runner
 COPY installdependencies.sh /opt/installdependencies.sh
