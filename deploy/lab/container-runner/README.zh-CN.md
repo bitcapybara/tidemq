@@ -1,10 +1,10 @@
 # 第二个 Linux runner
 
-只新增一个仓库级 runner，名称 `tidemq-ci-container-u126-8`、ID 23、标签 `tidemq-ci-container`。Linux Validate 使用该容器 runner，Faults 和 Coverage 继续使用原生 `tidemq-dev-u126-8`（ID 21）。容器由同一 `tidemq-runner` VM 的 Docker Compose 管理，配置见 [compose.yaml](compose.yaml)，镜像构建见 [Dockerfile](Dockerfile)。不增加 Kubernetes runner controller 或额外 VM。
+只新增一个仓库级 runner，名称 `tidemq-ci-container-u126-8`、ID 23、标签 `tidemq-ci-container`。当前 Linux Validate、故障/部署和报告合并顺序使用原生 `tidemq-dev-u126-8`（ID 21），容器部署保留。容器由同一 `tidemq-runner` VM 的 Docker Compose 管理，配置见 [compose.yaml](compose.yaml)，镜像构建见 [Dockerfile](Dockerfile)。不增加 Kubernetes runner controller 或额外 VM。
 
 ## 资源和路径
 
-runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 runner 的 systemd drop-in 为 `CPUQuota=400%`、`MemoryMax=6G`；容器为 4 CPU、8 GiB RAM、无额外 swap、1024 PID。Linux Validate 和 Faults 现在可以在两个执行器上并发，保持各自 `CARGO_BUILD_JOBS=2`、nextest逐项执行以及原有业务断言与重试策略；此调度调整不修改长期runner资源配置。
+runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 runner 的 systemd drop-in 为 `CPUQuota=400%`、`MemoryMax=6G`；容器为 4 CPU、8 GiB RAM、无额外 swap、1024 PID。当前两个 Rust 测试 job 顺序使用原生 runner，保持各自 `CARGO_BUILD_JOBS=2`、nextest逐项执行以及原有业务断言与重试策略；此调度调整不修改长期runner资源配置。
 
 | VM 路径 | 容器内路径 / 用途 |
 |---|---|
@@ -13,7 +13,6 @@ runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 run
 | `/srv/tidemq/container-runner/work` | `/srv/tidemq/work`，独立 checkout，保持两边源码绝对路径相同 |
 | `/srv/tidemq/container-runner/target` | `/srv/tidemq/cargo-target`，独立编译、profile 和临时报告目录 |
 | `/srv/tidemq/container-runner/tmp` | `/srv/tidemq/tmp`，独立测试临时文件 |
-| `/srv/tidemq/maintenance/coverage-handoff` | `/srv/tidemq/maintenance/coverage-handoff`，与原生 runner 共享的受限 coverage bundle 目录 |
 | `/srv/tidemq/rust/cargo` | `/opt/tidemq-rust/cargo`，共享下载缓存及 Cargo 的全局缓存数据库/锁；其中 bin 只读 |
 | `/srv/tidemq/rust/rustup` | `/opt/tidemq-rust/rustup:ro`，固定 Rust 1.100.0 工具链 |
 | 原生 runner 的 bin / externals、固定 nextest / llvm-cov | 只读工具，不包含原生 runner 的注册状态 |
@@ -74,7 +73,7 @@ lab_ssh tidemq-runner sudo systemctl show actions.runner.bitcapybara-tidemq.tide
 lab_ssh tidemq-runner sudo systemctl start tidemq-runner-maintenance.service
 ```
 
-GitHub 的 Linux Validate 使用该容器 runner，Faults 和 Coverage 使用原生 `tidemq-dev`，三条 Validate/Faults/macOS 路径可以同时运行。Linux Validate 的五处 nextest 调用使用本目录已部署镜像的 immutable ID `sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b`，固定8GiB/4 CPU。公共 Rust/nextest/Node 工具只读挂载，source/target/TMPDIR 和 profile 路径保持原绝对值，不挂载 Docker socket、Kubernetes 配置或实验室密钥。native lane 生成的 bundle 写入共享 coverage handoff 目录，由原生 Coverage job 恢复。正常/TERM 精确删除自己的 ID，SIGKILL 遗留由更新后的原生维护 bundle 按 label/name/UID 回收；长期容器规格、生产 quota 和真实容器限额负测继续保留。
+GitHub 的 Linux Validate、Faults 和 Coverage 当前均指定 `tidemq-dev`，由单个现有 executor 顺序执行；macOS 继续使用 hosted runner。Linux 全部五处 nextest 调用先在原生账户预编译，再用本目录已部署镜像的 immutable ID `sha256:b4db0d39a71b7e82611305160c66859b69bb4f8aaf64dec541b82e8aed12672b` 创建一次性测试容器，固定6GiB/4 CPU，与编译/Runner 分开计账；不使用长期容器的注册入口、state 或 HOME。公共 Rust/nextest/Node 工具只读挂载，source/target/TMPDIR 和 profile 路径保持原绝对值，不挂载 Docker socket 或实验室密钥。正常/TERM 精确删除自己的 ID，SIGKILL 遗留由更新后的原生维护 bundle 按 label/name/UID 回收；长期容器规格、生产 quota 和真实容器限额负测继续保留。
 
 该变更不要求重新 build/start 本目录镜像，但必须在空闲且独立 review 后更新原生维护 bundle。Coverage 等待两个测试 job 完成，从同一原生 runner 的数据盘读取两份输入，校验提交、run、attempt、工具和工作区路径。它合并已有二进制和 profile 并比较基线。报告完成后清理本地输入，最终覆盖率和 VM 报告保留 30 天。完整流程和当前端到端缺口见 [测试指南](../../../docs/testing.zh-CN.md)。
 
