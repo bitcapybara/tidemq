@@ -18,6 +18,9 @@ function fixture(t) {
     const build = path.join(target, 'debug', 'build', 'tidemq-protocol-' + '1'.repeat(16));
     fs.mkdirSync(build, {recursive: true});
     fs.writeFileSync(path.join(build, 'build-script-build'), Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from('build-' + lane)]), {mode: 0o755});
+    const v2Output = path.join(target, 'debug', 'build', 'tidemq', '2'.repeat(16), 'out');
+    fs.mkdirSync(v2Output, {recursive: true});
+    fs.writeFileSync(path.join(v2Output, 'tidemq'), Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from('v2-' + lane)]), {mode: 0o755});
     fs.writeFileSync(path.join(target, lane + '.profraw'), lane);
     for (const stage of lane === 'native' ? ['unit', 'sdk-default-unit', 'integration'] : ['runtime-faults', 'external-services']) {
       fs.writeFileSync(path.join(reports, stage + '-junit.xml'), '<testsuites/>');
@@ -34,10 +37,12 @@ test('parallel coverage retains both feature objects, all profiles and every tes
   restoreBundles(f.bundles, f.target, f.reports, f.identity);
   assert.equal(fs.readdirSync(path.join(f.target, 'debug', 'deps')).length, 2);
   for (const file of fs.readdirSync(path.join(f.target, 'debug', 'deps'))) assert.match(file, /^tidemq-[a-f0-9]{16}$/);
-  for (const file of fs.readdirSync(path.join(f.target, 'debug', 'build'))) {
+  for (const file of fs.readdirSync(path.join(f.target, 'debug', 'build')).filter(file => file.startsWith('tidemq-protocol-'))) {
     assert.match(file, /^tidemq-protocol-[a-f0-9]{16}$/);
     assert.ok(fs.existsSync(path.join(f.target, 'debug', 'build', file, 'build-script-build')));
   }
+  assert.ok(fs.existsSync(path.join(f.target, 'debug', 'build', 'tidemq', '2'.repeat(16), 'fingerprint')));
+  assert.ok(fs.existsSync(path.join(f.target, 'debug', 'build', 'tidemq', '2'.repeat(16), 'out', 'tidemq')));
   assert.deepEqual(fs.readdirSync(f.target).filter(file => file.endsWith('.profraw')).sort(), ['lab.profraw', 'native.profraw']);
   assert.equal(fs.readdirSync(f.reports).filter(file => file.endsWith('-junit.xml')).length, 5);
   assert.ok(fs.existsSync(path.join(f.reports, 'api-coverage.json')));
