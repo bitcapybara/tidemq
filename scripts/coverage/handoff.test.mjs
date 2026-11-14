@@ -17,7 +17,7 @@ function pack(lane) {
   return directory => fs.writeFileSync(path.join(directory, 'manifest.json'), lane);
 }
 
-test('coverage handoff publishes complete lanes and cleans only the matching attempt', t => {
+test('coverage handoff publishes complete lanes and cleans all attempts for the run', t => {
   const root = fixture(t);
   const retry = {...env, GITHUB_RUN_ATTEMPT: '2'};
   publishCoverage(root, env, 'native', pack('native'));
@@ -32,12 +32,13 @@ test('coverage handoff publishes complete lanes and cleans only the matching att
   assert.deepEqual(inputs.map(input => fs.readFileSync(path.join(input, 'manifest.json'), 'utf8')), ['native', 'lab']);
   assert.deepEqual(fs.readdirSync(path.dirname(inputs[0])).sort(), ['lab', 'native']);
   assert.throws(() => publishCoverage(root, env, 'lab', pack('overwrite')), /already published/);
-  assert.throws(() => coverageInputs(root, retry), /inputs missing/);
   publishCoverage(root, retry, 'native', pack('retry'));
+  const retryInputs = coverageInputs(root, retry);
+  assert.deepEqual(retryInputs.map(input => fs.readFileSync(path.join(input, 'manifest.json'), 'utf8')), ['retry', 'lab']);
   removeCoverageInputs(root, env);
   removeCoverageInputs(root, env);
-  assert.equal(fs.readdirSync(root).length, 1);
-  assert.throws(() => coverageInputs(root, retry), /lane missing: lab/);
+  assert.equal(fs.readdirSync(root).length, 0);
+  assert.throws(() => coverageInputs(root, retry), /inputs missing/);
 });
 
 test('coverage handoff rejects redirected stores and prunes only expired owned scopes', t => {

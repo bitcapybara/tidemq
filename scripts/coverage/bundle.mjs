@@ -9,6 +9,25 @@ import {coverageInputs, coverageStore, publishCoverage, removeCoverageInputs} fr
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = (file, value) => fs.writeFileSync(file, JSON.stringify(value, null, 2) + '\n', {mode: 0o600});
 const stages = {native: ['unit', 'sdk-default-unit', 'integration'], lab: ['runtime-faults', 'external-services']};
+const coverageByteBudget = 16 * 1024 * 1024 * 1024;
+
+function countCoverageEntry(counted, entry) {
+  let hashes = counted.get(entry.file);
+  if (!hashes) {
+    hashes = new Set();
+    counted.set(entry.file, hashes);
+  }
+  if (hashes.has(entry.sha256)) return 0;
+  hashes.add(entry.sha256);
+  return entry.bytes;
+}
+
+export function coverageByteTotal(entries) {
+  const counted = new Map();
+  let total = 0;
+  for (const entry of entries) total += countCoverageEntry(counted, entry);
+  return total;
+}
 
 function alternateObject(file, sha256) {
   const parsed = path.parse(file), suffix = sha256.slice(0, 16);
@@ -75,11 +94,15 @@ export function packBundle(target, reports, output, identity) {
 export function restoreBundles(bundles, target, reports, expected) {
   const manifests = bundles.map(bundle => JSON.parse(boundedFile(bundle, 'manifest.json', 4 * 1024 * 1024)));
   assert.deepEqual(manifests.map(value => value.lane).sort(), ['lab', 'native'], 'Both coverage lanes are required exactly once');
+  const expectedAttempt = BigInt(expected.run_attempt);
+  const countedEntries = new Map();
   let total = 0;
   for (let index = 0; index < bundles.length; index++) {
     const value = manifests[index];
     assert.equal(value.schema_version, 1, 'Unsupported coverage bundle');
-    for (const key of ['source_commit', 'run_id', 'run_attempt', 'workspace', 'toolchain']) assert.deepEqual(value[key], expected[key], 'Coverage bundle identity differs: ' + key);
+    for (const key of ['source_commit', 'run_id', 'workspace', 'toolchain']) assert.deepEqual(value[key], expected[key], 'Coverage bundle identity differs: ' + key);
+    assert.match(value.run_attempt ?? '', /^[0-9]+$/, 'Coverage bundle identity differs: run_attempt');
+    assert.ok(BigInt(value.run_attempt) <= expectedAttempt, 'Coverage bundle run_attempt is newer than expected');
     assert.ok(value.entries.length > 0 && value.entries.length <= 10000, 'Invalid bundle entry count');
     const names = new Set();
     for (const entry of value.entries) {
@@ -88,8 +111,8 @@ export function restoreBundles(bundles, target, reports, expected) {
       const bytes = boundedFile(bundles[index], entry.file);
       assert.equal(bytes.length, entry.bytes, 'Bundle file size changed');
       assert.equal(hash(bytes), entry.sha256, 'Bundle file digest changed');
-      total += bytes.length;
-      assert.ok(total <= 8 * 1024 * 1024 * 1024, 'Coverage bundles exceed their byte budget');
+      total += countCoverageEntry(countedEntries, {file: entry.file, sha256: entry.sha256, bytes: bytes.length});
+      assert.ok(total <= coverageByteBudget, `Coverage bundles exceed their byte budget: ${total} > ${coverageByteBudget}`);
     }
   }
   assert.ok(!fs.existsSync(target) || fs.readdirSync(target).length === 0, 'Coverage merge target must be empty');

@@ -258,7 +258,7 @@ jobs:
         if: always()
         with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
       - name: Remove local coverage inputs
-        if: always()
+        if: success()
         run: node scripts/coverage/bundle.mjs clean
 
   rust:
