@@ -329,7 +329,7 @@ fn split_credit(credit: &mut Credit, size: u32) -> Result<Credit> {
     })
 }
 
-fn admit(core: &Arc<Core>, mut message: Message, mut credit: Credit) -> Result<PendingSend> {
+fn admit(core: &Arc<Core>, message: Message, mut credit: Credit) -> Result<PendingSend> {
     if core.stop.is_cancelled() {
         return Err(Error::Closed);
     }
@@ -371,22 +371,6 @@ fn admit(core: &Arc<Core>, mut message: Message, mut credit: Credit) -> Result<P
         .ok_or(Error::ResponseMismatch {
             reason: "topic layout omitted the routing hash".into(),
         })?;
-    message.wire.key = message
-        .wire
-        .key
-        .map(|key| bytes::Bytes::copy_from_slice(&key));
-    message.wire.payload = bytes::Bytes::copy_from_slice(&message.wire.payload);
-    message.wire.properties = message
-        .wire
-        .properties
-        .into_iter()
-        .map(|(name, value)| {
-            (
-                name.as_str().to_owned(),
-                bytes::Bytes::copy_from_slice(&value),
-            )
-        })
-        .collect();
     let request = public::Publish {
         topic_id: bytes(core.topic_id),
         shard_id: target.shard_id.clone(),
