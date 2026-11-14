@@ -56,7 +56,7 @@ test('both platforms run normal validation and Linux shares the native executor 
   assert.match(faults, /bundle\.mjs pack lab\n/u);
   const coverage = job('coverage');
   assert.doesNotMatch(coverage, /download-artifact/u);
-  assert.match(coverage, /name: coverage-report[^\n]+\n\s+- name: Remove local coverage inputs\n\s+if: always\(\)\n\s+run: node scripts\/coverage\/bundle\.mjs clean/u);
+  assert.match(coverage, /name: coverage-report[^\n]+\n\s+- name: Remove local coverage inputs\n\s+if: success\(\)\n\s+run: node scripts\/coverage\/bundle\.mjs clean/u);
 });
 
 test('every trusted Linux nextest lane enables the same immutable isolated executor', () => {

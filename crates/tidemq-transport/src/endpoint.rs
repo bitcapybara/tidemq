@@ -343,18 +343,18 @@ impl Server {
                     .build()
                     .map_err(|source| setup("build server TLS", source))?,
             )
-            .map_err(|source| setup("configure server TLS", source))?
+            .map_err(|source| match source {})?
             .with_io(provider)
-            .map_err(|source| setup("bind server socket", source))?
+            .map_err(|source| match source {})?
             .with_limits(config.limits()?)
-            .map_err(|source| setup("configure server limits", source))?
+            .map_err(|source| match source {})?
             .with_endpoint_limits(EndpointLimits {
                 connections: config.max_connections,
                 handshakes: config.max_handshakes,
             })
-            .map_err(|source| setup("configure endpoint admission", source))?
+            .map_err(|source| match source {})?
             .with_event(EvidenceSubscriber(metrics.clone()))
-            .map_err(|source| setup("configure TLS evidence", source))?
+            .map_err(|source| match source {})?
             .start()
             .map_err(|source| setup("start server", source))?;
         let address = endpoint.local_addr().map_err(|source| Error::Io {
@@ -507,13 +507,13 @@ impl Client {
                     .build()
                     .map_err(|source| setup("build client TLS", source))?,
             )
-            .map_err(|source| setup("configure client TLS", source))?
+            .map_err(|source| match source {})?
             .with_io(provider)
-            .map_err(|source| setup("bind client socket", source))?
+            .map_err(|source| match source {})?
             .with_limits(config.limits()?)
-            .map_err(|source| setup("configure client limits", source))?
+            .map_err(|source| match source {})?
             .with_event(EvidenceSubscriber(metrics.clone()))
-            .map_err(|source| setup("configure client evidence", source))?
+            .map_err(|source| match source {})?
             .start()
             .map_err(|source| setup("start client", source))?;
         Ok(Self {
