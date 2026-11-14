@@ -6,7 +6,7 @@ import test from 'node:test';
 const workflow = fs.readFileSync(new URL('../../.github/workflows/rust.yml', import.meta.url), 'utf8');
 const gate = workflow.match(/node -e '([^'\n]+)'/)?.[1];
 assert(gate, 'The workflow must contain its final executable gate');
-const jobs = ['validate', 'faults', 'coverage', 'console', 'console-browser', 'console-browser-live', 'documentation'];
+const jobs = ['validate-linux', 'validate-macos', 'faults', 'coverage', 'console', 'console-browser', 'console-browser-live', 'documentation'];
 const read = relative => fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
 const mockPlaywright = read('../../console/web/playwright.config.ts');
 const livePlaywright = read('../../console/web/playwright.live.config.ts');
@@ -30,7 +30,7 @@ test('the main gate requires coverage, real backend browsers and every trusted R
 });
 
 test('forks require Console web, mock browsers and documentation without accessing shared services', () => {
-  const skipped = { validate: 'skipped', faults: 'skipped', coverage: 'skipped', 'console-browser-live': 'skipped' };
+  const skipped = { 'validate-linux': 'skipped', 'validate-macos': 'skipped', faults: 'skipped', coverage: 'skipped', 'console-browser-live': 'skipped' };
   assert.equal(evaluate(true, skipped), 0);
   for (const job of ['console', 'console-browser', 'documentation']) {
     assert.notEqual(evaluate(true, { ...skipped, [job]: 'failure' }), 0, job);
@@ -39,15 +39,20 @@ test('forks require Console web, mock browsers and documentation without accessi
 
 test('both platforms run normal validation and Linux shares the native executor with faults and coverage', () => {
   const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
-  const validate = job('validate');
-  const linuxRunner = validate.match(/- os: Linux\n\s+runner: (\[[^\n]+\])/u)?.[1];
-  assert(linuxRunner, 'Linux validation must retain its runner matrix entry');
+  const linux = job('validate-linux');
+  const macos = job('validate-macos');
+  const linuxRunner = linux.match(/runs-on: (\[[^\n]+\])/u)?.[1];
+  assert(linuxRunner, 'Linux validation must retain its native runner');
+  assert.match(macos, /runs-on: macos-latest/u);
   for (const name of ['faults', 'coverage']) {
     const runner = job(name).match(/runs-on: (\[[^\n]+\])/u)?.[1];
     assert.equal(linuxRunner, runner, `${name} must share the native executor with validation`);
   }
-  assert.match(validate, /bash scripts\/ci\/with-cargo-cache\.sh bash scripts\/ci\/native\.sh/u);
-  assert.match(validate, /run: \|\n\s+bash scripts\/ci\/validate\.sh\n\s+bash scripts\/ci\/integration\.sh normal\n\s+if: runner\.os == 'macOS'/u);
+  assert.match(linux, /bash scripts\/ci\/with-cargo-cache\.sh bash scripts\/ci\/native\.sh/u);
+  assert.match(macos, /run: \|\n\s+bash scripts\/ci\/validate\.sh\n\s+bash scripts\/ci\/integration\.sh normal/u);
+  assert.match(job('console-browser-live'), /needs: \[validate-linux\]/u);
+  assert.match(job('coverage'), /needs: \[validate-linux, faults\]/u);
+  assert.match(job('rust'), /needs: \[validate-linux, validate-macos, faults, coverage, console, console-browser, console-browser-live, documentation\]/u);
   const native = fs.readFileSync(new URL('./native.sh', import.meta.url), 'utf8');
   assert.match(native, /bash scripts\/ci\/validate\.sh\nbash scripts\/ci\/integration\.sh normal/u);
   assert.match(native, /bundle\.mjs pack native\n/u);

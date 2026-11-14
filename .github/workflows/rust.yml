@@ -109,43 +109,22 @@ jobs:
             console/web/test-results
           retention-days: 14
 
-  validate:
-    name: Validate (${{ matrix.os }})
+  validate-linux:
+    name: Validate (Linux)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: Linux
-            runner: [self-hosted, Linux, X64, tidemq-dev]
-          - os: macOS
-            runner: macos-latest
-    runs-on: ${{ matrix.runner }}
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
-      - uses: dtolnay/rust-toolchain@1.100.0
-        if: runner.os == 'macOS'
-        with: {components: 'rustfmt, clippy'}
-      - uses: taiki-e/install-action@v2
-        if: runner.os == 'macOS'
-        with: {tool: 'nextest@0.9.148'}
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/native.sh
-        if: runner.os == 'Linux'
         env:
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
           TIDEMQ_NEXTEST_IMAGE: sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc
-      - run: |
-          bash scripts/ci/validate.sh
-          bash scripts/ci/integration.sh normal
-        if: runner.os == 'macOS'
-        env:
-          TIDEMQ_REQUIRE_EXTERNAL: '0'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: tests-${{ matrix.os }}
+          name: tests-Linux
           path: |
             target/ci
             !target/ci/coverage
@@ -153,13 +132,41 @@ jobs:
             !target/ci/console-server
           retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: success() && runner.os == 'Linux'
+        if: success()
         with: {name: console-server-linux, path: target/ci/console-server, retention-days: 3}
+
+  validate-macos:
+    name: Validate (macOS)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with: {persist-credentials: false}
+      - uses: dtolnay/rust-toolchain@1.100.0
+        with: {components: 'rustfmt, clippy'}
+      - uses: taiki-e/install-action@v2
+        with: {tool: 'nextest@0.9.148'}
+      - run: |
+          bash scripts/ci/validate.sh
+          bash scripts/ci/integration.sh normal
+        env:
+          TIDEMQ_REQUIRE_EXTERNAL: '0'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: tests-macOS
+          path: |
+            target/ci
+            !target/ci/coverage
+            !target/ci/lab-report
+            !target/ci/console-server
+          retention-days: 14
 
   console-browser-live:
     name: Console native HTTPS (${{ matrix.browser }}, ${{ matrix.topology }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [validate]
+    needs: [validate-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
@@ -234,7 +241,7 @@ jobs:
   coverage:
     name: Coverage report gate (no test rerun)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: [validate, faults]
+    needs: [validate-linux, faults]
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 45
     steps:
@@ -264,12 +271,12 @@ jobs:
   rust:
     name: Rust gate
     if: always()
-    needs: [validate, faults, coverage, console, console-browser, console-browser-live, documentation]
+    needs: [validate-linux, validate-macos, faults, coverage, console, console-browser, console-browser-live, documentation]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - run: >-
-          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["console","console-browser","documentation"]:["validate","faults","coverage","console","console-browser","console-browser-live","documentation"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
+          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["console","console-browser","documentation"]:["validate-linux","validate-macos","faults","coverage","console","console-browser","console-browser-live","documentation"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
         env:
           RESULTS: ${{ toJSON(needs) }}
           FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

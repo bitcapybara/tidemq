@@ -119,10 +119,11 @@ export function restoreBundles(bundles, target, reports, expected) {
   const restored = new Set();
   for (let index = 0; index < bundles.length; index++) for (const entry of manifests[index].entries) {
     const bytes = boundedFile(bundles[index], entry.file);
-    let destination;
+    let destination, relative;
     if (entry.kind === 'object') {
       assert.ok(entry.file.startsWith('objects/debug/'), 'Object is outside the debug tree');
-      destination = path.join(target, entry.file.slice('objects/'.length));
+      relative = entry.file.slice('objects/'.length);
+      destination = path.join(target, relative);
       if (fs.existsSync(destination) && hash(fs.readFileSync(destination)) !== entry.sha256) {
         // Different feature builds may have the same executable name; retain both mappings.
         destination = alternateObject(destination, entry.sha256);
@@ -136,6 +137,10 @@ export function restoreBundles(bundles, target, reports, expected) {
     }
     if (fs.existsSync(destination)) assert.equal(hash(fs.readFileSync(destination)), entry.sha256, 'Conflicting coverage inputs');
     else { fs.mkdirSync(path.dirname(destination), {recursive: true}); fs.writeFileSync(destination, bytes, {mode: entry.kind === 'object' ? 0o755 : 0o600, flag: 'wx'}); }
+    if (entry.kind === 'object') {
+      const buildOutput = relative.match(/^(debug\/build\/[^/]+\/[^/]+)\/out\//);
+      if (buildOutput) fs.mkdirSync(path.join(target, buildOutput[1], 'fingerprint'), {recursive: true});
+    }
     restored.add(destination);
   }
   for (const stage of Object.values(stages).flat()) assert.ok(restored.has(path.join(reports, stage + '-junit.xml')), 'A test stage was omitted');
