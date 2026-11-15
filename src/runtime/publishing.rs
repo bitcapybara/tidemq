@@ -340,6 +340,11 @@ impl Service {
         let result = self
             .publish_with_quota_batch(&route, (shard, birth), permit, publishes, deadline)
             .await?;
+        #[cfg(feature = "test-hooks")]
+        let pause_sequences = identities
+            .iter()
+            .map(|(sequence, _)| *sequence)
+            .collect::<Vec<_>>();
         use crate::broker::AttemptOutcome;
         let (items, outcome) = match result {
             DataResponse::PublishedBatch(receipts) => {
@@ -368,6 +373,10 @@ impl Service {
                 if committed > 0 {
                     self.producer_metrics
                         .committed_batch(committed as u64, committed_bytes);
+                }
+                #[cfg(feature = "test-hooks")]
+                for sequence in pause_sequences {
+                    super::test_hooks::pause_publish(route.partition, sequence, deadline).await;
                 }
                 (items, AttemptOutcome::Committed)
             }

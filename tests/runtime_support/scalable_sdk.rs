@@ -364,8 +364,16 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
     .unwrap();
     let payload = vec![7; 96 * 1024];
     let retained =
-        tidemq_protocol::topic::delivery_bytes(b"large", &payload, &BTreeMap::new()).unwrap() * 2
-            + 8192;
+        tidemq_protocol::topic::delivery_bytes(b"small", b"known-small", &BTreeMap::new())
+            .unwrap()
+            .saturating_mul(2)
+            .saturating_add(4096)
+            .saturating_add(
+                tidemq_protocol::topic::delivery_bytes(b"large", &payload, &BTreeMap::new())
+                    .unwrap()
+                    * 2
+                    + 4096,
+            );
     let context = tidemq_sdk::RequestContext::with_timeout(Duration::from_secs(10)).unwrap();
     let waiting_context = context.clone();
     let sending = producer.clone();
@@ -385,7 +393,7 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
         }
         assert!(
             Instant::now() < until,
-            "The first send must settle before cancelling its batch"
+            "The batch must settle before cancelling its request"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
@@ -394,7 +402,7 @@ async fn cancelled_partial_batch_keeps_the_known_receipt_and_original_pending_ha
         "/metrics",
     )
     .await;
-    assert!(metrics.contains("tidemq_producer_new_messages_total 2"));
+    assert!(metrics.contains("tidemq_producer_new_messages_total 3"));
     context.cancellation_token().cancel();
     let error = waiting.await.unwrap().unwrap_err();
     assert!(error.outcome_unknown());
