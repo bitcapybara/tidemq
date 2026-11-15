@@ -14,6 +14,11 @@ struct BatchLink {
 type BatchMember = (usize, PendingSend);
 type BatchGroup = (Bytes, Bytes, u64, Bytes, u32, Vec<BatchMember>);
 
+enum BatchReroute {
+    Retry,
+    Split,
+}
+
 struct BatchShared {
     core: Weak<Core>,
     operation: Id,
@@ -23,6 +28,7 @@ struct BatchShared {
     inflight: AtomicBool,
     complete: AtomicBool,
     uncertain: AtomicBool,
+    members: Mutex<Vec<Weak<Work>>>,
     changed: Notify,
 }
 
@@ -578,6 +584,14 @@ fn install_batch_links(core: &Core, pending: &[PendingSend]) -> Result<()> {
                 inflight: AtomicBool::new(false),
                 complete: AtomicBool::new(false),
                 uncertain: AtomicBool::new(false),
+                members: Mutex::new(
+                    members
+                        .iter()
+                        .skip(offset)
+                        .take(end.saturating_sub(offset))
+                        .map(|(_, send)| Arc::downgrade(&send.work))
+                        .collect(),
+                ),
                 changed: Notify::new(),
             });
             for (index, (_, send)) in members
@@ -781,20 +795,25 @@ async fn drive_batch_request(
             if core.stop.is_cancelled() {
                 return Err((Error::Closed, true));
             }
-            if let Err(source) = reroute_batch(core, shared, &request, deadline).await {
-                let known = !source.outcome_unknown();
-                return Err(if known {
-                    (
-                        Error::SendNotSubmitted {
-                            source: Arc::new(source),
-                        },
-                        true,
-                    )
-                } else {
-                    (source, false)
-                });
+            match reroute_batch(core, shared, &request, deadline).await {
+                Ok(BatchReroute::Retry) => continue,
+                Ok(BatchReroute::Split) => {
+                    return drive_split_batch(core, shared, deadline).await;
+                }
+                Err(source) => {
+                    let known = !source.outcome_unknown();
+                    return Err(if known {
+                        (
+                            Error::SendNotSubmitted {
+                                source: Arc::new(source),
+                            },
+                            true,
+                        )
+                    } else {
+                        (source, false)
+                    });
+                }
             }
-            continue;
         }
         let shard = Id::from_slice(&request.shard_id).map_err(|source| (source.into(), false))?;
         let mut receipts = Vec::with_capacity(result.items.len());
@@ -844,6 +863,43 @@ async fn drive_batch_request(
         }
         return Ok(receipts);
     }
+}
+
+async fn drive_split_batch(
+    core: &Arc<Core>,
+    shared: &BatchShared,
+    deadline: Instant,
+) -> std::result::Result<Vec<SendReceipt>, (Error, bool)> {
+    let members = shared
+        .members
+        .lock()
+        .map_err(|_| (Error::Closed, false))?
+        .clone();
+    let mut receipts = Vec::with_capacity(members.len());
+    for member in members {
+        let work = member.upgrade().ok_or((Error::Closed, false))?;
+        let original = work
+            .request
+            .lock()
+            .map_err(|_| (Error::Closed, false))?
+            .clone();
+        *work.batch.lock().map_err(|_| (Error::Closed, false))? = None;
+        if let Err(source) = reroute(core, &work, &original, deadline).await {
+            let known = !source.outcome_unknown();
+            return Err(if known {
+                (
+                    Error::SendNotSubmitted {
+                        source: Arc::new(source),
+                    },
+                    true,
+                )
+            } else {
+                (source, false)
+            });
+        }
+        receipts.push(drive_requests(core, &work, deadline).await?);
+    }
+    Ok(receipts)
 }
 
 async fn drive(
@@ -1066,7 +1122,7 @@ async fn reroute_batch(
     shared: &BatchShared,
     original: &public::PublishBatch,
     deadline: Instant,
-) -> Result<()> {
+) -> Result<BatchReroute> {
     let _refresh = tokio::time::timeout_at(deadline, core.refresh.lock())
         .await
         .map_err(|_| Error::Deadline)?;
@@ -1088,12 +1144,7 @@ async fn reroute_batch(
             if target.as_ref().is_some_and(|current: &public::ShardRoute| {
                 current.shard_id != item_target.shard_id
             }) {
-                return Err(Error::RequestUnknown {
-                    source: Box::new(Error::ResponseMismatch {
-                        reason: "publish batch items route to different shards after refresh"
-                            .into(),
-                    }),
-                });
+                return Ok(BatchReroute::Split);
             }
             target = Some(item_target);
         }
@@ -1107,7 +1158,7 @@ async fn reroute_batch(
             let mut request = shared.request.lock().map_err(|_| Error::Closed)?;
             request.shard_id = target.shard_id;
             request.partition_id = target.birth_partition;
-            return Ok(());
+            return Ok(BatchReroute::Retry);
         }
         let context = crate::RequestContext::with_deadline(deadline);
         match context
