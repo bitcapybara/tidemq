@@ -106,15 +106,6 @@ pub async fn traffic(
             return Err(error);
         }
     }
-    let producer_elapsed = {
-        let ledger = lock(ledger)?;
-        ledger
-            .entries
-            .iter()
-            .filter_map(|entry| entry.committed_ns)
-            .max()
-            .context("Missing last durable publish receipt timestamp")?
-    };
     super::write(args, "producer-finished.json", b"{}\n".to_vec()).await?;
     let consumer = client
         .new_queue_consumer(topic, "perf")
@@ -154,9 +145,17 @@ pub async fn traffic(
             return Err(error);
         }
     }
-    let ledger = lock(ledger)?;
-    ledger.complete()?;
-    Ok((producer_elapsed, consumer))
+    let acknowledged_elapsed = {
+        let ledger = lock(ledger)?;
+        ledger.complete()?;
+        ledger
+            .entries
+            .iter()
+            .filter_map(|entry| entry.acknowledged_ns)
+            .max()
+            .context("Missing last durable ACK timestamp")?
+    };
+    Ok((acknowledged_elapsed, consumer))
 }
 
 fn spawn_consumer(

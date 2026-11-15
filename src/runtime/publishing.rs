@@ -259,10 +259,12 @@ impl Service {
         let request: public::PublishBatch =
             decode_payload(frame.payload.clone(), &self.config.protocol)
                 .map_err(|source| Error::operation("decode logical publish batch", source))?;
-        if request.items.is_empty() || request.items.len() > 1_024 {
-            return Err(Error::invalid(
-                "Logical publish batch size is outside 1..=1024",
-            ));
+        let max_batch_messages = usize::try_from(self.config.protocol.max_batch_messages)
+            .map_err(|_| Error::invalid("Logical publish batch limit does not fit the platform"))?;
+        if request.items.is_empty() || request.items.len() > max_batch_messages {
+            return Err(Error::invalid(format!(
+                "Logical publish batch size is outside 1..={max_batch_messages}"
+            )));
         }
         let shard = wire::id(&request.shard_id)?;
         let producer = wire::id(&request.producer_id)?;
