@@ -20,7 +20,6 @@ pub(super) struct Pools {
     pub shared: Mutex<Option<Arc<Protected>>>,
     pub mode: ConsumerMode,
     pub minimum: u32,
-    ordinary_read_batch_limit: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,13 +88,7 @@ impl Pools {
                 ConsumerMode::Serial
             },
             minimum,
-            ordinary_read_batch_limit: 32,
         })
-    }
-
-    pub fn with_read_batch_limit(mut self, limit: u32) -> Self {
-        self.ordinary_read_batch_limit = limit.clamp(1, 256);
-        self
     }
 
     pub fn reserve(
@@ -120,16 +113,9 @@ impl Pools {
         let available = memory
             .available_permits()
             .min(client_memory.available_permits());
-        let fair_bytes = if pool == Pool::Ordinary && self.ordinary_read_batch_limit > 32 {
-            available.min(
-                (self.minimum as usize)
-                    .saturating_add((self.ordinary_read_batch_limit as usize).saturating_mul(256)),
-            )
-        } else {
-            (available / contenders.max(1))
-                .max(self.minimum as usize)
-                .min(available)
-        };
+        let fair_bytes = (available / contenders.max(1))
+            .max(self.minimum as usize)
+            .min(available);
         let budget = fair_bytes.min(
             client
                 .inner
@@ -140,11 +126,7 @@ impl Pools {
         );
         let messages = slots
             .available_permits()
-            .min(if pool == Pool::Protected {
-                1
-            } else {
-                self.ordinary_read_batch_limit as usize
-            })
+            .min(if pool == Pool::Protected { 1 } else { 32 })
             .min(budget.saturating_sub(self.minimum.saturating_sub(256) as usize) / 256);
         if budget < self.minimum as usize || messages == 0 {
             return Ok(None);

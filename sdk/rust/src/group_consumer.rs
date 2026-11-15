@@ -285,8 +285,7 @@ impl Builder {
 
     async fn build_until(self, deadline: Instant) -> Result<Arc<Owner>> {
         let resource_memory = self.client.reserve_resource(deadline).await?;
-        let credit = credit::Pools::new(&self.client, self.messages, self.bytes)?
-            .with_read_batch_limit(self.messages);
+        let credit = credit::Pools::new(&self.client, self.messages, self.bytes)?;
         if credit.mode == ConsumerMode::Isolated {
             credit.native.register(&self.client, deadline).await?;
         }
