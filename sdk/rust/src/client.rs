@@ -810,6 +810,7 @@ impl Client {
                                 kind,
                                 FrameKind::PublisherControl
                                     | FrameKind::Publish
+                                    | FrameKind::PublishBatch
                                     | FrameKind::RetirePublishes
                                     | FrameKind::ConsumerControl
                                     | FrameKind::GroupRead

@@ -477,6 +477,7 @@ async fn scoped_tokens_are_checked_on_each_connection_and_frame() {
         Id::new_v7().unwrap(),
         &LogicalTopic {
             name: "forbidden".into(),
+            partition_count: 0,
         },
     );
     lane.sender.send(&request, deadline()).await.unwrap();
@@ -1098,6 +1099,7 @@ async fn ack_admission_exhaustion_preserves_preestablished_control_streams() {
         Id::new_v7().unwrap(),
         &LogicalTopic {
             name: "control-progress".into(),
+            partition_count: 0,
         },
     );
     core.sender.send(&request, deadline()).await.unwrap();
@@ -1176,6 +1178,7 @@ async fn slow_bulk_connection_does_not_block_control_progress() {
         Id::new_v7().unwrap(),
         &LogicalTopic {
             name: "bulk-isolation".into(),
+            partition_count: 0,
         },
     );
     outgoing.sender.send(&request, deadline()).await.unwrap();
@@ -1327,6 +1330,7 @@ async fn reset_core_lane_does_not_block_its_sibling() {
         Id::new_v7().unwrap(),
         &LogicalTopic {
             name: "sibling-progress".into(),
+            partition_count: 0,
         },
     );
     live.sender.send(&request, deadline()).await.unwrap();
@@ -1579,6 +1583,7 @@ async fn saturated_normal_control_and_data_preserve_core_frame_memory() {
         Id::new_v7().unwrap(),
         &LogicalTopic {
             name: "reserved-core-memory".into(),
+            partition_count: 0,
         },
     );
     lane.sender.send(&request, deadline()).await.unwrap();

@@ -17,7 +17,9 @@ use anyhow::{Context, Result, ensure};
 use clap::{Parser, ValueEnum};
 use serde::Serialize;
 use tidemq_protocol::Id;
-use tidemq_sdk::{Client, Credentials, MetricsSnapshot, TlsTrust};
+use tidemq_sdk::{
+    Client, Credentials, MetricsSnapshot, PolicyUpdate, QueueConsumer, ResourceLimits, TlsTrust,
+};
 use tokio::{io::AsyncWriteExt, time::timeout};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, ValueEnum)]
@@ -50,6 +52,15 @@ struct Args {
     /// Shared original producer and Queue consumer, with this many send and ACK workers.
     #[arg(long, default_value_t = 4)]
     concurrency: usize,
+    /// Number of ordered deliveries covered by one cumulative ACK.
+    #[arg(long, default_value_t = 1)]
+    ack_batch_size: usize,
+    /// Number of same-route publishes sent in one durable batch request.
+    #[arg(long, default_value_t = 1)]
+    producer_batch_size: usize,
+    /// Number of topic partitions used by the opt-in multi-group fixture.
+    #[arg(long, default_value_t = 1)]
+    topic_partitions: u32,
     #[arg(long, default_value_t = 10)]
     idle_seconds: u64,
     #[arg(long, default_value_t = 120)]
@@ -84,6 +95,18 @@ impl Args {
             "Concurrency must be in 1..=32 and not exceed messages"
         );
         ensure!(
+            (1..=256).contains(&self.ack_batch_size),
+            "ACK batch size must be in 1..=256"
+        );
+        ensure!(
+            (1..=4096).contains(&self.producer_batch_size),
+            "Producer batch size must be in 1..=4096"
+        );
+        ensure!(
+            (1..=16).contains(&self.topic_partitions),
+            "Topic partitions must be in 1..=16"
+        );
+        ensure!(
             self.messages
                 .checked_mul(self.message_bytes)
                 .context("Payload budget overflow")?
@@ -114,6 +137,12 @@ struct Report<'a> {
     configuration: &'a Args,
     elapsed_ns: Option<u64>,
     acknowledged_messages_per_second: Option<f64>,
+    payload_bytes: Option<u64>,
+    payload_bytes_per_second: Option<f64>,
+    wire_bytes: Option<u64>,
+    wire_bytes_per_second: Option<f64>,
+    replication_bytes: Option<u64>,
+    replication_bytes_per_second: Option<f64>,
     send_commit_latency: Option<ledger::Latency>,
     produce_to_receive_latency: Option<ledger::Latency>,
     sdk_before: Option<serde_json::Value>,
@@ -155,11 +184,17 @@ async fn run(args: &Args) -> Result<()> {
     };
     let ledger = Arc::new(Mutex::new(ledger::Ledger::new(count, Id::new_v7()?)?));
     let mut report = Report {
-        schema_version: 1,
+        schema_version: 2,
         status: "failed",
         configuration: args,
         elapsed_ns: None,
         acknowledged_messages_per_second: None,
+        payload_bytes: None,
+        payload_bytes_per_second: None,
+        wire_bytes: None,
+        wire_bytes_per_second: None,
+        replication_bytes: None,
+        replication_bytes_per_second: None,
         send_commit_latency: None,
         produce_to_receive_latency: None,
         sdk_before: None,
@@ -175,16 +210,19 @@ async fn run(args: &Args) -> Result<()> {
     };
     let mut client = None;
     let result = timeout(Duration::from_secs(args.timeout_seconds), async {
-        client = Some(
-            Client::builder(
-                args.endpoint.to_string(),
-                TlsTrust::ca_file(&args.ca),
-                Credentials::token_file(&args.token_file),
-            )
-            .request_timeout(Duration::from_secs(args.request_timeout_seconds))
-            .build()
-            .await?,
-        );
+        let mut client_builder = Client::builder(
+            args.endpoint.to_string(),
+            TlsTrust::ca_file(&args.ca),
+            Credentials::token_file(&args.token_file),
+        )
+        .request_timeout(Duration::from_secs(args.request_timeout_seconds));
+        if args.producer_batch_size > 64 {
+            let pending_requests = args.producer_batch_size.saturating_mul(4).max(512);
+            client_builder = client_builder
+                .pending_requests(u32::try_from(pending_requests)?)
+                .pending_bytes(64 * 1024 * 1024);
+        }
+        client = Some(client_builder.build().await?);
         measure(
             args,
             client.as_ref().context("Client is unavailable")?,
@@ -282,18 +320,40 @@ async fn measure(
         .create_namespace(tenant, "default")
         .await
         .context("Create benchmark namespace")?;
+    let quota_update = admin
+        .set_tenant_limits(
+            tenant,
+            ResourceLimits::builder()
+                .publish_bytes_per_second(2_000_000_000)
+                .consume_bytes_per_second(2_000_000_000)
+                .build()?,
+        )
+        .await
+        .context("Raise benchmark tenant throughput limits")?;
+    ensure!(
+        matches!(quota_update, PolicyUpdate::Applied),
+        "Benchmark tenant throughput limits were superseded"
+    );
     let topic = format!("{tenant_name}/default/messages");
     admin
-        .create_topic(&topic)
+        .create_topic_with_partitions(&topic, args.topic_partitions)
         .await
         .context("Create benchmark topic")?;
-    let producer = client.new_producer(&topic).build().await?;
-    let consumer = client
-        .new_queue_consumer(&topic, "perf")
-        .prefetch_messages(256)
-        .prefetch_bytes(4 * 1024 * 1024)
+    let producer = client
+        .new_producer(&topic)
+        .max_pending_sends(u32::try_from(args.producer_batch_size.max(64))?)
+        .max_pending_bytes(u32::try_from(
+            args.producer_batch_size
+                .saturating_mul(8 * 1024)
+                .clamp(8 * 1024 * 1024, 32 * 1024 * 1024),
+        )?)
         .build()
         .await?;
+    let mut consumer = if args.case == Case::Idle {
+        Some(build_consumer(client, &topic).await?)
+    } else {
+        None
+    };
     write(
         args,
         "ready.json",
@@ -310,9 +370,23 @@ async fn measure(
         "SDK observed an Unknown outcome during setup"
     );
     let result = match args.case {
-        Case::Traffic => workload::traffic(args, &producer, &consumer, ledger).await,
-        Case::Idle => workload::idle(&consumer, args.idle_seconds).await,
+        Case::Traffic => {
+            let (elapsed, built) =
+                workload::traffic(args, client, &producer, &topic, ledger).await?;
+            consumer = Some(built);
+            Ok(elapsed)
+        }
+        Case::Idle => {
+            workload::idle(
+                consumer.as_ref().context("Idle consumer is unavailable")?,
+                args.idle_seconds,
+            )
+            .await
+        }
     };
+    let consumer = consumer
+        .as_ref()
+        .context("Benchmark consumer is unavailable")?;
     report.sdk_after = Some(metrics(client.metrics().snapshot()));
     report.unresolved_sends = producer
         .pending_sends()
@@ -341,6 +415,16 @@ async fn measure(
     Ok(())
 }
 
+async fn build_consumer(client: &Client, topic: &str) -> Result<QueueConsumer> {
+    client
+        .new_queue_consumer(topic, "perf")
+        .prefetch_messages(256)
+        .prefetch_bytes(8 * 1024 * 1024)
+        .build()
+        .await
+        .map_err(anyhow::Error::new)
+}
+
 fn summarize(ledger: &workload::SharedLedger, report: &mut Report<'_>) -> Result<()> {
     let ledger = workload::lock(ledger)?;
     ledger.complete()?;
@@ -349,6 +433,11 @@ fn summarize(ledger: &workload::SharedLedger, report: &mut Report<'_>) -> Result
         ensure!(elapsed > 0, "Measurement duration must be positive");
         report.acknowledged_messages_per_second =
             Some(ledger.entries.len() as f64 * 1_000_000_000.0 / elapsed as f64);
+        let payload_bytes = u64::try_from(ledger.entries.len())?
+            .checked_mul(u64::try_from(report.configuration.message_bytes)?)
+            .context("Payload byte count overflow")?;
+        report.payload_bytes = Some(payload_bytes);
+        report.payload_bytes_per_second = Some(bytes_per_second(payload_bytes, elapsed)?);
         let durations = |committed: bool| -> Result<Vec<u64>> {
             ledger
                 .entries
@@ -369,6 +458,11 @@ fn summarize(ledger: &workload::SharedLedger, report: &mut Report<'_>) -> Result
         report.produce_to_receive_latency = ledger::latency(durations(false)?)?;
     }
     Ok(())
+}
+
+fn bytes_per_second(bytes: u64, elapsed_ns: u64) -> Result<f64> {
+    ensure!(elapsed_ns > 0, "Measurement duration must be positive");
+    Ok(bytes as f64 * 1_000_000_000.0 / elapsed_ns as f64)
 }
 
 fn metrics(value: MetricsSnapshot) -> serde_json::Value {
@@ -443,6 +537,15 @@ mod tests {
         value.concurrency = 5;
         assert!(value.validate().is_err());
         value.concurrency = 4;
+        value.ack_batch_size = 257;
+        assert!(value.validate().is_err());
+        value.ack_batch_size = 1;
+        value.producer_batch_size = 4_097;
+        assert!(value.validate().is_err());
+        value.producer_batch_size = 1;
+        value.topic_partitions = 17;
+        assert!(value.validate().is_err());
+        value.topic_partitions = 1;
         value.timeout_seconds = 601;
         assert!(value.validate().is_err());
         value.timeout_seconds = 120;
@@ -471,6 +574,15 @@ mod tests {
         value.validate().unwrap();
         value.request_timeout_seconds = 121;
         assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn payload_throughput_reports_bytes_per_second() {
+        assert_eq!(
+            bytes_per_second(1_000_000, 1_000_000_000).unwrap(),
+            1_000_000.0
+        );
+        assert!(bytes_per_second(1, 0).is_err());
     }
 
     #[tokio::test]

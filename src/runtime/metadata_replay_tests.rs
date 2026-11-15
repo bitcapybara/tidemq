@@ -43,6 +43,7 @@ async fn replayed_logical_topic_creation_preserves_the_original_result() {
     let operation = Id::new_v7().unwrap();
     let payload = public::LogicalTopic {
         name: "test/app/replayed-topic".into(),
+        partition_count: 0,
     };
     let original = dispatch(&service, FrameKind::CreateLogicalTopic, operation, &payload)
         .await
@@ -57,6 +58,7 @@ async fn replayed_logical_topic_creation_preserves_the_original_result() {
         operation,
         &public::LogicalTopic {
             name: "test/app/changed-topic".into(),
+            partition_count: 0,
         },
     )
     .await;
@@ -134,6 +136,7 @@ async fn a_cached_rejection_cannot_become_an_applied_creation() {
     let operation = Id::new_v7().unwrap();
     let payload = public::LogicalTopic {
         name: "test/app/rejected-topic".into(),
+        partition_count: 0,
     };
     let rejected = service
         .meta_write(
@@ -187,6 +190,7 @@ async fn an_unadmitted_revision_conflict_can_retry_with_the_original_resource_id
     let operation = Id::new_v7().unwrap();
     let payload = public::LogicalTopic {
         name: "test/app/cas-retry-topic".into(),
+        partition_count: 0,
     };
     let error = service
         .meta_write(

@@ -196,6 +196,33 @@ impl Service {
                 &self.config.protocol,
             );
         }
+        if super::service::frame_kind(frame)? == FrameKind::PublishBatch {
+            let mut attempt = self.producer_metrics.begin_attempt();
+            attempt.finish(crate::broker::AttemptOutcome::Unknown);
+            let _pending = self
+                .producer_metrics
+                .begin_submission(frame.payload.len() as u64);
+            return match self
+                .publish_batch_public(access, frame, route, deadline)
+                .await
+            {
+                Ok((frame, outcome)) => {
+                    attempt.finish(outcome);
+                    Ok(frame)
+                }
+                Err(error) => {
+                    let outcome = if error.failure().outcome
+                        == i32::from(tidemq_protocol::common::Outcome::Unknown)
+                    {
+                        crate::broker::AttemptOutcome::Unknown
+                    } else {
+                        crate::broker::AttemptOutcome::Rejected
+                    };
+                    attempt.finish(outcome);
+                    Err(error)
+                }
+            };
+        }
         let mut attempt = self.producer_metrics.begin_attempt();
         attempt.finish(crate::broker::AttemptOutcome::Unknown);
         let _pending = self
@@ -218,6 +245,179 @@ impl Service {
                 Err(error)
             }
         }
+    }
+
+    #[tracing::instrument(target = "tidemq_trace", name = "producer_batch_submission", skip_all)]
+    async fn publish_batch_public(
+        &self,
+        access: &Access,
+        frame: &Frame,
+        route: Route,
+        deadline: Instant,
+    ) -> Result<(Frame, crate::broker::AttemptOutcome)> {
+        self.admit_produce()?;
+        let request: public::PublishBatch =
+            decode_payload(frame.payload.clone(), &self.config.protocol)
+                .map_err(|source| Error::operation("decode logical publish batch", source))?;
+        if request.items.is_empty() || request.items.len() > 1_024 {
+            return Err(Error::invalid(
+                "Logical publish batch size is outside 1..=1024",
+            ));
+        }
+        let shard = wire::id(&request.shard_id)?;
+        let producer = wire::id(&request.producer_id)?;
+        let permit = self
+            .publisher_permit(
+                access,
+                route.partition.topic_id,
+                producer,
+                request.registration,
+                deadline,
+            )
+            .await?;
+        let birth = self
+            .publisher_birth(shard, route.partition, deadline)
+            .await?;
+        let mut publishes = Vec::with_capacity(request.items.len());
+        let mut identities = Vec::with_capacity(request.items.len());
+        let mut item_bytes = Vec::with_capacity(request.items.len());
+        for item in request.items {
+            let digest: [u8; 32] = item
+                .digest
+                .as_ref()
+                .try_into()
+                .map_err(|_| Error::invalid("Logical message digest must contain 32 bytes"))?;
+            let message = item
+                .message
+                .ok_or_else(|| Error::invalid("Logical message is required"))?;
+            let bytes = tidemq_protocol::topic::delivery_bytes(
+                message.key.as_deref().unwrap_or_default(),
+                &message.payload,
+                &message.properties,
+            )
+            .map_err(|source| Error::operation("validate public message size", source))?;
+            if bytes > u64::from(self.config.protocol.max_message_bytes).saturating_add(256) {
+                return Err(super::data::data_rejection(
+                    crate::broker::DataRejection::Producer(
+                        crate::producer::Rejection::MessageTooLarge,
+                    ),
+                ));
+            }
+            let context = tidemq_protocol::topic::MessageMetadata {
+                key_present: message.key.is_some(),
+                routing_hash: tidemq_protocol::topic::routing_hash(
+                    message.key.as_deref(),
+                    producer,
+                    item.sequence,
+                )
+                .map_err(|source| Error::operation("compute logical routing hash", source))?,
+                properties: message.properties,
+            };
+            identities.push((item.sequence, item.digest));
+            item_bytes.push(bytes);
+            publishes.push(PublishRequest {
+                identity: SendIdentity {
+                    topic: route.partition.topic_id,
+                    producer,
+                    registration: request.registration,
+                    sequence: item.sequence,
+                },
+                digest,
+                retired_before: request.retired_before,
+                message: MessageData {
+                    key: message.key.unwrap_or_default(),
+                    body: message.payload,
+                    context: postcard::to_stdvec(&context)
+                        .map_err(|source| {
+                            Error::operation("encode stored message context", source)
+                        })?
+                        .into(),
+                },
+            });
+        }
+        let result = self
+            .publish_with_quota_batch(&route, (shard, birth), permit, publishes, deadline)
+            .await?;
+        use crate::broker::AttemptOutcome;
+        let (items, outcome) = match result {
+            DataResponse::PublishedBatch(receipts) => {
+                if receipts.len() != identities.len() {
+                    return Err(Error::invalid(
+                        "Logical publish batch result length differs from request",
+                    ));
+                }
+                let mut items = Vec::with_capacity(receipts.len());
+                let mut committed = 0_usize;
+                let mut committed_bytes = 0_u64;
+                for (((sequence, digest), bytes), receipt) in
+                    identities.into_iter().zip(item_bytes).zip(receipts)
+                {
+                    if !receipt.duplicate {
+                        committed = committed.saturating_add(1);
+                        committed_bytes = committed_bytes.saturating_add(bytes);
+                    }
+                    items.push(public::PublishBatchResultItem {
+                        sequence,
+                        digest: Bytes::copy_from_slice(&digest),
+                        offset: Some(receipt.offset),
+                        ..Default::default()
+                    });
+                }
+                if committed > 0 {
+                    self.producer_metrics
+                        .committed_batch(committed as u64, committed_bytes);
+                }
+                (items, AttemptOutcome::Committed)
+            }
+            DataResponse::ShardSealed {
+                plan,
+                committed_end,
+            } => {
+                let items = identities
+                    .into_iter()
+                    .zip(item_bytes)
+                    .map(|((sequence, digest), _)| public::PublishBatchResultItem {
+                        sequence,
+                        digest: Bytes::copy_from_slice(&digest),
+                        permanent_seal: Bytes::copy_from_slice(plan.as_bytes()),
+                        sealed_end: committed_end,
+                        ..Default::default()
+                    })
+                    .collect();
+                (items, AttemptOutcome::Rejected)
+            }
+            DataResponse::PublishClosed => {
+                let items = identities
+                    .into_iter()
+                    .zip(item_bytes)
+                    .map(|((sequence, digest), _)| public::PublishBatchResultItem {
+                        sequence,
+                        digest: Bytes::copy_from_slice(&digest),
+                        permanently_closed: true,
+                        ..Default::default()
+                    })
+                    .collect();
+                (items, AttemptOutcome::Rejected)
+            }
+            _ => {
+                return Err(Error::invalid(
+                    "Logical publish batch returned an invalid result",
+                ));
+            }
+        };
+        let frame = wire::response(
+            frame,
+            FrameKind::PublishBatchResult,
+            &public::PublishBatchResult {
+                topic_id: request.topic_id,
+                shard_id: request.shard_id,
+                producer_id: request.producer_id,
+                registration: request.registration,
+                items,
+            },
+            &self.config.protocol,
+        )?;
+        Ok((frame, outcome))
     }
 
     #[tracing::instrument(target = "tidemq_trace", name = "producer_submission", skip_all)]
@@ -348,6 +548,31 @@ impl Service {
         Ok((frame, outcome))
     }
 
+    async fn ensure_publish_quota_batch(
+        &self,
+        route: &Route,
+        publishes: &[PublishRequest],
+        deadline: Instant,
+    ) -> Result<()> {
+        let now_ms = super::data::unix_millis()?;
+        let demand = self
+            .data
+            .get(&route.group_id)
+            .ok_or_else(Error::unavailable)?
+            .state
+            .try_with_application(|state| {
+                state.publish_quota_batch_demand(route.partition, publishes, now_ms)
+            })
+            .await
+            .map_err(|source| Error::operation("read tenant publish batch quota demand", source))?
+            .map_err(super::data::data_rejection)?;
+        if let Some(demand) = demand {
+            self.ensure_tenant_quota(route.group_id, route.partition, demand, deadline)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn ensure_publish_quota(
         &self,
         route: &Route,
@@ -371,6 +596,70 @@ impl Service {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn publish_with_quota_batch(
+        &self,
+        route: &Route,
+        birth: (Id, HashRange),
+        permit: PublisherPermit,
+        publishes: Vec<PublishRequest>,
+        deadline: Instant,
+    ) -> Result<DataResponse> {
+        let mut delay_ms = 10_u64;
+        let mut previous_delay_ms = 0;
+        let mut original_writer = None;
+        for attempt in 1..=MAX_PUBLISH_QUOTA_ATTEMPTS {
+            self.ensure_publish_quota_batch(route, &publishes, deadline)
+                .await?;
+            let now_ms = super::data::unix_millis()?;
+            let result = self
+                .publish_commit(route, deadline, |writer| {
+                    let identity = (writer.node_id, writer.owner_epoch);
+                    if original_writer.is_some_and(|original| original != identity) {
+                        return Err(Error::reject(ErrorCode::Fenced, Outcome::Rejected, true));
+                    }
+                    original_writer = Some(identity);
+                    if attempt > 1 {
+                        self.producer_metrics.quota_retry();
+                        quota_retry_event(attempt, previous_delay_ms, "commit");
+                    }
+                    Ok(DataCommand::PublishBatch {
+                        partition: route.partition,
+                        writer,
+                        birth,
+                        permit: permit.clone(),
+                        requests: publishes.clone(),
+                        now_ms,
+                    })
+                })
+                .await;
+            match result {
+                Err(error)
+                    if attempt < MAX_PUBLISH_QUOTA_ATTEMPTS
+                        && unrecorded_tenant_grant_refusal(&error) =>
+                {
+                    let Some(wake) = Instant::now()
+                        .checked_add(Duration::from_millis(delay_ms))
+                        .filter(|wake| *wake < deadline)
+                    else {
+                        return Err(error);
+                    };
+                    quota_retry_event(attempt + 1, delay_ms, "backoff");
+                    if tokio::time::timeout_at(deadline, tokio::time::sleep_until(wake))
+                        .await
+                        .is_err()
+                        || Instant::now() >= deadline
+                    {
+                        return Err(error);
+                    }
+                    previous_delay_ms = delay_ms;
+                    delay_ms = delay_ms.saturating_mul(2).min(50);
+                }
+                result => return result,
+            }
+        }
+        Err(Error::unavailable())
     }
 
     async fn publish_with_quota(

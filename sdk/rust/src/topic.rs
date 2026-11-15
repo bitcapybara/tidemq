@@ -129,9 +129,20 @@ impl Admin {
     }
 
     pub async fn create_topic(&self, name: &str) -> Result<TopicInfo> {
+        self.create_topic_with_partitions(name, 0).await
+    }
+
+    pub async fn create_topic_with_partitions(
+        &self,
+        name: &str,
+        partition_count: u32,
+    ) -> Result<TopicInfo> {
         let name = self.client.topic_name(name)?;
         let receipt = self
-            .execute(crate::admin::pending::Request::CreateTopic(name))
+            .execute(crate::admin::pending::Request::CreateTopic {
+                name,
+                partition_count,
+            })
             .await?;
         match receipt {
             crate::AdminReceipt::Topic(info) => Ok(info),

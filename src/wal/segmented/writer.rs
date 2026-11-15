@@ -320,19 +320,19 @@ impl Writer {
         let mut frames = Vec::new();
         let mut sequence = self.sequence;
         for AppendRecord { id, data } in pending.iter().flat_map(|p| &p.records) {
-            let mut payload = Vec::new();
-            payload
-                .try_reserve_exact(data.len().saturating_add(ENVELOPE_BYTES))
-                .map_err(|_| Error::Limit {
-                    name: "frame envelope allocation",
-                })?;
-            payload.push(u8::from(id.is_some()));
-            payload.extend_from_slice(&id.map_or(0, |id| id.0).to_le_bytes());
-            payload.extend_from_slice(data);
+            let mut envelope = [0_u8; ENVELOPE_BYTES];
+            let envelope_marker = envelope.get_mut(0).ok_or(Error::Limit {
+                name: "frame envelope layout",
+            })?;
+            *envelope_marker = u8::from(id.is_some());
+            let envelope_tail = envelope.get_mut(1..).ok_or(Error::Limit {
+                name: "frame envelope layout",
+            })?;
+            envelope_tail.copy_from_slice(&id.map_or(0, |id| id.0).to_le_bytes());
             frames.push(EncodedFrame {
                 id: *id,
                 sequence,
-                bytes: crate::wal::codec::frame(&payload, sequence)?,
+                bytes: crate::wal::codec::frame_with_prefix(&envelope, data, sequence)?,
             });
             sequence = sequence.checked_add(1).ok_or(Error::Limit {
                 name: "physical sequence",

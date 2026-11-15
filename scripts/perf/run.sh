@@ -14,16 +14,20 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 messages=${TIDEMQ_PERF_MESSAGES:-2048}
 size=${TIDEMQ_PERF_MESSAGE_BYTES:-1024}
 concurrency=${TIDEMQ_PERF_CONCURRENCY:-4}
+ack_batch_size=${TIDEMQ_PERF_ACK_BATCH_SIZE:-1}
+producer_batch_size=${TIDEMQ_PERF_PRODUCER_BATCH_SIZE:-1}
+data_groups=${TIDEMQ_PERF_DATA_GROUPS:-1}
 idle_seconds=${TIDEMQ_PERF_IDLE_SECONDS:-10}
 request_seconds=${TIDEMQ_PERF_REQUEST_TIMEOUT_SECONDS:-10}
 timeout_seconds=${TIDEMQ_PERF_TIMEOUT_SECONDS:-120}
 port=${TIDEMQ_PERF_PORT:-17410}
+console_assets=${TIDEMQ_PERF_CONSOLE_ASSETS:-}
 service_cpus=${TIDEMQ_PERF_SERVICE_CPUS:-2-5}
 client_cpus=${TIDEMQ_PERF_CLIENT_CPUS:-6-7}
-for number in "$messages" "$size" "$concurrency" "$idle_seconds" "$request_seconds" "$timeout_seconds" "$port"; do
+for number in "$messages" "$size" "$concurrency" "$ack_batch_size" "$producer_batch_size" "$data_groups" "$idle_seconds" "$request_seconds" "$timeout_seconds" "$port"; do
   [[ $number =~ ^[1-9][0-9]{0,6}$ ]] || usage
 done
-(( messages <= 200000 && size >= 32 && size <= 65536 && concurrency <= 32 && concurrency <= messages && messages * size <= 536870912 && idle_seconds <= 60 && port >= 1024 && port <= 55500 )) || usage
+(( messages <= 200000 && size >= 32 && size <= 65536 && concurrency <= 32 && concurrency <= messages && ack_batch_size <= 256 && producer_batch_size <= 4096 && data_groups <= 16 && messages * size <= 536870912 && idle_seconds <= 60 && port >= 1024 && port <= 55500 )) || usage
 (( request_seconds <= 120 && timeout_seconds >= 15 && timeout_seconds <= 600 && request_seconds < timeout_seconds && idle_seconds < timeout_seconds )) || usage
 [[ $service_cpus =~ ^[0-9,-]+$ && $client_cpus =~ ^[0-9,-]+$ ]] || usage
 for command in flock curl jq taskset perf perl openssl sha256sum timeout; do command -v "$command" >/dev/null; done
@@ -93,10 +97,40 @@ trap 'exit 143' TERM
 mkdir -- "$raw_logs"
 ulimit -f 524288
 bash "$repo/deploy/local/generate.sh" rf1 "$fixture" > "$raw_logs/generate.log" 2>&1
+if [[ ! -s $fixture/console/index.html || ! -s $fixture/console/.vite/manifest.json ]]; then
+  if [[ -n $console_assets ]]; then
+    [[ -s $console_assets/index.html && -s $console_assets/.vite/manifest.json ]] || {
+      printf 'Configured console assets are incomplete: %s\n' "$console_assets" >&2
+      exit 2
+    }
+    mkdir -- "$fixture/console"
+    cp -R -- "$console_assets/." "$fixture/console/"
+  else
+    bash "$repo/scripts/build-console.sh" "$fixture/console" > "$raw_logs/console-build.log" 2>&1
+  fi
+fi
 management=$((port + 1000))
 internal=$((port + 1))
 sed -i -e "s/127.0.0.1:7410/127.0.0.1:$port/g" -e "s/127.0.0.1:7411/127.0.0.1:$internal/g" \
   -e "s/127.0.0.1:8410/127.0.0.1:$management/g" "$fixture/node-1.toml"
+if (( producer_batch_size > 1024 )); then
+  cat >> "$fixture/node-1.toml" <<'EOF'
+
+[protocol]
+max_frame_bytes = 4194304
+max_batch_messages = 4096
+max_payload_fields = 4112
+EOF
+fi
+group=3
+while (( group <= data_groups + 1 )); do
+  cat >> "$fixture/node-1.toml" <<EOF
+
+[[runtime.groups]]
+group_id = $group
+EOF
+  group=$((group + 1))
+done
 cp -- "$fixture/node-1.toml" "$output/service-config.toml"
 sha256sum "$service" "$loadgen" "$fixture/node-1.toml" > "$output/binaries-config.sha256"
 for binary in "$service" "$loadgen"; do
@@ -113,9 +147,9 @@ lscpu -e=CPU,CORE,SOCKET,ONLINE > "$output/cpu-topology.txt"
 cat /proc/loadavg > "$output/host-load.before.txt"
 perf --version > "$output/perf-version.txt"
 jq -n --arg mode "$mode" --arg service_cpus "$service_cpus" --arg client_cpus "$client_cpus" \
-  --argjson messages "$messages" --argjson payload "$size" --argjson concurrency "$concurrency" --argjson port "$port" \
+  --argjson messages "$messages" --argjson payload "$size" --argjson concurrency "$concurrency" --argjson ack_batch_size "$ack_batch_size" --argjson producer_batch_size "$producer_batch_size" --argjson data_groups "$data_groups" --argjson port "$port" \
   --argjson request_seconds "$request_seconds" --argjson timeout_seconds "$timeout_seconds" \
-  '{mode:$mode,profiled:($mode=="profile"),replication_factor:1,service_cpus:$service_cpus,client_cpus:$client_cpus,messages:$messages,payload_bytes:$payload,concurrency:$concurrency,gateway_port:$port,fixture:"deploy/local/generate.sh rf1",profile_event:"cpu-clock",profile_call_graph:"fp",profile_hz:499,profile_max_seconds:15,request_timeout_seconds:$request_seconds,measurement_timeout_seconds:$timeout_seconds}' > "$output/metadata.json"
+  '{mode:$mode,profiled:($mode=="profile"),replication_factor:1,data_groups:$data_groups,service_cpus:$service_cpus,client_cpus:$client_cpus,messages:$messages,payload_bytes:$payload,payload_bytes_unit:"bytes",throughput_unit:"bytes_per_second",wire_bytes_measured:false,replication_bytes_measured:false,concurrency:$concurrency,ack_batch_size:$ack_batch_size,producer_batch_size:$producer_batch_size,gateway_port:$port,fixture:"deploy/local/generate.sh rf1",profile_event:"cpu-clock",profile_call_graph:"fp",profile_hz:499,profile_max_seconds:15,request_timeout_seconds:$request_seconds,measurement_timeout_seconds:$timeout_seconds}' > "$output/metadata.json"
 # Only this shell owns the lease; child timers must not retain it after cleanup.
 taskset -c "$service_cpus" "$service" serve --config "$fixture/node-1.toml" 9>&- > "$raw_logs/service.log" 2>&1 &
 service_pid=$!
@@ -127,14 +161,14 @@ for ((attempt=0; attempt<200; attempt++)); do
 done
 curl --fail --silent --max-time 2 "http://127.0.0.1:$management/readyz" > "$output/ready.json"
 args=(--endpoint "127.0.0.1:$port" --ca "$fixture/ca.pem" --token-file "$fixture/access.token" --request-timeout-seconds "$request_seconds" --timeout-seconds "$timeout_seconds")
-taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/warmup" --messages 32 --concurrency "$concurrency" 9>&- > "$raw_logs/warmup.log" 2>&1
+taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/warmup" --messages 32 --concurrency "$concurrency" --ack-batch-size "$ack_batch_size" --producer-batch-size "$producer_batch_size" --topic-partitions "$data_groups" 9>&- > "$raw_logs/warmup.log" 2>&1
 extra=()
 [[ $mode != profile ]] || extra+=(--profiled)
 case_name=traffic
 [[ $mode != idle ]] || case_name=idle
 taskset -c "$client_cpus" "$loadgen" "${args[@]}" --output-dir "$output/measurement" \
   --case "$case_name" --messages "$messages" --message-bytes "$size" --concurrency "$concurrency" \
-  --idle-seconds "$idle_seconds" --wait-for-start "${extra[@]}" 9>&- > "$raw_logs/loadgen.log" 2>&1 &
+  --ack-batch-size "$ack_batch_size" --producer-batch-size "$producer_batch_size" --topic-partitions "$data_groups" --idle-seconds "$idle_seconds" --wait-for-start "${extra[@]}" 9>&- > "$raw_logs/loadgen.log" 2>&1 &
 client_pid=$!
 wait_marker() {
   local name=$1

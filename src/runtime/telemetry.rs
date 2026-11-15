@@ -345,6 +345,7 @@ mod tests {
             identity,
             &tidemq_protocol::public::LogicalTopic {
                 name: "diagnostic".into(),
+                partition_count: 0,
             },
             1000,
             &limits,

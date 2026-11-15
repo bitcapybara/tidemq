@@ -285,7 +285,8 @@ impl Builder {
 
     async fn build_until(self, deadline: Instant) -> Result<Arc<Owner>> {
         let resource_memory = self.client.reserve_resource(deadline).await?;
-        let credit = credit::Pools::new(&self.client, self.messages, self.bytes)?;
+        let credit = credit::Pools::new(&self.client, self.messages, self.bytes)?
+            .with_read_batch_limit(self.messages);
         if credit.mode == ConsumerMode::Isolated {
             credit.native.register(&self.client, deadline).await?;
         }
@@ -801,6 +802,9 @@ impl StreamConsumer {
     }
 }
 impl QueueConsumer {
+    pub async fn ack_cumulative(&self, message: &ReceivedMessage) -> Result<AckReceipt> {
+        ack::start(&self.owner.core, message, None, true).await
+    }
     pub async fn ack(&self, message: &ReceivedMessage) -> Result<AckReceipt> {
         ack::start(&self.owner.core, message, None, false).await
     }

@@ -290,7 +290,8 @@ async fn encode_expired_ack_reply_preserves_shared_requests_and_flush_notificati
     // Every behavior failure is returned to the outer cleanup before it becomes an assertion.
     let outcome: anyhow::Result<()> = async {
         let deferred = |kind, name: &str| {
-            request(kind, TrafficClass::Control, &LogicalTopic { name: name.into() })
+            request(kind, TrafficClass::Control, &LogicalTopic { name: name.into(), partition_count: 0,
+})
         };
         let core = rpc
             .submit(deferred(FrameKind::Diagnose, "deferred-core"), deadline())
@@ -452,6 +453,7 @@ async fn expired_handler_reply_keeps_other_control_requests_live() {
             TrafficClass::Control,
             &LogicalTopic {
                 name: "deferred".into(),
+                partition_count: 0,
             },
         )
     };
@@ -485,6 +487,7 @@ async fn expired_handler_reply_keeps_other_control_requests_live() {
             TrafficClass::Control,
             &LogicalTopic {
                 name: "live-control".into(),
+                partition_count: 0,
             },
         ),
         deadline(),
@@ -534,6 +537,7 @@ async fn simultaneous_control_replies_wait_for_the_bounded_writer_queue() {
                     TrafficClass::Control,
                     &LogicalTopic {
                         name: "deferred".into(),
+                        partition_count: 0,
                     },
                 ),
                 deadline(),
@@ -639,6 +643,7 @@ async fn producer_submission_order_and_core_progress_survive_blocked_data_handle
                 TrafficClass::Control,
                 &LogicalTopic {
                     name: "diagnostic".into(),
+                    partition_count: 0,
                 },
             ),
             deadline(),
@@ -886,6 +891,7 @@ async fn native_idle_produce_connection_records_lane_read_errors_while_control_p
                     TrafficClass::Control,
                     &LogicalTopic {
                         name: "idle-connection-diagnostic".into(),
+                        partition_count: 0,
                     },
                 ),
                 Instant::now() + Duration::from_millis(200),
@@ -932,6 +938,7 @@ async fn native_idle_produce_connection_records_lane_read_errors_while_control_p
                 TrafficClass::Control,
                 &LogicalTopic {
                     name: "after-native-idle-close".into(),
+                    partition_count: 0,
                 },
             ),
             Instant::now() + Duration::from_millis(200),
@@ -1026,6 +1033,7 @@ async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturat
                         TrafficClass::Control,
                         &LogicalTopic {
                             name: format!("deferred{}", "x".repeat(padding)),
+                            partition_count: 0,
                         },
                     ),
                     deadline(),
@@ -1041,6 +1049,7 @@ async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturat
                     TrafficClass::Control,
                     &LogicalTopic {
                         name: format!("deferred{}", "x".repeat(padding)),
+                        partition_count: 0,
                     }
                 ),
                 deadline()
@@ -1070,6 +1079,7 @@ async fn modern_ack_rpc_keeps_its_lane_and_budget_when_normal_control_is_saturat
                     TrafficClass::Control,
                     &LogicalTopic {
                         name: "core-inspection".into(),
+                        partition_count: 0,
                     },
                 ),
                 deadline(),

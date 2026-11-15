@@ -138,6 +138,8 @@ pub enum FrameKind {
     GroupWatchResult = 99,
     GroupWatchCancel = 100,
     GroupWatchCancelled = 101,
+    PublishBatch = 102,
+    PublishBatchResult = 103,
 }
 impl FrameKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -201,6 +203,8 @@ impl FrameKind {
             Self::GroupWatchResult => "GROUP_WATCH_RESULT",
             Self::GroupWatchCancel => "GROUP_WATCH_CANCEL",
             Self::GroupWatchCancelled => "GROUP_WATCH_CANCELLED",
+            Self::PublishBatch => "PUBLISH_BATCH",
+            Self::PublishBatchResult => "PUBLISH_BATCH_RESULT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -261,6 +265,8 @@ impl FrameKind {
             "GROUP_WATCH_RESULT" => Some(Self::GroupWatchResult),
             "GROUP_WATCH_CANCEL" => Some(Self::GroupWatchCancel),
             "GROUP_WATCH_CANCELLED" => Some(Self::GroupWatchCancelled),
+            "PUBLISH_BATCH" => Some(Self::PublishBatch),
+            "PUBLISH_BATCH_RESULT" => Some(Self::PublishBatchResult),
             _ => None,
         }
     }

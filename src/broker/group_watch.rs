@@ -204,6 +204,7 @@ impl WatchHub {
                 false
             }
             DataCommand::Publish { partition, .. }
+            | DataCommand::PublishBatch { partition, .. }
             | DataCommand::Producer { partition, .. }
             | DataCommand::SealShard { partition, .. } => {
                 dependencies.insert(Dependency::Shard(*partition));
@@ -229,6 +230,7 @@ impl WatchHub {
             partition: match command {
                 DataCommand::InstallQuota { partition, .. }
                 | DataCommand::Publish { partition, .. }
+                | DataCommand::PublishBatch { partition, .. }
                 | DataCommand::RetirePublishes { partition, .. }
                 | DataCommand::CleanupPublisher { partition, .. }
                 | DataCommand::SealShard { partition, .. }

@@ -128,6 +128,14 @@ pub enum DataCommand {
         request: producer::PublishRequest,
         now_ms: u64,
     },
+    PublishBatch {
+        partition: PartitionKey,
+        writer: WriterFence,
+        birth: (Id, tidemq_protocol::topic::HashRange),
+        permit: producer::PublisherPermit,
+        requests: Vec<producer::PublishRequest>,
+        now_ms: u64,
+    },
     RetirePublishes {
         partition: PartitionKey,
         writer: WriterFence,
@@ -216,7 +224,10 @@ impl DataCommand {
             Self::Lifecycle(operation) => {
                 !matches!(operation.command, LifecycleCommand::Authorize(_))
             }
-            Self::AuthorityTransfer(_) | Self::Publish { .. } | Self::Initialize(_) => false,
+            Self::AuthorityTransfer(_)
+            | Self::Publish { .. }
+            | Self::PublishBatch { .. }
+            | Self::Initialize(_) => false,
         }
     }
 }
@@ -284,6 +295,7 @@ pub enum DataResponse {
     Registered(SessionInfo),
     Produced(BatchResult),
     Published(producer::PublishReceipt),
+    PublishedBatch(Vec<producer::PublishReceipt>),
     PublishClosed,
     Retired,
     TimeAdvanced,
@@ -306,6 +318,10 @@ impl fmt::Debug for DataResponse {
                 .field(outcome)
                 .finish(),
             Self::Published(receipt) => formatter.debug_tuple("Published").field(receipt).finish(),
+            Self::PublishedBatch(receipts) => formatter
+                .debug_tuple("PublishedBatch")
+                .field(&receipts.len())
+                .finish(),
             Self::PublishClosed => formatter.write_str("PublishClosed"),
             Self::Noop => formatter.write_str("Noop"),
             Self::Initialized => formatter.write_str("Initialized"),
@@ -1137,6 +1153,14 @@ impl Application for DataApplication {
                 request,
                 now_ms,
             } => self.publish_message(partition, writer, birth, permit, request, now_ms),
+            DataCommand::PublishBatch {
+                partition,
+                writer,
+                birth,
+                permit,
+                requests,
+                now_ms,
+            } => self.publish_messages(partition, writer, birth, permit, requests, now_ms),
             DataCommand::RetirePublishes {
                 partition,
                 writer,

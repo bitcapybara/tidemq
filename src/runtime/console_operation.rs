@@ -629,6 +629,7 @@ impl Service {
     ) -> Result<Executed> {
         let request = public::LogicalTopic {
             name: name.to_owned(),
+            partition_count: 0,
         };
         let frame = self.console_native_frame(
             record,
@@ -907,7 +908,13 @@ fn native_decision_binding(record: &ConsoleRecord) -> Option<[u8; 32]> {
             hash.update(b"tidemq/management-request/v1\0");
             hash.update(record.credential.as_bytes());
             hash.update(&i32::from(FrameKind::CreateLogicalTopic).to_le_bytes());
-            hash.update(&public::LogicalTopic { name: name.clone() }.encode_to_vec());
+            hash.update(
+                &public::LogicalTopic {
+                    name: name.clone(),
+                    partition_count: 0,
+                }
+                .encode_to_vec(),
+            );
         }
         _ => return None,
     }

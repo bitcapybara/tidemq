@@ -1,7 +1,30 @@
 use super::*;
+use bytes::Bytes;
+use prost::Message as ProstMessage;
 use std::sync::{Weak, atomic::AtomicBool};
 use tidemq_protocol::topic::{SendIdentity, message_digest, routing_hash};
 use tokio::sync::OwnedSemaphorePermit;
+
+#[derive(Clone)]
+struct BatchLink {
+    shared: Arc<BatchShared>,
+    index: usize,
+}
+
+type BatchMember = (usize, PendingSend);
+type BatchGroup = (Bytes, Bytes, u64, Bytes, u32, Vec<BatchMember>);
+
+struct BatchShared {
+    core: Weak<Core>,
+    operation: Id,
+    request: Mutex<public::PublishBatch>,
+    results: Mutex<Option<Vec<SendReceipt>>>,
+    failure: Mutex<Option<Arc<Error>>>,
+    inflight: AtomicBool,
+    complete: AtomicBool,
+    uncertain: AtomicBool,
+    changed: Notify,
+}
 
 struct Credit {
     charge: Option<crate::metrics::Charge>,
@@ -19,6 +42,7 @@ pub(super) struct Work {
     key: Option<u64>,
     operation: Id,
     request: Mutex<public::Publish>,
+    batch: Mutex<Option<BatchLink>>,
     credit: Mutex<Credit>,
     uncertain: AtomicBool,
     complete: AtomicBool,
@@ -161,6 +185,12 @@ impl PendingSend {
             }
         };
         if launch {
+            let batch = self.work.batch.lock().map_err(|_| Error::Closed)?.clone();
+            if let Some(batch) = batch {
+                *batch.shared.failure.lock().map_err(|_| Error::Closed)? = None;
+                batch.shared.uncertain.store(false, Ordering::Release);
+                batch.shared.complete.store(false, Ordering::Release);
+            }
             let work = self.work.clone();
             let task = tokio::spawn(crate::context::inherit_trace(async move {
                 let (result, complete) = match drive(&work, deadline).await {
@@ -243,8 +273,11 @@ pub(super) async fn batch(core: &Arc<Core>, messages: Vec<Message>) -> Result<Se
                     .lock()
                     .map_err(|_| Error::Closed)?
                     .push(send.clone());
-                send.ensure_running(deadline)?;
                 pending.push(send);
+            }
+            install_batch_links(core, &pending)?;
+            for send in &pending {
+                send.ensure_running(deadline)?;
             }
             crate::request::retain(crate::request::Recovery::Batch(pending.clone()));
             let mut observations = Vec::new();
@@ -396,6 +429,7 @@ fn admit(core: &Arc<Core>, message: Message, mut credit: Credit) -> Result<Pendi
             key,
             operation: Id::new_v7()?,
             request: Mutex::new(request),
+            batch: Mutex::new(None),
             credit: Mutex::new(credit),
             uncertain: AtomicBool::new(false),
             complete: AtomicBool::new(false),
@@ -443,10 +477,387 @@ fn release_requests(work: &Work) -> Result<()> {
     Ok(())
 }
 
+fn install_batch_links(core: &Core, pending: &[PendingSend]) -> Result<()> {
+    let mut groups: Vec<BatchGroup> = Vec::new();
+    for (index, send) in pending.iter().enumerate() {
+        let request = send.work.request.lock().map_err(|_| Error::Closed)?.clone();
+        let position = groups.iter().position(|group: &(_, _, _, _, _, _)| {
+            group.0 == request.topic_id
+                && group.1 == request.producer_id
+                && group.2 == request.registration
+                && group.3 == request.shard_id
+                && group.4 == request.partition_id
+        });
+        if let Some(position) = position {
+            groups
+                .get_mut(position)
+                .ok_or(Error::Closed)?
+                .5
+                .push((index, send.clone()));
+        } else {
+            groups.push((
+                request.topic_id,
+                request.producer_id,
+                request.registration,
+                request.shard_id,
+                request.partition_id,
+                vec![(index, send.clone())],
+            ));
+        }
+    }
+    let max_payload = usize::try_from(core.client.inner.config.protocol.max_frame_bytes)
+        .map_err(|_| Error::Configuration {
+            reason: "protocol frame limit does not fit the platform address space",
+        })?
+        .saturating_sub(4 * 1024);
+    for (_, _, _, _, _, members) in groups {
+        let mut offset = 0_usize;
+        while offset < members.len() {
+            let (_, first) = members.get(offset).ok_or(Error::Closed)?;
+            let first_request = first
+                .work
+                .request
+                .lock()
+                .map_err(|_| Error::Closed)?
+                .clone();
+            let mut items = Vec::new();
+            let mut retired_before = first_request.retired_before;
+            let base_request = public::PublishBatch {
+                topic_id: first_request.topic_id.clone(),
+                shard_id: first_request.shard_id.clone(),
+                partition_id: first_request.partition_id,
+                producer_id: first_request.producer_id.clone(),
+                registration: first_request.registration,
+                items: Vec::new(),
+                retired_before,
+            };
+            let mut encoded_len = base_request.encoded_len();
+            let mut end = offset;
+            while let Some((_, send)) = members.get(end) {
+                let request = send.work.request.lock().map_err(|_| Error::Closed)?.clone();
+                let message = request.message.ok_or(Error::ResponseMismatch {
+                    reason: "batch item omitted its logical message".into(),
+                })?;
+                let item = public::PublishBatchItem {
+                    sequence: request.sequence,
+                    digest: request.digest,
+                    message: Some(message),
+                };
+                let item_len = item.encoded_len();
+                let item_wire_len = prost::encoding::key_len(6)
+                    .saturating_add(prost::length_delimiter_len(item_len))
+                    .saturating_add(item_len);
+                let candidate_len = encoded_len.saturating_add(item_wire_len);
+                if candidate_len > max_payload {
+                    if items.is_empty() {
+                        return Err(Error::Configuration {
+                            reason: "single publish batch item exceeds the protocol frame limit",
+                        });
+                    }
+                    break;
+                }
+                items.push(item);
+                encoded_len = candidate_len;
+                retired_before = retired_before.min(request.retired_before);
+                end += 1;
+            }
+            let shared = Arc::new(BatchShared {
+                core: first.work.core.clone(),
+                operation: Id::new_v7()?,
+                request: Mutex::new(public::PublishBatch {
+                    topic_id: first_request.topic_id,
+                    shard_id: first_request.shard_id,
+                    partition_id: first_request.partition_id,
+                    producer_id: first_request.producer_id,
+                    registration: first_request.registration,
+                    items,
+                    retired_before,
+                }),
+                results: Mutex::new(None),
+                failure: Mutex::new(None),
+                inflight: AtomicBool::new(false),
+                complete: AtomicBool::new(false),
+                uncertain: AtomicBool::new(false),
+                changed: Notify::new(),
+            });
+            for (index, (_, send)) in members
+                .iter()
+                .skip(offset)
+                .take(end.saturating_sub(offset))
+                .enumerate()
+            {
+                *send.work.batch.lock().map_err(|_| Error::Closed)? = Some(BatchLink {
+                    shared: shared.clone(),
+                    index,
+                });
+            }
+            offset = end;
+        }
+    }
+    Ok(())
+}
+
+fn batch_failure(shared: &BatchShared) -> Result<Option<(Error, bool)>> {
+    let failure = shared.failure.lock().map_err(|_| Error::Closed)?.clone();
+    Ok(failure.map(|source| {
+        (
+            Error::Background { source },
+            !shared.uncertain.load(Ordering::Acquire),
+        )
+    }))
+}
+
+fn batch_result(shared: &BatchShared, index: usize) -> Result<Option<SendReceipt>> {
+    let results = shared.results.lock().map_err(|_| Error::Closed)?.clone();
+    results
+        .map(|results| {
+            results.get(index).copied().ok_or(Error::ResponseMismatch {
+                reason: "publish batch result omitted an item".into(),
+            })
+        })
+        .transpose()
+}
+
+async fn drive_batch(
+    link: &BatchLink,
+    deadline: Instant,
+) -> std::result::Result<SendReceipt, (Error, bool)> {
+    let shared = &link.shared;
+    let core = shared.core.upgrade().ok_or((Error::Closed, false))?;
+    loop {
+        if let Some(result) = batch_result(shared, link.index).map_err(|error| (error, false))? {
+            return Ok(result);
+        }
+        if let Some((error, known)) = batch_failure(shared).map_err(|error| (error, false))? {
+            return Err((error, known));
+        }
+        if Instant::now() >= deadline {
+            return Err((
+                Error::Deadline.preserve_uncertainty(shared.uncertain.load(Ordering::Acquire)),
+                !shared.uncertain.load(Ordering::Acquire),
+            ));
+        }
+        let notified = shared.changed.notified();
+        if shared
+            .inflight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let result = drive_batch_request(&core, shared, deadline).await;
+            match result {
+                Ok(receipts) => {
+                    if let Ok(mut stored) = shared.results.lock() {
+                        *stored = Some(receipts);
+                    }
+                    shared.complete.store(true, Ordering::Release);
+                }
+                Err((source, known)) => {
+                    shared.uncertain.store(!known, Ordering::Release);
+                    if let Ok(mut failure) = shared.failure.lock() {
+                        *failure = Some(Arc::new(source));
+                    }
+                    shared.complete.store(known, Ordering::Release);
+                }
+            }
+            shared.inflight.store(false, Ordering::Release);
+            shared.changed.notify_waiters();
+            continue;
+        }
+        if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            return Err((
+                Error::Deadline.preserve_uncertainty(shared.uncertain.load(Ordering::Acquire)),
+                !shared.uncertain.load(Ordering::Acquire),
+            ));
+        }
+    }
+}
+
+async fn drive_batch_request(
+    core: &Arc<Core>,
+    shared: &BatchShared,
+    deadline: Instant,
+) -> std::result::Result<Vec<SendReceipt>, (Error, bool)> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err((
+                Error::Deadline.preserve_uncertainty(shared.uncertain.load(Ordering::Acquire)),
+                !shared.uncertain.load(Ordering::Acquire),
+            ));
+        }
+        let request = shared
+            .request
+            .lock()
+            .map_err(|_| (Error::Closed, false))?
+            .clone();
+        let result: Result<public::PublishBatchResult> = core
+            .client
+            .request_affinity(
+                FrameKind::PublishBatch,
+                FrameKind::PublishBatchResult,
+                TrafficClass::Produce,
+                shared.operation,
+                &request,
+                deadline,
+                crate::client::affinity(&(request.partition_id, request.registration)),
+            )
+            .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error)
+                if (error.retry_admission() || error.retry_rejected())
+                    && !error.original_outcome_known() =>
+            {
+                shared.uncertain.store(true, Ordering::Release);
+                if Instant::now() >= deadline {
+                    return Err((error.preserve_uncertainty(true), false));
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                continue;
+            }
+            Err(error) => {
+                let error = error.preserve_uncertainty(shared.uncertain.load(Ordering::Acquire));
+                let known = !error.outcome_unknown();
+                shared.uncertain.store(!known, Ordering::Release);
+                return Err((error, known));
+            }
+        };
+        if result.topic_id != request.topic_id
+            || result.shard_id != request.shard_id
+            || result.producer_id != request.producer_id
+            || result.registration != request.registration
+            || result.items.len() != request.items.len()
+        {
+            return Err((
+                Error::RequestUnknown {
+                    source: Box::new(Error::ResponseMismatch {
+                        reason: "publish batch result differs from its original identity".into(),
+                    }),
+                },
+                false,
+            ));
+        }
+        if result
+            .items
+            .iter()
+            .any(|item| !item.permanent_seal.is_empty())
+        {
+            for (item, expected) in result.items.iter().zip(request.items.iter()) {
+                if item.sequence != expected.sequence || item.digest != expected.digest {
+                    return Err((
+                        Error::RequestUnknown {
+                            source: Box::new(Error::ResponseMismatch {
+                                reason:
+                                    "publish batch item identity differs from its original identity"
+                                        .into(),
+                            }),
+                        },
+                        false,
+                    ));
+                }
+                if item.permanent_seal.is_empty() {
+                    return Err((
+                        Error::RequestUnknown {
+                            source: Box::new(Error::ResponseMismatch {
+                                reason: "publish batch result mixes sealed and committed outcomes"
+                                    .into(),
+                            }),
+                        },
+                        false,
+                    ));
+                }
+                Id::from_slice(&item.permanent_seal).map_err(|source| (source.into(), false))?;
+                if item.offset.is_some() || item.permanently_closed {
+                    return Err((
+                        Error::RequestUnknown {
+                            source: Box::new(Error::ResponseMismatch {
+                                reason: "publish batch result mixes sealed and committed outcomes"
+                                    .into(),
+                            }),
+                        },
+                        false,
+                    ));
+                }
+            }
+            if core.stop.is_cancelled() {
+                return Err((Error::Closed, true));
+            }
+            if let Err(source) = reroute_batch(core, shared, &request, deadline).await {
+                let known = !source.outcome_unknown();
+                return Err(if known {
+                    (
+                        Error::SendNotSubmitted {
+                            source: Arc::new(source),
+                        },
+                        true,
+                    )
+                } else {
+                    (source, false)
+                });
+            }
+            continue;
+        }
+        let shard = Id::from_slice(&request.shard_id).map_err(|source| (source.into(), false))?;
+        let mut receipts = Vec::with_capacity(result.items.len());
+        for (item, expected) in result.items.into_iter().zip(request.items.iter()) {
+            if item.sequence != expected.sequence || item.digest != expected.digest {
+                return Err((
+                    Error::RequestUnknown {
+                        source: Box::new(Error::ResponseMismatch {
+                            reason:
+                                "publish batch item identity differs from its original identity"
+                                    .into(),
+                        }),
+                    },
+                    false,
+                ));
+            }
+            let Some(offset) = item.offset else {
+                if item.permanently_closed && item.permanent_seal.is_empty() {
+                    return Err((Error::SessionExpired, true));
+                }
+                return Err((
+                    Error::RequestUnknown {
+                        source: Box::new(Error::ResponseMismatch {
+                            reason: "publish batch item has no durable offset".into(),
+                        }),
+                    },
+                    false,
+                ));
+            };
+            if item.permanently_closed || !item.permanent_seal.is_empty() || offset == u64::MAX {
+                return Err((
+                    Error::RequestUnknown {
+                        source: Box::new(Error::ResponseMismatch {
+                            reason: "publish batch item has conflicting outcomes".into(),
+                        }),
+                    },
+                    false,
+                ));
+            }
+            receipts.push(SendReceipt {
+                id: MessageId {
+                    topic: core.topic_id,
+                    shard,
+                    offset,
+                },
+            });
+        }
+        return Ok(receipts);
+    }
+}
+
 async fn drive(
     work: &Arc<Work>,
     deadline: Instant,
 ) -> std::result::Result<SendReceipt, (Error, bool)> {
+    let batch = work
+        .batch
+        .lock()
+        .map_err(|_| (Error::Closed, false))?
+        .clone();
+    if let Some(link) = batch {
+        return drive_batch(&link, deadline).await;
+    }
     let core = work.core.upgrade().ok_or((Error::Closed, false))?;
     if work.created.elapsed() > Duration::from_secs(600) {
         core.stop.cancel();
@@ -622,6 +1033,78 @@ async fn reroute(
                 .insert(Id::from_slice(&target.shard_id)?, target.clone());
             drop(state);
             let mut request = work.request.lock().map_err(|_| Error::Closed)?;
+            request.shard_id = target.shard_id;
+            request.partition_id = target.birth_partition;
+            return Ok(());
+        }
+        let context = crate::RequestContext::with_deadline(deadline);
+        match context
+            .scope(core.client.admin().topic_info(&core.topic))
+            .await
+        {
+            Ok(layout) => {
+                if layout.id != core.topic_id {
+                    return Err(Error::TopicReplaced);
+                }
+                core.state()?.layout = layout;
+            }
+            Err(error)
+                if (error.retry_admission()
+                    || error.retry_rejected()
+                    || error.outcome_unknown())
+                    && Instant::now() < deadline => {}
+            Err(error) => return Err(error),
+        }
+        tokio::time::timeout_at(deadline, tokio::time::sleep(Duration::from_millis(10)))
+            .await
+            .map_err(|_| Error::Deadline)?;
+    }
+}
+
+async fn reroute_batch(
+    core: &Core,
+    shared: &BatchShared,
+    original: &public::PublishBatch,
+    deadline: Instant,
+) -> Result<()> {
+    let _refresh = tokio::time::timeout_at(deadline, core.refresh.lock())
+        .await
+        .map_err(|_| Error::Deadline)?;
+    loop {
+        let layout = core.state()?.layout.clone();
+        let mut target = None;
+        for item in &original.items {
+            let message = item.message.as_ref().ok_or(Error::Closed)?;
+            let hash = routing_hash(message.key.as_deref(), core.producer, item.sequence)?;
+            let item_target = layout
+                .wire
+                .active
+                .iter()
+                .find(|shard| {
+                    shard.hash_start <= hash && shard.hash_end.is_none_or(|end| hash < end)
+                })
+                .cloned()
+                .ok_or(Error::Closed)?;
+            if target.as_ref().is_some_and(|current: &public::ShardRoute| {
+                current.shard_id != item_target.shard_id
+            }) {
+                return Err(Error::RequestUnknown {
+                    source: Box::new(Error::ResponseMismatch {
+                        reason: "publish batch items route to different shards after refresh"
+                            .into(),
+                    }),
+                });
+            }
+            target = Some(item_target);
+        }
+        let target = target.ok_or(Error::Closed)?;
+        if target.shard_id != original.shard_id {
+            let mut state = core.state()?;
+            state
+                .touched
+                .insert(Id::from_slice(&target.shard_id)?, target.clone());
+            drop(state);
+            let mut request = shared.request.lock().map_err(|_| Error::Closed)?;
             request.shard_id = target.shard_id;
             request.partition_id = target.birth_partition;
             return Ok(());

@@ -347,6 +347,64 @@ impl DataApplication {
                 .last_activity_ms,
         )
     }
+    pub fn publish_quota_batch_demand(
+        &self,
+        partition: PartitionKey,
+        requests: &[crate::producer::PublishRequest],
+        now_ms: u64,
+    ) -> Result<Option<QuotaCapacity>, DataRejection> {
+        let state = self
+            .partitions
+            .get(&partition)
+            .ok_or(DataRejection::PartitionMissing)?;
+        let protected = state.protected_before();
+        let mut bytes = 0_u64;
+        for request in requests {
+            if state.seal.is_some()
+                || state.producer.publisher_closed(request.identity)
+                || state
+                    .producer
+                    .publish_result(request.identity, request.digest)
+                    .map_err(DataRejection::Producer)?
+                    .is_some()
+            {
+                continue;
+            }
+            bytes = bytes
+                .checked_add(
+                    request
+                        .message
+                        .logical_bytes()
+                        .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?,
+                )
+                .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?;
+        }
+        if bytes == 0 {
+            return Ok(None);
+        }
+        let backlog_bytes = match protected {
+            Some(before) => state
+                .retention
+                .logical_backlog_upper_bytes(Some(before))
+                .map_err(DataRejection::Retention)?
+                .checked_add(bytes)
+                .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?,
+            None => 0,
+        };
+        Ok(Some(QuotaCapacity {
+            backlog_bytes,
+            publish_bytes_per_second: state.quota.as_ref().map_or(bytes, |quota| {
+                rate_required(
+                    quota.publish,
+                    quota.grant.capacity.publish_bytes_per_second,
+                    bytes,
+                    now_ms,
+                )
+            }),
+            ..Default::default()
+        }))
+    }
+
     pub fn publish_quota_demand(
         &self,
         partition: PartitionKey,

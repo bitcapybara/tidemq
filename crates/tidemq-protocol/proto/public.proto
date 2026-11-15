@@ -106,7 +106,11 @@ message ClusterRegistryPage {
 
 message GetTopic { string name = 1; }
 message TopicResult { bytes topic_id = 1; string name = 2; }
-message LogicalTopic { string name = 1; }
+message LogicalTopic {
+  string name = 1;
+  // Zero keeps the existing single-partition behavior.
+  uint32 partition_count = 2;
+}
 message GetTopicLayout { bytes topic_id = 1; uint64 expected_revision = 2; bytes after_shard = 3; }
 message ShardRoute {
   bytes shard_id = 1;
@@ -357,6 +361,35 @@ message PublishResult {
   bytes permanent_seal = 8;
   uint64 sealed_end = 9;
   bool permanently_closed = 10;
+}
+message PublishBatchItem {
+  uint64 sequence = 1;
+  bytes digest = 2;
+  PublishMessage message = 3;
+}
+message PublishBatch {
+  bytes topic_id = 1;
+  bytes shard_id = 2;
+  uint32 partition_id = 3;
+  bytes producer_id = 4;
+  uint64 registration = 5;
+  repeated PublishBatchItem items = 6;
+  uint64 retired_before = 7;
+}
+message PublishBatchResultItem {
+  uint64 sequence = 1;
+  bytes digest = 2;
+  optional uint64 offset = 3;
+  bytes permanent_seal = 4;
+  uint64 sealed_end = 5;
+  bool permanently_closed = 6;
+}
+message PublishBatchResult {
+  bytes topic_id = 1;
+  bytes shard_id = 2;
+  bytes producer_id = 3;
+  uint64 registration = 4;
+  repeated PublishBatchResultItem items = 5;
 }
 message RetirePublishes {
   bytes topic_id = 1;

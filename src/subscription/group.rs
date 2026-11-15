@@ -972,9 +972,22 @@ impl GroupCursor {
         }
         if request.proofs.is_empty()
             || request.proofs.len() > self.limits.max_ack_batch as usize
-            || self.model == SubscriptionKind::Queue && request.proofs.len() != 1
+            || self.model == SubscriptionKind::Queue
+                && request.nack_delay_ms.is_some()
+                && request.proofs.len() != 1
         {
             return Err(Rejection::AckBatchTooLarge);
+        }
+        if self.model == SubscriptionKind::Queue && request.nack_delay_ms.is_none() {
+            let mut previous: Option<u64> = None;
+            for proof in &request.proofs {
+                if let Some(previous) = previous
+                    && proof.offset != previous.checked_add(1).ok_or(Rejection::CounterOverflow)?
+                {
+                    return Err(Rejection::InvalidContext);
+                }
+                previous = Some(proof.offset);
+            }
         }
         if member.acks.len() >= self.limits.max_window_slots as usize
             && member.ack_floor.checked_add(1) != Some(request.sequence)

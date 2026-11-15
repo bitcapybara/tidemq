@@ -342,7 +342,10 @@ pub fn kind_allowed(kind: FrameKind, class: TrafficClass) -> bool {
         | FrameKind::RaftVote
         | FrameKind::Diagnose
         | FrameKind::DiagnosticResult => class == TrafficClass::Control,
-        FrameKind::Publish | FrameKind::PublishResult => class == TrafficClass::Produce,
+        FrameKind::Publish
+        | FrameKind::PublishResult
+        | FrameKind::PublishBatch
+        | FrameKind::PublishBatchResult => class == TrafficClass::Produce,
         FrameKind::GroupRead | FrameKind::GroupDeliveries => {
             matches!(class, TrafficClass::Delivery | TrafficClass::Bulk)
         }
@@ -480,6 +483,7 @@ mod tests {
         let id = Id::new_v7().unwrap();
         let body = LogicalTopic {
             name: "events".into(),
+            partition_count: 0,
         };
         let frame = new_frame(
             FrameKind::CreateLogicalTopic,
@@ -556,6 +560,7 @@ mod tests {
         let id = Id::new_v7().unwrap();
         let message = LogicalTopic {
             name: "events".into(),
+            partition_count: 0,
         };
         let mut frame = new_frame(
             FrameKind::CreateLogicalTopic,

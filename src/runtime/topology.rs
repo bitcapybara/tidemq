@@ -125,6 +125,9 @@ impl Service {
         let request: public::LogicalTopic =
             decode_payload(frame.payload.clone(), &self.config.protocol)
                 .map_err(|source| Error::operation("decode logical topic creation", source))?;
+        if request.partition_count > 16 {
+            return Err(Error::invalid("Logical topic partition count exceeds 16"));
+        }
         access.authorize_topic(&request.name)?;
         let _guard = wire::within(deadline, self.metadata_mutation.lock()).await?;
         let operation = wire::id(&frame.operation_id)?;
@@ -132,7 +135,13 @@ impl Service {
         #[cfg(feature = "test-hooks")]
         let hook_name = request.name.clone();
         let topic = self
-            .configure_logical_topic(operation, digest, request.name, deadline)
+            .configure_logical_topic(
+                operation,
+                digest,
+                request.name,
+                request.partition_count,
+                deadline,
+            )
             .await?;
         #[cfg(feature = "test-hooks")]
         super::test_hooks::pause_topic_creation(&hook_name, deadline).await;
@@ -149,15 +158,17 @@ impl Service {
             .await
             .map_err(|source| Error::operation("read original topic creation status", source))?;
         if active {
-            self.ensure_route(
-                PartitionKey {
-                    topic_id: topic.topic_id,
-                    partition: 0,
-                },
-                deadline,
-            )
-            .await
-            .map_err(Error::admitted)?;
+            for partition in 0..topic.partition_count {
+                self.ensure_route(
+                    PartitionKey {
+                        topic_id: topic.topic_id,
+                        partition,
+                    },
+                    deadline,
+                )
+                .await
+                .map_err(Error::admitted)?;
+            }
         }
         wire::response(
             frame,
@@ -175,6 +186,7 @@ impl Service {
         operation: Id,
         digest: [u8; 32],
         name: String,
+        requested_partitions: u32,
         deadline: Instant,
     ) -> Result<metadata::TopicRecord> {
         if let Some(outcome) = self.management_outcome(operation, digest).await? {
@@ -185,16 +197,21 @@ impl Service {
                 )),
             };
         }
-        let group = self
+        let groups = self
             .metadata
             .as_ref()
             .ok_or_else(Error::unavailable)?
             .state
-            .try_with_application(|state| state.placement_group(None))
+            .try_with_application(|state| {
+                let count = usize::try_from(requested_partitions.max(1))
+                    .map_err(|_| crate::metadata::Rejection::InvalidLimit)?;
+                state
+                    .placement_groups(count)
+                    .ok_or(crate::metadata::Rejection::Capacity)
+            })
             .await
             .map_err(|source| Error::operation("select registered topic capacity", source))?
-            .ok_or_else(Error::unavailable)?;
-        let groups = vec![group];
+            .map_err(super::metadata::metadata_rejection)?;
         #[cfg(feature = "test-hooks")]
         let groups = super::watch_test_hooks::initial_topic_groups(self.cluster, &name, groups);
         let outcome = self
