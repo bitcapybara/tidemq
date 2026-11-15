@@ -69,7 +69,7 @@ Stream lanes are independent of storage shards. The server keeps a bounded, stic
 
 `send` accepts `Into<Message>`: use `producer.send("hello").await?` for a plain message, or `Message` for keys and properties. Success means durable commitment in the owning data group: local WAL for Combined and Raft for separated roles. One logical producer concurrently sends to multiple shards; use a bounded task pool or FuturesOrdered/FuturesUnordered to drive concurrent calls. Awaiting each call before creating the next call deliberately serializes the application.
 
-Stream preserves effective delivery order for the same key. Only Stream provides cumulative ACK, which covers the application's shared delivery prefix, including messages received through other clones. Coordinate concurrent business work before advancing that prefix. Queue distributes each message to one member and provides individual `ack` and `nack(message, delay)`. NACK durably schedules redelivery; it does not acknowledge successful processing. Delivery is at least once, so business effects should be idempotent.
+Stream preserves effective delivery order for the same key. Stream and Queue both provide cumulative ACK over the application's contiguous delivered prefix within one logical consumer instance. Queue additionally provides individual `ack` and `nack(message, delay)` for independently completed deliveries. Coordinate concurrent business work before advancing a cumulative prefix. Queue cumulative ACK rejects gaps in the delivered prefix. NACK durably schedules redelivery; it does not acknowledge successful processing. Delivery is at least once, so business effects should be idempotent.
 
 `receive().await` waits for a message. `try_receive()` only checks the local queue; None does not prove that the server has no backlog. Each subscription has independent progress. Zero members preserve the subscription and its backlog.
 
@@ -128,10 +128,10 @@ The test checks this prerequisite before starting network operations.
 
 The consumer types enforce their acknowledgement contracts at compile time:
 
-```compile_fail
+```rust,no_run
 use tidemq_sdk::{QueueConsumer, ReceivedMessage};
-async fn invalid(queue: &QueueConsumer, message: &ReceivedMessage) {
-    queue.ack_cumulative(message).await;
+async fn acknowledge(queue: &QueueConsumer, message: &ReceivedMessage) {
+    let _ = queue.ack_cumulative(message).await;
 }
 ```
 

@@ -73,13 +73,13 @@ send_batch 保留各条输入关联，允许跨组部分完成，不提供跨组
 | 入口 | 语义 |
 | --- | --- |
 | new_stream_consumer(topic, subscription) | 同 key 有效交付有序，提供 ack_cumulative |
-| new_queue_consumer(topic, subscription) | 多成员共同分摊消息，提供单条 ack 和 nack |
+| new_queue_consumer(topic, subscription) | 多成员共同分摊消息，提供 ack_cumulative、单条 ack 和 nack |
 | receive().await | 等待并返回一条消息 |
 | try_receive() | 只检查本地队列，返回 Option；None 不证明远端没有积压 |
 
 同一 Topic 可有多个独立订阅。零成员保留订阅、确认进度和积压。Consumer 关闭或 Drop 不删除订阅。交付至少一次，业务副作用需要幂等。
 
-Stream 的累计确认覆盖应用实际接收的共享前缀，不包含预取消息或别的成员的消息。多个 clone 共用该前缀；并行业务处理应先协调全部前置处理结果，才能累计确认较后的消息。Queue 不提供累计确认；nack(message, delay) 持久安排重投，成功回执表示重投已安排，不表示业务成功。在线成员的慢处理不会仅因缓存授权租约过期而被当成处理超时。
+Stream 和 Queue 的累计确认覆盖同一逻辑 consumer 实例实际接收的连续前缀，不包含预取消息或别的成员的消息。多个 clone 共用该前缀；并行业务处理应先协调全部前置处理结果，才能累计确认较后的消息。Queue 的累计确认遇到交付空洞会被拒绝，Queue 还支持独立的单条 ack 和 nack；nack(message, delay) 持久安排重投，成功回执表示重投已安排，不表示业务成功。在线成员的慢处理不会仅因缓存授权租约过期而被当成处理超时。
 
 ## Clone、预算与关闭
 

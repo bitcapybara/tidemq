@@ -9,7 +9,7 @@
 | 同 key 有效交付顺序 | 支持；Stream lane 与物理 Shard 独立 | 不提供 Stream 的同 key 顺序契约 |
 | 多个独立业务读取同一消息 | 创建不同订阅名 | 创建不同订阅名 |
 | 同一订阅多成员 | 服务端分配有界 lane | 成员分摊消息 |
-| 业务确认 | `ack_cumulative(&message)` | `ack(&message)` |
+| 业务确认 | `ack_cumulative(&message)` | `ack_cumulative(&message)` 或 `ack(&message)` |
 | 安排重投 | 无 Queue 式 NACK 接口 | `nack(&message, delay)` |
 | 交付保证 | 至少一次 | 至少一次 |
 
@@ -21,10 +21,10 @@ Topic 必须已存在。consumer build 创建或加入持久订阅；默认初�
 
 1. `receive().await?` 等待一条消息；`try_receive()` 只检查本地队列，返回 None 不证明远端没有积压。
 2. 在业务系统完成幂等处理。正文已接收、预取入队和 SDK 缓冲均不代表业务成功。
-3. Queue 对原消息调用单条 ACK；Stream 在全部前置处理成功后累计 ACK。
+3. Stream 在全部前置处理成功后累计 ACK。Queue 可按同一逻辑 consumer 实例内连续的已交付前缀累计 ACK，也可对独立完成的消息使用单条 ACK。
 4. 等待成功回执，才将对应范围视为持久确认。热 WAL 和 S3 冷读使用同一持久 attempt / ACK 权威。
 
-Stream 累计 ACK 覆盖该逻辑 consumer 已交付给应用的共享前缀，不含尚未交付的预取消息。多个 clone 共享前缀：如果并发处理时较早任务尚未成功，就不能累计确认较后的消息。Queue 的乱序单条 ACK 不会跳过更早未确认的洞。
+Stream 和 Queue 的累计 ACK 覆盖该逻辑 consumer 已交付给应用的连续前缀，不含尚未交付的预取消息。多个 clone 共享前缀：如果并发处理时较早任务尚未成功，就不能累计确认较后的消息。Queue 的累计 ACK 遇到交付空洞会被拒绝，乱序单条 ACK 不会跳过更早未确认的洞。
 
 Queue NACK 成功只表示已持久安排重投，不表示业务成功。业务永久失败不能通过自动 ACK、跳过、向前移动游标或“已投递 DLQ”隐式改写为成功。
 
