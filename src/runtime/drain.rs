@@ -226,7 +226,10 @@ impl Service {
         if let Some(expected) = drains.get(&partition) {
             if *expected != epoch {
                 drains.remove(&partition);
-            } else if matches!(kind, FrameKind::Publish | FrameKind::GroupRead) {
+            } else if matches!(
+                kind,
+                FrameKind::Publish | FrameKind::PublishBatch | FrameKind::GroupRead
+            ) {
                 return Err(Error::unavailable());
             }
         }
@@ -876,6 +879,7 @@ mod admission_tests {
         }
         for (kind, allowed) in [
             (FrameKind::Publish, false),
+            (FrameKind::PublishBatch, false),
             (FrameKind::GroupRead, false),
             (FrameKind::CreateLogicalTopic, false),
             (FrameKind::ConsoleWrite, false),

@@ -60,7 +60,17 @@ pub(crate) fn decode_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
 }
 
 pub(crate) fn frame(payload: &[u8], sequence: u64) -> Result<Vec<u8>> {
-    let length = u64::try_from(payload.len()).map_err(|_| Error::Limit {
+    frame_with_prefix(&[], payload, sequence)
+}
+
+pub(crate) fn frame_with_prefix(prefix: &[u8], payload: &[u8], sequence: u64) -> Result<Vec<u8>> {
+    let payload_len = prefix
+        .len()
+        .checked_add(payload.len())
+        .ok_or(Error::Limit {
+            name: "record length",
+        })?;
+    let length = u64::try_from(payload_len).map_err(|_| Error::Limit {
         name: "record length",
     })?;
     let length_bytes = length.to_le_bytes();
@@ -69,9 +79,9 @@ pub(crate) fn frame(payload: &[u8], sequence: u64) -> Result<Vec<u8>> {
     hash.update(&MAGIC);
     hash.update(&length_bytes);
     hash.update(&sequence_bytes);
+    hash.update(prefix);
     hash.update(payload);
-    let capacity = payload
-        .len()
+    let capacity = payload_len
         .checked_add(FRAME_HEADER_BYTES)
         .ok_or(Error::Limit {
             name: "frame length",
@@ -88,6 +98,7 @@ pub(crate) fn frame(payload: &[u8], sequence: u64) -> Result<Vec<u8>> {
     let header_hash = blake3::hash(&result);
     result.extend_from_slice(header_hash.as_bytes());
     result.extend_from_slice(hash.finalize().as_bytes());
+    result.extend_from_slice(prefix);
     result.extend_from_slice(payload);
     Ok(result)
 }
@@ -254,6 +265,23 @@ mod tests {
     #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
     struct Body {
         bytes: Bytes,
+    }
+
+    #[test]
+    fn prefixed_frame_matches_concatenated_payload_frame() {
+        let large_payload = vec![9_u8; 4096];
+        for (prefix, payload, sequence) in [
+            (&[][..], &[][..], 0),
+            (b"envelope".as_slice(), b"payload".as_slice(), 7),
+            (b"envelope".as_slice(), large_payload.as_slice(), 42),
+        ] {
+            let mut concatenated = prefix.to_vec();
+            concatenated.extend_from_slice(payload);
+            assert_eq!(
+                frame_with_prefix(prefix, payload, sequence).unwrap(),
+                frame(&concatenated, sequence).unwrap()
+            );
+        }
     }
 
     #[test]

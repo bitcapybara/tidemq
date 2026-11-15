@@ -31,6 +31,60 @@ pub(super) struct Record<'a> {
     pub command: &'a [u8],
 }
 
+pub(super) fn encode_record(
+    format: [u8; 8],
+    identity: [u8; 32],
+    sequence: u64,
+    command: &[u8],
+    limit: usize,
+) -> wal::Result<Vec<u8>> {
+    let command_len = u64::try_from(command.len()).map_err(|_| wal::Error::Limit {
+        name: "encoded storage value",
+    })?;
+    let size = 8usize
+        .checked_add(32)
+        .and_then(|size| size.checked_add(varint_len(sequence)))
+        .and_then(|size| size.checked_add(varint_len(command_len)))
+        .and_then(|size| size.checked_add(command.len()))
+        .ok_or(wal::Error::Limit {
+            name: "encoded storage value",
+        })?;
+    if size > limit {
+        return Err(wal::Error::Limit {
+            name: "encoded storage value",
+        });
+    }
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(size)
+        .map_err(|_| wal::Error::Limit {
+            name: "record allocation",
+        })?;
+    output.extend_from_slice(&format);
+    output.extend_from_slice(&identity);
+    push_varint(&mut output, sequence);
+    push_varint(&mut output, command_len);
+    output.extend_from_slice(command);
+    Ok(output)
+}
+
+fn varint_len(mut value: u64) -> usize {
+    let mut length = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        length += 1;
+    }
+    length
+}
+
+fn push_varint(output: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        output.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    output.push(value as u8);
+}
+
 #[derive(Serialize, Deserialize)]
 pub(super) struct Checkpoint {
     pub format: [u8; 8],

@@ -149,6 +149,40 @@ pub struct ClusterResult {
 }
 
 impl MetadataState {
+    pub(crate) fn placement_groups(&self, count: usize) -> Option<Vec<u64>> {
+        if count == 0 {
+            return None;
+        }
+        let mut groups = self
+            .groups
+            .values()
+            .filter(|group| {
+                !self
+                    .pending_data_replacements()
+                    .any(|plan| plan.group_id() == group.group_id)
+                    && !self
+                        .membership_change(group.group_id)
+                        .is_some_and(|change| !change.is_complete())
+                    && group.placement.hosts().iter().all(|node| {
+                        self.nodes.get(node).is_some_and(|node| {
+                            node.spec.schedulable && node.spec.roles.contains(&NodeRole::Storage)
+                        })
+                    })
+            })
+            .map(|group| {
+                (
+                    self.partitions
+                        .values()
+                        .filter(|partition| partition.group_id == group.group_id)
+                        .count(),
+                    group.group_id,
+                )
+            })
+            .collect::<Vec<_>>();
+        groups.sort_unstable();
+        (groups.len() >= count).then(|| groups.into_iter().take(count).map(|(_, id)| id).collect())
+    }
+
     pub(crate) fn placement_group(&self, exclude: Option<u64>) -> Option<u64> {
         self.groups
             .values()

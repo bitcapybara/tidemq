@@ -125,8 +125,9 @@ send 接受 `Into<Message>`，无 key 的简单消息可直接 producer.send("he
 | producer.send_batch(messages).await | 保留每条身份和输入关联，允许跨组部分完成 |
 | receive().await | 两类 Consumer 均等待并返回 `Result<ReceivedMessage>` |
 | try_receive() | 只查询本地队列，返回 `Result<Option<ReceivedMessage>>`；None 不证明远端无消息 |
-| StreamConsumer::ack_cumulative | 仅此类型提供，确认本成员的应用交付前缀 |
-| QueueConsumer::ack/nack | 仅此类型提供，单条确认或持久安排重投 |
+| StreamConsumer::ack_cumulative | 确认本成员的应用交付前缀 |
+| QueueConsumer::ack_cumulative | 确认同一逻辑 consumer 实例内连续的已交付前缀；Queue 另提供单条确认和持久重投 |
+| QueueConsumer::ack/nack | 单条确认或持久安排重投 |
 | pending_sends/pending_acks | 原逻辑实例的有界恢复快照，见第 8 节 |
 | close().await | Client、Producer、两类 Consumer 均返回 `Result<CloseReport, CloseError>` |
 
@@ -218,7 +219,7 @@ send_batch 保留每条身份、同 key 输入顺序及成功/未知/拒绝/未�
 | 模型 | 分配 | 确认与失败 |
 | --- | --- | --- |
 | Stream | 按 key hash 的有序 lane 分摊，一个 lane 一个有效 owner；一成员可读多个分片 | 本成员累计 ACK；失败不确认，可本地重试或退出后有序重投 |
-| Queue | 逐消息 attempt 分摊，同一分片可同时服务多个成员 | 单条 ACK/NACK，允许独立完成与重投，不保证同 key 顺序 |
+| Queue | 逐消息 attempt 分摊，同一分片可同时服务多个成员 | 同一逻辑 consumer 实例支持连续前缀或单条 ACK，支持 NACK，允许独立完成与重投，不保证同 key 顺序 |
 
 同 Topic 可有多个 Stream 和多个 Queue 订阅；不同订阅各有进度、起点、重投和历史保护，同一订阅内成员分摊工作。订阅在零成员时继续保护积压。
 
@@ -281,7 +282,7 @@ C1 累计确认 S:3 只确认自己的 S:1/S:3，不确认 C2 的 S:2。跨分�
 4. PendingAck 保存固定清单、已完成/未知/拒绝结果；重试只对账或继续原子批次，不能扩大前缀、重做整个成功集合或换新 attempt 确认。
 5. 原凭证失效且尚未完成时报告具体结果；新投递须重新由业务处理后发起新确认，不能伪造旧累计成功。
 
-首版使用合法消息凭证的有界子批次表达累计操作，服务端不信任客户端自报的最大 sequence。范围 ACK 压缩只有在证明完整覆盖和授权后才能引入。QueueConsumer 不提供累计方法，StreamConsumer 不提供单条业务 ACK/NACK；原始协议请求同样校验这些限制。
+首版使用合法消息凭证的有界子批次表达累计操作，服务端不信任客户端自报的最大 sequence。范围 ACK 压缩只有在证明完整覆盖和授权后才能引入。StreamConsumer 不提供单条业务 ACK/NACK；QueueConsumer 同时提供累计 ACK、单条 ACK 和 NACK；原始协议请求同样校验这些限制。
 
 ### 7.3 Queue NACK 与失败恢复
 

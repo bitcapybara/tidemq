@@ -211,6 +211,9 @@ pub struct TopicResult {
 pub struct LogicalTopic {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
+    /// Zero keeps the existing single-partition behavior.
+    #[prost(uint32, tag = "2")]
+    pub partition_count: u32,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetTopicLayout {
@@ -639,6 +642,60 @@ pub struct PublishResult {
     pub sealed_end: u64,
     #[prost(bool, tag = "10")]
     pub permanently_closed: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PublishBatchItem {
+    #[prost(uint64, tag = "1")]
+    pub sequence: u64,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub digest: ::prost::bytes::Bytes,
+    #[prost(message, optional, tag = "3")]
+    pub message: ::core::option::Option<PublishMessage>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PublishBatch {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(uint32, tag = "3")]
+    pub partition_id: u32,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub registration: u64,
+    #[prost(message, repeated, tag = "6")]
+    pub items: ::prost::alloc::vec::Vec<PublishBatchItem>,
+    #[prost(uint64, tag = "7")]
+    pub retired_before: u64,
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PublishBatchResultItem {
+    #[prost(uint64, tag = "1")]
+    pub sequence: u64,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub digest: ::prost::bytes::Bytes,
+    #[prost(uint64, optional, tag = "3")]
+    pub offset: ::core::option::Option<u64>,
+    #[prost(bytes = "bytes", tag = "4")]
+    pub permanent_seal: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "5")]
+    pub sealed_end: u64,
+    #[prost(bool, tag = "6")]
+    pub permanently_closed: bool,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PublishBatchResult {
+    #[prost(bytes = "bytes", tag = "1")]
+    pub topic_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "2")]
+    pub shard_id: ::prost::bytes::Bytes,
+    #[prost(bytes = "bytes", tag = "3")]
+    pub producer_id: ::prost::bytes::Bytes,
+    #[prost(uint64, tag = "4")]
+    pub registration: u64,
+    #[prost(message, repeated, tag = "5")]
+    pub items: ::prost::alloc::vec::Vec<PublishBatchResultItem>,
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RetirePublishes {

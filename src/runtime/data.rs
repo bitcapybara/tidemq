@@ -44,6 +44,7 @@ pub(crate) fn partition(frame: &Frame, limits: &ProtocolLimits) -> Result<Partit
     }
     Ok(match frame_kind(frame)? {
         FrameKind::Publish => from!(public::Publish),
+        FrameKind::PublishBatch => from!(public::PublishBatch),
         FrameKind::RetirePublishes => from!(public::RetirePublishes),
         FrameKind::GroupRead => from!(public::GroupRead),
         FrameKind::GroupAck => from!(public::GroupAck),

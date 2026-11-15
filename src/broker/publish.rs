@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 use tidemq_protocol::topic::HashRange;
 
 impl DataApplication {
@@ -39,6 +40,157 @@ impl DataApplication {
             .retire_publishes(&permit, before)
             .map_err(DataRejection::Producer)?;
         Ok(DataResponse::Retired)
+    }
+
+    pub(super) fn publish_messages(
+        &mut self,
+        partition: PartitionKey,
+        writer: WriterFence,
+        birth: (Id, HashRange),
+        permit: producer::PublisherPermit,
+        requests: Vec<producer::PublishRequest>,
+        now_ms: u64,
+    ) -> Result<DataResponse, DataRejection> {
+        self.check_writer(partition, writer)?;
+        birth
+            .1
+            .validate()
+            .map_err(|_| DataRejection::InvalidConfiguration)?;
+        let config = self.config.as_ref().ok_or(DataRejection::Uninitialized)?;
+        let available_bytes = config
+            .max_hot_bytes
+            .saturating_sub(self.hot_state_bytes()?)
+            .saturating_sub(
+                self.authority
+                    .reservation()
+                    .map_or(0, |capacity| capacity.max_hot_bytes),
+            )
+            .saturating_sub(640);
+        let available_messages = config
+            .max_hot_messages
+            .saturating_sub(self.hot_messages)
+            .saturating_sub(
+                self.authority
+                    .reservation()
+                    .map_or(0, |capacity| capacity.max_hot_messages),
+            );
+        let state = self
+            .partitions
+            .get_mut(&partition)
+            .ok_or(DataRejection::PartitionMissing)?;
+        if state.birth.is_some_and(|original| original != birth) {
+            return Err(DataRejection::ConfigurationConflict);
+        }
+        let mut total_bytes = 0_u64;
+        let mut new_bytes = Vec::with_capacity(requests.len());
+        let mut hashes = Vec::with_capacity(requests.len());
+        let mut batch_sequences = BTreeMap::new();
+        for request in &requests {
+            let hash = request.verify().map_err(DataRejection::Producer)?;
+            if !birth.1.contains(hash) {
+                return Err(DataRejection::Producer(producer::Rejection::WrongPartition));
+            }
+            if let Some(previous_digest) =
+                batch_sequences.insert(request.identity.sequence, request.digest)
+            {
+                if previous_digest != request.digest {
+                    return Err(DataRejection::Producer(
+                        producer::Rejection::SequenceConflict,
+                    ));
+                }
+                hashes.push(hash);
+                new_bytes.push(0);
+                continue;
+            }
+            let duplicate = state
+                .producer
+                .publish_result(request.identity, request.digest)
+                .map_err(DataRejection::Producer)?
+                .is_some();
+            let bytes = request
+                .message
+                .logical_bytes()
+                .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?;
+            hashes.push(hash);
+            new_bytes.push(if duplicate { 0 } else { bytes });
+            total_bytes = total_bytes
+                .checked_add(if duplicate { 0 } else { bytes })
+                .ok_or(DataRejection::Quota(QuotaRejection::Arithmetic))?;
+        }
+        if let Some((plan, committed_end)) = state.seal {
+            if total_bytes == 0 {
+                let results = state
+                    .producer
+                    .publish_batch_admitted(&permit, requests, now_ms, 0, 0, |_, _, _| Ok(()))
+                    .map_err(DataRejection::Producer)?;
+                return Ok(DataResponse::PublishedBatch(results));
+            }
+            return Ok(DataResponse::ShardSealed {
+                plan,
+                committed_end,
+            });
+        }
+        if total_bytes > 0 {
+            let protected = state.protected_before();
+            let backlog = state
+                .retention
+                .logical_backlog_upper_bytes(protected)
+                .map_err(DataRejection::Retention)?;
+            let quota = state
+                .quota
+                .as_mut()
+                .ok_or(DataRejection::Quota(QuotaRejection::Missing))?;
+            let rate = quota
+                .publish(backlog, protected.is_some(), total_bytes, now_ms)
+                .map_err(DataRejection::Quota)?;
+            let before = state.producer.hot_bytes();
+            let result = state
+                .producer
+                .publish_batch_admitted(
+                    &permit,
+                    requests,
+                    now_ms,
+                    available_bytes,
+                    available_messages,
+                    |previous, end, bytes| {
+                        state
+                            .retention
+                            .record_append(previous, end, now_ms, bytes)
+                            .map_err(|reason| match reason {
+                                crate::retention::Rejection::Allocation => {
+                                    producer::Rejection::Allocation
+                                }
+                                crate::retention::Rejection::TimestampBudget => {
+                                    producer::Rejection::DataCapacity
+                                }
+                                crate::retention::Rejection::CounterOverflow => {
+                                    producer::Rejection::CounterExhausted
+                                }
+                                _ => producer::Rejection::InvalidSnapshot,
+                            })
+                    },
+                )
+                .map_err(DataRejection::Producer)?;
+            state.birth = Some(birth);
+            for ((hash, bytes), receipt) in hashes.into_iter().zip(new_bytes).zip(&result) {
+                if !receipt.duplicate {
+                    state.load.publish(birth.1, hash, bytes);
+                }
+            }
+            quota.commit_publish(rate, total_bytes);
+            self.hot_bytes = self
+                .hot_bytes
+                .saturating_add(state.producer.hot_bytes().saturating_sub(before));
+            self.hot_messages = self
+                .hot_messages
+                .saturating_add(result.iter().filter(|receipt| !receipt.duplicate).count());
+            return Ok(DataResponse::PublishedBatch(result));
+        }
+        let result = state
+            .producer
+            .publish_batch_admitted(&permit, requests, now_ms, 0, 0, |_, _, _| Ok(()))
+            .map_err(DataRejection::Producer)?;
+        Ok(DataResponse::PublishedBatch(result))
     }
 
     pub(super) fn publish_message(

@@ -113,7 +113,10 @@ impl ProducerBuilder {
         self
     }
     pub async fn build(self) -> Result<Producer> {
-        if self.sends == 0 || self.sends > 256 || self.bytes < 4096 || self.bytes > 8 * 1024 * 1024
+        if self.sends == 0
+            || self.sends > 8_192
+            || self.bytes < 4096
+            || self.bytes > 32 * 1024 * 1024
         {
             return Err(Error::Configuration {
                 reason: "producer pending budgets are invalid",

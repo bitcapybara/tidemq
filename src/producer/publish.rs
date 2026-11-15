@@ -260,6 +260,200 @@ impl ProducerState {
     }
 
     #[allow(clippy::too_many_arguments)] // Admission carries the group budget and retention reservation together.
+    pub(crate) fn publish_batch_admitted(
+        &mut self,
+        permit: &PublisherPermit,
+        mut requests: Vec<PublishRequest>,
+        now_ms: u64,
+        available_bytes: u64,
+        available_messages: usize,
+        before_commit: impl FnOnce(u64, u64, u64) -> Result<()>,
+    ) -> Result<Vec<PublishReceipt>> {
+        if requests.is_empty() {
+            return Err(Rejection::InvalidBatch);
+        }
+        let now_ms = now_ms.max(self.logical_time_ms);
+        self.advance_time(now_ms)?;
+        self.publishers
+            .sessions
+            .retain(|_, session| !session.retired || session.reap_after_ms > now_ms);
+        let key = (permit.producer, permit.registration);
+        let current_session = self.publishers.sessions.get(&key);
+        if current_session.is_some_and(|session| {
+            session.client != permit.client || session.credential != permit.credential
+        }) {
+            return Err(Rejection::SessionConflict);
+        }
+        let mut receipts = Vec::with_capacity(requests.len());
+        let mut aliases = Vec::new();
+        let mut sequence_indexes = BTreeMap::new();
+        let mut new_items = Vec::new();
+        let mut retired_before = 0_u64;
+        let mut total_bytes = 0_u64;
+        for (index, request) in requests.iter_mut().enumerate() {
+            let hash = request.verify()?;
+            self.publisher_binding(permit, request.identity)?;
+            if let Some((previous_digest, previous)) =
+                sequence_indexes.insert(request.identity.sequence, (request.digest, index))
+            {
+                if previous_digest != request.digest {
+                    return Err(Rejection::SequenceConflict);
+                }
+                aliases.push((index, previous));
+                continue;
+            }
+            retired_before = retired_before.max(request.retired_before);
+            if let Some(result) = self.publish_result(request.identity, request.digest)? {
+                receipts.push((index, result));
+                continue;
+            }
+            if self.publisher_closed(request.identity) {
+                return Err(Rejection::SessionConflict);
+            }
+            let bytes = request
+                .message
+                .logical_bytes()
+                .ok_or(Rejection::InvalidBatch)?;
+            if bytes > self.limits.max_message_bytes {
+                return Err(Rejection::MessageTooLarge);
+            }
+            total_bytes = total_bytes
+                .checked_add(bytes)
+                .ok_or(Rejection::CounterExhausted)?;
+            request.message.key = super::super::types::compact_bytes(&request.message.key)?;
+            request.message.body = super::super::types::compact_bytes(&request.message.body)?;
+            request.message.context = super::super::types::compact_bytes(&request.message.context)?;
+            new_items.push((index, hash, bytes));
+        }
+        if !new_items.is_empty() && (!permit.live || permit.expires_ms <= now_ms) {
+            return Err(Rejection::SessionExpired);
+        }
+        if current_session.is_none() && self.publishers.sessions.len() >= self.limits.max_sessions {
+            return Err(Rejection::SessionCapacity);
+        }
+        if current_session.is_some_and(|session| session.retired && !new_items.is_empty()) {
+            return Err(Rejection::SessionConflict);
+        }
+        let retained =
+            current_session.map_or(0, |session| session.results.range(retired_before..).count());
+        if retained
+            .checked_add(new_items.len())
+            .is_none_or(|count| count > self.limits.max_results_per_session)
+        {
+            return Err(Rejection::SessionCapacity);
+        }
+        let hot_bytes = self
+            .hot_bytes
+            .checked_add(total_bytes)
+            .ok_or(Rejection::CounterExhausted)?;
+        if total_bytes > available_bytes
+            || new_items.len() > available_messages
+            || hot_bytes > self.limits.max_hot_bytes
+            || self
+                .messages
+                .len()
+                .checked_add(new_items.len())
+                .is_none_or(|count| count > self.limits.max_hot_messages)
+        {
+            return Err(Rejection::DataCapacity);
+        }
+        let end = self
+            .committed_end
+            .checked_add(u64::try_from(new_items.len()).map_err(|_| Rejection::CounterExhausted)?)
+            .ok_or(Rejection::CounterExhausted)?;
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(Rejection::CounterExhausted)?;
+        self.messages
+            .try_reserve(new_items.len())
+            .map_err(|_| Rejection::Allocation)?;
+        if new_items.is_empty() {
+            for (alias, previous) in aliases {
+                let receipt = receipts
+                    .iter()
+                    .find(|(saved, _)| *saved == previous)
+                    .map(|(_, receipt)| PublishReceipt {
+                        offset: receipt.offset,
+                        duplicate: true,
+                    })
+                    .ok_or(Rejection::InvalidSnapshot)?;
+                receipts.push((alias, receipt));
+            }
+            return requests
+                .iter()
+                .enumerate()
+                .map(|(index, _)| {
+                    receipts
+                        .iter()
+                        .find(|(saved, _)| *saved == index)
+                        .map(|(_, receipt)| *receipt)
+                        .ok_or(Rejection::InvalidSnapshot)
+                })
+                .collect::<Result<Vec<_>>>();
+        }
+        before_commit(self.committed_end, end, total_bytes)?;
+        let session = self
+            .publishers
+            .sessions
+            .entry(key)
+            .or_insert_with(|| Publisher {
+                client: permit.client,
+                credential: permit.credential,
+                floor: 1,
+                results: BTreeMap::new(),
+                retired: false,
+                reap_after_ms: permit.expires_ms.saturating_add(620_000),
+            });
+        session.floor = session.floor.max(retired_before);
+        session
+            .results
+            .retain(|sequence, _| *sequence >= session.floor);
+        let first_offset = self.committed_end;
+        for (new_index, (index, _, bytes)) in new_items.iter().enumerate() {
+            let offset = first_offset
+                .checked_add(u64::try_from(new_index).map_err(|_| Rejection::CounterExhausted)?)
+                .ok_or(Rejection::CounterExhausted)?;
+            let request = requests.get(*index).ok_or(Rejection::InvalidSnapshot)?;
+            session.results.insert(
+                request.identity.sequence,
+                SavedPublish {
+                    offset,
+                    digest: request.digest,
+                },
+            );
+            self.messages.push_back(request.message.clone());
+            receipts.push((
+                *index,
+                PublishReceipt {
+                    offset,
+                    duplicate: false,
+                },
+            ));
+            let _ = bytes;
+        }
+        for (alias, previous) in aliases {
+            let receipt = receipts
+                .iter()
+                .find(|(saved, _)| *saved == previous)
+                .map(|(_, receipt)| PublishReceipt {
+                    offset: receipt.offset,
+                    duplicate: true,
+                })
+                .ok_or(Rejection::InvalidSnapshot)?;
+            receipts.push((alias, receipt));
+        }
+        self.committed_end = end;
+        self.hot_bytes = hot_bytes;
+        self.revision = revision;
+        self.logical_time_ms = self.logical_time_ms.max(now_ms);
+        receipts.sort_by_key(|(index, _)| *index);
+        receipts
+            .into_iter()
+            .map(|(_, receipt)| Ok(receipt))
+            .collect()
+    }
+
     pub(crate) fn publish_admitted(
         &mut self,
         permit: &PublisherPermit,

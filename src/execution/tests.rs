@@ -118,6 +118,26 @@ fn options() -> LocalOptions {
     }
 }
 
+#[test]
+fn optimized_local_record_encoding_matches_postcard() {
+    let command = b"local-command";
+    let format = *b"TIDELOC1";
+    let identity = [7; 32];
+    let sequence = 300;
+    let expected = crate::wal::encode_value(
+        &super::storage::Record {
+            format,
+            identity,
+            sequence,
+            command,
+        },
+        1024,
+    )
+    .unwrap();
+    let actual = super::storage::encode_record(format, identity, sequence, command, 1024).unwrap();
+    assert_eq!(actual, expected);
+}
+
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }

@@ -108,6 +108,7 @@ async fn one_tenant_cannot_fill_data_handlers_by_opening_another_credential_and_
                 TrafficClass::Control,
                 &LogicalTopic {
                     name: "other-tenant".into(),
+                    partition_count: 0,
                 },
             ),
             deadline(),

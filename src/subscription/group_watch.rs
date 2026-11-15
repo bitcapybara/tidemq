@@ -207,6 +207,101 @@ mod tests {
         );
     }
     #[test]
+    fn queue_cumulative_ack_accepts_contiguous_proofs() {
+        let (mut cursor, id) = fixture();
+        let read = cursor
+            .read(
+                GroupRead {
+                    member: id,
+                    epoch: 1,
+                    sequence: 1,
+                    now_ms: 0,
+                    max_messages: 8,
+                    max_bytes: 4096,
+                },
+                &[
+                    Candidate {
+                        offset: 0,
+                        hash: 0,
+                        bytes: 1,
+                    },
+                    Candidate {
+                        offset: 1,
+                        hash: 0,
+                        bytes: 1,
+                    },
+                    Candidate {
+                        offset: 2,
+                        hash: 0,
+                        bytes: 1,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(read.deliveries.len(), 3);
+        assert_eq!(
+            cursor.acknowledge(GroupAck {
+                member: id,
+                epoch: 1,
+                sequence: 1,
+                now_ms: 0,
+                model: SubscriptionKind::Queue,
+                proofs: read.deliveries,
+                nack_delay_ms: None,
+            }),
+            Ok(AckDisposition::Acknowledged)
+        );
+    }
+
+    #[test]
+    fn queue_cumulative_ack_rejects_gaps() {
+        let (mut cursor, id) = fixture();
+        let read = cursor
+            .read(
+                GroupRead {
+                    member: id,
+                    epoch: 1,
+                    sequence: 1,
+                    now_ms: 0,
+                    max_messages: 8,
+                    max_bytes: 4096,
+                },
+                &[
+                    Candidate {
+                        offset: 0,
+                        hash: 0,
+                        bytes: 1,
+                    },
+                    Candidate {
+                        offset: 1,
+                        hash: 0,
+                        bytes: 1,
+                    },
+                    Candidate {
+                        offset: 2,
+                        hash: 0,
+                        bytes: 1,
+                    },
+                ],
+            )
+            .unwrap();
+        let mut proofs = read.deliveries;
+        proofs.remove(1);
+        assert_eq!(
+            cursor.acknowledge(GroupAck {
+                member: id,
+                epoch: 1,
+                sequence: 1,
+                now_ms: 0,
+                model: SubscriptionKind::Queue,
+                proofs,
+                nack_delay_ms: None,
+            }),
+            Err(Rejection::InvalidContext)
+        );
+    }
+
+    #[test]
     fn delayed_nack_is_a_timer_dependency_and_watch_timeout_never_redelivers() {
         let (mut cursor, id) = fixture();
         let read = cursor

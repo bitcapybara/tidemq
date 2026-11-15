@@ -817,9 +817,10 @@ impl Service {
             FrameKind::CreateLogicalTopic
             | FrameKind::ChangeTopicLayout
             | FrameKind::RemoveTopic => Permission::ManageTopics,
-            FrameKind::PublisherControl | FrameKind::Publish | FrameKind::RetirePublishes => {
-                Permission::Produce
-            }
+            FrameKind::PublisherControl
+            | FrameKind::Publish
+            | FrameKind::PublishBatch
+            | FrameKind::RetirePublishes => Permission::Produce,
             FrameKind::Diagnose | FrameKind::ManageCluster | FrameKind::GetClusterRegistry => {
                 Permission::ManageTenants
             }
@@ -888,6 +889,9 @@ impl Service {
             }
             FrameKind::PublisherControl => {
                 wire::id(&decode::<public::PublisherControl>(self, frame)?.topic_id)?
+            }
+            FrameKind::PublishBatch => {
+                wire::id(&decode::<public::PublishBatch>(self, frame)?.topic_id)?
             }
             FrameKind::Cancel | FrameKind::GroupWatchCancel => return Ok(AuthResource::Identity),
             FrameKind::ConsoleRead => return Ok(AuthResource::Identity),

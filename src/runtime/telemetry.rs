@@ -228,13 +228,17 @@ impl OperationTimer {
                     frame.payload.clone(),
                     limits,
                 )
-                .map(|result| {
-                    if result.offset.is_some() {
-                        Outcome::Committed
-                    } else {
-                        Outcome::Rejected
-                    }
-                })
+                .map(|result| publish_outcome(result.offset))
+                .unwrap_or(Outcome::Failed)
+            }
+            Ok(frame)
+                if frame.kind
+                    == i32::from(tidemq_protocol::common::FrameKind::PublishBatchResult) =>
+            {
+                tidemq_protocol::framing::decode_payload::<
+                    tidemq_protocol::public::PublishBatchResult,
+                >(frame.payload.clone(), limits)
+                .map(|result| publish_batch_outcome(&result))
                 .unwrap_or(Outcome::Failed)
             }
             Ok(_) => Outcome::Committed,
@@ -252,6 +256,26 @@ impl Drop for OperationTimer {
                 self.started.elapsed().as_secs_f64(),
             );
         }
+    }
+}
+
+fn publish_outcome(offset: Option<u64>) -> crate::observability::metrics::Outcome {
+    match offset {
+        Some(_) => crate::observability::metrics::Outcome::Committed,
+        None => crate::observability::metrics::Outcome::Rejected,
+    }
+}
+
+fn publish_batch_outcome(
+    result: &tidemq_protocol::public::PublishBatchResult,
+) -> crate::observability::metrics::Outcome {
+    if result.items.is_empty() {
+        return crate::observability::metrics::Outcome::Rejected;
+    }
+    if result.items.iter().all(|item| item.offset.is_some()) {
+        crate::observability::metrics::Outcome::Committed
+    } else {
+        crate::observability::metrics::Outcome::Rejected
     }
 }
 
@@ -318,6 +342,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn publish_batch_metrics_require_a_nonempty_fully_committed_result() {
+        use crate::observability::metrics::Outcome;
+        use tidemq_protocol::public::{PublishBatchResult, PublishBatchResultItem};
+
+        assert_eq!(
+            publish_batch_outcome(&PublishBatchResult::default()),
+            Outcome::Rejected
+        );
+        assert_eq!(
+            publish_batch_outcome(&PublishBatchResult {
+                items: vec![PublishBatchResultItem {
+                    offset: Some(7),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            Outcome::Committed
+        );
+        assert_eq!(
+            publish_batch_outcome(&PublishBatchResult {
+                items: vec![PublishBatchResultItem::default()],
+                ..Default::default()
+            }),
+            Outcome::Rejected
+        );
+    }
+
+    #[test]
     fn unknown_error_log_retains_nested_source_chain_and_wire_failure() {
         use tidemq_protocol::common::{ErrorCode, ErrorReply, TrafficClass};
         use tidemq_protocol::framing::{decode_payload, new_frame};
@@ -345,6 +397,7 @@ mod tests {
             identity,
             &tidemq_protocol::public::LogicalTopic {
                 name: "diagnostic".into(),
+                partition_count: 0,
             },
             1000,
             &limits,

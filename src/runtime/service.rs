@@ -461,7 +461,7 @@ impl Service {
         let operation = match frame_kind(frame)? {
             FrameKind::GroupRead => Operation::Read,
             FrameKind::GroupAck => Operation::Ack,
-            FrameKind::Publish => Operation::Produce,
+            FrameKind::Publish | FrameKind::PublishBatch => Operation::Produce,
             _ => Operation::Control,
         };
         let mut timer = super::telemetry::OperationTimer::new(self.metrics.operation(operation));
@@ -637,7 +637,10 @@ impl Service {
                 .await;
         }
         let group = route.group_id;
-        let result = if matches!(kind, FrameKind::Publish | FrameKind::RetirePublishes) {
+        let result = if matches!(
+            kind,
+            FrameKind::Publish | FrameKind::PublishBatch | FrameKind::RetirePublishes
+        ) {
             drop(order);
             self.publishing_public(&access, frame, route, deadline)
                 .await

@@ -52,7 +52,10 @@ pub enum AdminReceipt {
 pub(crate) enum Request {
     Identity(public::ManageIdentity),
     Cluster(public::ManageCluster),
-    CreateTopic(String),
+    CreateTopic {
+        name: String,
+        partition_count: u32,
+    },
     DeleteTopic(Id),
     Layout {
         name: String,
@@ -90,7 +93,12 @@ impl Request {
         let bytes = match self {
             Self::Identity(request) => request.encoded_len(),
             Self::Cluster(request) => request.encoded_len(),
-            Self::CreateTopic(name) => name.len(),
+            Self::CreateTopic {
+                name,
+                partition_count,
+            } => name
+                .len()
+                .saturating_add(std::mem::size_of_val(partition_count)),
             Self::DeleteTopic(_) => 16,
             Self::Layout { name, request } => name.len().saturating_add(request.encoded_len()),
         };
@@ -119,14 +127,20 @@ impl Request {
             Self::Identity(request) => {
                 return identity_request(client, request, operation, deadline).await;
             }
-            Self::CreateTopic(name) => {
+            Self::CreateTopic {
+                name,
+                partition_count,
+            } => {
                 let reply = client
                     .request(
                         FrameKind::CreateLogicalTopic,
                         FrameKind::TopicLayoutResult,
                         TrafficClass::Control,
                         operation,
-                        &public::LogicalTopic { name: name.clone() },
+                        &public::LogicalTopic {
+                            name: name.clone(),
+                            partition_count: *partition_count,
+                        },
                         deadline,
                     )
                     .await?;
@@ -147,7 +161,7 @@ impl Request {
             }
         };
         let expected_topic = match self {
-            Self::CreateTopic(_) => crate::admin::bytes(operation),
+            Self::CreateTopic { .. } => crate::admin::bytes(operation),
             Self::Layout { request, .. } => request.topic_id.clone(),
             Self::Identity(_) | Self::Cluster(_) | Self::DeleteTopic(_) => {
                 return Err(Error::ResponseMismatch {

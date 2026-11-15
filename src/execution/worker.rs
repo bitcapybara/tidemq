@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -13,16 +15,27 @@ use crate::wal::{self, RecordId, SegmentedDurability};
 
 use super::local::{LocalHealth, Payload, QueueEntry, Queued, Shared};
 use super::options::{RECORD_RESERVE, SEGMENT_HEADER};
-use super::storage::{FORMAT, Record, boundary, lock};
+use super::storage::{FORMAT, boundary, encode_record, lock};
 use super::{Application, Applied, Error, ExecutionPosition, Result};
 
 const MAINTENANCE_RETRY: Duration = Duration::from_millis(25);
+const BATCH_COLLECT_YIELDS: usize = 8;
 const MAX_IO_RETRIES: usize = 3;
 
 struct InFlight<A: Application> {
     payload: Payload<A>,
     sequence: u64,
 }
+
+type Durability = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+
+struct PendingBatch<A: Application> {
+    inflight: Vec<InFlight<A>>,
+    durability: Durability,
+    commit_started: Instant,
+}
+
+const PIPELINE_BATCHES: usize = 64;
 
 pub(super) async fn run<A: Application>(
     shared: Arc<Shared<A>>,
@@ -31,6 +44,9 @@ pub(super) async fn run<A: Application>(
 ) -> Result<()> {
     let mut carry: Option<Arc<Queued<A>>> = None;
     let mut blocked = false;
+    let mut closed = false;
+    let mut next_sequence = shared.sequence.load(Ordering::Acquire);
+    let mut pending = VecDeque::<PendingBatch<A>>::new();
     let mut writer = shared.storage.journal.health();
     loop {
         match &*writer.borrow_and_update() {
@@ -45,7 +61,8 @@ pub(super) async fn run<A: Application>(
                 );
             }
         }
-        if !matches!(*lock(&shared.phase), LocalHealth::Ready) {
+        let ready = matches!(*lock(&shared.phase), LocalHealth::Ready);
+        if !ready && pending.is_empty() {
             if let Some(queued) = carry.take() {
                 queued.reject("Group stopped before handoff");
             }
@@ -55,28 +72,87 @@ pub(super) async fn run<A: Application>(
             }
             return Ok(());
         }
-        let trigger = maintenance_trigger(&shared, retained.len());
-        if trigger.is_some() || shared.snapshot_requested.load(Ordering::Acquire) {
+        let trigger = pending
+            .is_empty()
+            .then(|| maintenance_trigger(&shared, retained.len()))
+            .flatten();
+        if trigger.is_some()
+            || (pending.is_empty() && shared.snapshot_requested.load(Ordering::Acquire))
+        {
             lock(&shared.stats).maintenance_trigger = trigger.or(Some("requested"));
             blocked = !checked(&shared, maintain(&shared, &mut retained).await)?;
         }
+        let pipeline_full = pending.len() >= PIPELINE_BATCHES;
+        if let Some(front) = pending.front_mut()
+            && (pipeline_full || !ready || carry.is_none() && closed)
+        {
+            let result = (&mut front.durability).await;
+            let pending_batch = pending
+                .pop_front()
+                .ok_or_else(|| Error::fatal("Durability pipeline lost its front batch"))?;
+            apply_durable(
+                &shared,
+                pending_batch.inflight,
+                result,
+                pending_batch.commit_started,
+            )
+            .await?;
+            continue;
+        }
+        let pipeline_has_room = pending.len() < PIPELINE_BATCHES;
+        if let Some(front) = pending.front_mut()
+            && carry.is_none()
+            && !closed
+            && pipeline_has_room
+        {
+            tokio::select! {
+                result = &mut front.durability => {
+                    let pending_batch = pending
+                        .pop_front()
+                        .ok_or_else(|| Error::fatal("Durability pipeline lost its front batch"))?;
+                    apply_durable(
+                        &shared,
+                        pending_batch.inflight,
+                        result,
+                        pending_batch.commit_started,
+                    )
+                    .await?;
+                }
+                entry = receiver.recv() => {
+                    match entry {
+                        Some(entry) => carry = Some(entry.queued),
+                        None => closed = true,
+                    }
+                }
+            }
+            continue;
+        }
         let first = match carry.take() {
             Some(queued) => queued,
-            None => tokio::select! {
+            None if !closed => tokio::select! {
                 biased;
                 _ = shared.wake.notified() => continue,
                 _ = shared.storage.notify.notified() => continue,
                 _ = writer.changed() => continue,
-                _ = tokio::time::sleep(MAINTENANCE_RETRY), if blocked => continue,
-                entry = receiver.recv() => match entry { Some(entry) => entry.queued, None => return Ok(()) },
+                _ = tokio::time::sleep(MAINTENANCE_RETRY), if blocked && pending.is_empty() => continue,
+                entry = receiver.recv() => match entry {
+                    Some(entry) => entry.queued,
+                    None => { closed = true; continue; }
+                },
             },
+            None => {
+                if pending.is_empty() {
+                    return Ok(());
+                }
+                continue;
+            }
         };
-        let (batch, next, bytes) = collect(&shared, first, &mut receiver);
+        let (batch, next, bytes) = collect(&shared, first, &mut receiver).await;
         carry = next;
         if batch.is_empty() {
             continue;
         }
-        let completion = batch.first().is_some_and(|queued| queued.completion);
+        let completion = batch.iter().all(|queued| queued.completion);
         if !can_append(&shared, bytes, batch.len(), completion) {
             blocked = !checked(&shared, maintain(&shared, &mut retained).await)?;
             if !can_append(&shared, bytes, batch.len(), completion) {
@@ -95,16 +171,22 @@ pub(super) async fn run<A: Application>(
                 continue;
             }
         }
-        let Some((inflight, durability)) = append(&shared, batch, &mut retained).await? else {
+        let Some((inflight, durability)) =
+            append(&shared, batch, &mut retained, &mut next_sequence).await?
+        else {
             continue;
         };
-        apply(&shared, inflight, durability).await?;
+        pending.push_back(PendingBatch {
+            inflight,
+            durability: Box::pin(async move { durability.durable().await.map_err(Into::into) }),
+            commit_started: Instant::now(),
+        });
     }
 }
 
 type Batch<A> = (Vec<Arc<Queued<A>>>, Option<Arc<Queued<A>>>, u64);
 
-fn collect<A: Application>(
+async fn collect<A: Application>(
     shared: &Shared<A>,
     first: Arc<Queued<A>>,
     receiver: &mut mpsc::Receiver<QueueEntry<A>>,
@@ -112,16 +194,13 @@ fn collect<A: Application>(
     let mut batch = Vec::new();
     let mut bytes = 0u64;
     let mut next = Some(first);
-    let completion = next.as_ref().is_some_and(|queued| queued.completion);
+    let mut empty_yields = 0;
     let batch_limit = shared
         .storage
         .options
         .batch_bytes()
         .min(shared.storage.options.journal.max_record_bytes as u64);
     while let Some(queued) = next.take() {
-        if queued.completion != completion {
-            return (batch, Some(queued), bytes);
-        }
         let size = lock(&queued.payload)
             .as_ref()
             .map_or(0, |p| p.bytes.len().saturating_add(RECORD_RESERVE)) as u64;
@@ -135,7 +214,23 @@ fn collect<A: Application>(
         if batch.len() >= shared.storage.options.batch_records() {
             break;
         }
-        next = receiver.try_recv().ok().map(|entry| entry.queued);
+        next = loop {
+            match receiver.try_recv() {
+                Ok(entry) => {
+                    empty_yields = 0;
+                    break Some(entry.queued);
+                }
+                Err(mpsc::error::TryRecvError::Empty)
+                    if !batch.is_empty() && empty_yields < BATCH_COLLECT_YIELDS =>
+                {
+                    empty_yields += 1;
+                    tokio::task::yield_now().await;
+                }
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
+                    break None;
+                }
+            }
+        };
     }
     (batch, next, bytes)
 }
@@ -217,10 +312,11 @@ async fn append<A: Application>(
     shared: &Shared<A>,
     batch: Vec<Arc<Queued<A>>>,
     retained: &mut VecDeque<(u64, RecordId)>,
+    next_sequence: &mut u64,
 ) -> Result<Option<(Vec<InFlight<A>>, SegmentedDurability)>> {
     let mut records = Vec::new();
     let mut inflight = Vec::new();
-    let mut sequence = shared.sequence.load(Ordering::Acquire);
+    let mut sequence = *next_sequence;
     for queued in batch {
         checked(
             shared,
@@ -249,13 +345,11 @@ async fn append<A: Application>(
         )?;
         let bytes = checked(
             shared,
-            wal::encode_value(
-                &Record {
-                    format: FORMAT,
-                    identity: shared.storage.hash,
-                    sequence,
-                    command: &payload.bytes,
-                },
+            encode_record(
+                FORMAT,
+                shared.storage.hash,
+                sequence,
+                &payload.bytes,
                 shared.storage.options.journal.max_record_bytes,
             )
             .map_err(Into::into),
@@ -265,6 +359,7 @@ async fn append<A: Application>(
         payload.bytes = Vec::new();
         inflight.push(InFlight { payload, sequence });
     }
+    *next_sequence = sequence;
     if records.is_empty() {
         return Ok(None);
     }
@@ -293,12 +388,13 @@ async fn append<A: Application>(
     Ok(Some((inflight, durability)))
 }
 
-async fn apply<A: Application>(
+async fn apply_durable<A: Application>(
     shared: &Shared<A>,
     inflight: Vec<InFlight<A>>,
-    durability: SegmentedDurability,
+    durable: Result<()>,
+    commit_started: Instant,
 ) -> Result<()> {
-    let mut durability = Some(durability);
+    let mut durable = Some(durable);
     for item in inflight {
         let InFlight { payload, sequence } = item;
         checked(
@@ -306,13 +402,15 @@ async fn apply<A: Application>(
             boundary(&shared.storage.directory, "before_durable"),
         )?;
         let start = Instant::now();
-        if let Some(durability) = durability.take() {
-            checked(shared, durability.durable().await.map_err(Into::into))?;
-        }
-        lock(&shared.stats).durable_sequence = sequence;
-        if let Some(metrics) = &shared.storage.options.metrics {
+        if let Some(result) = durable.take() {
+            checked(shared, result)?;
+            if let Some(metrics) = &shared.storage.options.metrics {
+                metrics.observe(Stage::Commit, commit_started.elapsed().as_secs_f64());
+            }
+        } else if let Some(metrics) = &shared.storage.options.metrics {
             metrics.observe(Stage::Commit, start.elapsed().as_secs_f64());
         }
+        lock(&shared.stats).durable_sequence = sequence;
         checked(shared, boundary(&shared.storage.directory, "after_durable"))?;
         let start = Instant::now();
         let (response, observations) = async {

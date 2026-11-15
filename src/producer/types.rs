@@ -23,7 +23,7 @@ impl Default for ProducerLimits {
     fn default() -> Self {
         Self {
             max_sessions: 128,
-            max_results_per_session: 64,
+            max_results_per_session: 1_024,
             max_hot_messages: 65_536,
             max_hot_bytes: 32 * 1024 * 1024,
             max_batch_messages: 1_024,

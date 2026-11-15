@@ -50,6 +50,86 @@ fn publish(
 }
 
 #[test]
+fn publish_batch_commits_each_receipt_and_replays_duplicates() {
+    let topic = Id::new_v7().unwrap();
+    let permit = permit(topic);
+    let mut state = ProducerState::new(topic, 0, ProducerLimits::default()).unwrap();
+    let requests = vec![message(&permit, 1, None), message(&permit, 2, Some(b"key"))];
+    let receipts = state
+        .publish_batch_admitted(
+            &permit,
+            requests.clone(),
+            1,
+            u64::MAX,
+            usize::MAX,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0].offset, 0);
+    assert_eq!(receipts[1].offset, 1);
+    assert!(receipts.iter().all(|receipt| !receipt.duplicate));
+    let duplicates = state
+        .publish_batch_admitted(&permit, requests, 2, u64::MAX, usize::MAX, |_, _, _| Ok(()))
+        .unwrap();
+    assert_eq!(duplicates.len(), 2);
+    assert_eq!(duplicates[0].offset, 0);
+    assert_eq!(duplicates[1].offset, 1);
+    assert!(duplicates.iter().all(|receipt| receipt.duplicate));
+    assert_eq!(state.committed_end(), 2);
+
+    let duplicate_sequence = message(&permit, 3, None);
+    let aliases = state
+        .publish_batch_admitted(
+            &permit,
+            vec![duplicate_sequence.clone(), duplicate_sequence.clone()],
+            3,
+            u64::MAX,
+            usize::MAX,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(aliases.len(), 2);
+    assert_eq!(aliases[0].offset, 2);
+    assert_eq!(aliases[1].offset, 2);
+    assert!(!aliases[0].duplicate);
+    assert!(aliases[1].duplicate);
+
+    let mut expired = permit.clone();
+    expired.expires_ms = 1;
+    let replay = state
+        .publish_batch_admitted(
+            &expired,
+            vec![duplicate_sequence],
+            2,
+            u64::MAX,
+            usize::MAX,
+            |_, _, _| Ok(()),
+        )
+        .unwrap();
+    assert!(replay[0].duplicate);
+    assert_eq!(state.committed_end(), 3);
+    state.validate().unwrap();
+}
+
+#[test]
+fn first_publish_batch_respects_result_capacity() {
+    let topic = Id::new_v7().unwrap();
+    let permit = permit(topic);
+    let limits = ProducerLimits::default();
+    let mut state = ProducerState::new(topic, 0, limits.clone()).unwrap();
+    let requests = (1..=limits.max_results_per_session as u64 + 1)
+        .map(|sequence| message(&permit, sequence, None))
+        .collect();
+
+    assert_eq!(
+        state.publish_batch_admitted(&permit, requests, 1, u64::MAX, usize::MAX, |_, _, _| Ok(())),
+        Err(Rejection::SessionCapacity)
+    );
+    state.validate().unwrap();
+}
+
+#[test]
 fn sparse_global_sequences_are_not_gaps_and_original_results_survive_permit_expiry() {
     let topic = Id::new_v7().unwrap();
     let permit = permit(topic);

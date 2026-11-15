@@ -46,6 +46,7 @@ pub(crate) fn external_kind(kind: FrameKind) -> bool {
             | FrameKind::RemoveTopic
             | FrameKind::PublisherControl
             | FrameKind::Publish
+            | FrameKind::PublishBatch
             | FrameKind::RetirePublishes
             | FrameKind::GroupRead
             | FrameKind::GroupWatch

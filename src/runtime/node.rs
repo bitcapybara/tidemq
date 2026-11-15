@@ -1116,6 +1116,7 @@ pub(crate) fn data_config(cluster: Id, group: &GroupConfig, config: &Config) -> 
     let max_message_bytes = u64::from(config.protocol.max_message_bytes)
         .saturating_add(256)
         .min(16 * 1024 * 1024);
+    let default_limits = ProducerLimits::default();
     DataGroupConfig {
         cluster_id: cluster,
         group_id: group.group_id,
@@ -1124,10 +1125,13 @@ pub(crate) fn data_config(cluster: Id, group: &GroupConfig, config: &Config) -> 
         max_hot_messages: 65_536,
         producer: ProducerLimits {
             max_message_bytes,
-            max_batch_bytes: ProducerLimits::default()
-                .max_batch_bytes
-                .max(max_message_bytes),
-            ..ProducerLimits::default()
+            max_batch_messages: usize::try_from(config.protocol.max_batch_messages)
+                .unwrap_or(default_limits.max_batch_messages),
+            max_batch_bytes: u64::from(config.protocol.max_frame_bytes)
+                .saturating_sub(1024)
+                .max(default_limits.max_batch_bytes)
+                .min(default_limits.max_hot_bytes),
+            ..default_limits
         },
         subscription: {
             let limits = crate::subscription::Limits::default();

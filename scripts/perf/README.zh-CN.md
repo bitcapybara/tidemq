@@ -34,6 +34,8 @@ bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baselin
 | `TIDEMQ_PERF_MESSAGES` | 2048 | 1–200000 |
 | `TIDEMQ_PERF_MESSAGE_BYTES` | 1024 | 32–65536，总 payload 不超过 512 MiB |
 | `TIDEMQ_PERF_CONCURRENCY` | 4 | 1–32，不超过消息数 |
+| `TIDEMQ_PERF_ACK_BATCH_SIZE` | 1 | 1–256，1 为逐条 Queue ACK，大于 1 使用有序 cumulative ACK |
+| `TIDEMQ_PERF_PRODUCER_BATCH_SIZE` | 1 | 1–4096，1 为单条 Publish，大于 1 使用同路由 PublishBatch |
 | `TIDEMQ_PERF_IDLE_SECONDS` | 10 | 1–60 |
 | `TIDEMQ_PERF_REQUEST_TIMEOUT_SECONDS` | 10 | 1–120，必须小于总 deadline |
 | `TIDEMQ_PERF_TIMEOUT_SECONDS` | 120 | 15–600，必须大于请求预算和 idle 时长 |
@@ -41,11 +43,11 @@ bash scripts/perf/run.sh /private/path/baseline-bin/tidemq /private/path/baselin
 | `TIDEMQ_PERF_CLIENT_CPUS` | 6-7 | taskset CPU 列表 |
 | `TIDEMQ_PERF_PORT` | 17410 | 1024–55500；内部端口 +1，管理端口 +1000 |
 
-每个发送/消费 worker 共享同一原始 SDK handle。payload 包含本轮 ID、业务序号和校验内容；ledger 保存每条消息的 SDK receipt ID、delivery ID、提交/接收/持久 ACK 单调时间。允许接收先于发送 receipt 返回，最终要求同一身份逐条一致、无重复、无遗漏。收齐后额外观察 500 ms 捕获已排队的额外消息；不证明窗口之后永不出现重复。
+每个发送/消费 worker 共享同一原始 SDK handle。默认每条 Publish 和 Queue ACK 都单独完成 durable commit。`TIDEMQ_PERF_PRODUCER_BATCH_SIZE` 大于 1 时使用同路由 PublishBatch，并保留逐条 sequence、digest 和 receipt 映射。`TIDEMQ_PERF_ACK_BATCH_SIZE` 大于 1 时只启用一个有序 consumer worker，先校验 batch 内所有 payload 和身份，再对最后一条 delivery 做 cumulative ACK，并为 batch 内每条 ledger entry 记录同一 durable ACK 时间。payload 包含本轮 ID、业务序号和校验内容；ledger 保存每条消息的 SDK receipt ID、delivery ID、提交/接收/持久 ACK 单调时间。收齐后额外观察 500 ms 捕获已排队的额外消息；不证明窗口之后永不出现重复。
 
 任何 SDK 错误或 Unknown 都使测量失败，不重新提交新身份，也不执行应用层重试。失败报告、部分 ledger 和原始 Pending 的诊断状态被保留。总 deadline 默认 120 秒，SDK 请求预算默认 10 秒，SDK 关闭另有 5 秒。调大 SDK 请求预算不会延长服务端控制 lease，Unknown 仍使测量失败。输出目录已存在时拒绝复用。
 
-`measurement/report.json` 中吞吐为发送开始到最后一条持久 ACK 的消息数/秒；提交延迟为每次 `send` 调用前到 receipt 返回，端到端延迟为同一次发送开始到接收。p50/p95/p99 使用最近秩，不插值。统计包括 SDK 排队和 RPC，排除本地 payload 构造。idle 模式不计算吞吐和延迟。
+`measurement/report.json` 中消息吞吐为发送开始到最后一条持久 ACK 的消息数/秒，`payload_bytes_per_second` 使用同一窗口报告有效 payload 字节/秒，单位是原始字节每秒，调用方按十进制 MB/GB 换算。`wire_bytes*` 和 `replication_bytes*` 在当前 RF1 harness 中为 null，并不代表已测得网络或复制流量。提交延迟为每次 `send` 调用前到 receipt 返回，端到端延迟为同一次发送开始到接收。p50/p95/p99 使用最近秩，不插值。统计包括 SDK 排队和 RPC，排除本地 payload 构造。idle 模式不计算吞吐和延迟。
 
 `metrics.before.prom` / `metrics.after.prom` 保留全部服务指标，`diagnostics.before.json` / `diagnostics.after.json` 保留 Raft group、last_applied、存储诊断和采样时间。`metrics.delta.tsv` 是数值差（包括 gauge 的变化，不都代表累计量）。诊断由服务周期采样，分析 Raft index 差时要记录时间滞后；基线没有细分暴露的 empty-read/retirement 次数不能由全局 Raft 写入量冒充。
 

@@ -801,6 +801,9 @@ impl StreamConsumer {
     }
 }
 impl QueueConsumer {
+    pub async fn ack_cumulative(&self, message: &ReceivedMessage) -> Result<AckReceipt> {
+        ack::start(&self.owner.core, message, None, true).await
+    }
     pub async fn ack(&self, message: &ReceivedMessage) -> Result<AckReceipt> {
         ack::start(&self.owner.core, message, None, false).await
     }

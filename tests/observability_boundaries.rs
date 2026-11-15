@@ -59,6 +59,7 @@ fn untrusted_trace_metadata_does_not_change_request_identity_payload_or_authorit
         id,
         &LogicalTopic {
             name: "events".into(),
+            partition_count: 0,
         },
         1_000,
         &limits,
