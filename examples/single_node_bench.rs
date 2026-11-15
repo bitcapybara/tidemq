@@ -404,7 +404,7 @@ async fn measure(
         report.unresolved_sends.is_empty() && report.unresolved_acks == Some(0),
         "Original Pending operations remain unresolved"
     );
-    workload::check_tail(&consumer).await?;
+    workload::check_tail(consumer).await?;
     report.sdk_after_tail = Some(metrics(client.metrics().snapshot()));
     write(args, "finished.json", b"{}\n".to_vec()).await?;
     if args.wait_for_start {
