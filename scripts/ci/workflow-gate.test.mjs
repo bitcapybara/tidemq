@@ -37,16 +37,17 @@ test('forks require Console web, mock browsers and documentation without accessi
   }
 });
 
-test('both platforms run normal validation and Linux shares the native executor with faults and coverage', () => {
+test('both platforms run normal validation and Linux validation and faults use separate executors', () => {
   const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
   const linux = job('validate-linux');
   const macos = job('validate-macos');
   const linuxRunner = linux.match(/runs-on: (\[[^\n]+\])/u)?.[1];
-  assert(linuxRunner, 'Linux validation must retain its native runner');
+  assert(linuxRunner, 'Linux validation must retain its container runner');
+  assert.equal(linuxRunner, '[self-hosted, Linux, X64, tidemq-ci-container]');
   assert.match(macos, /runs-on: macos-latest/u);
   for (const name of ['faults', 'coverage']) {
     const runner = job(name).match(/runs-on: (\[[^\n]+\])/u)?.[1];
-    assert.equal(linuxRunner, runner, `${name} must share the native executor with validation`);
+    assert.equal(runner, '[self-hosted, Linux, X64, tidemq-dev]', 'Linux faults and coverage must stay on the native executor');
   }
   assert.match(linux, /bash scripts\/ci\/with-cargo-cache\.sh bash scripts\/ci\/native\.sh/u);
   assert.match(macos, /run: \|\n\s+bash scripts\/ci\/validate\.sh\n\s+bash scripts\/ci\/integration\.sh normal/u);

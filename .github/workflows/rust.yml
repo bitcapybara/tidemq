@@ -112,7 +112,8 @@ jobs:
   validate-linux:
     name: Validate (Linux)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, Linux, X64, tidemq-dev]
+    # Standard validation runs in the isolated container lane; faults and coverage keep the lab-native lane.
+    runs-on: [self-hosted, Linux, X64, tidemq-ci-container]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -255,10 +256,14 @@ jobs:
           persist-credentials: false
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/coverage-report.sh
       - run: node --test trusted/scripts/coverage/*.test.mjs
-      - run: >-
-          node trusted/scripts/coverage-gate.mjs compare --tools trusted --candidate .
-          --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json
-          --run-id "$GITHUB_RUN_ID" --output target/ci/coverage/summary.json $COVERAGE_GATE_MODE
+      - run: |
+          coverage_gate_mode=()
+          if [ -n "$COVERAGE_GATE_MODE" ]; then
+            coverage_gate_mode=("$COVERAGE_GATE_MODE")
+          fi
+          node trusted/scripts/coverage-gate.mjs compare --tools trusted --candidate . \
+            --report target/ci/coverage/llvm.json --measurement target/ci/coverage/measurement.json \
+            --run-id "$GITHUB_RUN_ID" --output target/ci/coverage/summary.json "${coverage_gate_mode[@]}"
         env:
           COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

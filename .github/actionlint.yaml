@@ -1,2 +1,2 @@
 self-hosted-runner:
-  labels: [tidemq-dev]
+  labels: [tidemq-dev, tidemq-ci-container]
