@@ -13,7 +13,8 @@ export function collectFailureEvidence(root, output) {
       const json = /-(failure|diagnostics|metrics)\.json$/.test(file.name)
         || /^consumer-recovery-(after-quorum|timeout)\.json$/.test(file.name)
         || file.name === 'readiness-timeline.jsonl';
-      const log = /^(node|process)-[0-9]+(?:-(?:stdout|stderr))?\.(log|stdout|stderr)$/.test(file.name);
+      const log = /^(node|process)-[0-9]+(?:-(?:stdout|stderr))?\.(log|stdout|stderr)$/.test(file.name)
+        || /^deployment-[a-z0-9-]+\.log$/.test(file.name);
       if (!json && !log) continue;
       const source = path.join(root, directory.name, file.name);
       const size = fs.statSync(source).size;

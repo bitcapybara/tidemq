@@ -65,21 +65,23 @@ clean_nextest_containers() {
 
 sweep() {
   local repo=$1 phase=$2 run runs status=0 directory
-  if ! runs=$(kubectl --request-timeout=15s get namespaces -l tidemq.lab/ci=true -o json |
-    jq -er '[.items[].metadata.name] | join("\n")'); then
-    printf 'CI resource discovery failed; continuing local cache cleanup\n' >&2
-    runs= status=1
+  if [[ "$phase" == before ]]; then
+    if ! runs=$(kubectl --request-timeout=15s get namespaces -l tidemq.lab/ci=true -o json |
+      jq -er '[.items[].metadata.name] | join("\n")'); then
+      printf 'CI resource discovery failed; continuing local cache cleanup\n' >&2
+      runs= status=1
+    fi
+    if [[ -d "$TIDEMQ_LAB_HOME/runs" ]]; then
+      while IFS= read -r -d '' directory; do
+        [[ ! -f "$directory/.tidemq-ci" ]] || runs+=$'\n'"${directory##*/}"
+      done < <(find "$TIDEMQ_LAB_HOME/runs" -mindepth 1 -maxdepth 1 -type d -print0)
+    fi
+    while IFS= read -r run; do
+      [[ -n "$run" ]] || continue
+      [[ "$run" =~ ^ci-[0-9]+-[0-9]+$ ]] || { printf 'Invalid disposable CI identity: %s\n' "$run" >&2; status=1; continue; }
+      bash "$repo/scripts/lab/cleanup-ci.sh" "$run" || status=1
+    done < <(printf '%s\n' "$runs" | sort -u)
   fi
-  if [[ -d "$TIDEMQ_LAB_HOME/runs" ]]; then
-    while IFS= read -r -d '' directory; do
-      [[ ! -f "$directory/.tidemq-ci" ]] || runs+=$'\n'"${directory##*/}"
-    done < <(find "$TIDEMQ_LAB_HOME/runs" -mindepth 1 -maxdepth 1 -type d -print0)
-  fi
-  while IFS= read -r run; do
-    [[ -n "$run" ]] || continue
-    [[ "$run" =~ ^ci-[0-9]+-[0-9]+$ ]] || { printf 'Invalid disposable CI identity: %s\n' "$run" >&2; status=1; continue; }
-    bash "$repo/scripts/lab/cleanup-ci.sh" "$run" || status=1
-  done < <(printf '%s\n' "$runs" | sort -u)
 
   # Reclaim cancelled test scopes before removing paths that they could still mount.
   [[ $(docker --host unix:///var/run/docker.sock info --format '{{.DockerRootDir}}') == /srv/tidemq/docker ]] || return 1

@@ -125,7 +125,7 @@ docker() {
   if [[ "$*" == *' info '* ]]; then printf /srv/tidemq/docker;
   elif [[ "$*" != *' ps '* ]]; then printf '%s\\n' "$*" >> "$TRACE"; fi
 }
-sweep unused after
+sweep unused before
 `, 'test', path.join(scripts, 'runner-maintenance.sh'), root], {encoding: 'utf8'});
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stderr, /continuing local cache cleanup/);

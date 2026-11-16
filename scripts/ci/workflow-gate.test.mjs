@@ -78,6 +78,17 @@ test('only the native Linux fault lane enables the immutable nextest executor', 
   assert(!scripts.some(source => /cargo nextest run/u.test(source)));
 });
 
+test('fault evidence survives a failed run until the next CI cleanup', () => {
+  const evidence = read('./failure-evidence.mjs');
+  const lab = read('./lab.sh');
+  const maintenance = fs.readFileSync(new URL('../../scripts/lab/runner-maintenance.sh', import.meta.url), 'utf8');
+  assert.match(evidence, /deployment-\[a-z0-9-\]\+\\\.log/u);
+  assert.match(lab, /result == 0 && cleanup_result == 0/u);
+  assert.match(lab, /cleanupDeferred/u);
+  assert.match(lab, /Preserving failed CI resources for the next runner cleanup/u);
+  assert.match(maintenance, /if \[\[ "\$phase" == before \]\]; then[\s\S]*\.tidemq-ci[\s\S]*cleanup-ci\.sh/u);
+});
+
 test('browser jobs run Chromium only and cache Playwright downloads', () => {
   const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
   for (const name of ['console', 'console-browser', 'console-browser-live']) {

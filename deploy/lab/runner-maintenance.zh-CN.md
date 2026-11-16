@@ -4,7 +4,7 @@
 
 ## 执行时机与互斥
 
-安装程序把受跟踪的脚本及配置复制到 root 管理的 `/usr/local/lib/tidemq-lab/`，并在 runner `.env` 注册任务开始、完成两个钩子。完成钩子在制品上传及 action post steps 之后执行，依据 [GitHub 官方钩子协议](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts)。脚本在 checkout 之外，删除旧 checkout 不影响自身执行；更新 `.env` 后安装程序重启空闲 runner。
+安装程序把受跟踪的脚本及配置复制到 root 管理的 `/usr/local/lib/tidemq-lab/`，并在 runner `.env` 注册任务开始、完成两个钩子。完成钩子在制品上传及 action post steps 之后执行，依据 [GitHub 官方钩子协议](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/run-scripts)。脚本在 checkout 之外，删除旧 checkout 不影响自身执行；更新 `.env` 后安装程序重启空闲 runner。CI namespace 和私有 run 只在下一次任务的开始钩子回收，完成钩子和空闲定时器不触碰它们，以便失败资源留到下一次任务开始排查。
 
 `tidemq-runner-maintenance.timer` 每小时运行一次，并在启动后补查。检测到 `Runner.Worker` 时跳过；任务开始钩子与定时器取得同一个本地 flock，所以即使定时检查与新任务同时发生，任务步骤也会等待清理完成。清理还取得现有宿主全局租约，避开手动部署和故障测试。手动运行仍必须使用该租约。
 
@@ -45,7 +45,7 @@ Worker 上的 CI 镜像由 kubelet 自带镜像回收管理。已从运行中的
 
 先恢复允许故障的 VM，再检查 namespace 和所有 PV 的 claim namespace、固定名字及精确本地路径。确认 namespace 删除完成后，才删除该 run 的 6 个 PV、worker 数据、fixture 进程/单元、loadgen 目录和私有构建。任何不匹配或 API 故障都会保留重试材料并返回失败；控制面不可用时，本机缓存清理仍继续执行。`tidemq-dev`、无标签的手工 namespace 和公共服务不在允许范围内。
 
-正常 CI 会先收集业务报告和故障日志，再调用清理。GitHub 上传失败时应及时从任务日志排查；本地 checkout 会按上述规则回收，不作为长期证据库。长期需要保留的结果应合并为脱敏验收记录，原始过程通过固定 Git 提交和 GitHub 制品定位。
+正常 CI 会先收集业务报告和故障日志，再调用清理。失败的 CI 会保留本次 run 的 namespace、PV、fixture、loadgen 和私有构建目录，并在 `result.json` 标记 `cleanupDeferred=true`；故障报告和证据由 GitHub 制品保留。下一次 CI 开始时，原生 runner 的 `before` 钩子会先扫描 `.tidemq-ci` 标记，取得全局租约后调用同一套所有权校验的 `cleanup-ci.sh`，回收旧失败 run，再开始新的任务。同一个 workflow 的整条 CI 重跑会使用新的 `ci-<run>-<attempt>` 身份，因此旧 attempt 也会在新 attempt 启动前回收。GitHub 上传失败时应及时从任务日志排查；本地 checkout 会按上述规则回收，不作为长期证据库。长期需要保留的结果应合并为脱敏验收记录，原始过程通过固定 Git 提交和 GitHub 制品定位。
 
 ## 安装、查看与手动执行
 

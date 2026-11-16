@@ -38,7 +38,7 @@ collect_api_coverage() {
   node scripts/coverage/api.mjs "$run" "$private/build" "$report" "$CARGO_LLVM_COV_TARGET_DIR"
 }
 cleanup() {
-  local result=$? cleanup_result=0
+  local result=$? cleanup_result=0 cleanup_deferred=0
   trap - EXIT
   for file in build.log source-commit.txt source-patch-sha256.txt toolchain.txt sha256.txt runtime-sha256.txt image-id.txt image.txt profile.txt; do
     [[ ! -f "$private/build/$file" ]] || cp "$private/build/$file" "$report/$file" || cleanup_result=1
@@ -57,9 +57,17 @@ cleanup() {
   if [[ ${TIDEMQ_API_COVERAGE:-0} == 1 ]]; then
     collect_api_coverage >> "$report/coverage-collection.log" 2>&1 || cleanup_result=1
   fi
-  bash scripts/lab/cleanup-ci.sh "$run" >> "$report/cleanup.log" 2>&1 || cleanup_result=1
+  if (( result == 0 && cleanup_result == 0 )); then
+    bash scripts/lab/cleanup-ci.sh "$run" >> "$report/cleanup.log" 2>&1 || {
+      cleanup_result=1
+      cleanup_deferred=1
+    }
+  else
+    cleanup_deferred=1
+    printf 'Preserving failed CI resources for the next runner cleanup: %s\n' "$run" >> "$report/cleanup.log"
+  fi
   (( cleanup_result == 0 )) || result=1
-  printf '{"exitCode":%s,"cleanupExitCode":%s}\n' "$result" "$cleanup_result" > "$report/result.json"
+  printf '{"exitCode":%s,"cleanupExitCode":%s,"cleanupDeferred":%s}\n' "$result" "$cleanup_result" "$cleanup_deferred" > "$report/result.json"
   exit "$result"
 }
 trap cleanup EXIT
