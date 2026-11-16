@@ -7,5 +7,6 @@
 *.profraw
 *.profdata
 /artifacts/
+**/.DS_Store
 /console/web/node_modules/
 /console/web/dist/
