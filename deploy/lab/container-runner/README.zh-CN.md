@@ -17,6 +17,7 @@ runner VM 为 8 vCPU / 16 GiB，IP 和 64 GiB 数据盘保持不变。原生 run
 | `/srv/tidemq/rust/rustup` | `/opt/tidemq-rust/rustup:ro`，固定 Rust 1.100.0 工具链 |
 | 原生 runner 的 bin / externals、固定 nextest / llvm-cov | 只读工具，不包含原生 runner 的注册状态 |
 | `/srv/tidemq/maintenance/cargo-cache.lock` | 同路径文件挂载，协调 Cargo 流程与缓存回收 |
+| `/srv/tidemq/maintenance/coverage-handoff` | 同路径目录挂载，向原生 Coverage job 交接本 runner 的 native bundle；目录由 actions 用户私有持有 |
 | `/srv/tidemq/action-archives` | 同路径只读挂载，供两个 runner 读取固定 SHA 的官方 action 归档 |
 
 容器不发布端口，不挂载 Docker socket、libvirt、kubeconfig、SSH key 或原生 runner 的 `.credentials`。根文件系统只读，runner 的工作安装副本位于有界 HOME tmpfs；重启从镜像重建，注册状态从 `/state` 读取。日志、checkout、target 和 tmp 位于持久数据盘，不依赖容器可写层。`RUNNER_MANUALLY_TRAP_SIG=1` 使用上游 `run.sh` 自带的信号转发，把停止信号传给 Listener 并释放 GitHub 会话；以 GitHub online 状态和 `Listening for Jobs` 日志确认恢复，不能只看容器 running。
@@ -73,9 +74,9 @@ lab_ssh tidemq-runner sudo systemctl show actions.runner.bitcapybara-tidemq.tide
 lab_ssh tidemq-runner sudo systemctl start tidemq-runner-maintenance.service
 ```
 
-GitHub 的 Linux Validate 指定 `tidemq-ci-container`，Faults 和 Coverage 指定 `tidemq-dev`，Validate 和 Faults 可以并行启动，Coverage 等待两者完成；macOS 继续使用 hosted runner。Linux 全部五处 nextest 调用先在原生账户预编译，再用本目录已部署镜像的 immutable ID `sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc` 创建一次性测试容器，固定6GiB/4 CPU，与编译/Runner 分开计账；不使用长期容器的注册入口、state 或 HOME。公共 Rust/nextest/Node 工具只读挂载，source/target/TMPDIR 和 profile 路径保持原绝对值，不挂载 Docker socket 或实验室密钥。正常/TERM 精确删除自己的 ID，SIGKILL 遗留由更新后的原生维护 bundle 按 label/name/UID 回收；长期容器规格、生产 quota 和真实容器限额负测继续保留。
+GitHub 的 Linux Validate 指定 `tidemq-ci-container`，Faults 和 Coverage 指定 `tidemq-dev`，Validate 和 Faults 可以并行启动，Coverage 等待两者完成；macOS 继续使用 hosted runner。Validate 在本长期 runner 容器内直接执行本地 nextest 捕获路径，不设置 `TIDEMQ_NEXTEST_IMAGE`，不需要 Docker socket。Faults 继续在原生 runner 上预编译，并使用本目录已部署镜像的 immutable ID `sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc` 创建一次性 6GiB/4 CPU 测试容器；不使用长期容器的注册入口、state 或 HOME。公共 Rust/nextest/Node 工具只读挂载，source/target/TMPDIR 和 profile 路径保持原绝对值。正常/TERM 精确删除自己的容器 ID，SIGKILL 遗留由更新后的原生维护 bundle 按 label/name/UID 回收；长期容器规格、生产 quota 和真实容器限额负测继续保留。
 
-该变更不要求重新 build/start 本目录镜像，但必须在空闲且独立 review 后更新原生维护 bundle。Coverage 等待两个测试 job 完成，从同一原生 runner 的数据盘读取两份输入，校验提交、run、attempt、工具和工作区路径。它合并已有二进制和 profile 并比较基线。报告完成后清理本地输入，最终覆盖率和 VM 报告保留 30 天。完整流程和当前端到端缺口见 [测试指南](../../../docs/testing.zh-CN.md)。
+该变更不要求重新 build 本目录镜像，但必须在两个 runner 空闲且独立 review 后执行 `start`，让常驻容器重建并应用新的 coverage handoff 挂载；同时更新原生维护 bundle。Coverage 等待两个测试 job 完成，从同一共享 handoff 目录读取两份输入，校验提交、run、attempt、工具和工作区路径。它合并已有二进制和 profile 并比较基线。报告完成后清理本地输入，最终覆盖率和 VM 报告保留 30 天。完整流程和当前端到端缺口见 [测试指南](../../../docs/testing.zh-CN.md)。
 
 部署时的历史并行验收见 [runner-maintenance.json](../evidence/runner-maintenance.json)。当时两个 runner 均在线，两条 Linux job 同秒启动，671 项 Linux 测试、655 项 macOS 测试及 9 个 K8s/API 场景通过。原生与容器内 Cargo home 的设备号/inode 均为 `64784:1311125`，共用锁也为同一文件；已验证共享读锁会延后清理，空闲回收保留常驻容器及其镜像。历史覆盖率来自已有的 922 份 profile，未为生成报告重跑 Rust 测试。
 

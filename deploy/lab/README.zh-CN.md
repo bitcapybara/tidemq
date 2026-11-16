@@ -150,6 +150,7 @@ GitHub 仓库为 `bitcapybara/tidemq`。runner 名称 `tidemq-dev-u126-8`，ID 2
 | `/srv/tidemq/tools` | 验证 SHA 的 RustFS、Collector 测试二进制、kubectl、Helm、nextest、llvm-cov |
 | `/srv/tidemq/rust` | Rust 1.100.0 工具链与 Cargo cache，`/opt/tidemq-rust` 软链接 |
 | `/srv/tidemq/maintenance` | 自动清理的本地互斥锁；已安装脚本在 `/usr/local/lib/tidemq-lab` |
+| `/srv/tidemq/maintenance/coverage-handoff` | 两个 Linux job 共享的私有 coverage bundle 交接目录；容器 runner 只写自己的 native lane |
 | `/srv/tidemq/cargo-target` | 可重建的 debug / coverage 编译缓存 |
 | `/srv/tidemq/tmp` | 测试临时目录 |
 | `/srv/tidemq/container-runner/{state,diag,work,target,tmp}` | 容器独立注册状态、诊断、checkout、编译缓存、临时目录；内部 work/target/tmp 映射为与原生相同的绝对路径 |
@@ -161,7 +162,7 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
-当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）使用隔离的 `tidemq-ci-container` runner，Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和 Coverage 使用原生 `tidemq-dev` executor。Validate 和 Faults 可以并行启动，Coverage 仍等待两者完成。全部 nextest 调用在 host 按原参数预编译，再以已部署 immutable CI 镜像在 fresh 6GiB/4 CPU 容器复用构建执行；测试与编译/Runner 分开计账，保留相同绝对 source/target/TMPDIR、插桩环境和原有测试选择。正常/TERM 删除自己的容器 ID，异常遗留由现有维护锁/租约下的严格 label/name/UID 检查回收。长期 runner 配置、生产 quota 和真实容器限额负测保留。
+当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）使用隔离的 `tidemq-ci-container` runner，在 runner 容器内直接执行本地 nextest 捕获路径，不设置 `TIDEMQ_NEXTEST_IMAGE`，因此不需要 Docker socket。Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和 Coverage 使用原生 `tidemq-dev` executor；Faults 继续使用 immutable CI 镜像在 fresh 6GiB/4 CPU 测试容器中执行。Validate 和 Faults 可以并行启动，Coverage 仍等待两者完成。两条 runner 都保持原有 source/target/TMPDIR、插桩环境、测试选择和缓存锁约束；长期 runner 配置、生产 quota 和真实容器限额负测保留。
 
 两个测试 job 从开始即使用 LLVM 插桩，分别打包二进制/profile 并上传，再接续下一 job。coverage job 校验同一源码/CI run/工具/工作区路径及每个输入的 SHA256，再合并五阶段 JUnit、两个 job 的原生 profile 和全部远程实例 profile，导出 LLVM JSON、LCOV、HTML、原始 profile 归档并比较基线，不重新编译或重跑 Rust 测试。K8s 的10个角色实例和 loadgen 客户端均使用插桩二进制；measurement 绑定源码、镜像、二进制哈希、角色/Pod/worker/imageID和行为断言；缺少任一实例则失败。公共常驻服务与手动普通验收仍使用 release 构建。资源边界、同额度隔离对照及最终 CI 验收限制见[测试指南](../../docs/testing.zh-CN.md)。
 

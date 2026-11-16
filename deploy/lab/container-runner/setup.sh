@@ -7,6 +7,7 @@ if pgrep -u actions -f '[R]unner.Worker' >/dev/null; then printf 'A runner is bu
 cd /srv/tidemq/container-runner/source
 root=/srv/tidemq/container-runner
 for directory in state diag work target tmp; do install -d -m 0700 -o actions -g actions "$root/$directory"; done
+install -d -m 0700 -o actions -g actions /srv/tidemq/maintenance/coverage-handoff
 touch /srv/tidemq/maintenance/cargo-cache.lock
 chown actions:actions /srv/tidemq/maintenance/cargo-cache.lock
 chmod 0660 /srv/tidemq/maintenance/cargo-cache.lock

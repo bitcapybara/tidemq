@@ -27,6 +27,7 @@ services:
       - /srv/tidemq/container-runner/work:/srv/tidemq/work
       - /srv/tidemq/container-runner/target:/srv/tidemq/cargo-target
       - /srv/tidemq/container-runner/tmp:/srv/tidemq/tmp
+      - /srv/tidemq/maintenance/coverage-handoff:/srv/tidemq/maintenance/coverage-handoff
       - /srv/tidemq/maintenance/cargo-cache.lock:/srv/tidemq/maintenance/cargo-cache.lock
       - /srv/tidemq/rust/cargo:/opt/tidemq-rust/cargo
       - /srv/tidemq/rust/cargo/bin:/opt/tidemq-rust/cargo/bin:ro

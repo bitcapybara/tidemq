@@ -12,6 +12,7 @@ const mockPlaywright = read('../../console/web/playwright.config.ts');
 const livePlaywright = read('../../console/web/playwright.live.config.ts');
 const consolePackage = JSON.parse(read('../../console/web/package.json'));
 const liveRunner = read('./console-browser-live.mjs');
+const containerRunnerCompose = read('../../deploy/lab/container-runner/compose.yaml');
 
 function evaluate(fork, patch = {}) {
   const results = Object.fromEntries(jobs.map((job) => [job, { result: 'success' }]));
@@ -65,10 +66,13 @@ test('both platforms run normal validation and Linux validation and faults use s
   assert.match(coverage, /name: coverage-report[^\n]+\n\s+- name: Remove local coverage inputs\n\s+if: success\(\)\n\s+run: node scripts\/coverage\/bundle\.mjs clean/u);
 });
 
-test('every trusted Linux nextest lane enables the same immutable isolated executor', () => {
+test('only the native Linux fault lane enables the immutable nextest executor', () => {
   const image = 'sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc';
   const settings = [...workflow.matchAll(/TIDEMQ_NEXTEST_IMAGE: ([^\n]+)/gu)].map(match => match[1]);
-  assert.deepEqual(settings, [image, image]);
+  assert.deepEqual(settings, [image]);
+  const validateLinux = workflow.split('\n  validate-linux:\n')[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
+  assert.doesNotMatch(validateLinux, /TIDEMQ_NEXTEST_IMAGE:/u);
+  assert.match(containerRunnerCompose, /- \/srv\/tidemq\/maintenance\/coverage-handoff:\/srv\/tidemq\/maintenance\/coverage-handoff\n/u);
   const scripts = ['validate.sh', 'integration.sh'].map(name => fs.readFileSync(new URL('./' + name, import.meta.url), 'utf8'));
   assert.equal(scripts.flatMap(source => [...source.matchAll(/bash scripts\/ci\/nextest\.sh /gu)]).length, 5);
   assert(!scripts.some(source => /cargo nextest run/u.test(source)));

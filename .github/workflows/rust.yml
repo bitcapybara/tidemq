@@ -121,7 +121,6 @@ jobs:
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/native.sh
         env:
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
-          TIDEMQ_NEXTEST_IMAGE: sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
