@@ -4,9 +4,10 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 const workflow = fs.readFileSync(new URL('../../.github/workflows/rust.yml', import.meta.url), 'utf8');
+const documentationWorkflow = fs.readFileSync(new URL('../../.github/workflows/docs.yml', import.meta.url), 'utf8');
 const gate = workflow.match(/node -e '([^'\n]+)'/)?.[1];
 assert(gate, 'The workflow must contain its final executable gate');
-const jobs = ['validate-linux', 'validate-macos', 'faults', 'coverage', 'console', 'console-browser', 'console-browser-live', 'documentation'];
+const jobs = ['validate-linux', 'faults', 'coverage', 'console', 'console-browser', 'console-browser-live'];
 const read = relative => fs.readFileSync(new URL(relative, import.meta.url), 'utf8');
 const mockPlaywright = read('../../console/web/playwright.config.ts');
 const livePlaywright = read('../../console/web/playwright.live.config.ts');
@@ -14,47 +15,43 @@ const consolePackage = JSON.parse(read('../../console/web/package.json'));
 const liveRunner = read('./console-browser-live.mjs');
 const containerRunnerCompose = read('../../deploy/lab/container-runner/compose.yaml');
 
-function evaluate(fork, patch = {}) {
+function evaluate(patch = {}) {
   const results = Object.fromEntries(jobs.map((job) => [job, { result: 'success' }]));
   for (const [job, result] of Object.entries(patch)) results[job] = { result };
   return spawnSync(process.execPath, ['-e', gate], { encoding: 'utf8',
-    env: { ...process.env, FORK: String(fork), RESULTS: JSON.stringify(results) } }).status;
+    env: { ...process.env, RESULTS: JSON.stringify(results) } }).status;
 }
 
 test('the main gate requires coverage, real backend browsers and every trusted Rust lane', () => {
-  assert.equal(evaluate(false), 0);
+  assert.equal(evaluate(), 0);
   for (const job of jobs) {
     for (const status of ['failure', 'cancelled', 'skipped']) {
-      assert.notEqual(evaluate(false, { [job]: status }), 0, `${job}: ${status}`);
+      assert.notEqual(evaluate({ [job]: status }), 0, `${job}: ${status}`);
     }
   }
 });
 
-test('forks require Console web, mock browsers and documentation without accessing shared services', () => {
-  const skipped = { 'validate-linux': 'skipped', 'validate-macos': 'skipped', faults: 'skipped', coverage: 'skipped', 'console-browser-live': 'skipped' };
-  assert.equal(evaluate(true, skipped), 0);
-  for (const job of ['console', 'console-browser', 'documentation']) {
-    assert.notEqual(evaluate(true, { ...skipped, [job]: 'failure' }), 0, job);
-  }
-});
-
-test('both platforms run normal validation and Linux validation and faults use separate executors', () => {
+test('all workflow jobs use Linux self-hosted runners and macOS validation is removed', () => {
   const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
-  const linux = job('validate-linux');
-  const macos = job('validate-macos');
-  const linuxRunner = linux.match(/runs-on: (\[[^\n]+\])/u)?.[1];
-  assert(linuxRunner, 'Linux validation must retain its container runner');
-  assert.equal(linuxRunner, '[self-hosted, Linux, X64, tidemq-ci-container]');
-  assert.match(macos, /runs-on: macos-latest/u);
-  for (const name of ['faults', 'coverage']) {
-    const runner = job(name).match(/runs-on: (\[[^\n]+\])/u)?.[1];
-    assert.equal(runner, '[self-hosted, Linux, X64, tidemq-dev]', 'Linux faults and coverage must stay on the native executor');
+  assert.doesNotMatch(workflow, /validate-macos|macos-latest|tests-macOS/u);
+  for (const name of jobs) {
+    const source = job(name);
+    assert.match(source, /runs-on: \[self-hosted, Linux, X64, tidemq-(?:ci-container|dev)\]/u, `${name} must use a self-hosted Linux runner`);
   }
+  for (const name of ['validate-linux']) {
+    const runner = job(name).match(/runs-on: (\[[^\n]+\])/u)?.[1];
+    assert.equal(runner, '[self-hosted, Linux, X64, tidemq-ci-container]');
+  }
+  for (const name of ['faults', 'coverage', 'console', 'console-browser', 'console-browser-live']) {
+    const runner = job(name).match(/runs-on: (\[[^\n]+\])/u)?.[1];
+    assert.equal(runner, '[self-hosted, Linux, X64, tidemq-dev]', `${name} must stay on the native executor`);
+  }
+  assert.equal(job('rust').match(/runs-on: (\[[^\n]+\])/u)?.[1], '[self-hosted, Linux, X64, tidemq-ci-container]');
+  const linux = job('validate-linux');
   assert.match(linux, /bash scripts\/ci\/with-cargo-cache\.sh bash scripts\/ci\/native\.sh/u);
-  assert.match(macos, /run: \|\n\s+bash scripts\/ci\/validate\.sh\n\s+bash scripts\/ci\/integration\.sh normal/u);
   assert.match(job('console-browser-live'), /needs: \[validate-linux\]/u);
   assert.match(job('coverage'), /needs: \[validate-linux, faults\]/u);
-  assert.match(job('rust'), /needs: \[validate-linux, validate-macos, faults, coverage, console, console-browser, console-browser-live, documentation\]/u);
+  assert.match(job('rust'), /needs: \[validate-linux, faults, coverage, console, console-browser, console-browser-live\]/u);
   const native = fs.readFileSync(new URL('./native.sh', import.meta.url), 'utf8');
   assert.match(native, /bash scripts\/ci\/validate\.sh\nbash scripts\/ci\/integration\.sh normal/u);
   assert.match(native, /bundle\.mjs pack native\n/u);
@@ -64,6 +61,14 @@ test('both platforms run normal validation and Linux validation and faults use s
   const coverage = job('coverage');
   assert.doesNotMatch(coverage, /download-artifact/u);
   assert.match(coverage, /name: coverage-report[^\n]+\n\s+- name: Remove local coverage inputs\n\s+if: success\(\)\n\s+run: node scripts\/coverage\/bundle\.mjs clean/u);
+});
+
+test('the documentation workflow uses self-hosted Linux runners', () => {
+  assert.match(documentationWorkflow, /paths:\n\s+- 'docs\/\*\*'\n\s+- 'README\.md'\n\s+- 'README\.zh-CN\.md'\n\s+- '\.github\/workflows\/docs\.yml'/u);
+  for (const job of ['build', 'deploy']) {
+    const source = documentationWorkflow.split(`\n  ${job}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
+    assert.match(source, /runs-on: \[self-hosted, Linux, X64, tidemq-ci-container\]/u, `${job} must use the container runner`);
+  }
 });
 
 test('only the native Linux fault lane enables the immutable nextest executor', () => {
@@ -112,17 +117,15 @@ test('browser jobs run Chromium only and cache Playwright downloads', () => {
   for (const name of ['console-browser', 'console-browser-live']) {
     const source = job(name);
     assert.match(source, /timeout-minutes: 40/u, `${name} must allow the first browser install to finish`);
-    assert.match(source, /browser: \[chromium\]/u, `${name} must run Chromium only`);
-    assert.match(source, /playwright install --with-deps \$\{\{ matrix\.browser \}\}/u,
-      `${name} must install the selected matrix browser`);
+    assert.match(source, /playwright install --with-deps chromium/u, `${name} must install Chromium`);
     assert.equal((source.match(/playwright install --with-deps/gu) ?? []).length, 1,
       `${name} must have one browser installation target`);
   }
   assert.match(job('console-browser'),
-    /- run: npm run test:e2e -- --project=\$\{\{ matrix\.browser \}\}/u,
+    /- run: npm run test:e2e -- --project=chromium/u,
     'console-browser must execute the Chromium mock browser suite');
   assert.match(job('console-browser-live'),
-    /- run: npm run test:e2e:live -- --project=\$\{\{ matrix\.browser \}\}/u,
+    /- run: npm run test:e2e:live -- --project=chromium/u,
     'console-browser-live must execute the Chromium native browser suite');
   for (const name of ['console', 'console-browser', 'console-browser-live']) {
     const source = job(name);
@@ -132,6 +135,8 @@ test('browser jobs run Chromium only and cache Playwright downloads', () => {
     assert(cache >= 0 && cache < npm && npm < browser,
       `${name} must cache before npm install and install the browser last`);
   }
+  assert.doesNotMatch(job('console-browser'), /strategy:|matrix:/u);
+  assert.doesNotMatch(job('console-browser-live'), /browser: \[chromium\]/u);
 });
 
 test('browser entry points expose Chromium only', () => {

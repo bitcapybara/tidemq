@@ -19,28 +19,10 @@ env:
   TIDEMQ_NEXTEST_LOG_MODE: ${{ vars.TIDEMQ_NEXTEST_LOG_MODE || 'live' }}
 
 jobs:
-  documentation:
-    name: Documentation build and links
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: docs
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with: {persist-credentials: false}
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: docs/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run docs:build
-
   console:
     name: Console web
-    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 40
     defaults:
       run:
@@ -74,13 +56,10 @@ jobs:
           retention-days: 14
 
   console-browser:
-    name: Console browser (${{ matrix.browser }})
-    runs-on: ubuntu-24.04
+    name: Console browser (chromium)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        browser: [chromium]
     defaults:
       run:
         working-directory: console/web
@@ -97,13 +76,13 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('console/web/package-lock.json') }}
       - run: npm ci
-      - run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
+      - run: npx --no-install playwright install --with-deps chromium
       - run: npm run build
-      - run: npm run test:e2e -- --project=${{ matrix.browser }}
+      - run: npm run test:e2e -- --project=chromium
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: console-browser-${{ matrix.browser }}
+          name: console-browser-chromium
           path: |
             console/web/playwright-report
             console/web/test-results
@@ -135,45 +114,16 @@ jobs:
         if: success()
         with: {name: console-server-linux, path: target/ci/console-server, retention-days: 3}
 
-  validate-macos:
-    name: Validate (macOS)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: macos-latest
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with: {persist-credentials: false}
-      - uses: dtolnay/rust-toolchain@1.100.0
-        with: {components: 'rustfmt, clippy'}
-      - uses: taiki-e/install-action@v2
-        with: {tool: 'nextest@0.9.148'}
-      - run: |
-          bash scripts/ci/validate.sh
-          bash scripts/ci/integration.sh normal
-        env:
-          TIDEMQ_REQUIRE_EXTERNAL: '0'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: tests-macOS
-          path: |
-            target/ci
-            !target/ci/coverage
-            !target/ci/lab-report
-            !target/ci/console-server
-          retention-days: 14
-
   console-browser-live:
-    name: Console native HTTPS (${{ matrix.browser }}, ${{ matrix.topology }})
+    name: Console native HTTPS (chromium, ${{ matrix.topology }})
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [validate-linux]
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         topology: [combined, separated-rf1]
-        browser: [chromium]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with: {persist-credentials: false}
@@ -194,11 +144,11 @@ jobs:
           chmod 0700 target/ci/console-server/tidemq
       - run: npm ci
         working-directory: console/web
-      - run: npx --no-install playwright install --with-deps ${{ matrix.browser }}
+      - run: npx --no-install playwright install --with-deps chromium
         working-directory: console/web
       - run: npm run build
         working-directory: console/web
-      - run: npm run test:e2e:live -- --project=${{ matrix.browser }}
+      - run: npm run test:e2e:live -- --project=chromium
         working-directory: console/web
         env:
           TIDEMQ_LIVE_TOPOLOGY: ${{ matrix.topology }}
@@ -206,7 +156,7 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
-          name: console-browser-live-${{ matrix.browser }}-${{ matrix.topology }}
+          name: console-browser-live-chromium-${{ matrix.topology }}
           path: target/ci/console-browser-live
           retention-days: 14
 
@@ -274,13 +224,12 @@ jobs:
 
   rust:
     name: Rust gate
-    if: always()
-    needs: [validate-linux, validate-macos, faults, coverage, console, console-browser, console-browser-live, documentation]
-    runs-on: ubuntu-24.04
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [validate-linux, faults, coverage, console, console-browser, console-browser-live]
+    runs-on: [self-hosted, Linux, X64, tidemq-ci-container]
     timeout-minutes: 2
     steps:
       - run: >-
-          node -e 'const r=JSON.parse(process.env.RESULTS); const fork=process.env.FORK==="true"; const required=fork?["console","console-browser","documentation"]:["validate-linux","validate-macos","faults","coverage","console","console-browser","console-browser-live","documentation"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
+          node -e 'const r=JSON.parse(process.env.RESULTS); const required=["validate-linux","faults","coverage","console","console-browser","console-browser-live"]; if(required.some(k=>r[k].result!=="success")) process.exit(1)'
         env:
           RESULTS: ${{ toJSON(needs) }}
-          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}

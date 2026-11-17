@@ -160,7 +160,7 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 任务开始/完成钩子和每小时空闲定时器自动回收 checkout、超额缓存、停止的容器、未使用镜像和取消任务遗留资源。保留额度、所有权检查、互斥、安装与冷重建方法见 [Runner 资源清理](runner-maintenance.zh-CN.md)。原公共构建副本不再长期保存，服务身份和持久数据独立保留。
 
-Linux 校验、集成测试、覆盖率与 Kubernetes / VM 故障均使用 self-hosted runner。macOS 保留 GitHub-hosted 平台校验。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
+Linux 校验、集成测试、覆盖率、浏览器检查与 Kubernetes / VM 故障均使用 self-hosted runner，不再消耗 GitHub-hosted runner。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
 当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）使用隔离的 `tidemq-ci-container` runner，在 runner 容器内直接执行本地 nextest 捕获路径，不设置 `TIDEMQ_NEXTEST_IMAGE`，因此不需要 Docker socket。Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和 Coverage 使用原生 `tidemq-dev` executor；Faults 继续使用 immutable CI 镜像在 fresh 6GiB/4 CPU 测试容器中执行。Validate 和 Faults 可以并行启动，Coverage 仍等待两者完成。两条 runner 都保持原有 source/target/TMPDIR、插桩环境、测试选择和缓存锁约束；长期 runner 配置、生产 quota 和真实容器限额负测保留。
 
@@ -174,7 +174,7 @@ RF3 集群测试由 loadgen VM 运行真实 SDK，runner 仅控制和收集证�
 
 Rust workflow 使用 `tidemq-dev` concurrency group，不取消运行中的故障清理。故障/部署流程取得宿主 flock 租约；Validate普通测试与只读报告合并不占用故障租约。所有手动Cargo命令须经 `scripts/ci/with-cargo-cache.sh` 持有共享缓存锁；涉及共享实验室服务的手动测试和部署还必须经 `scripts/lab/with-lease.sh`。root运维使用同一 `/var/lock/tidemq-lab.lock` 的 `flock -n`。故障指令白名单只允许cp、worker、fixtures、loadgen，禁止操作storage、observe、runner；持续时间5–300秒，宿主先注册systemd恢复计时器再执行故障。
 
-此仓库为公共仓库。fork PR 的 Console web、mock 浏览器和文档检查使用 GitHub-hosted runner。自托管作业仅接受仓库内可信任务。GitHub outside contributor 审批策略设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
+此仓库为私有仓库。自托管作业只接受仓库内可信任务；外部 fork PR 不调度自托管 runner。GitHub outside contributor 审批策略仍设为 `all_external_contributors`，期望状态见 [github-policy.json](github-policy.json)。workflow 不能替代 GitHub 管理面的审批设置。
 
 CI 的 VM 故障作用于共享的三个 worker，因此同时位于这些 worker 的 `tidemq-dev` 也会受故障影响；公共 RustFS 和观测 VM 保持独立。需要公共 MQ 连续服务时，应为 CI 增配独立 worker 集群。
 
