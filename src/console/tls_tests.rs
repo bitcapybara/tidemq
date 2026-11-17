@@ -305,12 +305,22 @@ async fn same_length_required_asset_corruption_fails_readiness_over_https() {
         tokio::fs::write(&path, vec![b'!'; contents.len()])
             .await
             .unwrap();
-        let response = client
+        match client
             .get(format!("https://{}/{name}", address(&console)))
             .send()
             .await
-            .unwrap();
-        let _ = response.bytes().await;
+        {
+            Ok(response) => {
+                let _ = response.bytes().await;
+            }
+            Err(error) => {
+                let diagnostic = format!("{error:?}");
+                assert!(
+                    diagnostic.contains("UnexpectedEof"),
+                    "Corrupted asset request failed unexpectedly: {diagnostic}"
+                );
+            }
+        }
         let failed = tokio::time::timeout(Duration::from_secs(2), async {
             while process.phase() != Phase::Failed {
                 tokio::time::sleep(Duration::from_millis(5)).await;
