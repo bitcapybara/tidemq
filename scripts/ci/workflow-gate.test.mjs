@@ -71,8 +71,8 @@ test('the documentation workflow uses self-hosted Linux runners', () => {
   }
 });
 
-test('only the native Linux fault lane enables the immutable nextest executor', () => {
-  const image = 'sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc';
+test('only the native Linux fault lane enables the rebuilt nextest executor', () => {
+  const image = 'localhost/tidemq-nextest:ubuntu2404-rust1.100.0';
   const settings = [...workflow.matchAll(/TIDEMQ_NEXTEST_IMAGE: ([^\n]+)/gu)].map(match => match[1]);
   assert.deepEqual(settings, [image]);
   const validateLinux = workflow.split('\n  validate-linux:\n')[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
@@ -81,6 +81,7 @@ test('only the native Linux fault lane enables the immutable nextest executor', 
   const scripts = ['validate.sh', 'integration.sh'].map(name => fs.readFileSync(new URL('./' + name, import.meta.url), 'utf8'));
   assert.equal(scripts.flatMap(source => [...source.matchAll(/bash scripts\/ci\/nextest\.sh /gu)]).length, 5);
   assert(!scripts.some(source => /cargo nextest run/u.test(source)));
+  assert.match(read('./ensure-nextest-image.sh'), /image inspect/u);
 });
 
 test('fault evidence survives a failed run until the next CI cleanup', () => {

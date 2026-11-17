@@ -6,6 +6,13 @@ import {spawn, spawnSync} from 'node:child_process';
 import test from 'node:test';
 
 const script = new URL('./nextest.sh', import.meta.url).pathname;
+const ensureImage = new URL('./ensure-nextest-image.sh', import.meta.url).pathname;
+const image = 'localhost/tidemq-nextest:ubuntu2404-rust1.100.0';
+
+test('nextest image setup accepts only the repository-local image namespace', () => {
+  const result = spawnSync('bash', [ensureImage, '--selfcheck'], {encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test('runner options and positional or emulated filters keep their original semantics', t => {
   const f = fixture(t);
@@ -15,7 +22,7 @@ test('runner options and positional or emulated filters keep their original sema
   const execution = ['--profile', 'ci', '-E', 'test(a b)', '--run-ignored', 'only',
     '--test-threads', '2', '--retries', '0', '--no-fail-fast', 'substring', '--', '--skip', 'skip-me'];
   const result = spawnSync('bash', [script, ...args], {cwd: f.root,
-    env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)}, encoding: 'utf8'});
+    env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image}, encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);
   const calls = f.calls(), create = calls.find(a => a.includes('create'));
   assert.deepEqual(calls.find(a => a.includes('--no-run')), ['cargo', 'nextest', 'run', '--no-run', ...args]);
@@ -26,7 +33,7 @@ test('runner options and positional or emulated filters keep their original sema
 test('unsupported or incomplete isolated arguments fail before build and Docker', t => {
   for (const args of [['--unsupported'], ['--target', 'other'], ['--features'], ['--filterset'], ['--test-threads']]) {
     const f = fixture(t), result = spawnSync('bash', [script, ...args], {cwd: f.root,
-      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)}, encoding: 'utf8'});
+      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image}, encoding: 'utf8'});
     assert.equal(result.status, 2, result.stderr);
     assert.deepEqual(f.calls(), []);
   }
@@ -37,7 +44,7 @@ test('symlink mount roots are rejected before any Docker command', t => {
   const f = fixture(t), redirect = path.join(f.root, 'redirect');
   fs.symlinkSync(f.env.TMPDIR, redirect);
   const result = spawnSync('bash', [script, '--lib'], {cwd: f.root,
-    env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64), TMPDIR: redirect}, encoding: 'utf8'});
+    env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image, TMPDIR: redirect}, encoding: 'utf8'});
   assert.equal(result.status, 2, result.stderr);
   assert.deepEqual(f.calls(), []);
 });
@@ -60,7 +67,7 @@ test('all five lane selections preserve build and execution arguments', t => {
     ['--profile', 'ci', '--run-ignored', 'only', '-E', 'kind(test)'],
   ];
   for (const [index, args] of selections.entries()) {
-    const f = fixture(t), env = {...f.env, TIDEMQ_NEXTEST_LOG_MODE: 'live', TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64)};
+    const f = fixture(t), env = {...f.env, TIDEMQ_NEXTEST_LOG_MODE: 'live', TIDEMQ_NEXTEST_IMAGE: image};
     const result = spawnSync('bash', [script, ...args], {cwd: f.root, env, encoding: 'utf8'});
     assert.equal(result.status, 0, result.stderr);
     const calls = f.calls(), create = calls.find(a => a.includes('create'));
@@ -79,7 +86,7 @@ test('all five lane selections preserve build and execution arguments', t => {
 test('compile failure prevents container creation and test failures preserve their exit code', t => {
   for (const [settings, expected, created] of [[{BUILD_FAIL: '1'}, 42, false], [{TEST_EXIT: '100'}, 100, true]]) {
     const f = fixture(t), result = spawnSync('bash', [script, '--lib', '--profile', 'ci'], {cwd: f.root,
-      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64), ...settings}, encoding: 'utf8'});
+      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image, ...settings}, encoding: 'utf8'});
     assert.equal(result.status, expected, result.stderr);
     assert.equal(f.calls().some(a => a.includes('create')), created);
     assert.equal(f.calls().some(a => a.includes('rm')), created);
@@ -89,7 +96,7 @@ test('compile failure prevents container creation and test failures preserve the
 test('mutable images and redirected or private mounts fail before starting Docker', t => {
   for (const settings of [{TIDEMQ_NEXTEST_IMAGE: 'runner:latest'}, {CARGO_TARGET_DIR: '/'}, {TMPDIR: '/srv/tidemq/actions-runner'}]) {
     const f = fixture(t), result = spawnSync('bash', [script, '--lib'], {cwd: f.root,
-      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64), ...settings}, encoding: 'utf8'});
+      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image, ...settings}, encoding: 'utf8'});
     assert.equal(result.status, 2, result.stderr);
     assert.deepEqual(f.calls(), []);
   }
@@ -97,7 +104,7 @@ test('mutable images and redirected or private mounts fail before starting Docke
 
 test('TERM while attached removes only the created container', {timeout: 10000}, async t => {
   const f = fixture(t), child = spawn('bash', [script, '--lib', '--profile', 'ci'], {cwd: f.root,
-    env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64), BLOCK_START: '1'}, stdio: 'ignore'});
+    env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image, BLOCK_START: '1'}, stdio: 'ignore'});
   t.after(() => child.kill('SIGKILL'));
   const exited = new Promise(resolve => child.once('exit', code => resolve(code)));
   const until = Date.now() + 5000;
@@ -124,6 +131,7 @@ function fixture(t) {
     'fs.appendFileSync(process.env.TRACE,JSON.stringify(["docker",...a])+"\\n");',
     'if(a.includes("start")){const c=fs.readFileSync(process.env.TRACE,"utf8").trim().split("\\n").map(JSON.parse).find(v=>v.includes("create"));const r=c.slice(c.indexOf("/srv/tidemq/tools/cargo-nextest")+3);const build=new Set(["--workspace","--lib","--bins","--examples","--all-targets","--locked","--features","-F","--package","-p","--test"]);if(r.includes("--binaries-metadata")&&r.some(v=>build.has(v.split("=")[0])))process.exit(2);}',
     'if(a.includes("info"))console.log("systemd 2");',
+    'else if(a.includes("image")&&a.some(v=>v.includes("Labels")))console.log("true");',
     'else if(a.includes("image"))console.log(process.env.TIDEMQ_NEXTEST_IMAGE);',
     'else if(a.includes("create"))console.log("a".repeat(64));',
     'else if(a.includes("wait"))console.log(process.env.TEST_EXIT??0);',
@@ -149,7 +157,7 @@ test('unconfigured local execution preserves the original nextest argv', t => {
 test('console attach errors preserve the actual container result and still fail a successful run', t => {
   for (const status of [0, 100, 110]) {
     const f = fixture(t), result = spawnSync('bash', [script, '--lib', '--profile', 'ci'], {cwd: f.root,
-      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: 'sha256:' + 'b'.repeat(64), ATTACH_EXIT: '1', TEST_EXIT: String(status)}, encoding: 'utf8'});
+      env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image, ATTACH_EXIT: '1', TEST_EXIT: String(status)}, encoding: 'utf8'});
     assert.equal(result.status, status || 1, result.stderr);
     assert(f.calls().some(args => args.includes('wait')), 'The real container status must be collected after attach fails');
     assert(f.calls().some(args => args.includes('rm')), 'The owned container must still be cleaned up');
@@ -158,7 +166,6 @@ test('console attach errors preserve the actual container result and still fail 
 
 test('configured execution builds first and reuses metadata in a fresh bounded container', t => {
   const f = fixture(t), args = ['--workspace', '--all-targets', '--locked', '--features', 'tidemq-sdk/metrics,test-hooks', '--profile', 'ci', '-E', 'kind(test)'];
-  const image = 'sha256:' + 'b'.repeat(64);
   const result = spawnSync('bash', [script, ...args], {cwd: f.root, env: {...f.env, TIDEMQ_NEXTEST_IMAGE: image,
     LLVM_PROFILE_FILE: f.env.CARGO_TARGET_DIR + '/native-%p-%m.profraw', GITHUB_TOKEN: 'must-not-leak'}, encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);

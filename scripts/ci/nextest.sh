@@ -8,9 +8,9 @@ fi
   printf 'Isolated nextest requires the Linux actions user\n' >&2; exit 2;
 }
 umask 077
-[[ $TIDEMQ_NEXTEST_IMAGE =~ ^sha256:[a-f0-9]{64}$ &&
+[[ $TIDEMQ_NEXTEST_IMAGE =~ ^localhost/tidemq-nextest:[A-Za-z0-9][A-Za-z0-9_.-]*$ &&
    ${GITHUB_RUN_ID:-} =~ ^[0-9]+$ && ${GITHUB_RUN_ATTEMPT:-} =~ ^[0-9]+$ ]] || {
-  printf 'An immutable test image and numeric CI identity are required\n' >&2; exit 2;
+  printf 'A local nextest image name and numeric CI identity are required\n' >&2; exit 2;
 }
 build_arguments=("$@")
 discovery_arguments=()
@@ -70,9 +70,18 @@ for directory in "$workspace" "$target" "$temporary"; do
 done
 unset DOCKER_CONTEXT DOCKER_HOST DOCKER_TLS_VERIFY DOCKER_CERT_PATH
 docker=(docker --host unix:///var/run/docker.sock)
-[[ $("${docker[@]}" info --format '{{.CgroupDriver}} {{.CgroupVersion}}') == 'systemd 2' &&
-   $("${docker[@]}" image inspect "$TIDEMQ_NEXTEST_IMAGE" --format '{{.Id}}') == "$TIDEMQ_NEXTEST_IMAGE" ]] || {
-  printf 'The installed test image and independent systemd cgroups are required\n' >&2; exit 2;
+[[ $("${docker[@]}" info --format '{{.CgroupDriver}} {{.CgroupVersion}}') == 'systemd 2' ]] || {
+  printf 'Independent systemd cgroups are required\n' >&2; exit 2;
+}
+image_ready() {
+  [[ $("${docker[@]}" image inspect "$TIDEMQ_NEXTEST_IMAGE" \
+    --format '{{index .Config.Labels "tidemq.lab/nextest"}}' 2>/dev/null) == true ]]
+}
+if ! image_ready; then
+  bash "$(cd -- "${BASH_SOURCE[0]%/*}/../.." && pwd -P)/scripts/ci/ensure-nextest-image.sh" "$TIDEMQ_NEXTEST_IMAGE"
+fi
+image_ready || {
+  printf 'The nextest executor image could not be installed\n' >&2; exit 2;
 }
 
 mkdir -p target/ci

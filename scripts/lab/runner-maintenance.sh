@@ -111,7 +111,7 @@ sweep() {
     docker --host unix:///var/run/docker.sock exec tidemq-ci-runner /opt/tidemq-runner/idle.sh
   fi
   docker --host unix:///var/run/docker.sock container prune --filter 'label!=tidemq.lab/runner=ci-container' --force
-  docker --host unix:///var/run/docker.sock image prune --all --force
+  docker --host unix:///var/run/docker.sock image prune --all --force --filter 'label!=tidemq.lab/nextest=true'
   if docker --host unix:///var/run/docker.sock buildx version >/dev/null 2>&1; then
     docker --host unix:///var/run/docker.sock buildx prune --all --force
   fi
