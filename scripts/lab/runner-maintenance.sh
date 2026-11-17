@@ -137,6 +137,7 @@ main() {
   export TIDEMQ_LAB_INVENTORY="$repo/deploy/lab/inventory.json"
   export HOME=/home/actions PATH=/usr/local/bin:/usr/bin:/bin:/srv/tidemq/tools
   unset DOCKER_CONTEXT DOCKER_TLS_VERIFY DOCKER_CERT_PATH
+  git config --global init.defaultBranch main
   source "$repo/deploy/lab/runner-maintenance.env"
   for policy_name in TARGET_MAX_BYTES CARGO_CACHE_MAX_BYTES ACTION_CACHE_MAX_BYTES TMP_MAX_BYTES DIAGNOSTIC_MAX_BYTES ROOT_MIN_FREE_BYTES DATA_MIN_FREE_BYTES CACHE_MAX_DAYS; do
     [[ ${!policy_name} =~ ^[0-9]{1,12}$ ]] || exit 2

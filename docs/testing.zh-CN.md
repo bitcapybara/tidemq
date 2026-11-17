@@ -48,7 +48,7 @@ npm --prefix console/web run test:e2e:live
 TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 ```
 
-真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。受信任的 PR、main 和手动候选验收统一运行 Chromium/Chrome。fork PR 只运行 GitHub 托管的 Console web、mock 浏览器和文档构建及链接检查。可信运行的 Rust 最终 gate 还要求 Linux/macOS 验证、故障与部署验证、Rust 覆盖率和真实后端浏览器作业成功。真实后端作业校验同一次 Linux 构建制品的源码提交与二进制 SHA256。未实际运行的检查不计作该版本验收结果。
+真实用例启动器默认使用仓库 `target/debug/tidemq`；自定义 Cargo target 时通过 `TIDEMQ_BINARY` 指定本次构建的绝对路径。启动器完成就绪检查、有限进程退出、私有文件清理并保存清理收据。受信任的 PR、main 和手动候选验收统一运行 Chromium/Chrome。fork PR 只运行 GitHub 托管的 Console web、mock 浏览器和文档构建及链接检查。可信运行的 Rust 最终 gate 还要求 Linux 验证、故障与部署验证、Rust 覆盖率和真实后端浏览器作业成功。真实后端作业校验同一次 Linux 构建制品的源码提交与二进制 SHA256。未实际运行的检查不计作该版本验收结果。
 
 合入 main 前，按根目录 [AGENTS.md](https://github.com/bitcapybara/tidemq/blob/main/AGENTS.md) 完成独立 agent review 和候选分支 CI；偶发失败也要定位原因并修复。新功能的检查同时包含正确性、log/trace/metrics 和相应层次测试。长轮询真实 QUIC/Raft 回归由 `runtime_group_watch` 在 test-hooks 故障流程执行；同一流程显式运行根 crate 的 test-hooks 单元测试，覆盖拒绝回复背压等私有组件边界。原生保护帧与 RPC 隔离测试随 transport 单元流程执行；测试配置不代替实际运行结果。
 
@@ -58,7 +58,7 @@ TIDEMQ_LIVE_TOPOLOGY=separated-rf1 npm --prefix console/web run test:e2e:live
 
 ## CI 与覆盖率
 
-[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.100.0，main push、PR 和手动 dispatch 触发。Linux 和 macOS 的 Validate 都执行 `validate.sh` 和 `integration.sh normal`。Linux Validate 使用不挂 Docker socket 的隔离容器 runner，并在其中直接执行本地 nextest；Faults 和 Coverage 使用原生 `tidemq-dev` runner，两个 Linux 前置 job 可以并行，macOS 使用 GitHub-hosted runner。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
+[Rust 工作流](https://github.com/bitcapybara/tidemq/blob/main/.github/workflows/rust.yml) 固定 Rust 1.100.0，main push、PR 和手动 dispatch 触发。Linux Validate 执行 `validate.sh` 和 `integration.sh normal`，使用不挂 Docker socket 的隔离容器 runner，并在其中直接执行本地 nextest；Faults 和 Coverage 使用原生 `tidemq-dev` runner，Faults 在 Validate 完成后启动，以避免共享宿主机和实验室 VM 的资源竞争。详细环境、入口与验收见[VM 实验室](https://github.com/bitcapybara/tidemq/blob/main/deploy/lab/README.zh-CN.md)。
 
 Faults 单独运行专用 `test-hooks` 用例、确实使用故障钩子的共享用例变体、真实外部依赖和部署故障场景。为共享测试目标新增或重命名故障用例时，同步更新 `scripts/ci/integration.sh` 中的 nextest 选择条件。
 
@@ -214,7 +214,7 @@ cargo clippy -p tidemq --tests --no-deps --locked --no-default-features --featur
 cargo test -p tidemq --locked --no-default-features --features allocator-jemalloc --test allocator_diagnostics
 ```
 
-CI 覆盖 Linux/macOS；allocator 专项按需手动执行，不能使用互斥 feature 的 all-features。CI 文件存在不表示远端已运行。同 allocator 的 release 栈、持有/释放、跨线程释放和符号化已在本机验证，见[原始采样记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-19-allocator-release.zh-CN.md)；mimalloc 汇总统计不提供同等分配栈证据。
+CI 覆盖 Linux；allocator 专项按需手动执行，不能使用互斥 feature 的 all-features。CI 文件存在不表示远端已运行。同 allocator 的 release 栈、持有/释放、跨线程释放和符号化已在本机验证，见[原始采样记录](https://github.com/bitcapybara/tidemq/blob/e0be78cfc00c81f7d36caaf3f7835b9c45e963b6/docs/evidence/2026-10-19-allocator-release.zh-CN.md)；mimalloc 汇总统计不提供同等分配栈证据。
 
 
 ## 验收边界

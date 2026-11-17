@@ -49,6 +49,9 @@ test('all workflow jobs use Linux self-hosted runners and macOS validation is re
   assert.equal(job('rust').match(/runs-on: (\[[^\n]+\])/u)?.[1], '[self-hosted, Linux, X64, tidemq-ci-container]');
   const linux = job('validate-linux');
   assert.match(linux, /bash scripts\/ci\/with-cargo-cache\.sh bash scripts\/ci\/native\.sh/u);
+  const faultsJob = job('faults');
+  assert.match(faultsJob, /needs: \[validate-linux\]/u);
+  assert.match(faultsJob, /if: always\(\) &&/u);
   assert.match(job('console-browser-live'), /needs: \[validate-linux\]/u);
   assert.match(job('coverage'), /needs: \[validate-linux, faults\]/u);
   assert.match(job('rust'), /needs: \[validate-linux, faults, coverage, console, console-browser, console-browser-live\]/u);
