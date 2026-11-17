@@ -19,7 +19,7 @@ systemctl restart systemd-journald
 rm -f /etc/nginx/sites-enabled/default
 mountpoint -q /srv/tidemq || { printf 'The managed data disk is not mounted\n' >&2; exit 1; }
 if [[ "$role" == observe || "$role" == runner ]]; then
-  apt-get install -y docker.io docker-compose-v2
+  apt-get install -y docker.io docker-compose-v2 docker-buildx
   install -d -m 0700 /etc/docker
   cat > /etc/docker/daemon.json <<'EOF'
 {"data-root":"/srv/tidemq/docker","log-driver":"journald","live-restore":true,"default-ulimits":{"nofile":{"Name":"nofile","Hard":65536,"Soft":65536}}}
