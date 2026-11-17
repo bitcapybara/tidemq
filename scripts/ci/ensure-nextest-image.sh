@@ -54,6 +54,6 @@ context=$(mktemp -d "$repo/target/ci/nextest-image.XXXXXX")
 trap 'rm -rf -- "$context"' EXIT
 cp "$repo/deploy/lab/nextest/Dockerfile" "$context/Dockerfile"
 cp /etc/ssl/certs/ca-certificates.crt "$context/ca-certificates.crt"
-"${docker[@]}" build --pull=false --build-arg "UBUNTU_IMAGE=$base" \
+DOCKER_BUILDKIT=1 "${docker[@]}" build --pull=false --build-arg "UBUNTU_IMAGE=$base" \
   --label tidemq.lab/nextest=true --tag "$image" "$context"
 "${docker[@]}" image inspect "$image" --format '{{.Id}}'

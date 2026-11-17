@@ -81,7 +81,12 @@ test('only the native Linux fault lane enables the rebuilt nextest executor', ()
   const scripts = ['validate.sh', 'integration.sh'].map(name => fs.readFileSync(new URL('./' + name, import.meta.url), 'utf8'));
   assert.equal(scripts.flatMap(source => [...source.matchAll(/bash scripts\/ci\/nextest\.sh /gu)]).length, 5);
   assert(!scripts.some(source => /cargo nextest run/u.test(source)));
-  assert.match(read('./ensure-nextest-image.sh'), /image inspect/u);
+  assert.match(read('./ensure-nextest-image.sh'), /DOCKER_BUILDKIT=1[\s\S]*\bbuild\b/u);
+  const coverageTargets = [...workflow.matchAll(/TIDEMQ_COVERAGE_TARGET_DIR: ([^\n]+)/gu)].map(match => match[1]);
+  assert.equal(coverageTargets.length, 2);
+  assert.ok(coverageTargets.every(target => target.includes('/cargo-target/coverage-ci-${{ github.run_id }}-${{ github.run_attempt }}')));
+  const liveBrowser = workflow.split('\n  console-browser-live:\n')[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
+  assert.match(liveBrowser, /topology: \[combined, separated-rf1\]/u);
 });
 
 test('fault evidence survives a failed run until the next CI cleanup', () => {

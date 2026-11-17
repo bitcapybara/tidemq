@@ -89,7 +89,7 @@ jobs:
         with: {persist-credentials: false}
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/native.sh
         env:
-          TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
+          TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage-ci-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -157,7 +157,7 @@ jobs:
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/lab/with-lease.sh bash scripts/ci/faults.sh
         env:
           TIDEMQ_REQUIRE_EXTERNAL: '1'
-          TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
+          TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage-ci-${{ github.run_id }}-${{ github.run_attempt }}
           TIDEMQ_NEXTEST_IMAGE: localhost/tidemq-nextest:ubuntu2404-rust1.100.0
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
