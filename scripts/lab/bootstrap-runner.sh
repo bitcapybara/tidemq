@@ -4,10 +4,16 @@ set -euo pipefail
 bundle=$1
 [[ $(cat /etc/tidemq-lab-role) == runner ]] || exit 1
 export DEBIAN_FRONTEND=noninteractive
-apt-get install -y cmake python3-yaml
+apt-get install -y \
+  cmake python3-yaml xvfb fonts-noto-color-emoji fonts-unifont fonts-liberation \
+  fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf libfontconfig1 libfreetype6 \
+  xfonts-cyrillic xfonts-scalable libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 \
+  libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 \
+  libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 \
+  libxext6 libxfixes3 libxkbcommon0 libxrandr2
 mountpoint -q /srv/tidemq || exit 1
 id actions >/dev/null 2>&1 || useradd --create-home --shell /bin/bash --groups docker actions
-install -d -m 0755 -o actions -g actions /srv/tidemq/actions-runner /srv/tidemq/work /srv/tidemq/tools /srv/tidemq/cargo-target /srv/tidemq/tmp
+install -d -m 0755 -o actions -g actions /srv/tidemq/actions-runner /srv/tidemq/work /srv/tidemq/tools /srv/tidemq/cargo-target /srv/tidemq/tmp /srv/tidemq/playwright
 install -d -m 0700 -o actions -g actions /home/actions/.config/tidemq-lab /home/actions/.ssh
 if [[ ! -x /srv/tidemq/actions-runner/config.sh ]]; then
   tar -xzf "$bundle/runner.archive" -C /srv/tidemq/actions-runner
@@ -46,6 +52,7 @@ TIDEMQ_OTELCOL_BIN=/srv/tidemq/tools/collectorTest
 TIDEMQ_LAB_HOME=/home/actions/.config/tidemq-lab
 ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/srv/tidemq/action-archives
 TMPDIR=/srv/tidemq/tmp
+PLAYWRIGHT_BROWSERS_PATH=/srv/tidemq/playwright
 EOF
 printf '%s\n' '/opt/tidemq-rust/cargo/bin:/srv/tidemq/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin' > /srv/tidemq/actions-runner/.path
 chown actions:actions /srv/tidemq/actions-runner/.env /srv/tidemq/actions-runner/.path

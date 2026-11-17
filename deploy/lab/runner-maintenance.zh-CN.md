@@ -22,9 +22,10 @@
 | 原生 `/srv/tidemq/cargo-target`、容器 `/srv/tidemq/container-runner/target` | 各最长 7 天、12 GiB；超额清空并按需编译；目录不共用 |
 | Cargo registry / git | 各最长 7 天、2 GiB；不删除 `cargo/bin`、rustup 或固定工具 |
 | 原生及容器各自的 tmp | 最长 1 天，各 2 GiB；原生使用全局租约，容器使用自身清理锁 |
+| 原生 Playwright 浏览器 | `/srv/tidemq/playwright` 使用数据盘，超过 1 GiB 或 7 天后清理 |
 | Runner `_diag` | 删除超过 7 天的文件；超过 128 MiB 时删除超过 1 天的文件，保留近期及当前日志 |
 | 私有 lab `logs` 镜像导入日志 | 最长 7 天，128 MiB；超额清空，下次导入重新生成 |
-| Runner Docker | 清理停止的构建容器、未使用镜像和构建缓存；检查 VM role、挂载点和 Docker data-root，固定连接本机 socket；只允许常驻 `tidemq-ci-runner`（标签 `tidemq.lab/runner=ci-container`）存活，保留其容器和所引用镜像；其他运行中容器阻止清理 |
+| Runner Docker | 清理停止的构建容器和未使用镜像；仅在 Docker 提供 buildx 时回收构建缓存，避免触发 legacy builder 警告；检查 VM role、挂载点和 Docker data-root，固定连接本机 socket；只允许常驻 `tidemq-ci-runner`（标签 `tidemq.lab/runner=ci-container`）存活，保留其容器和所引用镜像；其他运行中容器阻止清理 |
 | 临时 Kubernetes / fixture / loadgen 数据 | 使用下述所有权检查与共用回收脚本 |
 
 数据盘可用量低于 12 GiB 或根盘低于 2 GiB 时，再清理可重建的 Cargo / 临时缓存。仍未达到额度则拒绝继续任务，保留运行数据供排查。额度是空闲时的保留限制；单个运行中任务仍受 64 GiB 数据盘及 CI 超时约束，不能把它当成无限临时空间。近期 runner 日志和 file commands 可能暂时超过软额度，磁盘检查不会为腾空间删除它们。

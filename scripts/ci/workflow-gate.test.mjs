@@ -94,31 +94,27 @@ test('fault evidence survives a failed run until the next CI cleanup', () => {
   assert.match(maintenance, /if \[\[ "\$phase" == before \]\]; then[\s\S]*\.tidemq-ci[\s\S]*cleanup-ci\.sh/u);
 });
 
-test('browser jobs run Chromium only and cache Playwright downloads', () => {
+test('browser jobs run Chromium only on pre-provisioned runners', () => {
   const job = (name) => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [\w-]+:/u)[0] ?? '';
   for (const name of ['console', 'console-browser', 'console-browser-live']) {
     const source = job(name);
-    assert.match(source, /actions\/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4\.3\.0/u,
-      `${name} must use the pinned Playwright cache action`);
-    assert.match(source, /path: ~\/\.cache\/ms-playwright/u, `${name} must cache the browser directory`);
-    assert.match(source,
-      /key: playwright-\$\{\{ runner\.os \}\}-\$\{\{ hashFiles\('console\/web\/package-lock\.json'\) \}\}/u,
-      `${name} must invalidate the browser cache when Playwright dependencies change`);
+    assert.doesNotMatch(source, /actions\/cache@|cache: npm|cache-dependency-path/u,
+      `${name} must use runner-local caches`);
   }
-  assert.match(job('console'), /- run: npx --no-install playwright install --with-deps chromium\n/u,
-    'console must install Chromium only');
+  assert.match(job('console'), /- run: npx --no-install playwright install chromium\n/u,
+    'console must install Chromium only without sudo');
   assert.doesNotMatch(job('console'), /firefox|webkit/u,
     'console must not install Firefox or WebKit');
   assert.match(job('console'),
-    /- run: node --test \.\.\/\.\.\/scripts\/ci\/workflow-gate\.test\.mjs\n\s+- run: npx --no-install playwright install --with-deps chromium\n/u,
+    /- run: node --test \.\.\/\.\.\/scripts\/ci\/workflow-gate\.test\.mjs\n\s+- run: npx --no-install playwright install chromium\n/u,
     'console must enforce the workflow regression test before browser installation');
   assert.match(job('console'), /timeout-minutes: 40/u,
     'console must allow the first browser install to finish');
   for (const name of ['console-browser', 'console-browser-live']) {
     const source = job(name);
     assert.match(source, /timeout-minutes: 40/u, `${name} must allow the first browser install to finish`);
-    assert.match(source, /playwright install --with-deps chromium/u, `${name} must install Chromium`);
-    assert.equal((source.match(/playwright install --with-deps/gu) ?? []).length, 1,
+    assert.match(source, /playwright install chromium/u, `${name} must install Chromium`);
+    assert.equal((source.match(/playwright install chromium/gu) ?? []).length, 1,
       `${name} must have one browser installation target`);
   }
   assert.match(job('console-browser'),
@@ -129,11 +125,9 @@ test('browser jobs run Chromium only and cache Playwright downloads', () => {
     'console-browser-live must execute the Chromium native browser suite');
   for (const name of ['console', 'console-browser', 'console-browser-live']) {
     const source = job(name);
-    const cache = source.indexOf('actions/cache@');
     const npm = source.indexOf('- run: npm ci');
-    const browser = source.indexOf('playwright install --with-deps');
-    assert(cache >= 0 && cache < npm && npm < browser,
-      `${name} must cache before npm install and install the browser last`);
+    const browser = source.indexOf('playwright install chromium');
+    assert(npm >= 0 && npm < browser, `${name} must install the browser after npm dependencies`);
   }
   assert.doesNotMatch(job('console-browser'), /strategy:|matrix:/u);
   assert.doesNotMatch(job('console-browser-live'), /browser: \[chromium\]/u);

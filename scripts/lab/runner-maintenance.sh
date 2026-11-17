@@ -97,6 +97,7 @@ sweep() {
   bound_cache /srv/tidemq/cargo-target "$TARGET_MAX_BYTES" "$CACHE_MAX_DAYS"
   clean_cargo_downloads /srv/tidemq/maintenance/cargo-cache.lock /srv/tidemq/rust/cargo
   bound_cache /srv/tidemq/tmp "$TMP_MAX_BYTES" 1
+  bound_cache /srv/tidemq/playwright "$ACTION_CACHE_MAX_BYTES" "$CACHE_MAX_DAYS"
   bound_cache "$TIDEMQ_LAB_HOME/logs" "$DIAGNOSTIC_MAX_BYTES" "$CACHE_MAX_DAYS"
   find /srv/tidemq/actions-runner/_diag -type f -mtime +7 -delete
   if (( $(du -sx -B1 /srv/tidemq/actions-runner/_diag | cut -f 1) > DIAGNOSTIC_MAX_BYTES )); then
@@ -111,7 +112,9 @@ sweep() {
   fi
   docker --host unix:///var/run/docker.sock container prune --filter 'label!=tidemq.lab/runner=ci-container' --force
   docker --host unix:///var/run/docker.sock image prune --all --force
-  docker --host unix:///var/run/docker.sock builder prune --all --force
+  if docker --host unix:///var/run/docker.sock buildx version >/dev/null 2>&1; then
+    docker --host unix:///var/run/docker.sock buildx prune --all --force
+  fi
   if (( $(free_bytes /) < ROOT_MIN_FREE_BYTES || $(free_bytes /srv/tidemq) < DATA_MIN_FREE_BYTES )); then
     for directory in /srv/tidemq/cargo-target /srv/tidemq/tmp; do
       [[ ! -d "$directory" ]] || empty_cache "$directory"

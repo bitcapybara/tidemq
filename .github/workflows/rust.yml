@@ -28,32 +28,27 @@ jobs:
       run:
         working-directory: console/web
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: console/web/package-lock.json
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('console/web/package-lock.json') }}
       - run: npm ci
       - run: node --test ../../scripts/ci/workflow-gate.test.mjs
-      - run: npx --no-install playwright install --with-deps chromium
+      - run: npx --no-install playwright install chromium
       - run: node --test tests/ci/*.test.mjs
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test:coverage
       - run: npm run build
       - run: node --test ../../scripts/console-package.test.mjs ../../deploy/console/prepare.test.mjs
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: console-coverage
           path: console/web/coverage
           retention-days: 14
+          if-no-files-found: ignore
 
   console-browser:
     name: Console browser (chromium)
@@ -64,22 +59,16 @@ jobs:
       run:
         working-directory: console/web
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: console/web/package-lock.json
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('console/web/package-lock.json') }}
       - run: npm ci
-      - run: npx --no-install playwright install --with-deps chromium
+      - run: npx --no-install playwright install chromium
       - run: npm run build
       - run: npm run test:e2e -- --project=chromium
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: console-browser-chromium
@@ -87,6 +76,7 @@ jobs:
             console/web/playwright-report
             console/web/test-results
           retention-days: 14
+          if-no-files-found: ignore
 
   validate-linux:
     name: Validate (Linux)
@@ -95,12 +85,12 @@ jobs:
     runs-on: [self-hosted, Linux, X64, tidemq-ci-container]
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/ci/native.sh
         env:
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: tests-Linux
@@ -110,9 +100,10 @@ jobs:
             !target/ci/lab-report
             !target/ci/console-server
           retention-days: 14
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: success()
-        with: {name: console-server-linux, path: target/ci/console-server, retention-days: 3}
+        with: {name: console-server-linux, path: target/ci/console-server, retention-days: 3, if-no-files-found: ignore}
 
   console-browser-live:
     name: Console native HTTPS (chromium, ${{ matrix.topology }})
@@ -125,18 +116,12 @@ jobs:
       matrix:
         topology: [combined, separated-rf1]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: npm
-          cache-dependency-path: console/web/package-lock.json
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('console/web/package-lock.json') }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with: {name: console-server-linux, path: target/ci/console-server}
       - run: |
           test "$(cat target/ci/console-server/source-commit.txt)" = "$GITHUB_SHA"
@@ -144,7 +129,7 @@ jobs:
           chmod 0700 target/ci/console-server/tidemq
       - run: npm ci
         working-directory: console/web
-      - run: npx --no-install playwright install --with-deps chromium
+      - run: npx --no-install playwright install chromium
         working-directory: console/web
       - run: npm run build
         working-directory: console/web
@@ -153,12 +138,13 @@ jobs:
         env:
           TIDEMQ_LIVE_TOPOLOGY: ${{ matrix.topology }}
           TIDEMQ_BINARY: ${{ github.workspace }}/target/ci/console-server/tidemq
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: console-browser-live-chromium-${{ matrix.topology }}
           path: target/ci/console-browser-live
           retention-days: 14
+          if-no-files-found: ignore
 
   faults:
     name: Faults and deployed API (Linux)
@@ -166,14 +152,14 @@ jobs:
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - run: bash scripts/ci/with-cargo-cache.sh bash scripts/lab/with-lease.sh bash scripts/ci/faults.sh
         env:
           TIDEMQ_REQUIRE_EXTERNAL: '1'
           TIDEMQ_COVERAGE_TARGET_DIR: /srv/tidemq/cargo-target/coverage
           TIDEMQ_NEXTEST_IMAGE: sha256:c25cdd9dc1718bd719f07067c9454ae81e9980054e6b4b423a7cb1e070c713cc
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: tests-Linux-faults
@@ -181,12 +167,14 @@ jobs:
             target/ci
             !target/ci/lab-report
           retention-days: 14
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: kubernetes-lab
           path: target/ci/lab-report
           retention-days: 30
+          if-no-files-found: ignore
 
   coverage:
     name: Coverage report gate (no test rerun)
@@ -195,9 +183,9 @@ jobs:
     runs-on: [self-hosted, Linux, X64, tidemq-dev]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {fetch-depth: 0, persist-credentials: false}
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha || github.sha }}
           path: trusted
@@ -215,9 +203,9 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --output target/ci/coverage/summary.json "${coverage_gate_mode[@]}"
         env:
           COVERAGE_GATE_MODE: ${{ github.event_name == 'pull_request' && '--require-baseline-unchanged' || (github.ref == 'refs/heads/main' && '--allow-initialize' || '') }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
-        with: {name: coverage-report, path: target/ci/coverage, retention-days: 30}
+        with: {name: coverage-report, path: target/ci/coverage, retention-days: 30, if-no-files-found: ignore}
       - name: Remove local coverage inputs
         if: success()
         run: node scripts/coverage/bundle.mjs clean
