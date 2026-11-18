@@ -1,6 +1,6 @@
 # 第二个 Linux runner
 
-只新增一个仓库级 runner，名称 `tidemq-ci-container-u126-8`、ID 23、标签 `tidemq-ci-container`。Linux Validate 使用该容器 runner，Faults 和 Coverage 继续使用原生 `tidemq-dev-u126-8`（ID 21）；由于两个重测试 lane 共享同一宿主机和实验室 VM，Faults 在 Validate 完成后启动。容器由同一 `tidemq-runner` VM 的 Docker Compose 管理，配置见 [compose.yaml](compose.yaml)，镜像构建见 [Dockerfile](Dockerfile)。不增加 Kubernetes runner controller 或额外 VM。
+只新增一个仓库级 runner，名称 `tidemq-ci-container-u126-8`、ID 23、标签 `tidemq-ci-container`。Linux Validate 使用该容器 runner，Faults 和 Coverage 继续使用原生 `tidemq-dev-u126-8`（ID 21）；Validate 不访问实验室 VM，Faults 通过 `with-lease.sh` 独占实验室资源，两个 job 可以并行。容器由同一 `tidemq-runner` VM 的 Docker Compose 管理，配置见 [compose.yaml](compose.yaml)，镜像构建见 [Dockerfile](Dockerfile)。不增加 Kubernetes runner controller 或额外 VM。
 
 ## 资源和路径
 
@@ -74,7 +74,7 @@ lab_ssh tidemq-runner sudo systemctl show actions.runner.bitcapybara-tidemq.tide
 lab_ssh tidemq-runner sudo systemctl start tidemq-runner-maintenance.service
 ```
 
-GitHub 的普通 Rust/文档检查指定 `tidemq-ci-container`，浏览器、Faults 和 Coverage 指定 `tidemq-dev`；Faults 在 Validate 完成后启动，Coverage 等待两者完成，以避免共享宿主机和实验室 VM 的资源竞争；所有 CI lane 都使用 self-hosted Linux runner。Validate 在本长期 runner 容器内直接执行本地 nextest 捕获路径，不设置 `TIDEMQ_NEXTEST_IMAGE`，不需要 Docker socket。Faults 继续在原生 runner 上预编译，并使用本目录的 `localhost/tidemq-nextest:ubuntu2404-rust1.100.0` 镜像名创建一次性 6GiB/4 CPU 测试容器；镜像缺失时由 CI 从固定 Ubuntu base 自动重建并按 `tidemq.lab/nextest=true` 标签保留；不使用长期容器的注册入口、state 或 HOME。公共 Rust/nextest/Node 工具只读挂载，source/target/TMPDIR 和 profile 路径保持原绝对值。正常/TERM 精确删除自己的容器 ID，SIGKILL 遗留由更新后的原生维护 bundle 按 label/name/UID 回收；长期容器规格、生产 quota 和真实容器限额负测继续保留。
+GitHub 的普通 Rust/文档检查指定 `tidemq-ci-container`，浏览器、Faults 和 Coverage 指定 `tidemq-dev`；Validate 与 Faults 可并行，Coverage 等待两者完成。Validate 在本长期 runner 容器内直接执行本地 nextest 捕获路径，不设置 `TIDEMQ_NEXTEST_IMAGE`，不需要 Docker socket；Faults 通过宿主租约保护实验室 VM，并在原生 runner 上预编译，使用本目录的 `localhost/tidemq-nextest:ubuntu2404-rust1.100.0` 镜像名创建一次性 6GiB/4 CPU 测试容器。两条 lane 的 source/target/TMPDIR、临时资源和覆盖率目录相互独立，共享宿主机只保留可接受的 CPU/内存竞争；镜像缺失时由 CI 从固定 Ubuntu base 自动重建并按 `tidemq.lab/nextest=true` 标签保留。不使用长期容器的注册入口、state 或 HOME。公共 Rust/nextest/Node 工具只读挂载，正常/TERM 精确删除自己的容器 ID，SIGKILL 遗留由更新后的原生维护 bundle 按 label/name/UID 回收；长期 runner 资源、生产 quota 和真实容器限额负测保留。
 
 该变更不要求重新 build 本目录镜像，但必须在两个 runner 空闲且独立 review 后执行 `start`，让常驻容器重建并应用新的 coverage handoff 挂载；同时更新原生维护 bundle。Coverage 等待两个测试 job 完成，从同一共享 handoff 目录读取两份输入，校验提交、run、attempt、工具和工作区路径。它合并已有二进制和 profile 并比较基线。报告完成后清理本地输入，最终覆盖率和 VM 报告保留 30 天。完整流程和当前端到端缺口见 [测试指南](../../../docs/testing.zh-CN.md)。
 

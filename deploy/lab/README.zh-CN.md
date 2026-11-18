@@ -162,7 +162,7 @@ Docker data-root 和 containerd 镜像存储也放在 runner 数据盘。`prepar
 
 Linux 校验、集成测试、覆盖率、浏览器检查与 Kubernetes / VM 故障均使用 self-hosted runner，不再消耗 GitHub-hosted runner。复杂步骤位于 `scripts/ci/`，workflow 只保留调度、checkout、调用脚本和上传结果。
 
-当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）使用隔离的 `tidemq-ci-container` runner，在 runner 容器内直接执行本地 nextest 捕获路径，不设置 `TIDEMQ_NEXTEST_IMAGE`，因此不需要 Docker socket。Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和 Coverage 使用原生 `tidemq-dev` executor；Faults 继续使用 immutable CI 镜像在 fresh 6GiB/4 CPU 测试容器中执行。由于两个重测试 lane 共享同一宿主机和实验室 VM，Faults 在 Validate 完成后启动，Coverage 仍等待两者完成，以避免 VM 和内存资源竞争。两条 runner 都保持原有 source/target/TMPDIR、插桩环境、测试选择和缓存锁约束；长期 runner 配置、生产 quota 和真实容器限额负测保留。
+当前 Linux Validate（静态检查、单元、默认 SDK、普通集成）使用隔离的 `tidemq-ci-container` runner，在 runner 容器内直接执行本地 nextest 捕获路径，不设置 `TIDEMQ_NEXTEST_IMAGE`，因此不需要 Docker socket。Faults（故障钩子、真实外部服务、K8s黑盒/VM故障）和 Coverage 使用原生 `tidemq-dev` executor；Faults 继续使用 immutable CI 镜像在 fresh 6GiB/4 CPU 测试容器中执行。Validate 不访问实验室 VM、kubeconfig 或 SSH 租约，Faults 通过 `with-lease.sh` 独占实验室资源，因此两个 job 可以并行；共享 runner VM 只会带来 CPU/内存竞争，不会共享测试数据或故障状态。Coverage 仍等待两个测试 job 完成。两条 runner 都保持原有 source/target/TMPDIR、插桩环境、测试选择和缓存锁约束；长期 runner 配置、生产 quota 和真实容器限额负测保留。
 
 两个测试 job 从开始即使用 LLVM 插桩，分别打包二进制/profile 并上传，再接续下一 job。coverage job 校验同一源码/CI run/工具/工作区路径及每个输入的 SHA256，再合并五阶段 JUnit、两个 job 的原生 profile 和全部远程实例 profile，导出 LLVM JSON、LCOV、HTML、原始 profile 归档并比较基线，不重新编译或重跑 Rust 测试。K8s 的10个角色实例和 loadgen 客户端均使用插桩二进制；measurement 绑定源码、镜像、二进制哈希、角色/Pod/worker/imageID和行为断言；缺少任一实例则失败。公共常驻服务与手动普通验收仍使用 release 构建。资源边界、同额度隔离对照及最终 CI 验收限制见[测试指南](../../docs/testing.zh-CN.md)。
 
