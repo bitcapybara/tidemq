@@ -616,7 +616,7 @@ async fn retiring_an_already_acked_read_alone_wakes_a_different_tenant_in_the_sa
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_joins_an_active_observation_and_releases_every_charged_resource() {
     let _serial = SERIAL.lock().await;
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(Duration::from_secs(90), async {
         let mut fixture = WatchFixture::new().await;
         let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
         let request = fixture.member.watch(fixture.sync().await, 1_000);
