@@ -56,8 +56,13 @@ async fn spawn_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
         .append(true)
         .open(fixture.directory.join(format!("process-{node}.log")))
         .unwrap();
+    let worker_threads = if std::env::var_os("TIDEMQ_REQUIRE_EXTERNAL").is_some() {
+        "4"
+    } else {
+        "2"
+    };
     tokio::process::Command::new(env!("CARGO_BIN_EXE_tidemq"))
-        .env("TOKIO_WORKER_THREADS", "2")
+        .env("TOKIO_WORKER_THREADS", worker_threads)
         .arg("serve")
         .arg("--config")
         .arg(&path)
