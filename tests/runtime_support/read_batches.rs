@@ -125,7 +125,7 @@ pub(super) async fn finish_original_send(
     }
 }
 
-pub(super) async fn finish_original_ack(
+pub(crate) async fn finish_original_ack(
     mut result: tidemq_sdk::Result<tidemq_sdk::AckReceipt>,
     until: Instant,
 ) -> tidemq_sdk::Result<tidemq_sdk::AckReceipt> {

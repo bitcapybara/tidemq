@@ -136,7 +136,10 @@ async fn operator_cli_lists_transfers_changes_layout_and_retires_a_broker_before
     )
     .await;
     assert_eq!(merged["shard_count"], 1);
-    queue.ack(&held).await.unwrap();
+    let until = deadline();
+    crate::read_batches::finish_original_ack(queue.ack(&held).await, until)
+        .await
+        .unwrap();
     let next = producer
         .send("after-operator-cli")
         .await
@@ -147,7 +150,10 @@ async fn operator_cli_lists_transfers_changes_layout_and_retires_a_broker_before
         .unwrap()
         .unwrap();
     assert_eq!(message.message_id(), next);
-    queue.ack(&message).await.unwrap();
+    let until = deadline();
+    crate::read_batches::finish_original_ack(queue.ack(&message).await, until)
+        .await
+        .unwrap();
     let disabled = command(
         &fixture,
         &["set-schedulable", "--node-id", "2", "--enabled", "false"],

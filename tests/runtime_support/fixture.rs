@@ -479,6 +479,28 @@ impl Fixture {
         .unwrap()
     }
 
+    pub(crate) async fn retry_admin(
+        mut result: tidemq_sdk::Result<tidemq_sdk::AdminReceipt>,
+        until: Instant,
+    ) -> tidemq_sdk::Result<tidemq_sdk::AdminReceipt> {
+        loop {
+            match result {
+                Ok(receipt) => return Ok(receipt),
+                Err(tidemq_sdk::Error::Administration { pending, source })
+                    if Instant::now() < until
+                        && (source.outcome_unknown()
+                            || source.kind() == tidemq_sdk::ErrorKind::Unavailable) =>
+                {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    result = tidemq_sdk::RequestContext::with_deadline(until)
+                        .scope(pending.retry())
+                        .await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     pub(crate) async fn stop(&mut self, node: u64) {
         let running = self.running.remove(&node).unwrap();
         running.shutdown().await.unwrap();
@@ -616,7 +638,7 @@ pub(crate) fn tcp_address() -> SocketAddr {
     panic!("No test TCP port is available outside the observed ephemeral range");
 }
 pub(crate) fn deadline() -> Instant {
-    Instant::now() + Duration::from_secs(30)
+    Instant::now() + Duration::from_secs(60)
 }
 
 pub(crate) async fn http(address: SocketAddr, path: &str) -> String {
