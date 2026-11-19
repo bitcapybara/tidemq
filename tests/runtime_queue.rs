@@ -57,7 +57,7 @@ async fn spawn_process(fixture: &Fixture, node: u64) -> tokio::process::Child {
         .open(fixture.directory.join(format!("process-{node}.log")))
         .unwrap();
     tokio::process::Command::new(env!("CARGO_BIN_EXE_tidemq"))
-        .env("TOKIO_WORKER_THREADS", "4")
+        .env("TOKIO_WORKER_THREADS", "2")
         .arg("serve")
         .arg("--config")
         .arg(&path)
