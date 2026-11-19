@@ -408,6 +408,15 @@ impl Member {
         }
     }
 
+    pub async fn heartbeat(&mut self, wire: &WireClient) {
+        let request = public::ConsumerControl {
+            action: public::ConsumerAction::HeartbeatConsumer.into(),
+            heartbeat_sequence: self.status.next_heartbeat_sequence,
+            ..self.request.clone()
+        };
+        self.status = wire.member_control(&request).await;
+    }
+
     pub async fn read(&self, wire: &WireClient, sequence: u64) -> public::GroupDeliveries {
         self.read_batch(wire, sequence, 1).await
     }

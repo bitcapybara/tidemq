@@ -611,7 +611,7 @@ async fn parked_gate_failure_ledger(
     }
 }
 
-pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: Bytes) {
+pub(super) async fn verify_observation_recovery(fixture: &mut WatchFixture, token: Bytes) {
     use tidemq::runtime::watch_test_hooks::AuthorizeQuorumPause;
     let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
     let before = quiescent(&observer).await;
@@ -637,6 +637,7 @@ pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: B
         let until = deadline();
         let (response, _) = fixture.wire.submit_until(&request, until).await;
         held.push((root, until, response));
+        fixture.member.heartbeat(&fixture.wire).await;
     }
     tokio::time::timeout_at(deadline(), async {
         loop {
@@ -668,8 +669,10 @@ pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: B
             parked_gate_failure_ledger(&observer, held, pause.parked(), expected).await;
             panic!("The original authority pause deadline expired: {error}");
         }
+        fixture.member.heartbeat(&fixture.wire).await;
     }
     drop(before_wait);
+    fixture.member.heartbeat(&fixture.wire).await;
     let mut observation = Observation::new(
         fixture.member.watch(token.clone(), 0),
         Duration::from_millis(RPC_MS),
@@ -720,6 +723,7 @@ pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: B
             i32::from(public::WatchStatus::WatchUnchanged)
         );
         assert_eq!(target.observed_token, token);
+        fixture.member.heartbeat(&fixture.wire).await;
     }
     let result = observation
         .finish(
@@ -736,7 +740,17 @@ pub(super) async fn verify_observation_recovery(fixture: &WatchFixture, token: B
         "Recovery extended the original two-second deadline"
     );
     drop(pause);
-    let after = quiescent_from(async || observer.snapshot().await, Some(&before)).await;
+    let mut heartbeat = Box::pin(async {
+        let mut tick = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            tick.tick().await;
+            fixture.member.heartbeat(&fixture.wire).await;
+        }
+    });
+    let after = tokio::select! {
+        after = quiescent_from(async || observer.snapshot().await, Some(&before)) => after,
+        _ = &mut heartbeat => unreachable!(),
+    };
     eprintln!(
         "Known observation recovery resource ledger: {}",
         serde_json::to_string(&after).unwrap()

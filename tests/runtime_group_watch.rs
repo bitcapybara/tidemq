@@ -248,7 +248,7 @@ async fn malformed_forged_member_and_duplicate_targets_have_explicit_rejections(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn observation_budget_refuses_explicitly_while_member_control_still_progresses() {
     let _serial = SERIAL.lock().await;
-    let fixture = WatchFixture::new().await;
+    let mut fixture = WatchFixture::new().await;
     let token = fixture.sync().await;
     let observer = fixture.runtime.running.get(&1).unwrap().watch_diagnostics();
     let mut pending = vec![
@@ -264,7 +264,10 @@ async fn observation_budget_refuses_explicitly_while_member_control_still_progre
     })
     .await
     .expect("The initial real Watch never registered");
-    for _ in 1..160 {
+    for index in 1..160 {
+        if index % 8 == 0 {
+            fixture.member.heartbeat(&fixture.wire).await;
+        }
         pending.push(
             fixture
                 .wire
@@ -359,7 +362,9 @@ async fn observation_budget_refuses_explicitly_while_member_control_still_progre
     let metrics = fixture.metrics(1).await;
     assert!(metric(&metrics, "tidemq_watch_admission_rejected_total") > 0);
     assert_eq!(activity(&metrics), [0, 0, 0]);
-    group_watch_scale::verify_observation_recovery(&fixture, token).await;
+    fixture.member.heartbeat(&fixture.wire).await;
+    group_watch_scale::verify_observation_recovery(&mut fixture, token).await;
+    fixture.member.heartbeat(&fixture.wire).await;
     fixture.close().await;
 }
 
