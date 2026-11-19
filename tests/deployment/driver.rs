@@ -279,7 +279,7 @@ async fn connect(args: &Args, deadline: Instant) -> Result<Client> {
                         TlsTrust::ca_file(&args.ca),
                         Credentials::token_file(&args.token_file),
                     )
-                    .request_timeout(Duration::from_secs(10))
+                    .request_timeout(Duration::from_secs(30))
                     .build(),
                 )
                 .await

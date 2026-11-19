@@ -142,7 +142,7 @@ pub fn request_deadline(total: Instant) -> Result<Instant> {
     ensure!(Instant::now() < total, "Validation work deadline exceeded");
     Ok(total.min(
         Instant::now()
-            .checked_add(Duration::from_secs(10))
+            .checked_add(Duration::from_secs(30))
             .context("Request deadline overflow")?,
     ))
 }

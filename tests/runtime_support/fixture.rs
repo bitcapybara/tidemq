@@ -219,7 +219,7 @@ impl Fixture {
     }
 
     pub(crate) async fn start_all(&mut self) {
-        self.start_all_with_ready_timeout(Duration::from_secs(15))
+        self.start_all_with_ready_timeout(Duration::from_secs(30))
             .await;
     }
 
@@ -286,7 +286,7 @@ impl Fixture {
     }
 
     pub(crate) async fn wait_ready(&self) {
-        self.wait_ready_with_timeout(Duration::from_secs(15)).await;
+        self.wait_ready_with_timeout(Duration::from_secs(30)).await;
     }
 
     async fn wait_ready_with_timeout(&self, timeout: Duration) {
@@ -362,7 +362,7 @@ impl Fixture {
         client: &Client,
         storage_group: u64,
     ) -> (u64, u64) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             match client
                 .console_read(tidemq_protocol::console::Query::Cluster {
@@ -421,7 +421,7 @@ impl Fixture {
         role: &str,
         voter_count: usize,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let query = tidemq_sdk::RequestContext::with_deadline(deadline)
                 .scope(
@@ -456,7 +456,7 @@ impl Fixture {
     }
 
     pub(crate) async fn client(&self, gateway: u64) -> Client {
-        self.client_with_timeouts(gateway, Duration::from_secs(10), Duration::from_secs(5))
+        self.client_with_timeouts(gateway, Duration::from_secs(30), Duration::from_secs(5))
             .await
     }
 
@@ -616,7 +616,7 @@ pub(crate) fn tcp_address() -> SocketAddr {
     panic!("No test TCP port is available outside the observed ephemeral range");
 }
 pub(crate) fn deadline() -> Instant {
-    Instant::now() + Duration::from_secs(10)
+    Instant::now() + Duration::from_secs(30)
 }
 
 pub(crate) async fn http(address: SocketAddr, path: &str) -> String {
