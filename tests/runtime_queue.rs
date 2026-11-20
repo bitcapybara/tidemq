@@ -195,7 +195,9 @@ async fn create_logical_resources(client: &Client) -> tidemq_sdk::TopicInfo {
         .create_namespace(tenant, "app")
         .await
         .unwrap();
-    client.admin().create_topic(RUNTIME_TOPIC).await.unwrap()
+    Fixture::retry_topic(&client.admin(), RUNTIME_TOPIC, deadline())
+        .await
+        .unwrap()
 }
 
 async fn logical_send(

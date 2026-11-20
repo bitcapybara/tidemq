@@ -647,7 +647,9 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     let mut work = Vec::new();
     for index in 0..4 {
         let name = format!("separated/app/read-barrier-{index}");
-        let topic = client.admin().create_topic(&name).await.unwrap();
+        let topic = Fixture::retry_topic(&client.admin(), &name, deadline())
+            .await
+            .unwrap();
         let consumer = client
             .new_stream_consumer(&name, "durable")
             .build()

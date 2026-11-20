@@ -501,6 +501,33 @@ impl Fixture {
         }
     }
 
+    pub(crate) async fn retry_topic(
+        admin: &tidemq_sdk::Admin,
+        name: &str,
+        until: Instant,
+    ) -> tidemq_sdk::Result<tidemq_sdk::TopicInfo> {
+        match tidemq_sdk::RequestContext::with_deadline(until)
+            .scope(admin.create_topic(name))
+            .await
+        {
+            Ok(topic) => Ok(topic),
+            Err(tidemq_sdk::Error::Administration { pending, source }) => {
+                match Self::retry_admin(
+                    Err(tidemq_sdk::Error::Administration { pending, source }),
+                    until,
+                )
+                .await?
+                {
+                    tidemq_sdk::AdminReceipt::Topic(topic) => Ok(topic),
+                    _ => Err(tidemq_sdk::Error::ResponseMismatch {
+                        reason: "administration returned a non-topic result".into(),
+                    }),
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) async fn stop(&mut self, node: u64) {
         let running = self.running.remove(&node).unwrap();
         running.shutdown().await.unwrap();
