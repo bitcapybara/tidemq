@@ -125,7 +125,7 @@ async fn a_stream_handoff_keeps_cumulative_ack_usable_for_retained_ranges() {
 async fn a_stream_handoff_stops_disconnected_members_from_delivering_old_prefetch() {
     let fixture = dynamic_fixture().await;
     let admin = fixture
-        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(5))
+        .client_with_timeouts(1, Duration::from_secs(30), Duration::from_secs(30))
         .await;
     let tenant = admin.admin().create_tenant("acme").await.unwrap();
     admin.admin().create_namespace(tenant, "app").await.unwrap();

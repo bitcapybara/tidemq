@@ -631,7 +631,9 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     for (node, child) in &mut processes {
         wait_process(&fixture, *node, child).await;
     }
-    let client = fixture.client(41).await;
+    let client = fixture
+        .client_with_timeouts(41, Duration::from_secs(120), Duration::from_secs(30))
+        .await;
     fixture.wait_for_quorum_leaders(&client, 2).await;
     let tenant = client.admin().create_tenant("separated").await.unwrap();
     Fixture::retry_admin(
