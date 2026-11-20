@@ -645,9 +645,10 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
     .await
     .unwrap();
     let mut work = Vec::new();
+    let topic_deadline = Instant::now() + Duration::from_secs(120);
     for index in 0..4 {
         let name = format!("separated/app/read-barrier-{index}");
-        let topic = Fixture::retry_topic(&client.admin(), &name, deadline())
+        let topic = Fixture::retry_topic(&client.admin(), &name, topic_deadline)
             .await
             .unwrap();
         let consumer = client

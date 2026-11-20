@@ -192,7 +192,22 @@ async fn cancelled_operator_waiter_recovers_the_original_public_transfer_after_p
     );
     assert!(admin.pending_operations().unwrap().is_empty());
     wait_for_consumer_assignment(&queue, deadline()).await;
-    queue.ack(&held).await.unwrap();
+    let until = deadline();
+    loop {
+        match queue.ack(&held).await {
+            Ok(receipt) => {
+                assert_eq!(receipt, tidemq_sdk::AckReceipt::Acknowledged);
+                break;
+            }
+            Err(error)
+                if error.kind() == tidemq_sdk::ErrorKind::StaleDelivery
+                    && Instant::now() < until =>
+            {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("The transferred delivery could not be acknowledged: {error:?}"),
+        }
+    }
     for (index, identity) in expected.iter().enumerate().skip(1) {
         let message = tokio::time::timeout_at(deadline(), queue.receive())
             .await
