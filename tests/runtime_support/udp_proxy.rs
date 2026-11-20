@@ -27,6 +27,7 @@ pub struct Snapshot {
 struct Mtu {
     request: AtomicUsize,
     response: AtomicUsize,
+    reliable: std::sync::atomic::AtomicBool,
 }
 
 pub struct Proxy {
@@ -55,6 +56,7 @@ impl Proxy {
         let mtu = Arc::new(Mtu {
             request: AtomicUsize::new(1200),
             response: AtomicUsize::new(1200),
+            reliable: std::sync::atomic::AtomicBool::new(false),
         });
         let (stop, stopped) = watch::channel(false);
         let task = tokio::spawn(run(
@@ -83,6 +85,10 @@ impl Proxy {
 
     pub fn set_response_mtu(&self, mtu: usize) {
         self.mtu.response.store(mtu, Ordering::Release);
+    }
+
+    pub fn set_reliable(&self) {
+        self.mtu.reliable.store(true, Ordering::Release);
     }
 
     pub fn switch(&self) {
@@ -142,16 +148,19 @@ async fn run(
             _ = stop.changed() => return Ok(()),
             received = public.recv_from(&mut request) => {
                 let (length, address) = received?;
-                if client.is_some_and(|client| client != address) { continue; }
-                client = Some(address);
+                if client != Some(address) {
+                    client = Some(address);
+                    pending_request = None;
+                    pending_response = None;
+                }
                 let target = backends[backend.load(Ordering::Acquire)];
-                relay(&outgoing, &request[..length], target, &mut pending_request, &counters, mtu.request.load(Ordering::Acquire)).await?;
+                relay(&outgoing, &request[..length], target, &mut pending_request, &counters, mtu.request.load(Ordering::Acquire), mtu.reliable.load(Ordering::Acquire)).await?;
             }
             received = outgoing.recv_from(&mut response) => {
                 let (length, address) = received?;
                 if !backends.contains(&address) { continue; }
                 if let Some(client) = client {
-                    relay(&public, &response[..length], client, &mut pending_response, &counters, mtu.response.load(Ordering::Acquire)).await?;
+                    relay(&public, &response[..length], client, &mut pending_response, &counters, mtu.response.load(Ordering::Acquire), mtu.reliable.load(Ordering::Acquire)).await?;
                 }
             }
             _ = timer.tick() => {
@@ -169,17 +178,21 @@ async fn relay(
     pending: &mut Option<Pending>,
     counters: &Counters,
     mtu: usize,
+    reliable: bool,
 ) -> std::io::Result<()> {
     let number = counters.packets.fetch_add(1, Ordering::Relaxed) + 1;
     if bytes.len() > mtu {
         counters.over_mtu.fetch_add(1, Ordering::Relaxed);
         return Ok(());
     }
-    if number.is_multiple_of(17) {
+    if !reliable && number.is_multiple_of(17) {
         counters.lost.fetch_add(1, Ordering::Relaxed);
         return Ok(());
     }
-    if let Some(previous) = pending.take() {
+    if reliable {
+        pending.take();
+        socket.send_to(bytes, target).await?;
+    } else if let Some(previous) = pending.take() {
         socket.send_to(bytes, target).await?;
         socket.send_to(&previous.bytes, previous.target).await?;
         counters.reordered.fetch_add(1, Ordering::Relaxed);

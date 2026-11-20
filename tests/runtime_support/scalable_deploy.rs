@@ -62,7 +62,7 @@ async fn deployment_driver_checks_stable_message_ids_and_original_pending_handle
         if case == "unavailable" {
             let waiting = stage(&output.join("waiting-fault.json"), &mut child, until, &log).await;
             assert_eq!(waiting["business_acknowledged_before"], 8);
-            proxy.set_mtu(1199);
+            proxy.set_response_mtu(0);
             tokio::fs::write(output.join("fault-injected"), [])
                 .await
                 .unwrap();
@@ -71,7 +71,8 @@ async fn deployment_driver_checks_stable_message_ids_and_original_pending_handle
             assert_eq!(observed["ledger"]["committed"], 8);
             assert_eq!(observed["batch"]["receipt_seen"], false);
             assert!(observed["batch"]["original_pending"].as_u64().unwrap() > 0);
-            proxy.set_mtu(1200);
+            proxy.set_mtu(65_536);
+            proxy.set_reliable();
             tokio::fs::write(output.join("recovered"), [])
                 .await
                 .unwrap();
