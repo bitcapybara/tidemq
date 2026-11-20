@@ -1173,7 +1173,13 @@ async fn scale(shards_per_topic: usize) {
     heartbeats.add(wire.clone(), hot_member.clone());
     let mut scopes = Vec::new();
     for (index, name) in names.iter().enumerate() {
-        let topic = admin.admin().create_topic(name).await.unwrap();
+        let topic = Fixture::retry_topic(
+            &admin.admin(),
+            name,
+            Instant::now() + Duration::from_secs(90),
+        )
+        .await
+        .unwrap();
         assert_eq!(topic.shard_count(), shards_per_topic);
         let routes = layout(&wire, topic.id().into(), shards_per_topic).await;
         eprintln!(
