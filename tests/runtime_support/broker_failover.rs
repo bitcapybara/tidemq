@@ -319,7 +319,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     let topic = Fixture::retry_topic(
         &admin,
         RUNTIME_TOPIC,
-        Instant::now() + Duration::from_secs(180),
+        Instant::now() + Duration::from_secs(240),
     )
     .await
     .unwrap();

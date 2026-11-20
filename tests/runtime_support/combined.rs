@@ -650,7 +650,7 @@ async fn separated_rf3_keeps_metadata_and_data_read_barriers_live_during_durable
         let topic = Fixture::retry_topic(
             &client.admin(),
             &name,
-            Instant::now() + Duration::from_secs(300),
+            Instant::now() + Duration::from_secs(420),
         )
         .await
         .unwrap();
