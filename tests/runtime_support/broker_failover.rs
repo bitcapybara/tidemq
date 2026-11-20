@@ -312,6 +312,7 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
         wait_process(&fixture, *node, process).await;
     }
     let client = fixture.client(41).await;
+    fixture.wait_for_quorum_leaders(&client, 2).await;
     let admin = client.admin();
     let tenant = admin.create_tenant("test").await.unwrap();
     admin.create_namespace(tenant, "app").await.unwrap();
