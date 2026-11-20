@@ -316,9 +316,13 @@ async fn independent_rf3_broker_crash_automatically_fences_and_resumes_original_
     let admin = client.admin();
     let tenant = admin.create_tenant("test").await.unwrap();
     admin.create_namespace(tenant, "app").await.unwrap();
-    let topic = Fixture::retry_topic(&admin, RUNTIME_TOPIC, deadline())
-        .await
-        .unwrap();
+    let topic = Fixture::retry_topic(
+        &admin,
+        RUNTIME_TOPIC,
+        Instant::now() + Duration::from_secs(180),
+    )
+    .await
+    .unwrap();
     let principal = admin
         .new_principal(tenant, "fence-observer", [tidemq_sdk::Permission::Consume])
         .build()
