@@ -1,17 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ -z ${TIDEMQ_NEXTEST_IMAGE:-} ]]; then
-  exec bash "${BASH_SOURCE[0]%/*}/capture-nextest.sh" cargo nextest run "$@"
+script_dir=${BASH_SOURCE[0]%/*}
+image=${TIDEMQ_NEXTEST_IMAGE:-}
+if [[ -z $image ]]; then
+  if ! [[ ${GITHUB_ACTIONS:-} == true && $(uname -s) == Linux &&
+          ${GITHUB_RUN_ID:-} =~ ^[0-9]+$ && ${GITHUB_RUN_ATTEMPT:-} =~ ^[0-9]+$ &&
+          ${CARGO_TARGET_DIR:-} == "${TIDEMQ_COVERAGE_TARGET_DIR:-}" &&
+          ${CARGO_TARGET_DIR:-} == /*/coverage-ci-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT" ]]; then
+    exec bash "$script_dir/capture-nextest.sh" cargo nextest run "$@"
+  fi
+else
+  [[ $(uname -s) == Linux && $(id -u) == 1001 && $(id -g) == 1001 ]] || {
+    printf 'Isolated nextest requires the Linux actions user\n' >&2; exit 2;
+  }
+  umask 077
+  [[ $image =~ ^localhost/tidemq-nextest:[A-Za-z0-9][A-Za-z0-9_.-]*$ &&
+     ${GITHUB_RUN_ID:-} =~ ^[0-9]+$ && ${GITHUB_RUN_ATTEMPT:-} =~ ^[0-9]+$ ]] || {
+    printf 'A local nextest image name and numeric CI identity are required\n' >&2; exit 2;
+  }
 fi
-[[ $(uname -s) == Linux && $(id -u) == 1001 && $(id -g) == 1001 ]] || {
-  printf 'Isolated nextest requires the Linux actions user\n' >&2; exit 2;
-}
-umask 077
-[[ $TIDEMQ_NEXTEST_IMAGE =~ ^localhost/tidemq-nextest:[A-Za-z0-9][A-Za-z0-9_.-]*$ &&
-   ${GITHUB_RUN_ID:-} =~ ^[0-9]+$ && ${GITHUB_RUN_ATTEMPT:-} =~ ^[0-9]+$ ]] || {
-  printf 'A local nextest image name and numeric CI identity are required\n' >&2; exit 2;
-}
 build_arguments=("$@")
 discovery_arguments=()
 execution_arguments=()
@@ -46,12 +54,45 @@ while (( $# > 0 )); do
       execution_arguments+=(-- "$@")
       break ;;
     -*)
-      printf 'Unsupported argument in the isolated CI nextest entry\n' >&2; exit 2 ;;
+      printf 'Unsupported argument in the CI nextest entry\n' >&2; exit 2 ;;
     *)
       discovery_arguments+=("$argument")
       execution_arguments+=("$argument") ;;
   esac
 done
+
+if [[ -z $image ]]; then
+  run_preflight() {
+    "$@" &
+    wait "$!"
+  }
+  stop_preflight() {
+    local child
+    for child in $(jobs -p); do
+      kill -TERM "$child" 2>/dev/null || true
+      wait "$child" || true
+    done
+    exit "$1"
+  }
+  trap 'stop_preflight 143' TERM
+  trap 'stop_preflight 130' INT
+  mkdir -p target/ci
+  metadata=$(mktemp -d "$PWD/target/ci/nextest.XXXXXX")
+  run_preflight bash "$script_dir/capture-nextest.sh" cargo nextest list \
+    --list-type binaries-only --message-format json "${discovery_arguments[@]}" > "$metadata/binaries.json"
+  run_preflight cargo metadata "${metadata_flags[@]}" > "$metadata/cargo.json"
+  # The compiler and tests share a cgroup on the Validate runner.
+  cache_result=0
+  run_preflight python3 "$script_dir/release-build-cache.py" "$CARGO_TARGET_DIR" || cache_result=$?
+  (( cache_result < 128 )) || exit "$cache_result"
+  if (( cache_result != 0 )); then
+    printf 'Could not release private build cache; proceeding with nextest\n' >&2
+  fi
+  trap - INT TERM
+  exec bash "$script_dir/capture-nextest.sh" cargo nextest run \
+    --binaries-metadata "$metadata/binaries.json" --cargo-metadata "$metadata/cargo.json" \
+    "${execution_arguments[@]}"
+fi
 
 workspace=$(pwd -P)
 target=${CARGO_TARGET_DIR:?An absolute Cargo target directory is required}

@@ -124,7 +124,17 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   for (const name of ['bin', 'target', 'tmp']) fs.mkdirSync(path.join(root, name));
   const executable = (name, code) => fs.writeFileSync(path.join(root, 'bin', name), code, {mode: 0o755});
-  executable('cargo', '#!/usr/bin/env node\nconst fs=require("node:fs");const a=process.argv.slice(2);fs.appendFileSync(process.env.TRACE,JSON.stringify(["cargo",...a])+"\\n");if(a.includes("--no-run")&&process.env.BUILD_FAIL==="1")process.exit(42);if(a.includes("--message-format")||a[0]==="metadata")console.log("{}");\n');
+  executable('cargo', [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs"), args = process.argv.slice(2), env = process.env;',
+    'fs.appendFileSync(env.TRACE, JSON.stringify(["cargo", ...args]) + "\\n");',
+    'if ((args.includes("--no-run") || args.includes("list")) && env.BUILD_FAIL === "1") process.exit(42);',
+    'if (args.includes("list") && env.BLOCK_PREFLIGHT === "1") {',
+    '  process.on("SIGTERM", () => { fs.writeFileSync(env.SIGNAL_FILE + ".term", "cancelled"); process.exit(143); });',
+    '  fs.writeFileSync(env.SIGNAL_FILE, "ready");',
+    '  setInterval(() => {}, 1000);',
+    '} else if (args.includes("--message-format") || args[0] === "metadata") console.log("{}");',
+  ].join('\n'));
   executable('docker', [
     '#!/usr/bin/env node',
     'const fs=require("node:fs"),a=process.argv.slice(2),file=process.env.SIGNAL_FILE;',
@@ -152,6 +162,59 @@ test('unconfigured local execution preserves the original nextest argv', t => {
   const result = spawnSync('bash', [script, ...args], {cwd: f.root, env: f.env, encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(f.calls(), [['cargo', 'nextest', 'run', ...args]]);
+});
+
+function validateEnv(f) {
+  const target = path.join(f.root, 'coverage-ci-123-1');
+  fs.mkdirSync(target, {mode: 0o700});
+  return {...f.env, GITHUB_ACTIONS: 'true', CARGO_TARGET_DIR: target, TIDEMQ_COVERAGE_TARGET_DIR: target};
+}
+
+test('Validate releases its private build cache and discovers tests from the existing build', t => {
+  const f = fixture(t), env = validateEnv(f);
+  const selection = ['--profile', 'ci', '-E', 'kind(test)'];
+  const args = ['--workspace', '--all-targets', '--locked', '--features', 'tidemq-sdk/metrics', ...selection];
+  fs.writeFileSync(path.join(f.root, 'bin/python3'), [
+    '#!/usr/bin/env node',
+    'const fs = require("node:fs");',
+    'fs.appendFileSync(process.env.TRACE, JSON.stringify(["python3", ...process.argv.slice(2)]) + "\\n");',
+  ].join('\n'), {mode: 0o755});
+  const result = spawnSync('bash', [script, ...args], {cwd: f.root, env, encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  const calls = f.calls(), run = calls.at(-1);
+  assert.match(run[4], /nextest\.[^/]+\/binaries\.json$/u);
+  assert.equal(run[6], path.join(path.dirname(run[4]), 'cargo.json'));
+  assert.deepEqual(calls, [
+    ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', ...args],
+    ['cargo', 'metadata', '--format-version', '1', '--locked', '--features', 'tidemq-sdk/metrics'],
+    ['python3', new URL('./release-build-cache.py', import.meta.url).pathname, env.CARGO_TARGET_DIR],
+    ['cargo', 'nextest', 'run', '--binaries-metadata', run[4], '--cargo-metadata', run[6], ...selection],
+  ]);
+  const failed = fixture(t);
+  const failure = spawnSync('bash', [script, ...args], {cwd: failed.root,
+    env: {...validateEnv(failed), BUILD_FAIL: '1'}, encoding: 'utf8'});
+  assert.equal(failure.status, 42, failure.stderr);
+  assert.deepEqual(failed.calls(), calls.slice(0, 1));
+});
+
+test('TERM during Validate compilation reaches the owned process and prevents tests', {timeout: 15000}, async t => {
+  const f = fixture(t);
+  const child = spawn('bash', [script, '--lib', '--locked'], {
+    cwd: f.root, env: {...validateEnv(f), BLOCK_PREFLIGHT: '1'}, stdio: 'ignore',
+  });
+  t.after(() => child.kill('SIGTERM'));
+  const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve([code, signal])));
+  const until = Date.now() + 7000;
+  while (!fs.existsSync(f.env.SIGNAL_FILE)) {
+    assert(Date.now() < until, 'The controlled compilation must start');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  child.kill('SIGTERM');
+  assert.deepEqual(await exited, [143, null]);
+  assert.ok(fs.existsSync(f.env.SIGNAL_FILE + '.term'));
+  assert.deepEqual(f.calls(), [
+    ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', '--lib', '--locked'],
+  ]);
 });
 
 test('console attach errors preserve the actual container result and still fail a successful run', t => {
