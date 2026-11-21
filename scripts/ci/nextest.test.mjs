@@ -131,7 +131,12 @@ function fixture(t) {
     'if ((args.includes("--no-run") || args.includes("list")) && env.BUILD_FAIL === "1") process.exit(42);',
     'if (args.includes("list") && env.BLOCK_PREFLIGHT === "1") {',
     '  process.on("SIGTERM", () => { fs.writeFileSync(env.SIGNAL_FILE + ".term", "cancelled"); process.exit(143); });',
-    '  fs.writeFileSync(env.SIGNAL_FILE, "ready");',
+    '  require("node:child_process").spawn(process.execPath, ["-e", `',
+    '    const fs = require("node:fs"), marker = process.env.SIGNAL_FILE;',
+    '    process.on("SIGTERM", () => { fs.writeFileSync(marker + ".compiler-term", "cancelled"); process.exit(143); });',
+    '    fs.writeFileSync(marker, String(process.pid));',
+    '    setInterval(() => {}, 1000);',
+    '  `], {stdio: "ignore"});',
     '  setInterval(() => {}, 1000);',
     '} else if (args.includes("--message-format") || args[0] === "metadata") console.log("{}");',
   ].join('\n'));
@@ -151,6 +156,7 @@ function fixture(t) {
   ].join('\n'));
   executable('id', '#!/usr/bin/env bash\nprintf "1001\\n"\n');
   executable('uname', '#!/usr/bin/env bash\nprintf "Linux\\n"\n');
+  executable('rustc', '#!/usr/bin/env bash\nprintf "host: x86_64-unknown-linux-gnu\\n"\n');
   const env = {...process.env, PATH: path.join(root, 'bin') + ':' + process.env.PATH, TRACE: path.join(root, 'trace'),
     CARGO_TARGET_DIR: path.join(root, 'target'), TMPDIR: path.join(root, 'tmp'), GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1', SIGNAL_FILE: path.join(root, 'started')};
   delete env.TIDEMQ_NEXTEST_IMAGE;
@@ -167,8 +173,25 @@ test('unconfigured local execution preserves the original nextest argv', t => {
 function validateEnv(f) {
   const target = path.join(f.root, 'coverage-ci-123-1');
   fs.mkdirSync(target, {mode: 0o700});
-  return {...f.env, GITHUB_ACTIONS: 'true', CARGO_TARGET_DIR: target, TIDEMQ_COVERAGE_TARGET_DIR: target};
+  return {...f.env, GITHUB_ACTIONS: 'true', GITHUB_WORKSPACE: f.root,
+    CARGO_TARGET_DIR: target, TIDEMQ_COVERAGE_TARGET_DIR: target};
 }
+
+test('a temporary fixture keeps local nextest behavior when it inherits the CI target', t => {
+  const f = fixture(t), env = validateEnv(f);
+  const temporary = path.join(f.root, 'tmp');
+  const result = spawnSync('bash', [script, '--lib'], {cwd: temporary, env, encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.calls(), [['cargo', 'nextest', 'run', '--lib']]);
+});
+
+test('Validate passes additional native nextest options through unchanged', t => {
+  const f = fixture(t), env = validateEnv(f);
+  const args = ['--lib', '--failure-output=immediate'];
+  const result = spawnSync('bash', [script, ...args], {cwd: f.root, env, encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(f.calls(), [['cargo', 'nextest', 'run', ...args]]);
+});
 
 test('Validate releases its private build cache and discovers tests from the existing build', t => {
   const f = fixture(t), env = validateEnv(f);
@@ -186,7 +209,8 @@ test('Validate releases its private build cache and discovers tests from the exi
   assert.equal(run[6], path.join(path.dirname(run[4]), 'cargo.json'));
   assert.deepEqual(calls, [
     ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', ...args],
-    ['cargo', 'metadata', '--format-version', '1', '--locked', '--features', 'tidemq-sdk/metrics'],
+    ['cargo', 'metadata', '--format-version', '1', '--locked', '--all-features',
+      '--filter-platform', 'x86_64-unknown-linux-gnu'],
     ['python3', new URL('./release-build-cache.py', import.meta.url).pathname, env.CARGO_TARGET_DIR],
     ['cargo', 'nextest', 'run', '--binaries-metadata', run[4], '--cargo-metadata', run[6], ...selection],
   ]);
@@ -197,7 +221,7 @@ test('Validate releases its private build cache and discovers tests from the exi
   assert.deepEqual(failed.calls(), calls.slice(0, 1));
 });
 
-test('TERM during Validate compilation reaches the owned process and prevents tests', {timeout: 15000}, async t => {
+test('TERM during Validate compilation reaches the compiler group and prevents tests', {timeout: 15000}, async t => {
   const f = fixture(t);
   const child = spawn('bash', [script, '--lib', '--locked'], {
     cwd: f.root, env: {...validateEnv(f), BLOCK_PREFLIGHT: '1'}, stdio: 'ignore',
@@ -209,9 +233,22 @@ test('TERM during Validate compilation reaches the owned process and prevents te
     assert(Date.now() < until, 'The controlled compilation must start');
     await new Promise(resolve => setTimeout(resolve, 20));
   }
+  const compiler = Number(fs.readFileSync(f.env.SIGNAL_FILE, 'utf8'));
+  const cancelled = f.env.SIGNAL_FILE + '.compiler-term';
+  t.after(() => {
+    if (!fs.existsSync(cancelled)) {
+      try { process.kill(compiler, 'SIGTERM'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    }
+  });
   child.kill('SIGTERM');
   assert.deepEqual(await exited, [143, null]);
   assert.ok(fs.existsSync(f.env.SIGNAL_FILE + '.term'));
+  const joined = Date.now() + 3000;
+  while (!fs.existsSync(cancelled)) {
+    assert(Date.now() < joined, 'TERM must reach the compiler descendant');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
   assert.deepEqual(f.calls(), [
     ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', '--lib', '--locked'],
   ]);

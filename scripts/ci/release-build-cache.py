@@ -13,9 +13,11 @@ def release_clean_pages(target):
 
     root_fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if not os.path.samestat(root, os.fstat(root_fd)):
+        opened = os.fstat(root_fd)
+        if (not os.path.samestat(root, opened) or opened.st_uid != root.st_uid
+                or opened.st_mode & 0o077):
             raise ValueError("The CI Cargo target changed after validation")
-        return advise_files(root_fd, root)
+        return advise_files(root_fd, opened)
     finally:
         os.close(root_fd)
 

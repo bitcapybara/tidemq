@@ -5,6 +5,7 @@ script_dir=${BASH_SOURCE[0]%/*}
 image=${TIDEMQ_NEXTEST_IMAGE:-}
 if [[ -z $image ]]; then
   if ! [[ ${GITHUB_ACTIONS:-} == true && $(uname -s) == Linux &&
+          ${GITHUB_WORKSPACE:-} == "$(pwd -P)" &&
           ${GITHUB_RUN_ID:-} =~ ^[0-9]+$ && ${GITHUB_RUN_ATTEMPT:-} =~ ^[0-9]+$ &&
           ${CARGO_TARGET_DIR:-} == "${TIDEMQ_COVERAGE_TARGET_DIR:-}" &&
           ${CARGO_TARGET_DIR:-} == /*/coverage-ci-"$GITHUB_RUN_ID"-"$GITHUB_RUN_ATTEMPT" ]]; then
@@ -54,6 +55,9 @@ while (( $# > 0 )); do
       execution_arguments+=(-- "$@")
       break ;;
     -*)
+      if [[ -z $image ]]; then
+        exec bash "$script_dir/capture-nextest.sh" cargo nextest run "${build_arguments[@]}"
+      fi
       printf 'Unsupported argument in the CI nextest entry\n' >&2; exit 2 ;;
     *)
       discovery_arguments+=("$argument")
@@ -62,6 +66,7 @@ while (( $# > 0 )); do
 done
 
 if [[ -z $image ]]; then
+  set -m
   run_preflight() {
     "$@" &
     wait "$!"
@@ -69,7 +74,7 @@ if [[ -z $image ]]; then
   stop_preflight() {
     local child
     for child in $(jobs -p); do
-      kill -TERM "$child" 2>/dev/null || true
+      kill -TERM -- "-$child" 2>/dev/null || true
       wait "$child" || true
     done
     exit "$1"
@@ -78,9 +83,11 @@ if [[ -z $image ]]; then
   trap 'stop_preflight 130' INT
   mkdir -p target/ci
   metadata=$(mktemp -d "$PWD/target/ci/nextest.XXXXXX")
+  host=$(rustc -vV | sed -n 's/^host: //p')
   run_preflight bash "$script_dir/capture-nextest.sh" cargo nextest list \
     --list-type binaries-only --message-format json "${discovery_arguments[@]}" > "$metadata/binaries.json"
-  run_preflight cargo metadata "${metadata_flags[@]}" > "$metadata/cargo.json"
+  run_preflight cargo metadata --format-version 1 --locked --all-features \
+    --filter-platform "${CARGO_BUILD_TARGET:-$host}" > "$metadata/cargo.json"
   # The compiler and tests share a cgroup on the Validate runner.
   cache_result=0
   run_preflight python3 "$script_dir/release-build-cache.py" "$CARGO_TARGET_DIR" || cache_result=$?
@@ -89,6 +96,9 @@ if [[ -z $image ]]; then
     printf 'Could not release private build cache; proceeding with nextest\n' >&2
   fi
   trap - INT TERM
+  set +m
+  # Bash 3.2 treats an empty array as unset.
+  set +u
   exec bash "$script_dir/capture-nextest.sh" cargo nextest run \
     --binaries-metadata "$metadata/binaries.json" --cargo-metadata "$metadata/cargo.json" \
     "${execution_arguments[@]}"
