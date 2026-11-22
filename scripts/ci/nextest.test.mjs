@@ -7,6 +7,7 @@ import test from 'node:test';
 
 const script = new URL('./nextest.sh', import.meta.url).pathname;
 const ensureImage = new URL('./ensure-nextest-image.sh', import.meta.url).pathname;
+const releaseBuildCache = new URL('./release-build-cache.py', import.meta.url).pathname;
 const image = 'localhost/tidemq-nextest:ubuntu2404-rust1.100.0';
 
 test('nextest image setup accepts only the repository-local image namespace', () => {
@@ -211,7 +212,7 @@ test('Validate releases its private build cache and discovers tests from the exi
     ['cargo', 'nextest', 'list', '--list-type', 'binaries-only', '--message-format', 'json', ...args],
     ['cargo', 'metadata', '--format-version', '1', '--locked', '--all-features',
       '--filter-platform', 'x86_64-unknown-linux-gnu'],
-    ['python3', new URL('./release-build-cache.py', import.meta.url).pathname, env.CARGO_TARGET_DIR],
+    ['python3', releaseBuildCache, env.CARGO_TARGET_DIR],
     ['cargo', 'nextest', 'run', '--binaries-metadata', run[4], '--cargo-metadata', run[6], ...selection],
   ]);
   const failed = fixture(t);
@@ -221,8 +222,55 @@ test('Validate releases its private build cache and discovers tests from the exi
   assert.deepEqual(failed.calls(), calls.slice(0, 1));
 });
 
+test('build cache release advises only files exclusively owned by the private target', t => {
+  const f = fixture(t), {CARGO_TARGET_DIR: target} = validateEnv(f);
+  const outside = path.join(f.root, 'outside');
+  const redirected = path.join(f.root, 'redirected');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(target, 'artifact'), 'owned');
+  fs.writeFileSync(path.join(outside, 'file'), 'shared');
+  fs.symlinkSync(outside, path.join(target, 'alias'));
+  fs.symlinkSync(path.join(outside, 'file'), path.join(target, 'symlink'));
+  fs.linkSync(path.join(outside, 'file'), path.join(target, 'hardlink'));
+  fs.symlinkSync(target, redirected);
+
+  const python = `
+import os
+import runpy
+import sys
+
+helper, target, redirected = sys.argv[1:]
+advised = []
+os.POSIX_FADV_DONTNEED = 4
+os.posix_fadvise = lambda fd, *_: advised.append(os.fstat(fd))
+release = runpy.run_path(helper)["release_clean_pages"]
+assert release(target) == 1
+assert os.path.samestat(advised[0], os.stat(os.path.join(target, "artifact")))
+
+for invalid in (redirected, target):
+    if invalid == target:
+        os.chmod(target, 0o755)
+    try:
+        release(invalid)
+    except ValueError:
+        continue
+    raise AssertionError("Cache release accepted a redirected or nonprivate target")
+assert len(advised) == 1
+`;
+  const result = spawnSync('python3', ['-c', python, releaseBuildCache, target, redirected], {encoding: 'utf8'});
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('TERM during Validate compilation reaches the compiler group and prevents tests', {timeout: 15000}, async t => {
+  let compiler;
+  // The cancellation marker must outlive compiler cleanup.
+  t.after(() => {
+    if (compiler === undefined || fs.existsSync(cancelled)) return;
+    try { process.kill(compiler, 'SIGTERM'); }
+    catch (error) { if (error.code !== 'ESRCH') throw error; }
+  });
   const f = fixture(t);
+  const cancelled = f.env.SIGNAL_FILE + '.compiler-term';
   const child = spawn('bash', [script, '--lib', '--locked'], {
     cwd: f.root, env: {...validateEnv(f), BLOCK_PREFLIGHT: '1'}, stdio: 'ignore',
   });
@@ -233,14 +281,7 @@ test('TERM during Validate compilation reaches the compiler group and prevents t
     assert(Date.now() < until, 'The controlled compilation must start');
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  const compiler = Number(fs.readFileSync(f.env.SIGNAL_FILE, 'utf8'));
-  const cancelled = f.env.SIGNAL_FILE + '.compiler-term';
-  t.after(() => {
-    if (!fs.existsSync(cancelled)) {
-      try { process.kill(compiler, 'SIGTERM'); }
-      catch (error) { if (error.code !== 'ESRCH') throw error; }
-    }
-  });
+  compiler = Number(fs.readFileSync(f.env.SIGNAL_FILE, 'utf8'));
   child.kill('SIGTERM');
   assert.deepEqual(await exited, [143, null]);
   assert.ok(fs.existsSync(f.env.SIGNAL_FILE + '.term'));
