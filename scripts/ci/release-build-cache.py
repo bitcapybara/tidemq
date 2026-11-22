@@ -11,20 +11,27 @@ def release_clean_pages(target):
             or root.st_uid != os.getuid() or root.st_mode & 0o077):
         raise ValueError("The CI Cargo target must be a private, owned directory")
 
-    root_fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent_fd = os.open(os.path.dirname(target), flags)
     try:
-        opened = os.fstat(root_fd)
-        if (not os.path.samestat(root, opened) or opened.st_uid != root.st_uid
-                or opened.st_mode & 0o077):
-            raise ValueError("The CI Cargo target changed after validation")
-        return advise_files(root_fd, opened)
+        root_fd = os.open(os.path.basename(target), flags, dir_fd=parent_fd)
+        try:
+            opened = os.fstat(root_fd)
+            if (not os.path.samestat(root, opened) or opened.st_uid != root.st_uid
+                    or opened.st_mode & 0o077):
+                raise ValueError("The CI Cargo target changed after validation")
+            target_mount = mount_id(root_fd)
+            if target_mount != mount_id(parent_fd):
+                raise ValueError("The CI Cargo target must be on its parent mount")
+            return advise_files(root_fd, opened, target_mount)
+        finally:
+            os.close(root_fd)
     finally:
-        os.close(root_fd)
+        os.close(parent_fd)
 
 
-def advise_files(root_fd, root):
+def advise_files(root_fd, root, target_mount):
     advised = 0
-    target_mount = mount_id(root_fd)
     for _, directories, names, directory in os.fwalk(".", follow_symlinks=False, dir_fd=root_fd):
         if mount_id(directory) != target_mount:
             directories.clear()

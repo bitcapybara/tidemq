@@ -135,11 +135,10 @@ function fixture(t) {
     '  require("node:child_process").spawn(process.execPath, ["-e", `',
     '    const fs = require("node:fs"), marker = process.env.SIGNAL_FILE;',
     '    process.on("SIGTERM", () => { fs.writeFileSync(marker + ".compiler-term", "cancelled"); process.exit(143); });',
-    '    fs.writeFileSync(marker + ".tmp", String(process.pid), {flag: "wx"});',
-    '    fs.renameSync(marker + ".tmp", marker);',
-    '    setInterval(() => {}, 1000);',
+    '    fs.writeFileSync(marker, "ready");',
+    '    setInterval(() => { if (!fs.existsSync(process.env.TRACE)) process.exit(0); }, 100);',
     '  `], {stdio: "ignore"});',
-    '  setInterval(() => {}, 1000);',
+    '  setInterval(() => { if (!fs.existsSync(env.TRACE)) process.exit(0); }, 100);',
     '} else if (args.includes("--message-format") || args[0] === "metadata") console.log("{}");',
   ].join('\n'));
   executable('docker', [
@@ -227,6 +226,7 @@ test('build cache release advises only files exclusively owned by the private ta
   const f = fixture(t), {CARGO_TARGET_DIR: target} = validateEnv(f);
   const outside = path.join(f.root, 'outside');
   const redirected = path.join(f.root, 'redirected');
+  const mountedRoot = path.join(f.root, 'mounted-root');
   for (const directory of [outside, path.join(target, 'nested'), path.join(target, 'mounted')]) {
     fs.mkdirSync(directory);
   }
@@ -240,45 +240,41 @@ test('build cache release advises only files exclusively owned by the private ta
   fs.symlinkSync(path.join(outside, 'file'), path.join(target, 'symlink'));
   fs.linkSync(path.join(outside, 'file'), path.join(target, 'hardlink'));
   fs.symlinkSync(target, redirected);
+  fs.mkdirSync(mountedRoot, {mode: 0o700});
+  fs.writeFileSync(path.join(mountedRoot, 'artifact'), 'mounted');
 
   const python = `
 import os
 import runpy
 import sys
 
-helper, target, redirected = sys.argv[1:]
+helper, target, redirected, mounted_root = sys.argv[1:]
 advised = []
 os.POSIX_FADV_DONTNEED = 4
 os.posix_fadvise = lambda fd, *_: advised.append(os.fstat(fd))
 release = runpy.run_path(helper)["release_clean_pages"]
 foreign = {os.stat(os.path.join(target, name)).st_ino for name in ("mounted", "mounted-file")}
+foreign.add(os.stat(mounted_root).st_ino)
 release.__globals__["mount_id"] = lambda fd: 2 if os.fstat(fd).st_ino in foreign else 1
 assert release(target) == 2
 expected = {os.stat(os.path.join(target, name)).st_ino for name in ("artifact", "nested/artifact")}
 assert {file.st_ino for file in advised} == expected
 
-for invalid in (redirected, target):
+for invalid in (redirected, mounted_root, target):
     if invalid == target:
         os.chmod(target, 0o755)
     try:
         release(invalid)
     except ValueError:
         continue
-    raise AssertionError("Cache release accepted a redirected or nonprivate target")
+    raise AssertionError("Cache release accepted a redirected, mounted or nonprivate target")
 assert len(advised) == 2
 `;
-  const result = spawnSync('python3', ['-c', python, releaseBuildCache, target, redirected], {encoding: 'utf8'});
+  const result = spawnSync('python3', ['-c', python, releaseBuildCache, target, redirected, mountedRoot], {encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);
 });
 
 test('TERM during Validate compilation reaches the compiler group and prevents tests', {timeout: 15000}, async t => {
-  let compiler;
-  // The cancellation marker must outlive compiler cleanup.
-  t.after(() => {
-    if (compiler === undefined || fs.existsSync(cancelled)) return;
-    try { process.kill(compiler, 'SIGTERM'); }
-    catch (error) { if (error.code !== 'ESRCH') throw error; }
-  });
   const f = fixture(t);
   const cancelled = f.env.SIGNAL_FILE + '.compiler-term';
   const child = spawn('bash', [script, '--lib', '--locked'], {
@@ -291,9 +287,6 @@ test('TERM during Validate compilation reaches the compiler group and prevents t
     assert(Date.now() < until, 'The controlled compilation must start');
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  const pid = Number(fs.readFileSync(f.env.SIGNAL_FILE, 'utf8'));
-  assert(Number.isSafeInteger(pid) && pid > 1, 'The compiler marker must contain a valid process ID');
-  compiler = pid;
   child.kill('SIGTERM');
   assert.deepEqual(await exited, [143, null]);
   assert.ok(fs.existsSync(f.env.SIGNAL_FILE + '.term'));
