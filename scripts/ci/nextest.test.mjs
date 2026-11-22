@@ -135,7 +135,8 @@ function fixture(t) {
     '  require("node:child_process").spawn(process.execPath, ["-e", `',
     '    const fs = require("node:fs"), marker = process.env.SIGNAL_FILE;',
     '    process.on("SIGTERM", () => { fs.writeFileSync(marker + ".compiler-term", "cancelled"); process.exit(143); });',
-    '    fs.writeFileSync(marker, String(process.pid));',
+    '    fs.writeFileSync(marker + ".tmp", String(process.pid), {flag: "wx"});',
+    '    fs.renameSync(marker + ".tmp", marker);',
     '    setInterval(() => {}, 1000);',
     '  `], {stdio: "ignore"});',
     '  setInterval(() => {}, 1000);',
@@ -226,8 +227,14 @@ test('build cache release advises only files exclusively owned by the private ta
   const f = fixture(t), {CARGO_TARGET_DIR: target} = validateEnv(f);
   const outside = path.join(f.root, 'outside');
   const redirected = path.join(f.root, 'redirected');
-  fs.mkdirSync(outside);
+  for (const directory of [outside, path.join(target, 'nested'), path.join(target, 'mounted')]) {
+    fs.mkdirSync(directory);
+  }
   fs.writeFileSync(path.join(target, 'artifact'), 'owned');
+  fs.writeFileSync(path.join(target, 'nested', 'artifact'), 'owned');
+  fs.writeFileSync(path.join(target, 'mounted', 'artifact'), 'mounted');
+  fs.writeFileSync(path.join(target, 'mounted-file'), 'mounted');
+  fs.writeFileSync(path.join(outside, 'single-link'), 'outside');
   fs.writeFileSync(path.join(outside, 'file'), 'shared');
   fs.symlinkSync(outside, path.join(target, 'alias'));
   fs.symlinkSync(path.join(outside, 'file'), path.join(target, 'symlink'));
@@ -244,8 +251,11 @@ advised = []
 os.POSIX_FADV_DONTNEED = 4
 os.posix_fadvise = lambda fd, *_: advised.append(os.fstat(fd))
 release = runpy.run_path(helper)["release_clean_pages"]
-assert release(target) == 1
-assert os.path.samestat(advised[0], os.stat(os.path.join(target, "artifact")))
+foreign = {os.stat(os.path.join(target, name)).st_ino for name in ("mounted", "mounted-file")}
+release.__globals__["mount_id"] = lambda fd: 2 if os.fstat(fd).st_ino in foreign else 1
+assert release(target) == 2
+expected = {os.stat(os.path.join(target, name)).st_ino for name in ("artifact", "nested/artifact")}
+assert {file.st_ino for file in advised} == expected
 
 for invalid in (redirected, target):
     if invalid == target:
@@ -255,7 +265,7 @@ for invalid in (redirected, target):
     except ValueError:
         continue
     raise AssertionError("Cache release accepted a redirected or nonprivate target")
-assert len(advised) == 1
+assert len(advised) == 2
 `;
   const result = spawnSync('python3', ['-c', python, releaseBuildCache, target, redirected], {encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr);
@@ -281,7 +291,9 @@ test('TERM during Validate compilation reaches the compiler group and prevents t
     assert(Date.now() < until, 'The controlled compilation must start');
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  compiler = Number(fs.readFileSync(f.env.SIGNAL_FILE, 'utf8'));
+  const pid = Number(fs.readFileSync(f.env.SIGNAL_FILE, 'utf8'));
+  assert(Number.isSafeInteger(pid) && pid > 1, 'The compiler marker must contain a valid process ID');
+  compiler = pid;
   child.kill('SIGTERM');
   assert.deepEqual(await exited, [143, null]);
   assert.ok(fs.existsSync(f.env.SIGNAL_FILE + '.term'));

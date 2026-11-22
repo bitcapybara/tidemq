@@ -24,7 +24,11 @@ def release_clean_pages(target):
 
 def advise_files(root_fd, root):
     advised = 0
+    target_mount = mount_id(root_fd)
     for _, directories, names, directory in os.fwalk(".", follow_symlinks=False, dir_fd=root_fd):
+        if mount_id(directory) != target_mount:
+            directories.clear()
+            continue
         directories[:] = [
             name for name in directories
             if os.stat(name, dir_fd=directory, follow_symlinks=False).st_dev == root.st_dev
@@ -37,12 +41,23 @@ def advise_files(root_fd, root):
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
             try:
                 current = os.fstat(fd)
-                if os.path.samestat(entry, current) and current.st_nlink == 1:
+                if (os.path.samestat(entry, current) and current.st_nlink == 1
+                        and mount_id(fd) == target_mount):
                     os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
                     advised += 1
             finally:
                 os.close(fd)
     return advised
+
+
+def mount_id(fd):
+    # A bind mount can share the target's device without belonging to its directory tree.
+    with open(f"/proc/self/fdinfo/{fd}", encoding="ascii") as info:
+        for line in info:
+            key, _, value = line.partition(":")
+            if key == "mnt_id":
+                return int(value)
+    raise ValueError("Unable to identify the CI Cargo target mount")
 
 
 if __name__ == "__main__":
