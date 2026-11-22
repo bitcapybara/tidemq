@@ -38,7 +38,11 @@ test("real Rust backend: a credential write keeps its operation ID across result
   await page.getByLabel("Personal token", { exact: true }).fill((await readFile(tokenFile, "utf8")).trim());
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Overview", exact: true })).toBeVisible();
+  const credentialsDirectory = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/v1/credentials" && response.request().method() === "GET",
+  );
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("link", { name: "Identity & access", exact: true }).click();
+  expect((await credentialsDirectory).status()).toBe(200);
   await page.getByRole("button", { name: "Issue token", exact: true }).click();
   await page.getByLabel("Validity duration").fill("1");
   await page.getByRole("dialog", { name: "Issue token", exact: true }).getByRole("combobox", { name: "Unit", exact: true }).selectOption("minutes");
